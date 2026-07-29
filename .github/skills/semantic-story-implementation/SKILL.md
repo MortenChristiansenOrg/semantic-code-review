@@ -291,8 +291,20 @@ target. Submit a batch only when the reviewer is finished:
 ```
 
 Submission freezes comment text and anchors. Address submitted items one stage
-at a time, rewrite the affected stage and downstream history, refresh the
-semantic artifact, then record each resolution:
+at a time. Implement and test one fix on top of the current stage stack, commit
+it, then fold it into the affected stage:
+
+```text
+... rewrite-stage --stage add-cancellation-policy --fix HEAD
+```
+
+The command requires a clean branch with one fix commit directly after the
+current stack tip. It constructs the rewritten stage and every downstream
+commit through an isolated Git index, moves the branch only after all patches
+apply, refreshes artifact bindings, and rolls back the branch if validation
+fails.
+
+After rewriting, record each resolution:
 
 ```text
 ... comment resolve \
@@ -337,6 +349,7 @@ stage record
 stage validation
 stage finish
 stage discard
+rewrite-stage --stage <id> [--fix <revision>]
 refresh
 repair
 publish [--message <commit-message>]

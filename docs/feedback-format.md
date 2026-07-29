@@ -92,4 +92,3 @@ The active feedback root SHOULD be locally ignored so it cannot enter semantic
 stage commits. A product may persist it in a database or publish a snapshot in a
 separate metadata commit. The implementation artifact remains valid without
 feedback state.
-

@@ -348,6 +348,30 @@ try {
     throw new Error("Dependent stage was not finalized correctly.");
   }
 
+  fs.writeFileSync(
+    path.join(repository, "src", "order.txt"),
+    "pending -> cancelled with review fix\n",
+    "utf8",
+  );
+  git("add", "src/order.txt");
+  git("commit", "-m", "Address stage feedback");
+  semantic("rewrite-stage", "--stage", "add-policy", "--fix", "HEAD");
+  const rewrittenByToolFirst = readJson(
+    ".semantic-review/stages/add-policy.json",
+  ).change.commit;
+  const rewrittenByToolSecond = readJson(
+    ".semantic-review/stages/persist-state.json",
+  ).change.commit;
+  if (
+    rewrittenByToolFirst === firstCommit ||
+    rewrittenByToolSecond === secondCommit ||
+    git("rev-parse", "HEAD") !== rewrittenByToolSecond ||
+    fs.readFileSync(path.join(repository, "src", "order.txt"), "utf8") !==
+      "pending -> cancelled with review fix\n"
+  ) {
+    throw new Error("rewrite-stage did not rebuild the semantic stack.");
+  }
+
   git("checkout", "--detach", base);
   fs.writeFileSync(
     path.join(repository, "base-update.txt"),
@@ -357,10 +381,10 @@ try {
   git("add", "base-update.txt");
   git("commit", "-m", "Advance target branch");
   const newBase = git("rev-parse", "HEAD");
-  git("cherry-pick", "--no-commit", firstCommit);
+  git("cherry-pick", "--no-commit", rewrittenByToolFirst);
   git("commit", "-m", "Rewrite cancellation policy");
   const rewrittenFirst = git("rev-parse", "HEAD");
-  git("cherry-pick", "--no-commit", secondCommit);
+  git("cherry-pick", "--no-commit", rewrittenByToolSecond);
   git("commit", "-m", "Rewrite persistence");
   const rewrittenSecond = git("rev-parse", "HEAD");
 

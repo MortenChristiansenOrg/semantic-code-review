@@ -2,6 +2,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -48,6 +49,7 @@ Usage:
   semantic-review.mjs stage validation [options]
   semantic-review.mjs stage finish [options]
   semantic-review.mjs stage discard --id <stage-id>
+  semantic-review.mjs rewrite-stage --stage <id> [--fix <revision>]
   semantic-review.mjs refresh [--base <revision>] --stage <id>=<revision> [...]
   semantic-review.mjs repair
   semantic-review.mjs publish [--message <commit-message>]
@@ -170,6 +172,30 @@ function git(args, { cwd, allowFailure = false, encoding = "utf8" } = {}) {
     const detail = error.stderr?.toString().trim();
     fail(`git ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
   }
+}
+
+function gitRaw(
+  args,
+  { cwd, input, env = {}, allowFailure = false, encoding = "utf8" } = {},
+) {
+  const result = spawnSync("git", args, {
+    cwd,
+    input,
+    encoding,
+    env: {
+      ...process.env,
+      ...env,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (result.status !== 0) {
+    if (allowFailure) return null;
+    const detail = result.stderr?.toString().trim();
+    fail(`git ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
+  }
+  return typeof result.stdout === "string"
+    ? result.stdout.trim()
+    : result.stdout;
 }
 
 function repositoryRoot() {
@@ -1334,6 +1360,184 @@ function refreshStages(paths, options) {
   );
 }
 
+function commitMetadata(root, commit) {
+  return {
+    authorName: git(["show", "-s", "--format=%an", commit], { cwd: root }),
+    authorEmail: git(["show", "-s", "--format=%ae", commit], { cwd: root }),
+    authorDate: git(["show", "-s", "--format=%aI", commit], { cwd: root }),
+    message: gitRaw(["show", "-s", "--format=%B", commit], {
+      cwd: root,
+    }),
+  };
+}
+
+function applyCommitPatch({
+  root,
+  indexFile,
+  baseTree,
+  patchParent,
+  patchCommit,
+  metadataCommit,
+  newParent,
+}) {
+  fs.rmSync(indexFile, { force: true });
+  const env = { GIT_INDEX_FILE: indexFile };
+  gitRaw(["read-tree", baseTree], { cwd: root, env });
+  const patch = gitRaw(
+    [
+      "diff",
+      "--binary",
+      "--full-index",
+      "--find-renames=50%",
+      patchParent,
+      patchCommit,
+      "--",
+    ],
+    { cwd: root, encoding: "buffer" },
+  );
+  if (patch.length === 0) {
+    fail(`Commit ${patchCommit} has no patch to apply.`);
+  }
+  gitRaw(["apply", "--cached", "--3way", "--whitespace=nowarn", "-"], {
+    cwd: root,
+    env,
+    input: patch,
+    encoding: "buffer",
+  });
+  const tree = gitRaw(["write-tree"], { cwd: root, env });
+  const metadata = commitMetadata(root, metadataCommit);
+  return gitRaw(["commit-tree", tree, "-p", newParent], {
+    cwd: root,
+    input: metadata.message,
+    env: {
+      GIT_AUTHOR_NAME: metadata.authorName,
+      GIT_AUTHOR_EMAIL: metadata.authorEmail,
+      GIT_AUTHOR_DATE: metadata.authorDate,
+    },
+  });
+}
+
+function rewriteStage(paths, options) {
+  assertKnownOptions(options, new Set(["stage", "fix"]));
+  const artifact = validateArtifact(paths, { quiet: true });
+  assertCleanWorkingTree(paths.root, "Stage rewriting");
+  const stageId = option(options, "stage", { required: true });
+  const targetIndex = artifact.manifest.stages.indexOf(stageId);
+  if (targetIndex < 0) fail(`Stage ${stageId} does not exist.`);
+
+  const fixCommit = commitObject(
+    paths.root,
+    option(options, "fix", { defaultValue: "HEAD" }),
+  );
+  const head = commitObject(paths.root, "HEAD");
+  if (head !== fixCommit) fail("The fix commit must be the current HEAD.");
+  const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+    cwd: paths.root,
+    allowFailure: true,
+  });
+  if (!branch) fail("Stage rewriting requires a checked-out local branch.");
+
+  const stageTip = lastStageCommit(artifact);
+  const fixParents = commitParents(paths.root, fixCommit);
+  if (fixParents.length !== 1 || fixParents[0] !== stageTip) {
+    fail(`Fix commit ${fixCommit} must directly follow stage tip ${stageTip}.`);
+  }
+  const fixPaths = changedPathNames(paths.root, stageTip, fixCommit);
+  if (
+    fixPaths.length === 0 ||
+    fixPaths.some(
+      (file) =>
+        file === ".semantic-review" ||
+        file.startsWith(".semantic-review/") ||
+        file === ".semantic-review-feedback" ||
+        file.startsWith(".semantic-review-feedback/"),
+    )
+  ) {
+    fail("Fix commit must contain implementation changes only.");
+  }
+
+  const stageIds = artifact.manifest.stages.slice(targetIndex);
+  const oldCommits = stageIds.map(
+    (id) => artifact.stages.get(id).change.commit,
+  );
+  const targetOldCommit = oldCommits[0];
+  const targetOldParent =
+    targetIndex === 0
+      ? artifact.manifest.baseRevision
+      : artifact.stages.get(artifact.manifest.stages[targetIndex - 1]).change
+          .commit;
+  const indexFile = path.join(
+    os.tmpdir(),
+    `semantic-review-rewrite-${process.pid}-${Date.now()}.index`,
+  );
+  const mapping = new Map();
+
+  try {
+    let newCommit = applyCommitPatch({
+      root: paths.root,
+      indexFile,
+      baseTree: targetOldCommit,
+      patchParent: stageTip,
+      patchCommit: fixCommit,
+      metadataCommit: targetOldCommit,
+      newParent: targetOldParent,
+    });
+    mapping.set(stageId, newCommit);
+
+    for (let index = 1; index < stageIds.length; index += 1) {
+      const oldCommit = oldCommits[index];
+      const oldParent = oldCommits[index - 1];
+      newCommit = applyCommitPatch({
+        root: paths.root,
+        indexFile,
+        baseTree: newCommit,
+        patchParent: oldParent,
+        patchCommit: oldCommit,
+        metadataCommit: oldCommit,
+        newParent: newCommit,
+      });
+      mapping.set(stageIds[index], newCommit);
+    }
+
+    const newTip = mapping.get(stageIds.at(-1));
+    git(
+      [
+        "update-ref",
+        `refs/heads/${branch}`,
+        newTip,
+        fixCommit,
+      ],
+      { cwd: paths.root },
+    );
+    git(["reset", "--hard", newTip], { cwd: paths.root });
+
+    const refreshOptions = new Map([
+      [
+        "stage",
+        [...mapping].map(([id, commit]) => `${id}=${commit}`),
+      ],
+    ]);
+    try {
+      refreshStages(paths, refreshOptions);
+    } catch (error) {
+      git(["update-ref", `refs/heads/${branch}`, fixCommit, newTip], {
+        cwd: paths.root,
+      });
+      git(["reset", "--hard", fixCommit], { cwd: paths.root });
+      throw error;
+    }
+
+    console.log(`Rewrote ${stageId} and ${stageIds.length - 1} downstream stage(s):`);
+    for (const id of stageIds) {
+      console.log(
+        `  ${id}: ${artifact.stages.get(id).change.commit} -> ${mapping.get(id)}`,
+      );
+    }
+  } finally {
+    fs.rmSync(indexFile, { force: true });
+  }
+}
+
 function repairArtifact(paths, options) {
   assertKnownOptions(options, new Set());
   if (!fs.existsSync(paths.manifest)) {
@@ -1650,6 +1854,10 @@ function dispatch(paths, positionals, options) {
   }
   if (command === "stage" && subcommand === "discard") {
     discardStage(paths, options);
+    return;
+  }
+  if (command === "rewrite-stage" && subcommand === undefined) {
+    rewriteStage(paths, options);
     return;
   }
   if (command === "refresh" && subcommand === undefined) {

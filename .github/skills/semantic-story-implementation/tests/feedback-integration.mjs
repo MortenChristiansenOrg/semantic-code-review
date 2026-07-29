@@ -168,17 +168,10 @@ try {
   fs.writeFileSync(path.join(repository, "change.txt"), "descriptive value\n");
   git("add", "change.txt");
   git("commit", "-m", "Address review feedback");
-  const fixCommit = git("rev-parse", "HEAD");
-  git("checkout", "--detach", `${originalCommit}^`);
-  git("cherry-pick", "--no-commit", originalCommit);
-  git("cherry-pick", "--no-commit", fixCommit);
-  git("commit", "-C", originalCommit);
-  const rewrittenCommit = git("rev-parse", "HEAD");
-  semantic(
-    "refresh",
-    "--stage",
-    `implementation=${rewrittenCommit}`,
-  );
+  semantic("rewrite-stage", "--stage", "implementation", "--fix", "HEAD");
+  const rewrittenCommit = readJson(
+    ".semantic-review/stages/implementation.json",
+  ).change.commit;
 
   for (const id of ["decision-comment", "line-comment"]) {
     feedback(
