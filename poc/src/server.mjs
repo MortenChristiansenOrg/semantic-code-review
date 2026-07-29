@@ -12,6 +12,11 @@ import {
 
 const modulePath = fileURLToPath(import.meta.url);
 const publicDirectory = path.resolve(path.dirname(modulePath), "..", "public");
+const defaultRepositoryRoot = path.resolve(
+  path.dirname(modulePath),
+  "..",
+  "..",
+);
 const LOCAL_HOST_PATTERN =
   /^(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$|^\[::1\](?::\d{1,5})?$/i;
 
@@ -163,7 +168,7 @@ export function createReviewServer({ repositoryRoot }) {
 }
 
 export async function startServer({
-  repositoryRoot = process.cwd(),
+  repositoryRoot = process.env.REPOSITORY_ROOT ?? defaultRepositoryRoot,
   host = "127.0.0.1",
   port = Number(process.env.PORT ?? 4173),
 } = {}) {

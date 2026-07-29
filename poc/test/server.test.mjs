@@ -57,6 +57,24 @@ test("serves the current semantic review as JSON", async () => {
   }
 });
 
+test("discovers the repository when npm changes the working directory", async () => {
+  const server = await startServer({ port: 0 });
+  try {
+    const address = server.address();
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/review`,
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.manifest.reviewId, "review-tool-poc");
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("serves the browser workspace assets", async () => {
   const server = await startServer({ repositoryRoot, port: 0 });
   try {
