@@ -1,0 +1,20 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "id": "verify-semantic-process",
+  "title": "Verify the semantic implementation process",
+  "summary": "The experiment can verify each canonical stage and preserve observations without hand-editing artifacts.",
+  "source": {
+    "kind": "local",
+    "reference": "poc-process-observation-1"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "record-finalized-evidence",
+      "text": "Validation results and lessons discovered immediately after stage finalization can be added through a schema-validating script command."
+    },
+    {
+      "id": "survive-lifecycle-transition",
+      "text": "POC checks can process the same stage while it is working and after it becomes canonical."
+    }
+  ]
+}

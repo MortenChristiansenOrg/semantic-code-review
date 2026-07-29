@@ -1,0 +1,36 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "id": "review-artifacts",
+  "title": "Review semantic implementation artifacts",
+  "summary": "A developer can run a local tool to understand a semantic review artifact and inspect each implementation stage.",
+  "source": {
+    "kind": "local",
+    "reference": "poc-request-2026-07-29"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "load-linked-artifacts",
+      "text": "The tool loads the manifest and every indexed requirement and stage document without relying on directory discovery."
+    },
+    {
+      "id": "present-review-context",
+      "text": "The tool presents requirements, stage order, dependencies, rationale, decisions, assumptions, alternatives, failed attempts, risks, validation evidence, and open questions."
+    },
+    {
+      "id": "show-stage-diffs",
+      "text": "The tool presents the Git diff associated with each finalized stage."
+    },
+    {
+      "id": "surface-artifact-errors",
+      "text": "Missing, malformed, or inconsistent artifact data is surfaced as an explicit error."
+    },
+    {
+      "id": "run-locally",
+      "text": "The proof of concept runs locally without external services."
+    },
+    {
+      "id": "process-current-review",
+      "text": "After every implementation stage, the tool can process the semantic artifacts produced for this proof of concept."
+    }
+  ]
+}

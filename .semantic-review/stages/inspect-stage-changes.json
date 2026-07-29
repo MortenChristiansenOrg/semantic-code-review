@@ -1,0 +1,102 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "inspect-stage-changes",
+  "title": "Inspect stage diffs and validation state",
+  "summary": "Expose canonical validator status and lazy unified Git diffs, then render file inventories and code changes in the stage workspace.",
+  "dependsOn": [
+    "render-review-workspace"
+  ],
+  "requirementRefs": [
+    "review-artifacts#show-stage-diffs",
+    "review-artifacts#surface-artifact-errors",
+    "review-artifacts#present-review-context",
+    "review-artifacts#process-current-review"
+  ],
+  "change": {
+    "commit": "2b92cc8983dc29a839f3e73bf1a0f088bd20fd20",
+    "files": [
+      {
+        "path": "poc/public/app.js",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/public/styles.css",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/README.md",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/src/review-service.mjs",
+        "kind": "added"
+      },
+      {
+        "path": "poc/src/server.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/test/server.test.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "README.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "The artifact explains intent, while Git remains authoritative for code. The review tool should join them at view time rather than duplicate patch data in JSON.",
+  "decisions": [
+    {
+      "id": "invoke-authoritative-validator",
+      "category": "engineering",
+      "summary": "Run the semantic review CLI for validation status instead of implementing a second schema validator in the POC.",
+      "rationale": "The experiment should expose the standard's authoritative result and avoid validation drift between the writer and viewer."
+    },
+    {
+      "id": "lazy-unified-diff",
+      "category": "engineering",
+      "summary": "Load a unified Git diff only when the reviewer requests it.",
+      "rationale": "Intent metadata stays fast to navigate while Git output remains authoritative and potentially large patches do not block initial rendering."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [
+    {
+      "id": "embedded-patch-data",
+      "approach": "Store or return diffs inside the main review artifact response.",
+      "reasonRejected": "The standard deliberately avoids duplicated patch data, and eager loading would make every navigation pay the largest diff cost."
+    }
+  ],
+  "failedAttempts": [],
+  "risks": [
+    {
+      "id": "large-diff-output",
+      "summary": "A generated or unusually large commit could exceed practical browser or subprocess limits.",
+      "mitigation": "Load diffs on demand and cap subprocess output with an explicit error rather than truncating silently."
+    }
+  ],
+  "validation": [
+    {
+      "id": "integrated-poc-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Covers artifact loading, browser assets, authoritative validation, and a real finalized-stage Git diff while this stage is working.",
+      "command": "npm test --prefix poc"
+    },
+    {
+      "id": "live-diff-probe",
+      "type": "manual",
+      "status": "passed",
+      "summary": "The running app reported valid artifacts, three finalized stages, the active working stage, and a 14,818-character Git diff for stage one."
+    },
+    {
+      "id": "canonical-integrated-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "After finalization, the POC validated and processed all four canonical stages and served Git diffs.",
+      "command": "npm test --prefix poc"
+    }
+  ],
+  "openQuestions": []
+}

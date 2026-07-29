@@ -1,0 +1,22 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json",
+  "formatVersion": "0.1",
+  "reviewId": "review-tool-poc",
+  "title": "Semantic review tool proof of concept",
+  "summary": "Build a local web app that loads, validates, and presents semantic review artifacts, including the artifacts produced while building the app.",
+  "baseRevision": "3663fb2bd8d199b80d898d6215bacfb21c344ed6",
+  "targetBranch": "master",
+  "requirements": [
+    "review-artifacts",
+    "verify-semantic-process"
+  ],
+  "stages": [
+    "load-artifact-api",
+    "support-finalized-verification",
+    "render-review-workspace",
+    "inspect-stage-changes",
+    "reject-unsafe-git-revisions",
+    "enforce-local-host-boundary",
+    "resolve-repository-root"
+  ]
+}

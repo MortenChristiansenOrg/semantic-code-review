@@ -1,0 +1,62 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "reject-unsafe-git-revisions",
+  "title": "Reject unsafe Git revision values",
+  "summary": "Validate artifact base and stage revisions as full SHA-1 object IDs before invoking Git diff.",
+  "dependsOn": [
+    "inspect-stage-changes"
+  ],
+  "requirementRefs": [
+    "review-artifacts#show-stage-diffs",
+    "review-artifacts#surface-artifact-errors"
+  ],
+  "change": {
+    "commit": "f53993ea7b31b024cc9ff13aedeae4fd52fcfbd7",
+    "files": [
+      {
+        "path": "poc/src/review-service.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/test/review-service.test.mjs",
+        "kind": "added"
+      }
+    ]
+  },
+  "rationale": "The viewer treats repository artifacts as input. Revision values must be constrained before they cross the process boundary so they cannot become Git command options.",
+  "decisions": [
+    {
+      "id": "validate-at-process-boundary",
+      "category": "engineering",
+      "summary": "Recheck revision syntax in the diff service immediately before process execution.",
+      "rationale": "The viewer may receive invalid artifacts before the validation endpoint completes, so the sensitive operation must enforce its own input boundary."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [],
+  "failedAttempts": [],
+  "risks": [
+    {
+      "id": "git-option-injection",
+      "summary": "A malformed revision beginning with a dash could be interpreted as a git diff option and alter command behavior or write output.",
+      "mitigation": "Require the standard's exact lowercase 40-character SHA-1 format before invoking Git."
+    }
+  ],
+  "validation": [
+    {
+      "id": "revision-boundary-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Rejects option-shaped artifact revisions before Git execution while preserving valid stage diff behavior.",
+      "command": "npm test --prefix poc"
+    },
+    {
+      "id": "canonical-revision-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "The finalized hardening stage and all previous stage diffs remain processable.",
+      "command": "npm test --prefix poc"
+    }
+  ],
+  "openQuestions": []
+}
