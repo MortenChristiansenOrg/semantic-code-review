@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +30,26 @@ function semantic(...args) {
 
 function feedback(...args) {
   return run(process.execPath, [feedbackCli, ...args]);
+}
+
+function feedbackAsync(...args) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      [feedbackCli, ...args],
+      { cwd: repository, encoding: "utf8" },
+      (error, stdout) => (error ? reject(error) : resolve(stdout.trim())),
+    );
+  });
+}
+
+function expectFeedbackFailure(...args) {
+  try {
+    feedback(...args);
+  } catch {
+    return;
+  }
+  throw new Error(`Expected feedback command to fail: ${args.join(" ")}`);
 }
 
 try {
@@ -80,8 +100,89 @@ try {
   git("add", "change.txt");
   git("commit", "-m", "Implement");
   semantic("stage", "finish", "--id", "implementation", "--commit", "HEAD");
+  semantic(
+    "stage",
+    "begin",
+    "--id",
+    "follow-up",
+    "--title",
+    "Follow-up",
+    "--summary",
+    "Add a second resolution target.",
+    "--rationale",
+    "Exercise stage assignment validation.",
+    "--depends-on",
+    "implementation",
+    "--requirement-ref",
+    "story#works",
+  );
+  fs.writeFileSync(path.join(repository, "follow-up.txt"), "follow-up\n");
+  git("add", "follow-up.txt");
+  git("commit", "-m", "Follow up");
+  semantic("stage", "finish", "--id", "follow-up", "--commit", "HEAD");
+  feedback("approve-stack", "--branch", "review/no-comments");
+  if (git("rev-parse", "review/no-comments") !== git("rev-parse", "HEAD")) {
+    throw new Error("A no-comment review could not approve the stack.");
+  }
   feedback("init");
+  feedback("batch", "create", "--id", "empty", "--title", "Empty");
+  feedback("batch", "delete", "--id", "empty");
+  if (
+    fs.existsSync(
+      path.join(repository, ".semantic-review-feedback", "batches", "empty.json"),
+    )
+  ) {
+    throw new Error("Empty draft batch was not deleted.");
+  }
   feedback("batch", "create", "--id", "review", "--title", "Review");
+  await Promise.all([
+    feedbackAsync(
+      "comment",
+      "add",
+      "--batch",
+      "review",
+      "--id",
+      "concurrent-one",
+      "--body",
+      "First concurrent comment",
+      "--target-kind",
+      "stage",
+      "--label",
+      "Implementation stage",
+      "--stage",
+      "implementation",
+    ),
+    feedbackAsync(
+      "comment",
+      "add",
+      "--batch",
+      "review",
+      "--id",
+      "concurrent-two",
+      "--body",
+      "Second concurrent comment",
+      "--target-kind",
+      "stage",
+      "--label",
+      "Implementation stage",
+      "--stage",
+      "implementation",
+    ),
+  ]);
+  const concurrentBatch = JSON.parse(
+    fs.readFileSync(
+      path.join(repository, ".semantic-review-feedback", "batches", "review.json"),
+      "utf8",
+    ),
+  );
+  if (
+    !concurrentBatch.items.includes("concurrent-one") ||
+    !concurrentBatch.items.includes("concurrent-two")
+  ) {
+    throw new Error("Concurrent feedback mutations lost an item.");
+  }
+  feedback("comment", "delete", "--id", "concurrent-one");
+  feedback("comment", "delete", "--id", "concurrent-two");
   feedback(
     "comment",
     "add",
@@ -134,6 +235,37 @@ try {
   );
   feedback("comment", "delete", "--id", "deleted");
   feedback("batch", "submit", "--id", "review");
+  const implementationCommit = JSON.parse(
+    fs.readFileSync(
+      path.join(
+        repository,
+        ".semantic-review",
+        "stages",
+        "implementation.json",
+      ),
+      "utf8",
+    ),
+  ).change.commit;
+  const followUpCommit = JSON.parse(
+    fs.readFileSync(
+      path.join(repository, ".semantic-review", "stages", "follow-up.json"),
+      "utf8",
+    ),
+  ).change.commit;
+  expectFeedbackFailure(
+    "comment",
+    "resolve",
+    "--id",
+    "editable",
+    "--summary",
+    "Wrong stage.",
+    "--stage",
+    "follow-up",
+    "--previous",
+    implementationCommit,
+    "--rewritten",
+    followUpCommit,
+  );
   const groups = JSON.parse(feedback("next", "--json"));
   if (
     groups.length !== 1 ||

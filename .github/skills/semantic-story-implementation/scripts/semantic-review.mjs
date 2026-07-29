@@ -53,7 +53,7 @@ Usage:
   semantic-review.mjs refresh [--base <revision>] --stage <id>=<revision> [...]
   semantic-review.mjs repair
   semantic-review.mjs publish [--message <commit-message>]
-  semantic-review.mjs prepare-pr --branch <branch-name>
+  semantic-review.mjs prepare-pr --branch <branch-name> [--check-only]
   semantic-review.mjs archive [--destination <path>] [--message <commit-message>]
   semantic-review.mjs validate [--schema-only] [--publish]
 
@@ -1660,7 +1660,8 @@ function publishArtifact(paths, options) {
   assertCleanWorkingTree(paths.root, "Artifact publication");
   const { stageTip, metadataCommit } = reviewHeadState(paths, artifact);
   if (metadataCommit) {
-    fail("The active artifact is already published at HEAD.");
+    console.log(`Semantic review metadata is already published at HEAD.`);
+    return;
   }
 
   const message = option(options, "message", {
@@ -1702,8 +1703,9 @@ function publishArtifact(paths, options) {
 }
 
 function preparePrBranch(paths, options) {
-  assertKnownOptions(options, new Set(["branch"]));
+  assertKnownOptions(options, new Set(["branch", "check-only"]));
   const branch = option(options, "branch", { required: true });
+  const checkOnly = flag(options, "check-only");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "PR branch preparation");
   const { head, metadataCommit } = reviewHeadState(paths, artifact);
@@ -1719,10 +1721,19 @@ function preparePrBranch(paths, options) {
       `Branch ${branch} already points to ${existing}; refusing to move it to ${head}.`,
     );
   }
-  if (!existing) {
+  if (checkOnly && existing && !metadataCommit) {
+    fail(
+      `Branch ${branch} already points to the unpublished stage tip; publication would move HEAD and leave the branch behind.`,
+    );
+  }
+  if (!existing && !checkOnly) {
     git(["branch", branch, head], { cwd: paths.root });
   }
 
+  if (checkOnly) {
+    console.log(`PR-ready branch ${branch} can point to ${head}.`);
+    return;
+  }
   console.log(
     `PR-ready branch ${branch} points to ${head}${metadataCommit ? " with published metadata" : ""}; base is ${artifact.manifest.baseRevision}.`,
   );

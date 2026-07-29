@@ -11,6 +11,8 @@
   --amber-soft: #fff0d8;
   --fault: #b64141;
   --fault-soft: #f8dddd;
+  --feedback: #9b3f72;
+  --feedback-soft: #f7e5f0;
   --line: #cad5e5;
   --line-strong: #9fb0c7;
   --shadow: 0 24px 70px rgb(23 32 51 / 10%);
@@ -144,6 +146,40 @@ a:focus-visible {
   color: var(--paper);
   background: var(--ink);
   cursor: pointer;
+}
+
+.review-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 38px;
+  padding: 0 0.85rem;
+  border: 1px solid var(--feedback);
+  color: var(--feedback);
+  background: var(--paper);
+  cursor: pointer;
+}
+
+.review-toggle:hover {
+  color: var(--paper);
+  background: var(--feedback);
+}
+
+.review-count {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  color: var(--paper);
+  background: var(--feedback);
+  font: 0.64rem/1 "Cascadia Code", Consolas, monospace;
+}
+
+.review-toggle:hover .review-count {
+  color: var(--feedback);
+  background: var(--paper);
 }
 
 .reload-button:hover {
@@ -298,7 +334,7 @@ a:focus-visible {
 
 .criteria-list li {
   display: grid;
-  grid-template-columns: minmax(100px, 0.35fr) 1fr;
+  grid-template-columns: minmax(100px, 0.35fr) 1fr auto;
   gap: 0.8rem;
   padding-top: 0.6rem;
   border-top: 1px solid var(--line);
@@ -439,6 +475,10 @@ a:focus-visible {
   border-bottom: 3px solid var(--ink);
 }
 
+.stage-detail-header > .comment-action {
+  margin-left: auto;
+}
+
 .stage-detail h2 {
   max-width: 850px;
   margin: 0;
@@ -532,7 +572,7 @@ a:focus-visible {
 
 .file-list li {
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr) auto;
   gap: 0.8rem;
   align-items: baseline;
   padding: 0.45rem 0;
@@ -583,29 +623,51 @@ a:focus-visible {
   font: 0.72rem/1.55 "Cascadia Code", Consolas, monospace;
 }
 
-.unified-diff span {
+.unified-diff .diff-row {
   display: block;
   min-height: 1.1em;
-  padding: 0 1rem;
+  padding-left: 1rem;
   white-space: pre;
 }
 
-.diff-addition {
+.diff-row {
+  position: relative;
+}
+
+.diff-line-copy {
+  display: inline-block;
+  padding-right: 3.5rem;
+}
+
+.diff-row > .comment-action {
+  position: sticky;
+  right: 0.35rem;
+  float: right;
+  min-width: 24px;
+  min-height: 20px;
+  margin: 0.08rem 0.3rem 0 0.5rem;
+  padding: 0;
+  border-color: currentColor;
+  color: inherit;
+  background: #1e293b;
+}
+
+.diff-row.diff-addition {
   color: #d9f8e5;
   background: rgb(38 119 78 / 32%);
 }
 
-.diff-deletion {
+.diff-row.diff-deletion {
   color: #ffdede;
   background: rgb(182 65 65 / 28%);
 }
 
-.diff-hunk {
+.diff-row.diff-hunk {
   color: #b9ecf2;
   background: rgb(22 166 182 / 14%);
 }
 
-.diff-file {
+.diff-row.diff-file {
   color: #ffd89f;
 }
 
@@ -660,8 +722,34 @@ a:focus-visible {
 }
 
 .context-item {
+  position: relative;
   padding: 1rem 0;
   border-bottom: 1px solid var(--line);
+}
+
+.context-item > .comment-action {
+  margin-top: 0.75rem;
+}
+
+.comment-action {
+  min-height: 28px;
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--feedback);
+  color: var(--feedback);
+  background: transparent;
+  font: 0.66rem/1 "Cascadia Code", Consolas, monospace;
+  cursor: pointer;
+}
+
+.comment-action:hover:not(:disabled) {
+  color: var(--paper);
+  background: var(--feedback);
+}
+
+.comment-action:disabled {
+  border-color: var(--line-strong);
+  color: var(--muted);
+  cursor: not-allowed;
 }
 
 .context-item:last-child {
@@ -714,6 +802,286 @@ a:focus-visible {
   max-width: 720px;
   font-size: 1rem;
   line-height: 1.55;
+}
+
+.feedback-panel {
+  position: fixed;
+  z-index: 20;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(430px, 100vw);
+  overflow: auto;
+  padding: 1.3rem;
+  border-left: 1px solid var(--line-strong);
+  background: var(--paper);
+  box-shadow: -24px 0 70px rgb(23 32 51 / 16%);
+  transform: translateX(105%);
+  transition: transform 180ms ease-out;
+}
+
+.feedback-open .feedback-panel {
+  transform: translateX(0);
+}
+
+.feedback-panel-header,
+.feedback-batch-heading,
+.feedback-item-heading,
+.dialog-heading,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.feedback-panel-header {
+  padding-bottom: 1rem;
+  border-bottom: 3px solid var(--ink);
+}
+
+.feedback-panel-header h2,
+.comment-dialog h2 {
+  margin: 0;
+  font: 630 1.5rem/1.1 "Bahnschrift", "Segoe UI", sans-serif;
+}
+
+.icon-button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: transparent;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.feedback-help {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.batch-creator,
+.stack-approval form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding: 1rem 0;
+}
+
+.batch-creator input,
+.stack-approval input,
+.comment-dialog textarea {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: var(--paper);
+  font: inherit;
+}
+
+.batch-creator input,
+.stack-approval input {
+  min-height: 38px;
+  padding: 0 0.65rem;
+}
+
+.feedback-batches {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.feedback-batch {
+  border: 1px solid var(--line);
+}
+
+.feedback-batch.is-selected {
+  border-color: var(--feedback);
+}
+
+.feedback-batch-heading {
+  width: 100%;
+  padding: 0.85rem;
+  border: 0;
+  text-align: left;
+  background: #f7f9fd;
+  cursor: pointer;
+}
+
+.feedback-batch-heading > span:first-child {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.feedback-batch-heading .code-text {
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.batch-status,
+.feedback-target-kind {
+  padding: 0.22rem 0.42rem;
+  border: 1px solid currentColor;
+  font: 0.62rem/1 "Cascadia Code", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.status-draft {
+  color: var(--feedback);
+}
+
+.status-submitted,
+.status-addressing {
+  color: #85540d;
+}
+
+.status-resolved {
+  color: var(--structure);
+}
+
+.status-approved {
+  color: #26774e;
+}
+
+.feedback-items {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.75rem;
+}
+
+.feedback-item {
+  padding: 0.8rem;
+  border-left: 3px solid var(--feedback);
+  background: var(--feedback-soft);
+}
+
+.feedback-addressed,
+.feedback-approved {
+  border-left-color: var(--cyan);
+  background: var(--cyan-soft);
+}
+
+.feedback-target-label {
+  margin: 0.65rem 0 0;
+  font-weight: 650;
+}
+
+.feedback-body {
+  margin: 0.4rem 0 0;
+  line-height: 1.45;
+}
+
+.stale-anchor {
+  margin: 0.6rem 0 0;
+  color: #85540d;
+  font-size: 0.74rem;
+}
+
+.resolution-ticket {
+  margin-top: 0.8rem;
+  padding: 0.75rem;
+  border: 1px solid var(--cyan);
+  background: var(--paper);
+}
+
+.resolution-ticket p {
+  margin-top: 0;
+}
+
+.resolution-commits {
+  margin-bottom: 0;
+  color: var(--structure);
+  font-size: 0.7rem;
+}
+
+.feedback-batch > .primary-button,
+.feedback-item > .secondary-button {
+  margin: 0 0.75rem 0.75rem;
+}
+
+.draft-comment-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+}
+
+.draft-comment-actions .secondary-button {
+  min-height: 32px;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 38px;
+  padding: 0 0.9rem;
+  cursor: pointer;
+}
+
+.primary-button {
+  border: 1px solid var(--feedback);
+  color: var(--paper);
+  background: var(--feedback);
+}
+
+.secondary-button {
+  border: 1px solid var(--feedback);
+  color: var(--feedback);
+  background: var(--paper);
+}
+
+.stack-approval {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--cyan);
+  background: var(--cyan-soft);
+}
+
+.approval-result {
+  font: 0.68rem/1.45 "Cascadia Code", Consolas, monospace;
+}
+
+.comment-dialog {
+  width: min(560px, calc(100vw - 2rem));
+  padding: 1.2rem;
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+.comment-dialog::backdrop {
+  background: rgb(23 32 51 / 48%);
+}
+
+.comment-target {
+  padding: 0.75rem;
+  color: var(--feedback);
+  background: var(--feedback-soft);
+  font-weight: 650;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.comment-dialog textarea {
+  padding: 0.75rem;
+  resize: vertical;
+}
+
+.dialog-actions {
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+.form-error {
+  min-height: 1.2em;
+  margin: 0.5rem 0 0;
+  color: var(--fault);
+  font-size: 0.78rem;
 }
 
 @media (max-width: 940px) {
@@ -769,6 +1137,10 @@ a:focus-visible {
     display: none;
   }
 
+  .review-toggle {
+    padding: 0 0.55rem;
+  }
+
   .review-header {
     gap: 2rem;
   }
@@ -802,10 +1174,18 @@ a:focus-visible {
     align-items: stretch;
     flex-direction: column;
   }
+
+  .feedback-panel {
+    width: 100vw;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .feedback-panel {
+    transition: none;
   }
 }

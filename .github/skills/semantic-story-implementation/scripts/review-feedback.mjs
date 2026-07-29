@@ -37,6 +37,7 @@ const HELP = `Semantic review feedback CLI
 Usage:
   review-feedback.mjs init
   review-feedback.mjs batch create --id <id> --title <title>
+  review-feedback.mjs batch delete --id <id>
   review-feedback.mjs comment add [target options]
   review-feedback.mjs comment edit --id <feedback-id> --body <body>
   review-feedback.mjs comment delete --id <feedback-id>
@@ -44,6 +45,7 @@ Usage:
   review-feedback.mjs batch submit --id <batch-id>
   review-feedback.mjs next [--json]
   review-feedback.mjs comment resolve --id <feedback-id> [resolution options]
+  review-feedback.mjs resolution rebind --stage <id> --previous <sha> --rewritten <sha>
   review-feedback.mjs comment approve --id <feedback-id>
   review-feedback.mjs batch approve-all --id <batch-id>
   review-feedback.mjs approve-stack --branch <branch-name>
@@ -132,6 +134,10 @@ function repositoryRoot() {
 
 function pathsFor(root) {
   const feedback = path.join(root, ".semantic-review-feedback");
+  const gitLock = git(
+    ["rev-parse", "--git-path", "semantic-review-feedback.lock"],
+    { cwd: root },
+  );
   return {
     root,
     semantic: path.join(root, ".semantic-review"),
@@ -139,7 +145,63 @@ function pathsFor(root) {
     feedbackManifest: path.join(feedback, "manifest.json"),
     batches: path.join(feedback, "batches"),
     items: path.join(feedback, "items"),
+    lock: path.isAbsolute(gitLock) ? gitLock : path.resolve(root, gitLock),
   };
+}
+
+function sleep(milliseconds) {
+  Atomics.wait(
+    new Int32Array(new SharedArrayBuffer(4)),
+    0,
+    0,
+    milliseconds,
+  );
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
+function withFeedbackLock(paths, action) {
+  const lock = paths.lock;
+  const owner = path.join(lock, "owner.json");
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      fs.mkdirSync(lock);
+      writeJson(owner, {
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      });
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      let stale = false;
+      try {
+        stale = !processIsAlive(readJson(owner).pid);
+      } catch {
+        stale = Date.now() - fs.statSync(lock).mtimeMs > 10_000;
+      }
+      if (stale) {
+        fs.rmSync(lock, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) {
+        fail("Timed out waiting for another feedback mutation to finish.");
+      }
+      sleep(25);
+    }
+  }
+  try {
+    return action();
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 function findDuplicateKeys(node, file, errors) {
@@ -343,7 +405,10 @@ function expectedBatchStatus(batch, items) {
   return "addressing";
 }
 
-function validateFeedback(paths, { quiet = false } = {}) {
+function validateFeedback(
+  paths,
+  { quiet = false, allowStaleResolutions = false } = {},
+) {
   const semantic = semanticArtifact(paths);
   const feedback = loadFeedback(paths);
   const ajv = schemaValidator();
@@ -391,10 +456,26 @@ function validateFeedback(paths, { quiet = false } = {}) {
         `Feedback item ${id} is assigned to missing stage ${item.assignedStageId}.`,
       );
     }
+    if (item.status !== "draft" && !item.assignedStageCommit) {
+      fail(`Feedback item ${id} has no submission stage snapshot.`);
+    }
     if (item.resolution) {
       const stage = semantic.stages.get(item.resolution.stageId);
       if (!stage) fail(`Resolution stage ${item.resolution.stageId} is missing.`);
-      if (stage.change.commit !== item.resolution.rewrittenCommit) {
+      if (item.resolution.stageId !== item.assignedStageId) {
+        fail(
+          `Resolution ${id} uses stage ${item.resolution.stageId}, not assigned stage ${item.assignedStageId}.`,
+        );
+      }
+      if (item.resolution.previousCommit !== item.assignedStageCommit) {
+        fail(
+          `Resolution ${id} previous commit does not match its submission snapshot.`,
+        );
+      }
+      if (
+        !allowStaleResolutions &&
+        stage.change.commit !== item.resolution.rewrittenCommit
+      ) {
         fail(
           `Resolution ${id} points to stale rewritten commit ${item.resolution.rewrittenCommit}.`,
         );
@@ -600,12 +681,7 @@ function assignComment(paths, options) {
   const stageId = option(options, "stage", { required: true });
   const item = feedback.items.get(id);
   if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (!["draft", "submitted"].includes(item.status)) {
-    fail(`Feedback item ${id} can no longer be assigned.`);
-  }
-  if (item.status === "submitted" && item.assignedStageId) {
-    fail(`Submitted feedback item ${id} is already assigned.`);
-  }
+  if (item.status !== "draft") fail(`Feedback item ${id} is immutable after submission.`);
   if (!semantic.stages.has(stageId)) fail(`Stage ${stageId} does not exist.`);
   item.assignedStageId = stageId;
   writeItem(paths, item);
@@ -633,7 +709,7 @@ function updateBatchStatus(batch, feedback) {
 
 function submitBatch(paths, options) {
   assertKnownOptions(options, new Set(["id"]));
-  const { feedback } = validateFeedback(paths, { quiet: true });
+  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
   if (!batch) fail(`Batch ${id} does not exist.`);
@@ -643,6 +719,13 @@ function submitBatch(paths, options) {
   const now = new Date().toISOString();
   for (const itemId of batch.items) {
     const item = feedback.items.get(itemId);
+    const stageId = item.assignedStageId ?? item.target.stageId;
+    const stage = semantic.stages.get(stageId);
+    if (!stage) {
+      fail(`Feedback item ${itemId} requires a valid stage assignment before submission.`);
+    }
+    item.assignedStageId = stageId;
+    item.assignedStageCommit = stage.change.commit;
     item.status = "submitted";
     writeItem(paths, item);
   }
@@ -651,6 +734,24 @@ function submitBatch(paths, options) {
   writeBatch(paths, batch);
   validateFeedback(paths, { quiet: true });
   console.log(`Submitted feedback batch ${id}.`);
+}
+
+function deleteBatch(paths, options) {
+  assertKnownOptions(options, new Set(["id"]));
+  const { feedback } = validateFeedback(paths, { quiet: true });
+  const id = option(options, "id", { required: true });
+  const batch = feedback.batches.get(id);
+  if (!batch) fail(`Batch ${id} does not exist.`);
+  if (batch.status !== "draft" || batch.items.length !== 0) {
+    fail(`Batch ${id} must be an empty draft to delete.`);
+  }
+  feedback.manifest.batches = feedback.manifest.batches.filter(
+    (batchId) => batchId !== id,
+  );
+  fs.rmSync(path.join(paths.batches, `${id}.json`));
+  writeJson(paths.feedbackManifest, feedback.manifest);
+  validateFeedback(paths, { quiet: true });
+  console.log(`Deleted feedback batch ${id}.`);
 }
 
 function nextFeedback(paths, options) {
@@ -720,6 +821,12 @@ function resolveComment(paths, options) {
   if (!item) fail(`Feedback item ${id} does not exist.`);
   if (item.status !== "submitted") fail(`Feedback item ${id} is not submitted.`);
   const stageId = option(options, "stage", { required: true });
+  const expectedStageId = item.assignedStageId ?? item.target.stageId;
+  if (stageId !== expectedStageId) {
+    fail(
+      `Feedback item ${id} must be resolved in ${expectedStageId}, not ${stageId}.`,
+    );
+  }
   const stage = semantic.stages.get(stageId);
   if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
   const previous = option(options, "previous", { required: true });
@@ -730,6 +837,15 @@ function resolveComment(paths, options) {
   if (stage.change.commit !== rewritten) {
     fail(`Stage ${stageId} currently points to ${stage.change.commit}, not ${rewritten}.`);
   }
+  if (item.assignedStageCommit !== previous) {
+    fail(
+      `Feedback item ${id} was submitted against ${item.assignedStageCommit}, not ${previous}.`,
+    );
+  }
+  if (previous === rewritten) {
+    fail("Resolution commits must show an actual stage rewrite.");
+  }
+  git(["cat-file", "-e", `${previous}^{commit}`], { cwd: paths.root });
   item.status = "addressed";
   item.resolution = {
     summary: option(options, "summary", { required: true }),
@@ -763,6 +879,42 @@ function approveComment(paths, options) {
   console.log(`Approved feedback resolution ${id}.`);
 }
 
+function rebindResolutions(paths, options) {
+  assertKnownOptions(
+    options,
+    new Set(["stage", "previous", "rewritten"]),
+  );
+  const { semantic, feedback } = validateFeedback(paths, {
+    quiet: true,
+    allowStaleResolutions: true,
+  });
+  const stageId = option(options, "stage", { required: true });
+  const previous = option(options, "previous", { required: true });
+  const rewritten = option(options, "rewritten", { required: true });
+  if (!SHA1_PATTERN.test(previous) || !SHA1_PATTERN.test(rewritten)) {
+    fail("Resolution commits must be full lowercase SHA-1 IDs.");
+  }
+  const stage = semantic.stages.get(stageId);
+  if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
+  if (stage.change.commit !== rewritten) {
+    fail(`Stage ${stageId} currently points to ${stage.change.commit}, not ${rewritten}.`);
+  }
+  const matching = [...feedback.items.values()].filter(
+    (item) =>
+      item.resolution?.stageId === stageId &&
+      item.resolution.rewrittenCommit === previous,
+  );
+  if (matching.length === 0) {
+    fail(`No resolutions for ${stageId} point to ${previous}.`);
+  }
+  for (const item of matching) {
+    item.resolution.rewrittenCommit = rewritten;
+    writeItem(paths, item);
+  }
+  validateFeedback(paths, { quiet: true });
+  console.log(`Rebound ${matching.length} resolution(s) for ${stageId}.`);
+}
+
 function approveAll(paths, options) {
   assertKnownOptions(options, new Set(["id"]));
   const { feedback } = validateFeedback(paths, { quiet: true });
@@ -793,17 +945,31 @@ function approveAll(paths, options) {
 function approveStack(paths, options) {
   assertKnownOptions(options, new Set(["branch"]));
   const branch = option(options, "branch", { required: true });
-  const { feedback } = validateFeedback(paths, { quiet: true });
-  const incomplete = [...feedback.batches.values()].filter(
-    (batch) => batch.status !== "approved",
-  );
-  if (incomplete.length) {
-    fail(
-      `Cannot approve stack; incomplete batches: ${incomplete
-        .map((batch) => `${batch.id}:${batch.status}`)
-        .join(", ")}.`,
+  if (loadFeedback(paths, { required: false })) {
+    const { feedback } = validateFeedback(paths, { quiet: true });
+    const incomplete = [...feedback.batches.values()].filter(
+      (batch) => batch.status !== "approved",
     );
+    if (incomplete.length) {
+      fail(
+        `Cannot approve stack; incomplete batches: ${incomplete
+          .map((batch) => `${batch.id}:${batch.status}`)
+          .join(", ")}.`,
+      );
+    }
   }
+  execFileSync(
+    process.execPath,
+    [semanticCli, "prepare-pr", "--branch", branch, "--check-only"],
+    {
+      cwd: paths.root,
+      stdio: "inherit",
+    },
+  );
+  execFileSync(process.execPath, [semanticCli, "publish"], {
+    cwd: paths.root,
+    stdio: "inherit",
+  });
   execFileSync(process.execPath, [semanticCli, "prepare-pr", "--branch", branch], {
     cwd: paths.root,
     stdio: "inherit",
@@ -820,6 +986,7 @@ function dispatch(paths, positionals, options) {
   }
   if (command === "init" && !subcommand) return initialize(paths, options);
   if (command === "batch" && subcommand === "create") return createBatch(paths, options);
+  if (command === "batch" && subcommand === "delete") return deleteBatch(paths, options);
   if (command === "comment" && subcommand === "add") return addComment(paths, options);
   if (command === "comment" && subcommand === "edit") return editComment(paths, options);
   if (command === "comment" && subcommand === "delete") return deleteComment(paths, options);
@@ -827,6 +994,7 @@ function dispatch(paths, positionals, options) {
   if (command === "batch" && subcommand === "submit") return submitBatch(paths, options);
   if (command === "next" && !subcommand) return nextFeedback(paths, options);
   if (command === "comment" && subcommand === "resolve") return resolveComment(paths, options);
+  if (command === "resolution" && subcommand === "rebind") return rebindResolutions(paths, options);
   if (command === "comment" && subcommand === "approve") return approveComment(paths, options);
   if (command === "batch" && subcommand === "approve-all") return approveAll(paths, options);
   if (command === "approve-stack" && !subcommand) return approveStack(paths, options);
@@ -841,7 +1009,16 @@ function dispatch(paths, positionals, options) {
 try {
   const { positionals, options } = parseArguments(process.argv.slice(2));
   const paths = pathsFor(repositoryRoot());
-  dispatch(paths, positionals, options);
+  const readOnly =
+    positionals.length === 0 ||
+    positionals[0] === "help" ||
+    positionals[0] === "next" ||
+    positionals[0] === "validate";
+  if (readOnly) {
+    dispatch(paths, positionals, options);
+  } else {
+    withFeedbackLock(paths, () => dispatch(paths, positionals, options));
+  }
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);

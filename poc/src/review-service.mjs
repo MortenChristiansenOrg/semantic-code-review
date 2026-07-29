@@ -75,6 +75,8 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
   const { stdout } = await run(
     "git",
     [
+      "-c",
+      "core.quotePath=false",
       "diff",
       "--no-ext-diff",
       "--find-renames=50%",

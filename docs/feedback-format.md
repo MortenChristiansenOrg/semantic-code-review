@@ -33,8 +33,9 @@ The format is validated by the schemas in
 | `resolved` | Every item has an unapproved resolution |
 | `approved` | Every resolution has reviewer approval |
 
-Submitting a batch freezes its comment bodies and targets. Corrections become a
-new batch so the agent always receives an immutable instruction set.
+Submitting a batch freezes its comment bodies and targets and snapshots the
+assigned stage commit. Corrections become a new batch so the agent always
+receives an immutable instruction set.
 
 ## Feedback item lifecycle
 
@@ -48,6 +49,11 @@ new batch so the agent always receives an immutable instruction set.
 A resolution records its explanation, semantic stage, previous stage commit,
 rewritten stage commit, and timestamps. It does not claim that the reviewer has
 accepted the result until the item reaches `approved`.
+
+If a later validated fix rewrites the same stage again, tooling updates only
+the resolution's rewritten commit to the final stage tip. The original commit,
+reviewer text, target anchor, explanation, and approval timestamps remain
+unchanged.
 
 ## Targets
 
@@ -85,6 +91,11 @@ An agent processes submitted feedback by semantic stage:
 The reviewer can then approve resolutions individually or all at once. Stack
 approval is allowed only when no draft, submitted, addressing, or merely
 resolved feedback remains.
+
+Every mutation and stack approval MUST hold one repository-scoped,
+cross-process lock. A resolution MUST use the assigned stage commit captured at
+submission as its previous commit and a different current stage commit as its
+rewritten commit.
 
 ## Storage and publication
 

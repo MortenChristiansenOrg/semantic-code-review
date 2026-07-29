@@ -291,8 +291,9 @@ target. Submit a batch only when the reviewer is finished:
 ```
 
 Submission freezes comment text and anchors. Address submitted items one stage
-at a time. Implement and test one fix on top of the current stage stack, commit
-it, then fold it into the affected stage:
+at a time and snapshots the assigned stage commit. All feedback mutations are
+serialized by a repository-scoped lock. Implement and test one fix on top of
+the current stage stack, commit it, then fold it into the affected stage:
 
 ```text
 ... rewrite-stage --stage add-cancellation-policy --fix HEAD
@@ -315,6 +316,19 @@ After rewriting, record each resolution:
   --rewritten <new-stage-commit>
 ```
 
+The `--previous` commit must equal the stage snapshot captured at submission,
+and `--rewritten` must be the different current stage commit.
+
+If a later fix rewrites the same stage again after resolutions were recorded,
+rebind those tickets to the final stage commit:
+
+```text
+... resolution rebind \
+  --stage add-cancellation-policy \
+  --previous <superseded-stage-commit> \
+  --rewritten <final-stage-commit>
+```
+
 Reviewer approval is explicit:
 
 ```text
@@ -324,7 +338,11 @@ Reviewer approval is explicit:
 ```
 
 `approve-stack` refuses draft, submitted, addressing, or unapproved resolved
-feedback.
+feedback. It publishes the validated semantic artifact before creating the
+PR-ready branch, so the branch contains the implementation and its review
+metadata. Empty draft batches must be deleted with `batch delete --id <id>`
+before no-comment approval. Approval preflights the branch and can be retried
+after publication without creating another metadata commit.
 
 ## Completion gate
 

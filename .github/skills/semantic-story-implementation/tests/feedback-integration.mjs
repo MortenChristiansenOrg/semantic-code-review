@@ -40,6 +40,15 @@ function feedback(...args) {
   return run(process.execPath, [feedbackCli, ...args]);
 }
 
+function expectFeedbackFailure(...args) {
+  try {
+    feedback(...args);
+  } catch {
+    return;
+  }
+  throw new Error(`Expected feedback command to fail: ${args.join(" ")}`);
+}
+
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(repository, relativePath), "utf8"));
 }
@@ -164,6 +173,20 @@ try {
   );
   feedback("batch", "submit", "--id", "review-one");
   feedback("validate");
+  expectFeedbackFailure(
+    "comment",
+    "resolve",
+    "--id",
+    "decision-comment",
+    "--summary",
+    "No rewrite.",
+    "--stage",
+    "implementation",
+    "--previous",
+    originalCommit,
+    "--rewritten",
+    originalCommit,
+  );
 
   fs.writeFileSync(path.join(repository, "change.txt"), "descriptive value\n");
   git("add", "change.txt");
@@ -189,9 +212,37 @@ try {
       rewrittenCommit,
     );
   }
+  fs.writeFileSync(path.join(repository, "change.txt"), "final value\n");
+  git("add", "change.txt");
+  git("commit", "-m", "Harden reviewed change");
+  semantic("rewrite-stage", "--stage", "implementation", "--fix", "HEAD");
+  const finalRewrittenCommit = readJson(
+    ".semantic-review/stages/implementation.json",
+  ).change.commit;
+  feedback(
+    "resolution",
+    "rebind",
+    "--stage",
+    "implementation",
+    "--previous",
+    rewrittenCommit,
+    "--rewritten",
+    finalRewrittenCommit,
+  );
   feedback("comment", "approve", "--id", "decision-comment");
   feedback("batch", "approve-all", "--id", "review-one");
   feedback("validate");
+  git("branch", "review/conflict", "HEAD");
+  expectFeedbackFailure(
+    "approve-stack",
+    "--branch",
+    "review/conflict",
+  );
+  if (git("rev-parse", "HEAD") !== finalRewrittenCommit) {
+    throw new Error("Failed approval preflight published metadata.");
+  }
+  git("branch", "-D", "review/conflict");
+  feedback("approve-stack", "--branch", "review/feedback-test");
   feedback("approve-stack", "--branch", "review/feedback-test");
 
   const batch = readJson(
@@ -200,12 +251,15 @@ try {
   const lineComment = readJson(
     ".semantic-review-feedback/items/line-comment.json",
   );
+  const publishedCommit = git("rev-parse", "HEAD");
   if (
     batch.status !== "approved" ||
     lineComment.status !== "approved" ||
     lineComment.target.stageCommit !== originalCommit ||
-    lineComment.resolution.rewrittenCommit !== rewrittenCommit ||
-    git("rev-parse", "review/feedback-test") !== rewrittenCommit
+    lineComment.resolution.rewrittenCommit !== finalRewrittenCommit ||
+    git("rev-parse", "HEAD^") !== finalRewrittenCommit ||
+    git("rev-parse", "review/feedback-test") !== publishedCommit ||
+    !git("ls-files", ".semantic-review/manifest.json")
   ) {
     throw new Error("Feedback workflow did not preserve or approve state.");
   }

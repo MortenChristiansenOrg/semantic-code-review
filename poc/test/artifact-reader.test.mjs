@@ -14,14 +14,20 @@ const repositoryRoot = path.resolve(testDirectory, "..", "..");
 
 test("loads the POC review across working and finalized lifecycle states", async () => {
   const review = await readSemanticReview({ repositoryRoot });
+  const manifest = JSON.parse(
+    await fs.readFile(
+      path.join(repositoryRoot, ".semantic-review", "manifest.json"),
+      "utf8",
+    ),
+  );
   const visibleStageIds = [
     ...review.stages.map((stage) => stage.id),
     ...review.workingStages.map((stage) => stage.id),
   ];
 
-  assert.equal(review.manifest.reviewId, "review-tool-poc");
+  assert.equal(review.manifest.reviewId, manifest.reviewId);
   assert.ok(review.requirements.length >= 1);
-  assert.ok(visibleStageIds.includes("load-artifact-api"));
+  assert.ok(manifest.stages.every((stageId) => visibleStageIds.includes(stageId)));
 });
 
 test("reports an indexed document that is missing", async () => {

@@ -40,6 +40,9 @@
     "assignedStageId": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
     },
+    "assignedStageCommit": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/sha1"
+    },
     "createdAt": {
       "type": "string",
       "format": "date-time"

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { readSemanticReview } from "../src/artifact-reader.mjs";
+import { initializeFeedback } from "../src/feedback-service.mjs";
 import { startServer } from "../src/server.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -34,7 +39,18 @@ function requestWithHost({ port, host, requestPath }) {
   });
 }
 
+async function postJson(url, body = {}) {
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 test("serves the current semantic review as JSON", async () => {
+  const expected = await readSemanticReview({ repositoryRoot });
   const server = await startServer({ repositoryRoot, port: 0 });
   try {
     const address = server.address();
@@ -48,8 +64,12 @@ test("serves the current semantic review as JSON", async () => {
     ];
 
     assert.equal(response.status, 200);
-    assert.equal(body.manifest.reviewId, "review-tool-poc");
-    assert.ok(visibleStageIds.includes("load-artifact-api"));
+    assert.equal(body.manifest.reviewId, expected.manifest.reviewId);
+    assert.ok(
+      expected.manifest.stages.every((stageId) =>
+        visibleStageIds.includes(stageId),
+      ),
+    );
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -58,6 +78,7 @@ test("serves the current semantic review as JSON", async () => {
 });
 
 test("discovers the repository when npm changes the working directory", async () => {
+  const expected = await readSemanticReview({ repositoryRoot });
   const server = await startServer({ port: 0 });
   try {
     const address = server.address();
@@ -67,7 +88,7 @@ test("discovers the repository when npm changes the working directory", async ()
     const body = await response.json();
 
     assert.equal(response.status, 200);
-    assert.equal(body.manifest.reviewId, "review-tool-poc");
+    assert.equal(body.manifest.reviewId, expected.manifest.reviewId);
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -104,14 +125,66 @@ test("serves the browser workspace assets", async () => {
   }
 });
 
+test("keeps feedback browser handlers in page scope", () => {
+  const appPath = path.join(repositoryRoot, "poc", "public", "app.js");
+  const source = fs
+    .readFileSync(appPath, "utf8")
+    .replace(
+      /loadReview\(\);\s*$/,
+      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, parseUnifiedDiffRows, parseUnifiedDiffPath };",
+    );
+  const node = {
+    addEventListener() {},
+    classList: { add() {}, remove() {}, toggle() {} },
+    setAttribute() {},
+  };
+  const context = {
+    document: {
+      body: node,
+      querySelector() {
+        return node;
+      },
+    },
+    window: { addEventListener() {} },
+  };
+
+  vm.runInNewContext(source, context);
+
+  assert.equal(typeof context.browserHandlers.renderFeedbackPanel, "function");
+  assert.equal(typeof context.browserHandlers.openCommentEdit, "function");
+  assert.equal(typeof context.browserHandlers.apiRequest, "function");
+  const deletedRows = context.browserHandlers.parseUnifiedDiffRows(
+    "diff --git a/deleted.txt b/deleted.txt\n--- a/deleted.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old value",
+  );
+  assert.equal(deletedRows.at(-1).target.path, "deleted.txt");
+  assert.equal(deletedRows.at(-1).target.side, "old");
+  assert.equal(
+    context.browserHandlers.parseUnifiedDiffPath(
+      "b/Initial design discussion.md\t",
+    ),
+    "Initial design discussion.md",
+  );
+  assert.equal(
+    context.browserHandlers.parseUnifiedDiffPath('"b/a path.txt"'),
+    "a path.txt",
+  );
+  const headerLikeContent = context.browserHandlers.parseUnifiedDiffRows(
+    "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n--- old content\n+++ new content",
+  );
+  assert.equal(headerLikeContent.at(-2).target.side, "old");
+  assert.equal(headerLikeContent.at(-1).target.side, "new");
+});
+
 test("serves authoritative validation and a finalized stage diff", async () => {
+  const expected = await readSemanticReview({ repositoryRoot });
+  const firstStage = expected.stages[0];
   const server = await startServer({ repositoryRoot, port: 0 });
   try {
     const address = server.address();
     const baseUrl = `http://127.0.0.1:${address.port}`;
     const [validationResponse, diffResponse] = await Promise.all([
       fetch(`${baseUrl}/api/validation`),
-      fetch(`${baseUrl}/api/stages/load-artifact-api/diff`),
+      fetch(`${baseUrl}/api/stages/${firstStage.id}/diff`),
     ]);
     const [validation, diff] = await Promise.all([
       validationResponse.json(),
@@ -122,9 +195,9 @@ test("serves authoritative validation and a finalized stage diff", async () => {
     assert.equal(validation.status, "passed");
     assert.match(validation.summary, /full validation passed/i);
     assert.equal(diffResponse.status, 200);
-    assert.equal(diff.stageId, "load-artifact-api");
-    assert.match(diff.diff, /poc\/src\/artifact-reader\.mjs/);
-    assert.match(diff.diff, /^\+.*readSemanticReview/m);
+    assert.equal(diff.stageId, firstStage.id);
+    assert.ok(diff.diff.length > 0);
+    assert.ok(diff.diff.includes(firstStage.change.files[0].path));
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -148,5 +221,183 @@ test("rejects non-local Host headers before serving repository data", async () =
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
+  }
+});
+
+test("rejects cross-origin and non-JSON mutations", async () => {
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const url = `http://127.0.0.1:${address.port}/api/feedback/init`;
+    const crossOrigin = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: "https://attacker.example",
+      },
+      body: "{}",
+    });
+    const simpleRequest = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+      },
+      body: "{}",
+    });
+
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(simpleRequest.status, 415);
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("serves and mutates schema-validated feedback state", async () => {
+  const feedbackRoot = path.join(
+    repositoryRoot,
+    ".semantic-review-feedback",
+  );
+  const backupRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "semantic-review-feedback-api-"),
+  );
+  const backup = path.join(backupRoot, ".semantic-review-feedback");
+  const hadFeedback = fs.existsSync(feedbackRoot);
+  if (hadFeedback) {
+    fs.cpSync(feedbackRoot, backup, { recursive: true });
+  } else {
+    await initializeFeedback({ repositoryRoot });
+  }
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const initial = await fetch(`${baseUrl}/api/feedback`);
+    const initialBody = await initial.json();
+
+    assert.equal(initial.status, 200);
+    assert.equal(initialBody.initialized, true);
+
+    const batchResponse = await postJson(`${baseUrl}/api/feedback/batches`, {
+      title: "API test batch",
+    });
+    const batchState = await batchResponse.json();
+    const batch = batchState.batches.at(-1);
+    assert.equal(batchResponse.status, 201);
+    assert.equal(batch.status, "draft");
+
+    const criterionResponse = await postJson(
+      `${baseUrl}/api/feedback/comments`,
+      {
+        batchId: batch.id,
+        body: "Clarify this criterion.",
+        target: {
+          kind: "criterion",
+          label: "Criterion: publication works",
+          requirementId: "review-lifecycle",
+          criterionId: "publish-metadata",
+          assignedStageId: "automate-review-lifecycle",
+        },
+      },
+    );
+    const criterionState = await criterionResponse.json();
+    const criterionItem = criterionState.batches
+      .find((candidate) => candidate.id === batch.id)
+      .feedbackItems.at(-1);
+    assert.equal(criterionResponse.status, 201);
+    assert.equal(
+      criterionItem.assignedStageId,
+      "automate-review-lifecycle",
+    );
+    await fetch(`${baseUrl}/api/feedback/items/${criterionItem.id}`, {
+      method: "DELETE",
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+
+    const commentResponse = await postJson(
+      `${baseUrl}/api/feedback/comments`,
+      {
+        batchId: batch.id,
+        body: "Clarify the lifecycle decision.",
+        target: {
+          kind: "context",
+          label: "Decision: metadata-only publication",
+          stageId: "automate-review-lifecycle",
+          collection: "decisions",
+          itemId: "metadata-only-publication",
+        },
+      },
+    );
+    const commentState = await commentResponse.json();
+    const updatedBatch = commentState.batches.find(
+      (candidate) => candidate.id === batch.id,
+    );
+    assert.equal(commentResponse.status, 201);
+    assert.equal(updatedBatch.feedbackItems.length, 1);
+    assert.equal(updatedBatch.feedbackItems[0].status, "draft");
+
+    const item = updatedBatch.feedbackItems[0];
+    const editResponse = await fetch(
+      `${baseUrl}/api/feedback/items/${item.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          body: "Clarify the lifecycle decision and its tradeoff.",
+        }),
+      },
+    );
+    const editState = await editResponse.json();
+    const edited = editState.batches
+      .find((candidate) => candidate.id === batch.id)
+      .feedbackItems.find((candidate) => candidate.id === item.id);
+    assert.equal(editResponse.status, 200);
+    assert.match(edited.body, /tradeoff/);
+
+    const deleteResponse = await fetch(
+      `${baseUrl}/api/feedback/items/${item.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+        },
+      },
+    );
+    const deleteState = await deleteResponse.json();
+    const afterDelete = deleteState.batches.find(
+      (candidate) => candidate.id === batch.id,
+    );
+    assert.equal(deleteResponse.status, 200);
+    assert.equal(afterDelete.feedbackItems.length, 0);
+
+    const deleteBatchResponse = await fetch(
+      `${baseUrl}/api/feedback/batches/${batch.id}`,
+      {
+        method: "DELETE",
+        headers: {
+          "content-type": "application/json",
+        },
+      },
+    );
+    const afterBatchDelete = await deleteBatchResponse.json();
+    assert.equal(deleteBatchResponse.status, 200);
+    assert.equal(
+      afterBatchDelete.batches.some((candidate) => candidate.id === batch.id),
+      false,
+    );
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    fs.rmSync(feedbackRoot, { recursive: true, force: true });
+    if (hadFeedback) {
+      fs.cpSync(backup, feedbackRoot, { recursive: true });
+    }
+    fs.rmSync(backupRoot, { recursive: true, force: true });
   }
 });

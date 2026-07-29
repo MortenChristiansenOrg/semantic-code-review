@@ -25,6 +25,10 @@
           <span class="connection-status" id="connection-status">
             Loading artifact
           </span>
+          <button class="review-toggle" id="review-toggle" type="button">
+            Review queue
+            <span class="review-count" id="review-count">0</span>
+          </button>
           <button class="reload-button" id="reload-button" type="button">
             Reload
           </button>
@@ -37,7 +41,47 @@
           <h1>Reconstructing the review narrative…</h1>
         </section>
       </main>
+      <aside
+        class="feedback-panel"
+        id="feedback-panel"
+        aria-label="Review feedback"
+        aria-hidden="true"
+      ></aside>
     </div>
+    <dialog class="comment-dialog" id="comment-dialog">
+      <form method="dialog" id="comment-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Add to review queue</p>
+            <h2>Comment on this evidence</h2>
+          </div>
+          <button
+            class="icon-button"
+            type="button"
+            id="comment-close"
+            aria-label="Close comment dialog"
+          >
+            ×
+          </button>
+        </div>
+        <p class="comment-target" id="comment-target"></p>
+        <label class="field-label" for="comment-body">Feedback</label>
+        <textarea
+          id="comment-body"
+          name="body"
+          rows="5"
+          required
+          placeholder="Describe what should change and why."
+        ></textarea>
+        <p class="form-error" id="comment-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" type="button" id="comment-cancel">
+            Cancel
+          </button>
+          <button class="primary-button" type="submit">Add comment</button>
+        </div>
+      </form>
+    </dialog>
     <template id="error-template">
       <section class="error-state" role="alert">
         <p class="eyebrow">Artifact could not be processed</p>
