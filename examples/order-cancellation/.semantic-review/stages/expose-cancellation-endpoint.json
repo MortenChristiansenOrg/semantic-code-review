@@ -1,0 +1,77 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "expose-cancellation-endpoint",
+  "title": "Expose order cancellation through the API",
+  "summary": "Adds the authenticated cancellation endpoint and maps domain outcomes to stable HTTP responses.",
+  "dependsOn": [
+    "persist-cancellation"
+  ],
+  "requirementRefs": [
+    "cancel-order#cancel-pending",
+    "cancel-order#return-conflict"
+  ],
+  "change": {
+    "commit": "4444444444444444444444444444444444444444",
+    "files": [
+      {
+        "path": "src/Orders/Api/CancelOrderEndpoint.cs",
+        "kind": "added"
+      },
+      {
+        "path": "src/Orders/Api/OrderErrors.cs",
+        "kind": "modified"
+      },
+      {
+        "path": "tests/Orders.Api.Tests/CancelOrderEndpointTests.cs",
+        "kind": "added"
+      }
+    ]
+  },
+  "rationale": "A dedicated command endpoint keeps cancellation authorization and response mapping explicit while delegating transition rules to the domain model.",
+  "decisions": [
+    {
+      "id": "use-conflict-response",
+      "category": "requirement",
+      "summary": "Return HTTP 409 when the current order state disallows cancellation.",
+      "rationale": "The request is valid but conflicts with the current resource state, matching acceptance criterion return-conflict."
+    },
+    {
+      "id": "hide-foreign-orders",
+      "category": "engineering",
+      "summary": "Return HTTP 404 when the order belongs to another customer.",
+      "rationale": "This follows the existing orders API convention and avoids disclosing another customer's order IDs."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "no-request-body",
+      "statement": "Cancellation does not require a reason in this story.",
+      "riskIfWrong": "The endpoint contract and persistence model will need an additional cancellation-reason field."
+    }
+  ],
+  "alternatives": [
+    {
+      "id": "delete-endpoint",
+      "approach": "Model cancellation as DELETE /orders/{id}.",
+      "reasonRejected": "The order remains queryable for audit and customer history, so it is not deleted."
+    }
+  ],
+  "failedAttempts": [],
+  "risks": [
+    {
+      "id": "concurrent-fulfilment",
+      "summary": "Fulfilment could start between loading and saving the order.",
+      "mitigation": "The existing optimistic concurrency token converts the race into HTTP 409."
+    }
+  ],
+  "validation": [
+    {
+      "id": "api-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Covers success, foreign ownership, missing order, forbidden state, and concurrency conflict.",
+      "command": "dotnet test tests/Orders.Api.Tests/Orders.Api.Tests.csproj --filter CancelOrderEndpointTests"
+    }
+  ],
+  "openQuestions": []
+}

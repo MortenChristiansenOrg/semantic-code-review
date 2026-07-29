@@ -1,0 +1,29 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "id": "cancel-order",
+  "title": "Customer cancels an order",
+  "summary": "A customer can cancel an order before fulfilment starts and immediately see the cancelled state.",
+  "source": {
+    "kind": "azure-devops",
+    "reference": "AB#4821",
+    "url": "https://dev.azure.com/example/Commerce/_workitems/edit/4821"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "cancel-pending",
+      "text": "A pending order owned by the caller can be cancelled."
+    },
+    {
+      "id": "reject-shipped",
+      "text": "An order that has entered fulfilment cannot be cancelled."
+    },
+    {
+      "id": "persist-state",
+      "text": "A successful cancellation is persisted and returned by later reads."
+    },
+    {
+      "id": "return-conflict",
+      "text": "A disallowed cancellation returns HTTP 409 with a stable error code."
+    }
+  ]
+}
