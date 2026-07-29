@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json",
+  "title": "Semantic review feedback common definitions",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "repositoryPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\.\\.?$)(?!\\.\\.?/)(?!.*\\/\\.\\.?\\/)(?!.*\\/\\.\\.?$)(?!.*\\\\)[^/]+(?:/[^/]+)*$"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "label"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "requirement",
+            "criterion",
+            "stage",
+            "context",
+            "file",
+            "line"
+          ]
+        },
+        "label": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "requirementId": {
+          "$ref": "#/$defs/id"
+        },
+        "criterionId": {
+          "$ref": "#/$defs/id"
+        },
+        "stageId": {
+          "$ref": "#/$defs/id"
+        },
+        "stageCommit": {
+          "$ref": "#/$defs/sha1"
+        },
+        "collection": {
+          "enum": [
+            "decisions",
+            "assumptions",
+            "alternatives",
+            "failedAttempts",
+            "risks",
+            "validation",
+            "openQuestions"
+          ]
+        },
+        "itemId": {
+          "$ref": "#/$defs/id"
+        },
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "side": {
+          "enum": [
+            "old",
+            "new"
+          ]
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "requirement"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "requirementId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "criterion"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "requirementId",
+              "criterionId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "stage"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "stageId",
+              "stageCommit"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "context"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "stageId",
+              "stageCommit",
+              "collection",
+              "itemId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "file"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "stageId",
+              "stageCommit",
+              "path"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "line"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "stageId",
+              "stageCommit",
+              "path",
+              "side",
+              "line"
+            ]
+          }
+        }
+      ]
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "stageId",
+        "previousCommit",
+        "rewrittenCommit",
+        "addressedAt"
+      ],
+      "properties": {
+        "summary": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "stageId": {
+          "$ref": "#/$defs/id"
+        },
+        "previousCommit": {
+          "$ref": "#/$defs/sha1"
+        },
+        "rewrittenCommit": {
+          "$ref": "#/$defs/sha1"
+        },
+        "addressedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "approvedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

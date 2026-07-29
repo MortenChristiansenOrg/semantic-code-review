@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/schemas/feedback/v0.1/item.schema.json",
+  "title": "Semantic review feedback item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "id",
+    "batchId",
+    "status",
+    "body",
+    "target",
+    "createdAt"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/schemas/feedback/v0.1/item.schema.json"
+    },
+    "id": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
+    },
+    "batchId": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "submitted",
+        "addressed",
+        "approved"
+      ]
+    },
+    "body": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "target": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/target"
+    },
+    "assignedStageId": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolution": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/resolution"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "addressed",
+              "approved"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "resolution"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "approved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "resolution": {
+            "type": "object",
+            "required": [
+              "approvedAt"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

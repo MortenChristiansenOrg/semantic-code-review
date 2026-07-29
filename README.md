@@ -13,6 +13,7 @@ without asking the AI to reconstruct its reasoning after implementation.
 - [Vision and scope](docs/vision-and-scope.md)
 - [Semantic review model](docs/semantic-review-model.md)
 - [Artifact format standard](docs/artifact-format.md)
+- [Feedback format proposal](docs/feedback-format.md)
 - [Architecture and roadmap](docs/architecture-and-roadmap.md)
 
 The proposed standard includes

@@ -267,6 +267,53 @@ The default destination is
 `.semantic-review-history/<review-id>/.semantic-review`. Archival creates its
 own commit and refuses an untracked or unpublished artifact.
 
+## Reviewer feedback state
+
+Use the companion CLI for mutable comments and approvals:
+
+```text
+node .github/skills/semantic-story-implementation/scripts/review-feedback.mjs <command>
+```
+
+Initialize it once for the active review, then create a draft batch:
+
+```text
+... init
+... batch create --id review-one --title "Initial review"
+```
+
+Comments can target requirements, criteria, stages, context items, changed
+files, or diff lines. The CLI derives current stage commits and validates every
+target. Submit a batch only when the reviewer is finished:
+
+```text
+... batch submit --id review-one
+```
+
+Submission freezes comment text and anchors. Address submitted items one stage
+at a time, rewrite the affected stage and downstream history, refresh the
+semantic artifact, then record each resolution:
+
+```text
+... comment resolve \
+  --id clarify-policy \
+  --summary "Moved the rule into the aggregate and added coverage." \
+  --stage add-cancellation-policy \
+  --previous <old-stage-commit> \
+  --rewritten <new-stage-commit>
+```
+
+Reviewer approval is explicit:
+
+```text
+... comment approve --id clarify-policy
+... batch approve-all --id review-one
+... approve-stack --branch review/order-cancellation
+```
+
+`approve-stack` refuses draft, submitted, addressing, or unapproved resolved
+feedback.
+
 ## Completion gate
 
 Run:

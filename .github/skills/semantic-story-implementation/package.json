@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/integration.mjs"
+    "test": "node tests/integration.mjs && node tests/feedback-integration.mjs && node tests/feedback-draft-integration.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",
