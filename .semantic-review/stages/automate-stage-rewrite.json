@@ -1,0 +1,74 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "automate-stage-rewrite",
+  "title": "Rewrite one semantic stage and replay downstream history",
+  "summary": "Add a transactional CLI command that folds a fix commit into a selected stage, recreates downstream commits, moves the current branch, and refreshes artifact bindings.",
+  "dependsOn": [
+    "define-feedback-protocol"
+  ],
+  "requirementRefs": [
+    "review-feedback#apply-stage-by-stage",
+    "review-feedback#show-resolutions",
+    "review-feedback#validate-review-state"
+  ],
+  "change": {
+    "commit": "9096124b8a7164592aa5ea6674e1d400f2313a14",
+    "files": [
+      {
+        "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/SKILL.md",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/tests/feedback-integration.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/tests/integration.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "docs/feedback-format.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "Feedback application is the highest-risk Git operation in the workflow. It should be one deterministic command with explicit preconditions and rollback instead of agent-authored cherry-pick sequences.",
+  "decisions": [
+    {
+      "id": "plumbing-based-rewrite",
+      "category": "engineering",
+      "summary": "Construct rewritten commits with a temporary Git index and commit-tree before moving any branch reference.",
+      "rationale": "The entire candidate stack can be built and validated for conflicts without mutating the worktree or published branch."
+    },
+    {
+      "id": "one-fix-commit-contract",
+      "category": "engineering",
+      "summary": "Require one clean fix commit directly after the current semantic stack tip.",
+      "rationale": "The agent can implement and test freely, then expose one bounded patch for deterministic folding into the selected stage."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [],
+  "failedAttempts": [],
+  "risks": [
+    {
+      "id": "replay-conflict",
+      "summary": "A downstream stage patch may conflict with the rewritten parent.",
+      "mitigation": "Build through an isolated temporary index and leave the branch and artifact unchanged when any patch cannot apply."
+    }
+  ],
+  "validation": [
+    {
+      "id": "rewrite-integration-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Covers fix folding, downstream replay, artifact refresh, feedback resolution, and PR branch approval through rewrite-stage.",
+      "command": "npm test --prefix .github/skills/semantic-story-implementation"
+    }
+  ],
+  "openQuestions": []
+}

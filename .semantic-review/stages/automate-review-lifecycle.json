@@ -1,0 +1,77 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "automate-review-lifecycle",
+  "title": "Automate review publication and landing",
+  "summary": "Add deterministic CLI commands for publishing metadata, preparing a PR branch, and archiving a merged review.",
+  "dependsOn": [],
+  "requirementRefs": [
+    "review-lifecycle#publish-metadata",
+    "review-lifecycle#prepare-pr-branch",
+    "review-lifecycle#archive-merged-review",
+    "review-feedback#approve-stack",
+    "review-feedback#validate-review-state"
+  ],
+  "change": {
+    "commit": "87ad31f36988fe7e22298cab12bf7a2dcb2e594d",
+    "files": [
+      {
+        "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/SKILL.md",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/tests/integration.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "docs/semantic-review-model.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "The first experiment required manual branch reconstruction and artifact moves. Encoding the accepted sequence in scripts reduces ambiguity and makes lifecycle preconditions executable.",
+  "decisions": [
+    {
+      "id": "metadata-only-publication",
+      "category": "engineering",
+      "summary": "Permit publication only as a commit whose changed paths are under .semantic-review.",
+      "rationale": "The metadata commit remains outside the semantic stage chain while preserving a reviewable artifact alongside the implementation branch."
+    },
+    {
+      "id": "refuse-branch-overwrite",
+      "category": "engineering",
+      "summary": "PR branch preparation refuses to move an existing branch to a different commit.",
+      "rationale": "Approval automation must not silently overwrite another review or published branch."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [
+    {
+      "id": "document-git-commands-only",
+      "approach": "Document the sequence of git add, commit, branch, merge, and move commands without scripting it.",
+      "reasonRejected": "The first experiment showed that ordering mistakes can close the semantic stack or leave the next review unable to initialize."
+    }
+  ],
+  "failedAttempts": [
+    {
+      "id": "archive-normal-add",
+      "approach": "Move the artifact to history and stage both source and destination with a normal git add -A.",
+      "outcome": "The local .semantic-review ignore pattern also matched the nested archived directory, so Git refused to add it.",
+      "lesson": "Archive staging must force-add the exact validated destination while using normal deletion staging for the active root."
+    }
+  ],
+  "risks": [],
+  "validation": [
+    {
+      "id": "lifecycle-integration-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Covers metadata-only publication, PR branch preparation without overwrite, and committed artifact archival.",
+      "command": "npm test --prefix .github/skills/semantic-story-implementation"
+    }
+  ],
+  "openQuestions": []
+}

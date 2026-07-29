@@ -1,0 +1,44 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "id": "review-feedback",
+  "title": "Review and resolve semantic implementation feedback",
+  "summary": "A reviewer can comment across semantic stages, submit feedback for agent-driven history rewriting, inspect resolutions, approve them, and approve the final stack.",
+  "source": {
+    "kind": "local",
+    "reference": "feedback-experiment-2026-07-29"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "target-review-elements",
+      "text": "The reviewer can comment on requirements or criteria, stage decisions, changed files, and specific diff lines with stable anchors."
+    },
+    {
+      "id": "comment-across-stages",
+      "text": "One feedback batch can contain comments targeting multiple semantic stages."
+    },
+    {
+      "id": "submit-feedback",
+      "text": "Draft comments can be submitted as an immutable batch for agent processing."
+    },
+    {
+      "id": "apply-stage-by-stage",
+      "text": "Submitted feedback is applied one semantic stage at a time, rewriting that commit and replaying downstream stages while keeping artifacts valid."
+    },
+    {
+      "id": "show-resolutions",
+      "text": "The UI shows each feedback item, how it was addressed, the rewritten stage, and its current approval state."
+    },
+    {
+      "id": "approve-resolutions",
+      "text": "The reviewer can approve resolutions individually or all at once."
+    },
+    {
+      "id": "approve-stack",
+      "text": "When all feedback is resolved and approved, the stack can be deterministically prepared on a PR-ready branch."
+    },
+    {
+      "id": "validate-review-state",
+      "text": "Feedback state and implementation artifacts are schema-validated and explicit failures are surfaced."
+    }
+  ]
+}

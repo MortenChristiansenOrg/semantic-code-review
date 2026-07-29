@@ -1,0 +1,169 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "add-feedback-review-workspace",
+  "title": "Add the feedback review workspace",
+  "summary": "Extend the local app with schema-backed feedback APIs and a reviewer queue for targeted comments, submission, resolution inspection, and approvals.",
+  "dependsOn": [
+    "automate-stage-rewrite"
+  ],
+  "requirementRefs": [
+    "review-feedback#target-review-elements",
+    "review-feedback#comment-across-stages",
+    "review-feedback#submit-feedback",
+    "review-feedback#show-resolutions",
+    "review-feedback#approve-resolutions",
+    "review-feedback#approve-stack",
+    "review-feedback#validate-review-state"
+  ],
+  "change": {
+    "commit": "6d2e80f8aea28fd532adaf01cb171165acafb1d9",
+    "files": [
+      {
+        "path": ".github/skills/semantic-story-implementation/scripts/review-feedback.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/SKILL.md",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/tests/feedback-draft-integration.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": ".github/skills/semantic-story-implementation/tests/feedback-integration.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "docs/feedback-format.md",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/public/app.js",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/public/index.html",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/public/styles.css",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/README.md",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/src/feedback-service.mjs",
+        "kind": "added"
+      },
+      {
+        "path": "poc/src/review-service.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/src/server.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/test/artifact-reader.test.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "poc/test/server.test.mjs",
+        "kind": "modified"
+      },
+      {
+        "path": "standard/v0.1/feedback-schema/item.schema.json",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "Feedback should stay adjacent to the semantic evidence it refers to. A persistent sidecar queue lets reviewers comment across stages without losing the implementation narrative or conflating draft comments with accepted resolutions.",
+  "decisions": [
+    {
+      "id": "review-queue-sidecar",
+      "category": "engineering",
+      "summary": "Add a persistent review queue beside the semantic stage workspace rather than a separate feedback page.",
+      "rationale": "The reviewer needs the target evidence and the cross-stage batch at the same time; separating them would force constant navigation and weaken context."
+    },
+    {
+      "id": "script-backed-mutations",
+      "category": "engineering",
+      "summary": "Route every feedback mutation through the feedback CLI.",
+      "rationale": "The server can expose ergonomic JSON endpoints while schemas, target checks, and lifecycle transitions remain centralized in scripts."
+    },
+    {
+      "id": "contextual-comment-entry",
+      "category": "requirement",
+      "summary": "Place comment actions directly on requirements, criteria, context records, files, and diff lines.",
+      "rationale": "Reviewers should comment where they notice the issue, while the queue provides cross-stage batch control."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [],
+  "failedAttempts": [
+    {
+      "id": "hardcoded-first-review-tests",
+      "approach": "Keep POC tests pinned to review-tool-poc and its load-artifact-api stage while starting a second active review.",
+      "outcome": "The viewer correctly loaded review-feedback-poc, but four tests failed because their expected artifact identity and diff stage were historical fixtures.",
+      "lesson": "A tool that reviews its own active artifact must derive test expectations from the current manifest rather than a previous experiment."
+    }
+  ],
+  "risks": [
+    {
+      "id": "feedback-panel-density",
+      "summary": "A permanently visible queue can squeeze code review space on smaller screens.",
+      "mitigation": "Use a collapsible drawer on desktop and a full-width overlay on narrow viewports."
+    }
+  ],
+  "validation": [
+    {
+      "id": "feedback-workspace-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Covers active-artifact rendering, feedback API mutations with state restoration, validator and diff endpoints, and reusable manifest-derived expectations.",
+      "command": "npm test --prefix poc"
+    },
+    {
+      "id": "live-feedback-probe",
+      "type": "manual",
+      "status": "passed",
+      "summary": "The running workspace loaded three finalized stages, the active UI stage, and the draft cross-stage feedback batch."
+    },
+    {
+      "id": "canonical-feedback-workspace-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "After finalization, the UI loads all four canonical stages and the active draft feedback batch.",
+      "command": "npm test --prefix poc"
+    },
+    {
+      "id": "feedback-ui-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Browser handlers, assignment, draft mutation, security, diff anchoring, and feedback APIs pass 11 POC tests.",
+      "command": "npm test --prefix poc"
+    },
+    {
+      "id": "feedback-workflow-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "Lifecycle, rewrite, locking, provenance, resolution rebinding, approval retry, and publication pass all skill integration tests.",
+      "command": "npm test --prefix .github/skills/semantic-story-implementation"
+    },
+    {
+      "id": "clean-checkout-feedback-tests",
+      "type": "automated",
+      "status": "passed",
+      "summary": "The POC suite passes without pre-existing ignored feedback state.",
+      "command": "npm test --prefix poc (with .semantic-review-feedback absent)"
+    }
+  ],
+  "openQuestions": []
+}
