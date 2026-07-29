@@ -5,6 +5,7 @@ import { readSemanticReview } from "./artifact-reader.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_COMMAND_OUTPUT = 5 * 1024 * 1024;
+const SHA1_PATTERN = /^[0-9a-f]{40}$/;
 
 export class ReviewServiceError extends Error {
   constructor(code, message, status = 422, details = undefined) {
@@ -39,6 +40,16 @@ async function run(command, args, repositoryRoot) {
   }
 }
 
+function requireCommitId(value, label) {
+  if (typeof value !== "string" || !SHA1_PATTERN.test(value)) {
+    throw new ReviewServiceError(
+      "invalid-git-revision",
+      `${label} must be a full lowercase 40-character SHA-1 commit ID.`,
+    );
+  }
+  return value;
+}
+
 export async function readStageDiff({ repositoryRoot, stageId }) {
   const review = await readSemanticReview({
     repositoryRoot,
@@ -54,10 +65,13 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
   }
 
   const stage = review.stages[index];
-  const parent =
+  const parent = requireCommitId(
     index === 0
       ? review.manifest.baseRevision
-      : review.stages[index - 1].change.commit;
+      : review.stages[index - 1].change.commit,
+    "Stage parent",
+  );
+  const commit = requireCommitId(stage.change?.commit, "Stage commit");
   const { stdout } = await run(
     "git",
     [
@@ -66,7 +80,7 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
       "--find-renames=50%",
       "--unified=3",
       parent,
-      stage.change.commit,
+      commit,
       "--",
     ],
     repositoryRoot,
@@ -75,7 +89,7 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
   return {
     stageId,
     parent,
-    commit: stage.change.commit,
+    commit,
     diff: stdout,
   };
 }
