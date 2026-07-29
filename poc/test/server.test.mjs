@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,32 @@ import { startServer } from "../src/server.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(testDirectory, "..", "..");
+
+function requestWithHost({ port, host, requestPath }) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: requestPath,
+        headers: {
+          host,
+        },
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            status: response.statusCode,
+            body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          });
+        });
+      },
+    );
+    request.on("error", reject);
+  });
+}
 
 test("serves the current semantic review as JSON", async () => {
   const server = await startServer({ repositoryRoot, port: 0 });
@@ -80,6 +107,25 @@ test("serves authoritative validation and a finalized stage diff", async () => {
     assert.equal(diff.stageId, "load-artifact-api");
     assert.match(diff.diff, /poc\/src\/artifact-reader\.mjs/);
     assert.match(diff.diff, /^\+.*readSemanticReview/m);
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("rejects non-local Host headers before serving repository data", async () => {
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const response = await requestWithHost({
+      port: address.port,
+      host: "attacker.example",
+      requestPath: "/api/review",
+    });
+
+    assert.equal(response.status, 403);
+    assert.equal(response.body.error.code, "invalid-host");
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

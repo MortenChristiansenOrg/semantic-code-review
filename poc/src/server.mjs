@@ -12,6 +12,8 @@ import {
 
 const modulePath = fileURLToPath(import.meta.url);
 const publicDirectory = path.resolve(path.dirname(modulePath), "..", "public");
+const LOCAL_HOST_PATTERN =
+  /^(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$|^\[::1\](?::\d{1,5})?$/i;
 
 function sendJson(response, status, body) {
   const content = `${JSON.stringify(body, null, 2)}\n`;
@@ -69,10 +71,23 @@ function errorResponse(error) {
   };
 }
 
+function isAllowedHost(host) {
+  return typeof host === "string" && LOCAL_HOST_PATTERN.test(host);
+}
+
 export function createReviewServer({ repositoryRoot }) {
   const root = path.resolve(repositoryRoot);
   return http.createServer(async (request, response) => {
     try {
+      if (!isAllowedHost(request.headers.host)) {
+        sendJson(response, 403, {
+          error: {
+            code: "invalid-host",
+            message: "This service only accepts localhost requests.",
+          },
+        });
+        return;
+      }
       const url = new URL(request.url, "http://localhost");
       if (request.method === "GET" && url.pathname === "/api/health") {
         sendJson(response, 200, { status: "ok" });
