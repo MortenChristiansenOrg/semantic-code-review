@@ -237,6 +237,36 @@ try {
   git("commit", "-m", "Add cancellation policy");
   const firstCommit = git("rev-parse", "HEAD");
   semantic("stage", "finish", "--id", "add-policy", "--commit", "HEAD");
+  semantic(
+    "stage",
+    "record",
+    "--stage",
+    "add-policy",
+    "--finalized",
+    "--kind",
+    "risk",
+    "--item-id",
+    "canonical-check",
+    "--summary",
+    "The canonical artifact needs a post-finalization check.",
+    "--mitigation",
+    "Record the result through the finalized context update path.",
+  );
+  semantic(
+    "stage",
+    "validation",
+    "--stage",
+    "add-policy",
+    "--finalized",
+    "--item-id",
+    "canonical-load",
+    "--type",
+    "analysis",
+    "--status",
+    "passed",
+    "--summary",
+    "The finalized stage remained schema and Git valid.",
+  );
 
   semantic(
     "stage",
@@ -302,6 +332,8 @@ try {
       "Keep cancellation policy in the aggregate." ||
     firstStage.summary !== "Add an explicit domain cancellation transition." ||
     firstStage.failedAttempts[0]?.id !== "ordinal-state-check" ||
+    firstStage.risks[0]?.id !== "canonical-check" ||
+    firstStage.validation[1]?.id !== "canonical-load" ||
     firstStage.change.files[0]?.path !== "src/order.txt"
   ) {
     throw new Error("Finalized stage did not preserve captured context.");

@@ -188,6 +188,23 @@ commit them, then:
 inventory, creates the canonical stage, updates the manifest, removes the
 working draft, and runs full validation transactionally.
 
+If a check can only run against the canonical stage, record it immediately
+after finalization with `--finalized`:
+
+```text
+... stage validation --stage add-cancellation-policy --finalized \
+  --item-id canonical-review-load \
+  --type automated \
+  --status passed \
+  --summary "The review tool loaded the finalized stage." \
+  --command "npm test --prefix poc"
+```
+
+`stage record --finalized` is also available for a decision, assumption,
+alternative, failed attempt, risk, or question discovered during that check.
+Finalized updates can only change these context collections; commit and graph
+data remain owned by `stage finish` and `refresh`.
+
 Repeat this process for each stage. Do not begin multiple stages concurrently.
 
 ## Rebases and replay

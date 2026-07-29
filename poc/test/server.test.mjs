@@ -15,10 +15,14 @@ test("serves the current semantic review as JSON", async () => {
       `http://127.0.0.1:${address.port}/api/review`,
     );
     const body = await response.json();
+    const visibleStageIds = [
+      ...body.stages.map((stage) => stage.id),
+      ...body.workingStages.map((stage) => stage.id),
+    ];
 
     assert.equal(response.status, 200);
     assert.equal(body.manifest.reviewId, "review-tool-poc");
-    assert.equal(body.workingStages[0].id, "load-artifact-api");
+    assert.ok(visibleStageIds.includes("load-artifact-api"));
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

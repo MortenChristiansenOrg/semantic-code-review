@@ -958,6 +958,29 @@ function updateWorkingStage(paths, id, update) {
   }
 }
 
+function updateStageContext(paths, id, finalized, update) {
+  if (!finalized) {
+    updateWorkingStage(paths, id, update);
+    return;
+  }
+
+  const artifact = validateArtifact(paths, { quiet: true });
+  const stage = artifact.stages.get(id);
+  if (!stage) {
+    fail(`Finalized stage ${id} does not exist.`);
+  }
+  const file = path.join(paths.stages, `${id}.json`);
+  const oldStage = structuredClone(stage);
+  update(stage);
+  try {
+    writeJson(file, stage);
+    validateArtifact(paths, { quiet: true });
+  } catch (error) {
+    writeJson(file, oldStage);
+    throw error;
+  }
+}
+
 function setStage(paths, options) {
   assertKnownOptions(
     options,
@@ -1077,12 +1100,20 @@ function recordStageItem(paths, options) {
   const kind = option(options, "kind", { required: true });
   const item = itemForKind(kind, options);
   const replace = flag(options, "replace");
+  const finalized = flag(options, "finalized");
   assertKnownOptions(
     options,
-    new Set(["stage", "kind", "item-id", "replace", ...item.allowed]),
+    new Set([
+      "stage",
+      "kind",
+      "item-id",
+      "replace",
+      "finalized",
+      ...item.allowed,
+    ]),
   );
 
-  updateWorkingStage(paths, stageId, (stage) => {
+  updateStageContext(paths, stageId, finalized, (stage) => {
     const index = stage[item.collection].findIndex(
       (existing) => existing.id === item.value.id,
     );
@@ -1103,7 +1134,7 @@ function recordStageItem(paths, options) {
     }
   });
   console.log(
-    `${replace ? "Replaced" : "Recorded"} ${kind} ${item.value.id} for ${stageId}.`,
+    `${replace ? "Replaced" : "Recorded"} ${kind} ${item.value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
   );
 }
 
@@ -1118,10 +1149,12 @@ function recordValidation(paths, options) {
       "summary",
       "command",
       "replace",
+      "finalized",
     ]),
   );
   const stageId = option(options, "stage", { required: true });
   const replace = flag(options, "replace");
+  const finalized = flag(options, "finalized");
   const value = {
     id: option(options, "item-id", { required: true }),
     type: option(options, "type", { required: true }),
@@ -1133,7 +1166,7 @@ function recordValidation(paths, options) {
     value.command = command;
   }
 
-  updateWorkingStage(paths, stageId, (stage) => {
+  updateStageContext(paths, stageId, finalized, (stage) => {
     const index = stage.validation.findIndex(
       (existing) => existing.id === value.id,
     );
@@ -1154,7 +1187,7 @@ function recordValidation(paths, options) {
     }
   });
   console.log(
-    `${replace ? "Replaced" : "Recorded"} validation ${value.id} for ${stageId}.`,
+    `${replace ? "Replaced" : "Recorded"} validation ${value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
   );
 }
 

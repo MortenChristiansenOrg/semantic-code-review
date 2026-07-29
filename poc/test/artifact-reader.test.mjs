@@ -12,16 +12,16 @@ import {
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(testDirectory, "..", "..");
 
-test("loads the POC review and its active working stage", async () => {
+test("loads the POC review across working and finalized lifecycle states", async () => {
   const review = await readSemanticReview({ repositoryRoot });
+  const visibleStageIds = [
+    ...review.stages.map((stage) => stage.id),
+    ...review.workingStages.map((stage) => stage.id),
+  ];
 
   assert.equal(review.manifest.reviewId, "review-tool-poc");
-  assert.equal(review.requirements.length, 1);
-  assert.equal(review.stages.length, 0);
-  assert.deepEqual(
-    review.workingStages.map((stage) => stage.id),
-    ["load-artifact-api"],
-  );
+  assert.ok(review.requirements.length >= 1);
+  assert.ok(visibleStageIds.includes("load-artifact-api"));
 });
 
 test("reports an indexed document that is missing", async () => {
