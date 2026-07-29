@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Local semantic review workspace for AI-assisted implementation artifacts."
+    >
+    <title>Semantic Review Workspace</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#stage-detail">Skip to selected stage</a>
+    <div class="app-shell">
+      <header class="masthead">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">SR</span>
+          <div>
+            <p class="eyebrow">Local review workspace</p>
+            <p class="brand-name">Semantic Review</p>
+          </div>
+        </div>
+        <div class="masthead-actions">
+          <span class="connection-status" id="connection-status">
+            Loading artifact
+          </span>
+          <button class="reload-button" id="reload-button" type="button">
+            Reload
+          </button>
+        </div>
+      </header>
+
+      <main id="workspace" aria-live="polite">
+        <section class="loading-state">
+          <p class="eyebrow">Reading implementation graph</p>
+          <h1>Reconstructing the review narrative…</h1>
+        </section>
+      </main>
+    </div>
+    <template id="error-template">
+      <section class="error-state" role="alert">
+        <p class="eyebrow">Artifact could not be processed</p>
+        <h1 data-error-title>Review unavailable</h1>
+        <p data-error-message></p>
+        <p class="error-guidance">
+          Run the semantic review validator, correct the reported document, then
+          reload this page.
+        </p>
+      </section>
+    </template>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

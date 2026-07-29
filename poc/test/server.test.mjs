@@ -29,3 +29,32 @@ test("serves the current semantic review as JSON", async () => {
     );
   }
 });
+
+test("serves the browser workspace assets", async () => {
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const [htmlResponse, scriptResponse, styleResponse] = await Promise.all([
+      fetch(`${baseUrl}/`),
+      fetch(`${baseUrl}/app.js`),
+      fetch(`${baseUrl}/styles.css`),
+    ]);
+    const [html, script, styles] = await Promise.all([
+      htmlResponse.text(),
+      scriptResponse.text(),
+      styleResponse.text(),
+    ]);
+
+    assert.equal(htmlResponse.status, 200);
+    assert.match(html, /Semantic Review Workspace/);
+    assert.equal(scriptResponse.status, 200);
+    assert.match(script, /renderStageDetail/);
+    assert.equal(styleResponse.status, 200);
+    assert.match(styles, /\.stage-spine/);
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});

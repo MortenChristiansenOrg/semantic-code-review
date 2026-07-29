@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
@@ -5,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { ArtifactError, readSemanticReview } from "./artifact-reader.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
+const publicDirectory = path.resolve(path.dirname(modulePath), "..", "public");
 
 function sendJson(response, status, body) {
   const content = `${JSON.stringify(body, null, 2)}\n`;
@@ -16,10 +18,11 @@ function sendJson(response, status, body) {
   response.end(content);
 }
 
-function sendText(response, status, content, contentType = "text/plain") {
-  response.writeHead(status, {
-    "content-type": `${contentType}; charset=utf-8`,
-    "content-length": Buffer.byteLength(content),
+async function sendPublicFile(response, filename, contentType) {
+  const content = await fs.readFile(path.join(publicDirectory, filename));
+  response.writeHead(200, {
+    "content-type": contentType,
+    "content-length": content.length,
     "cache-control": "no-store",
   });
   response.end(content);
@@ -64,10 +67,26 @@ export function createReviewServer({ repositoryRoot }) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/") {
-        sendText(
+        await sendPublicFile(
           response,
-          200,
-          "Semantic Review Tool POC\n\nReview API: /api/review\n",
+          "index.html",
+          "text/html; charset=utf-8",
+        );
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/app.js") {
+        await sendPublicFile(
+          response,
+          "app.js",
+          "text/javascript; charset=utf-8",
+        );
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/styles.css") {
+        await sendPublicFile(
+          response,
+          "styles.css",
+          "text/css; charset=utf-8",
         );
         return;
       }
@@ -78,6 +97,15 @@ export function createReviewServer({ repositoryRoot }) {
         },
       });
     } catch (error) {
+      if (error.code === "ENOENT") {
+        sendJson(response, 404, {
+          error: {
+            code: "not-found",
+            message: "Route asset not found.",
+          },
+        });
+        return;
+      }
       const { status, body } = errorResponse(error);
       sendJson(response, status, body);
     }
