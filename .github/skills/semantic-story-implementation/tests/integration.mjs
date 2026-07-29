@@ -415,6 +415,43 @@ try {
     throw new Error(".semantic-review was not added to local Git excludes.");
   }
 
+  const stageTip = git("rev-parse", "HEAD");
+  semantic("publish", "--message", "Publish test semantic review");
+  const publishedHead = git("rev-parse", "HEAD");
+  if (git("rev-parse", "HEAD^") !== stageTip) {
+    throw new Error("Published metadata did not directly follow the stage tip.");
+  }
+  const publishedPaths = git("diff", "--name-only", "HEAD^", "HEAD")
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (
+    publishedPaths.length === 0 ||
+    !publishedPaths.every((file) => file.startsWith(".semantic-review/"))
+  ) {
+    throw new Error("Publication commit contained non-artifact paths.");
+  }
+
+  semantic("prepare-pr", "--branch", "review/test-approved");
+  if (git("rev-parse", "review/test-approved") !== publishedHead) {
+    throw new Error("PR-ready branch did not point to the published review.");
+  }
+
+  semantic("archive", "--message", "Archive test semantic review");
+  if (
+    fs.existsSync(path.join(repository, ".semantic-review")) ||
+    !fs.existsSync(
+      path.join(
+        repository,
+        ".semantic-review-history",
+        "cancel-order",
+        ".semantic-review",
+        "manifest.json",
+      ),
+    )
+  ) {
+    throw new Error("Review archival did not move the published artifact.");
+  }
+
   console.log("Semantic story implementation workflow passed.");
 } finally {
   fs.rmSync(repository, { recursive: true, force: true });

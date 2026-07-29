@@ -50,6 +50,9 @@ Usage:
   semantic-review.mjs stage discard --id <stage-id>
   semantic-review.mjs refresh [--base <revision>] --stage <id>=<revision> [...]
   semantic-review.mjs repair
+  semantic-review.mjs publish [--message <commit-message>]
+  semantic-review.mjs prepare-pr --branch <branch-name>
+  semantic-review.mjs archive [--destination <path>] [--message <commit-message>]
   semantic-review.mjs validate [--schema-only] [--publish]
 
 Common repeated options:
@@ -1407,6 +1410,206 @@ function repairArtifact(paths, options) {
   console.log(`Repaired ${actions.length} interrupted artifact write(s).`);
 }
 
+function changedPathNames(root, from, to) {
+  const output = git(["diff", "--name-only", from, to, "--"], { cwd: root });
+  return output ? output.split(/\r?\n/).filter(Boolean) : [];
+}
+
+function lastStageCommit(artifact) {
+  const lastStageId = artifact.manifest.stages.at(-1);
+  if (!lastStageId) {
+    fail("The review has no finalized stages.");
+  }
+  return artifact.stages.get(lastStageId).change.commit;
+}
+
+function reviewHeadState(paths, artifact) {
+  const stageTip = lastStageCommit(artifact);
+  const head = commitObject(paths.root, "HEAD");
+  if (head === stageTip) {
+    return { head, stageTip, metadataCommit: false };
+  }
+
+  const parents = commitParents(paths.root, head);
+  const changedPaths = changedPathNames(paths.root, stageTip, head);
+  if (
+    parents.length === 1 &&
+    parents[0] === stageTip &&
+    changedPaths.length > 0 &&
+    changedPaths.every(
+      (file) =>
+        file === ".semantic-review" ||
+        file.startsWith(".semantic-review/"),
+    )
+  ) {
+    return { head, stageTip, metadataCommit: true };
+  }
+
+  fail(
+    `HEAD ${head} must be the final stage commit ${stageTip} or one metadata-only commit directly after it.`,
+  );
+}
+
+function publishArtifact(paths, options) {
+  assertKnownOptions(options, new Set(["message"]));
+  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  assertCleanWorkingTree(paths.root, "Artifact publication");
+  const { stageTip, metadataCommit } = reviewHeadState(paths, artifact);
+  if (metadataCommit) {
+    fail("The active artifact is already published at HEAD.");
+  }
+
+  const message = option(options, "message", {
+    defaultValue: `Publish ${artifact.manifest.reviewId} semantic review`,
+  });
+  git(["add", "-f", "--", ".semantic-review"], { cwd: paths.root });
+  const staged = git(["diff", "--cached", "--name-only"], {
+    cwd: paths.root,
+  })
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (
+    staged.length === 0 ||
+    !staged.every((file) => file.startsWith(".semantic-review/"))
+  ) {
+    git(["reset", "--", ".semantic-review"], {
+      cwd: paths.root,
+      allowFailure: true,
+    });
+    fail("Publication may stage only .semantic-review artifact files.");
+  }
+
+  git(
+    [
+      "commit",
+      "-m",
+      message,
+      "-m",
+      "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+    ],
+    { cwd: paths.root },
+  );
+  const head = commitObject(paths.root, "HEAD");
+  const parents = commitParents(paths.root, head);
+  if (parents.length !== 1 || parents[0] !== stageTip) {
+    fail("Published metadata commit does not directly follow the stage stack.");
+  }
+  console.log(`Published semantic review metadata at ${head}.`);
+}
+
+function preparePrBranch(paths, options) {
+  assertKnownOptions(options, new Set(["branch"]));
+  const branch = option(options, "branch", { required: true });
+  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  assertCleanWorkingTree(paths.root, "PR branch preparation");
+  const { head, metadataCommit } = reviewHeadState(paths, artifact);
+  git(["check-ref-format", "--branch", branch], { cwd: paths.root });
+
+  const reference = `refs/heads/${branch}`;
+  const existing = git(["rev-parse", "--verify", reference], {
+    cwd: paths.root,
+    allowFailure: true,
+  });
+  if (existing && existing !== head) {
+    fail(
+      `Branch ${branch} already points to ${existing}; refusing to move it to ${head}.`,
+    );
+  }
+  if (!existing) {
+    git(["branch", branch, head], { cwd: paths.root });
+  }
+
+  console.log(
+    `PR-ready branch ${branch} points to ${head}${metadataCommit ? " with published metadata" : ""}; base is ${artifact.manifest.baseRevision}.`,
+  );
+}
+
+function archiveReview(paths, options) {
+  assertKnownOptions(options, new Set(["destination", "message"]));
+  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  assertCleanWorkingTree(paths.root, "Review archival");
+  reviewHeadState(paths, artifact);
+
+  const trackedManifest = git(
+    ["ls-files", "--error-unmatch", ".semantic-review/manifest.json"],
+    { cwd: paths.root, allowFailure: true },
+  );
+  if (!trackedManifest) {
+    fail("Archive requires a published, tracked semantic review artifact.");
+  }
+
+  const destinationOption = option(options, "destination", {
+    defaultValue: `.semantic-review-history/${artifact.manifest.reviewId}/.semantic-review`,
+  });
+  if (
+    path.isAbsolute(destinationOption) ||
+    destinationOption.split(/[\\/]/).includes("..")
+  ) {
+    fail("Archive destination must be a repository-relative path without '..'.");
+  }
+  const destination = path.resolve(paths.root, destinationOption);
+  if (
+    destination === paths.root ||
+    !destination.startsWith(`${paths.root}${path.sep}`) ||
+    path.basename(destination) !== ".semantic-review"
+  ) {
+    fail("Archive destination must end in .semantic-review inside the repository.");
+  }
+  if (fs.existsSync(destination)) {
+    fail(`Archive destination already exists: ${destinationOption}.`);
+  }
+
+  const message = option(options, "message", {
+    defaultValue: `Archive ${artifact.manifest.reviewId} semantic review`,
+  });
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.renameSync(paths.artifact, destination);
+  try {
+    const relativeDestination = formatPath(
+      path.relative(paths.root, destination),
+    );
+    git(["add", "-A", "--", ".semantic-review"], { cwd: paths.root });
+    git(["add", "-f", "--", relativeDestination], { cwd: paths.root });
+    const staged = git(["diff", "--cached", "--name-only"], {
+      cwd: paths.root,
+    })
+      .split(/\r?\n/)
+      .filter(Boolean);
+    if (
+      staged.length === 0 ||
+      !staged.every(
+        (file) =>
+          file.startsWith(".semantic-review/") ||
+          file.startsWith(`${relativeDestination}/`),
+      )
+    ) {
+      fail("Archival staged files outside the active and destination artifacts.");
+    }
+    git(
+      [
+        "commit",
+        "-m",
+        message,
+        "-m",
+        "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+      ],
+      { cwd: paths.root },
+    );
+    console.log(
+      `Archived ${artifact.manifest.reviewId} at ${relativeDestination}.`,
+    );
+  } catch (error) {
+    git(["reset", "--", ".semantic-review", destinationOption], {
+      cwd: paths.root,
+      allowFailure: true,
+    });
+    if (!fs.existsSync(paths.artifact) && fs.existsSync(destination)) {
+      fs.renameSync(destination, paths.artifact);
+    }
+    throw error;
+  }
+}
+
 function dispatch(paths, positionals, options) {
   const [command, subcommand, ...extra] = positionals;
   if (extra.length > 0) {
@@ -1455,6 +1658,18 @@ function dispatch(paths, positionals, options) {
   }
   if (command === "repair" && subcommand === undefined) {
     repairArtifact(paths, options);
+    return;
+  }
+  if (command === "publish" && subcommand === undefined) {
+    publishArtifact(paths, options);
+    return;
+  }
+  if (command === "prepare-pr" && subcommand === undefined) {
+    preparePrBranch(paths, options);
+    return;
+  }
+  if (command === "archive" && subcommand === undefined) {
+    archiveReview(paths, options);
     return;
   }
   if (command === "validate" && subcommand === undefined) {

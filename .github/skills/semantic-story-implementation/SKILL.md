@@ -237,15 +237,35 @@ or a stage that is both working and finalized, run:
 The command restores the last manifest-defined state when it can do so without
 guessing. It refuses ambiguous repairs.
 
-## Artifact publication
+## Approval, publication, and landing
 
 The CLI locally excludes `.semantic-review/` so artifact files cannot enter a
-stage commit. To publish the artifact in a later metadata commit, first pass
-publication validation, then explicitly use:
+stage commit. After human approval, publish the validated artifact as one
+metadata-only commit:
 
 ```text
-git add -f .semantic-review
+... publish --message "Publish order cancellation semantic review"
 ```
+
+Create a PR-ready branch without switching the current worktree:
+
+```text
+... prepare-pr --branch review/order-cancellation
+```
+
+The command accepts either the final stage commit or its direct metadata-only
+child, refuses unrelated commits, and never moves an existing branch.
+
+After that branch is merged into the target branch, switch to the updated target
+and archive the review so another active `.semantic-review` can be initialized:
+
+```text
+... archive
+```
+
+The default destination is
+`.semantic-review-history/<review-id>/.semantic-review`. Archival creates its
+own commit and refuses an untracked or unpublished artifact.
 
 ## Completion gate
 
@@ -272,6 +292,9 @@ stage finish
 stage discard
 refresh
 repair
+publish [--message <commit-message>]
+prepare-pr --branch <branch-name>
+archive [--destination <path>] [--message <commit-message>]
 validate [--schema-only] [--publish]
 ```
 

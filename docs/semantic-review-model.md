@@ -50,8 +50,11 @@ The model may later allow multiple commits per stage or parallel branches.
 6. The agent updates the affected stage only, then rebases or replays dependent
    stages.
 7. The tool highlights downstream stages whose code or rationale changed.
-8. Once accepted, the final stack is delivered through the normal pull-request
-   workflow.
+8. Once accepted, the validated artifact is published in a metadata-only commit
+   directly after the stage stack.
+9. Tooling creates a PR-ready branch without moving an existing branch. After
+   merge, the artifact is archived under its review ID so another active review
+   can begin.
 
 ## Review experience
 
