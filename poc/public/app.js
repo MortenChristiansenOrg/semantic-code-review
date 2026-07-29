@@ -4,6 +4,7 @@ const reloadButton = document.querySelector("#reload-button");
 const errorTemplate = document.querySelector("#error-template");
 
 let review;
+let validation;
 let selectedStageId;
 
 reloadButton.addEventListener("click", () => loadReview());
@@ -48,20 +49,39 @@ async function loadReview() {
   statusElement.textContent = "Loading artifact";
   reloadButton.disabled = true;
   try {
-    const response = await fetch("/api/review", {
-      headers: { accept: "application/json" },
-    });
-    const body = await response.json();
-    if (!response.ok) {
-      throw new Error(body.error?.message ?? "Review API request failed.");
+    const [reviewResponse, validationResponse] = await Promise.all([
+      fetch("/api/review", {
+        headers: { accept: "application/json" },
+      }),
+      fetch("/api/validation", {
+        headers: { accept: "application/json" },
+      }),
+    ]);
+    const [reviewBody, validationBody] = await Promise.all([
+      reviewResponse.json(),
+      validationResponse.json(),
+    ]);
+    if (!reviewResponse.ok) {
+      throw new Error(
+        reviewBody.error?.message ?? "Review API request failed.",
+      );
     }
-    review = body;
+    review = reviewBody;
+    validation = validationResponse.ok
+      ? validationBody
+      : {
+          status: "failed",
+          summary:
+            validationBody.error?.details ||
+            validationBody.error?.message ||
+            "Artifact validation failed.",
+        };
     const stages = allStages(review);
     const requested = decodeURIComponent(window.location.hash.slice(1));
     selectedStageId = stages.some(({ stage }) => stage.id === requested)
       ? requested
       : stages.at(-1)?.stage.id;
-    statusElement.textContent = `${review.stages.length} finalized · ${review.workingStages.length} working`;
+    statusElement.textContent = `${validation.status === "passed" ? "Valid" : "Invalid"} · ${review.stages.length} finalized · ${review.workingStages.length} working`;
     renderReview();
   } catch (error) {
     review = undefined;
@@ -76,9 +96,29 @@ function renderReview() {
   workspace.replaceChildren();
   workspace.append(
     renderReviewHeader(),
+    renderValidationBanner(),
     renderRequirementStrip(),
     renderStageWorkspace(),
   );
+}
+
+function renderValidationBanner() {
+  const banner = element(
+    "section",
+    `validation-banner validation-${validation.status}`,
+  );
+  const copy = element("div");
+  appendText(
+    copy,
+    "p",
+    "eyebrow",
+    validation.status === "passed"
+      ? "Artifact integrity confirmed"
+      : "Artifact integrity failed",
+  );
+  appendText(copy, "p", "validation-summary", validation.summary);
+  banner.append(copy);
+  return banner;
 }
 
 function renderReviewHeader() {
@@ -253,9 +293,95 @@ function renderStageDetail({ stage, status, order }) {
   article.append(
     renderReferenceBand(stage),
     renderRationale(stage),
+    renderChangePanel(stage),
     renderContextGrid(stage),
   );
   return article;
+}
+
+function renderChangePanel(stage) {
+  const section = element("section", "change-panel");
+  const heading = element("div", "change-heading");
+  const title = element("div");
+  appendText(title, "p", "eyebrow", "Git evidence");
+  appendText(title, "h3", "", "Files and patch");
+  heading.append(title);
+  section.append(heading);
+
+  if (!stage.change) {
+    appendText(
+      section,
+      "p",
+      "empty-copy",
+      "This stage is still working. Its commit and exact patch are created during finalization.",
+    );
+    return section;
+  }
+
+  const fileList = element("ul", "file-list");
+  for (const file of stage.change.files) {
+    const item = element("li");
+    appendText(item, "span", `file-kind kind-${file.kind}`, file.kind);
+    const pathCopy = file.previousPath
+      ? `${file.previousPath} → ${file.path}`
+      : file.path;
+    appendText(item, "span", "code-text file-path", pathCopy);
+    fileList.append(item);
+  }
+
+  const button = element("button", "diff-button", "Load unified diff");
+  button.type = "button";
+  const output = element("div", "diff-output");
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    button.textContent = "Loading diff";
+    output.replaceChildren(
+      element("p", "empty-copy", "Reading patch from Git…"),
+    );
+    try {
+      const response = await fetch(
+        `/api/stages/${encodeURIComponent(stage.id)}/diff`,
+      );
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error?.message ?? "Diff request failed.");
+      }
+      renderUnifiedDiff(output, body.diff);
+      button.textContent = "Reload unified diff";
+    } catch (error) {
+      output.replaceChildren(
+        element("p", "inline-error", error.message),
+      );
+      button.textContent = "Retry unified diff";
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  heading.append(button);
+  section.append(fileList, output);
+  return section;
+}
+
+function renderUnifiedDiff(container, diff) {
+  const pre = element("pre", "unified-diff");
+  const code = element("code");
+  const lines = diff.split("\n");
+  for (const line of lines) {
+    let kind = "diff-context";
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      kind = "diff-file";
+    } else if (line.startsWith("@@")) {
+      kind = "diff-hunk";
+    } else if (line.startsWith("+")) {
+      kind = "diff-addition";
+    } else if (line.startsWith("-")) {
+      kind = "diff-deletion";
+    }
+    appendText(code, "span", kind, line || " ");
+  }
+  pre.append(code);
+  container.replaceChildren(pre);
 }
 
 function renderReferenceBand(stage) {

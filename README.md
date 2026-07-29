@@ -23,5 +23,9 @@ The [semantic story implementation skill](.github/skills/semantic-story-implemen
 guides coding agents through creating and validating these artifacts while they
 implement a user story.
 
+The [local review tool proof of concept](poc/README.md) loads the active
+artifact, renders its semantic stages, invokes the validator, and shows
+Git-backed stage diffs.
+
 The original conversation is retained in
 [Initial design discussion.md](Initial%20design%20discussion.md).

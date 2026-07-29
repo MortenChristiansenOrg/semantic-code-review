@@ -222,6 +222,27 @@ a:focus-visible {
   background: #f5f8fd;
 }
 
+.validation-banner {
+  padding: 1rem clamp(1.4rem, 4vw, 4.5rem);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.validation-banner.validation-passed {
+  border-left: 6px solid var(--cyan);
+  background: var(--cyan-soft);
+}
+
+.validation-banner.validation-failed {
+  border-left: 6px solid var(--fault);
+  background: var(--fault-soft);
+}
+
+.validation-summary {
+  margin: 0;
+  font: 0.72rem/1.5 "Cascadia Code", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
 .section-heading h2 {
   margin: 0;
   font: 620 1.45rem/1.2 "Bahnschrift", "Segoe UI", sans-serif;
@@ -465,6 +486,137 @@ a:focus-visible {
   line-height: 1.55;
 }
 
+.change-panel {
+  padding: 2rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.change-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.change-heading h3 {
+  margin: 0;
+  font: 620 1.25rem/1.2 "Bahnschrift", "Segoe UI", sans-serif;
+}
+
+.diff-button {
+  min-height: 38px;
+  padding: 0 0.9rem;
+  border: 1px solid var(--structure);
+  color: var(--structure);
+  background: transparent;
+  cursor: pointer;
+}
+
+.diff-button:hover {
+  color: var(--paper);
+  background: var(--structure);
+}
+
+.diff-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.file-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list li {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-kind {
+  font: 0.64rem/1 "Cascadia Code", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.kind-added {
+  color: #26774e;
+}
+
+.kind-modified,
+.kind-renamed {
+  color: #85540d;
+}
+
+.kind-deleted {
+  color: var(--fault);
+}
+
+.file-path {
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
+}
+
+.diff-output {
+  margin-top: 1rem;
+}
+
+.unified-diff {
+  overflow: auto;
+  max-height: 620px;
+  margin: 0;
+  border: 1px solid var(--line-strong);
+  color: #dbe5f5;
+  background: #1e293b;
+  tab-size: 2;
+}
+
+.unified-diff code {
+  display: grid;
+  min-width: max-content;
+  padding: 0.8rem 0;
+  font: 0.72rem/1.55 "Cascadia Code", Consolas, monospace;
+}
+
+.unified-diff span {
+  display: block;
+  min-height: 1.1em;
+  padding: 0 1rem;
+  white-space: pre;
+}
+
+.diff-addition {
+  color: #d9f8e5;
+  background: rgb(38 119 78 / 32%);
+}
+
+.diff-deletion {
+  color: #ffdede;
+  background: rgb(182 65 65 / 28%);
+}
+
+.diff-hunk {
+  color: #b9ecf2;
+  background: rgb(22 166 182 / 14%);
+}
+
+.diff-file {
+  color: #ffd89f;
+}
+
+.inline-error {
+  margin: 0;
+  padding: 0.9rem;
+  border-left: 4px solid var(--fault);
+  color: var(--fault);
+  background: var(--fault-soft);
+}
+
 .context-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -644,6 +796,11 @@ a:focus-visible {
 
   .stage-detail-header {
     display: grid;
+  }
+
+  .change-heading {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

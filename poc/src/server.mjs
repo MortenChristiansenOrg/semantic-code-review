@@ -4,6 +4,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { ArtifactError, readSemanticReview } from "./artifact-reader.mjs";
+import {
+  readStageDiff,
+  ReviewServiceError,
+  validateCurrentReview,
+} from "./review-service.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
 const publicDirectory = path.resolve(path.dirname(modulePath), "..", "public");
@@ -29,6 +34,18 @@ async function sendPublicFile(response, filename, contentType) {
 }
 
 function errorResponse(error) {
+  if (error instanceof ReviewServiceError) {
+    return {
+      status: error.status,
+      body: {
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+        },
+      },
+    };
+  }
   if (error instanceof ArtifactError) {
     return {
       status: 422,
@@ -64,6 +81,24 @@ export function createReviewServer({ repositoryRoot }) {
       if (request.method === "GET" && url.pathname === "/api/review") {
         const review = await readSemanticReview({ repositoryRoot: root });
         sendJson(response, 200, review);
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/validation") {
+        const validation = await validateCurrentReview({
+          repositoryRoot: root,
+        });
+        sendJson(response, 200, validation);
+        return;
+      }
+      const diffMatch = url.pathname.match(
+        /^\/api\/stages\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/diff$/,
+      );
+      if (request.method === "GET" && diffMatch) {
+        const diff = await readStageDiff({
+          repositoryRoot: root,
+          stageId: diffMatch[1],
+        });
+        sendJson(response, 200, diff);
         return;
       }
       if (request.method === "GET" && url.pathname === "/") {

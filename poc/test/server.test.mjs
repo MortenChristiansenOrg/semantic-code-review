@@ -58,3 +58,31 @@ test("serves the browser workspace assets", async () => {
     );
   }
 });
+
+test("serves authoritative validation and a finalized stage diff", async () => {
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const [validationResponse, diffResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/validation`),
+      fetch(`${baseUrl}/api/stages/load-artifact-api/diff`),
+    ]);
+    const [validation, diff] = await Promise.all([
+      validationResponse.json(),
+      diffResponse.json(),
+    ]);
+
+    assert.equal(validationResponse.status, 200);
+    assert.equal(validation.status, "passed");
+    assert.match(validation.summary, /full validation passed/i);
+    assert.equal(diffResponse.status, 200);
+    assert.equal(diff.stageId, "load-artifact-api");
+    assert.match(diff.diff, /poc\/src\/artifact-reader\.mjs/);
+    assert.match(diff.diff, /^\+.*readSemanticReview/m);
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
