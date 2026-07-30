@@ -10,6 +10,7 @@ without asking the AI to reconstruct its reasoning after implementation.
 
 ## Design documents
 
+- [User manual](docs/user-manual.md)
 - [Vision and scope](docs/vision-and-scope.md)
 - [Semantic review model](docs/semantic-review-model.md)
 - [Artifact format standard](docs/artifact-format.md)

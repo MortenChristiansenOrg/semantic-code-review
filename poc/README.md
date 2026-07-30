@@ -13,6 +13,8 @@ Open <http://127.0.0.1:4173>. The server reads the repository's
 `.semantic-review` artifact on every request, so finalized and working-stage
 changes appear without restarting it.
 
+See the [user manual](../docs/user-manual.md) for the reviewer workflow.
+
 The workspace provides:
 
 - Manifest-indexed requirements and semantic stages.
