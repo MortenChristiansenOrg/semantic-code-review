@@ -1,0 +1,16 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json",
+  "formatVersion": "0.1",
+  "reviewId": "document-review-workflow",
+  "title": "Document semantic review usage and future stage branches",
+  "summary": "Record branch-per-stage stacked diffs as a future option and add a concise manual for reviewers.",
+  "baseRevision": "9ba8b1c452a71b3239fd1ae008b4a1c7f323631a",
+  "targetBranch": "master",
+  "requirements": [
+    "review-documentation"
+  ],
+  "stages": [
+    "note-stage-branches",
+    "write-user-manual"
+  ]
+}

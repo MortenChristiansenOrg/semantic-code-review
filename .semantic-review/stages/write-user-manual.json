@@ -1,0 +1,61 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "write-user-manual",
+  "title": "Add the reviewer user manual",
+  "summary": "Explain the local review app and its complete human review workflow in plain language.",
+  "dependsOn": [
+    "note-stage-branches"
+  ],
+  "requirementRefs": [
+    "review-documentation#manual-start",
+    "review-documentation#manual-review",
+    "review-documentation#manual-feedback",
+    "review-documentation#manual-approval"
+  ],
+  "change": {
+    "commit": "c6ed48576061433882434d493f8fe153d62a8ce7",
+    "files": [
+      {
+        "path": "docs/user-manual.md",
+        "kind": "added"
+      },
+      {
+        "path": "poc/README.md",
+        "kind": "modified"
+      },
+      {
+        "path": "README.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "The protocol documents are implementation-facing; a reviewer unfamiliar with the project needs one task-oriented entry point.",
+  "decisions": [
+    {
+      "id": "task-oriented-reviewer-guide",
+      "category": "requirement",
+      "summary": "Organize the manual around reviewer tasks rather than artifact internals.",
+      "rationale": "A new user needs to start the app, understand a stage, comment, review fixes, and approve; schemas and CLI implementation details are not required for those tasks."
+    },
+    {
+      "id": "state-poc-limitations",
+      "category": "requirement",
+      "summary": "State current POC limitations in the manual.",
+      "rationale": "Users need to know that feedback is local, stage commits share one branch, hosted PR operations are absent, and overall approval is represented by the created Git branch rather than a persistent UI badge."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [],
+  "failedAttempts": [],
+  "risks": [],
+  "validation": [
+    {
+      "id": "manual-content-review",
+      "type": "manual",
+      "status": "passed",
+      "summary": "The manual follows the current UI labels from startup through review, feedback, resolution approval, and whole-stack approval, and its linked files exist.",
+      "command": "git diff --check and local link target check"
+    }
+  ],
+  "openQuestions": []
+}

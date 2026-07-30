@@ -1,0 +1,42 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "note-stage-branches",
+  "title": "Note branch-per-stage review stacks",
+  "summary": "Add the multi-branch stacked-diff topology to future improvements.",
+  "dependsOn": [],
+  "requirementRefs": [
+    "review-documentation#note-stage-branches"
+  ],
+  "change": {
+    "commit": "81466220b0652487ee09b3512bb4d3a9fe11d309",
+    "files": [
+      {
+        "path": "docs/architecture-and-roadmap.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "The experiment validated linear commit rewriting but revealed a user expectation that each semantic stage may also have a visible branch pointer.",
+  "decisions": [
+    {
+      "id": "preserve-v01-linear-topology",
+      "category": "engineering",
+      "summary": "Keep the v0.1 linear commit stack unchanged.",
+      "rationale": "Branch-per-stage refs can improve visibility and stacked-PR integration, but require deterministic downstream ref movement and publication semantics that the current protocol does not define."
+    }
+  ],
+  "assumptions": [],
+  "alternatives": [],
+  "failedAttempts": [],
+  "risks": [],
+  "validation": [
+    {
+      "id": "roadmap-review",
+      "type": "manual",
+      "status": "passed",
+      "summary": "The roadmap distinguishes the current linear v0.1 model from the deferred branch-per-stage option and lists the required safety concerns.",
+      "command": "git diff --check"
+    }
+  ],
+  "openQuestions": []
+}
