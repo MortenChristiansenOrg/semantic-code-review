@@ -109,6 +109,16 @@ avoid repeating the same mistake. How guidance is generalized, approved,
 scoped, retrieved, and retired should be designed only after there is evidence
 that the primary semantic review workflow is useful.
 
+Also explore representing each semantic stage with its own branch stacked on
+the previous stage, rather than keeping only one branch for the complete linear
+commit stack. Stage branches could make stage boundaries visible to familiar
+stacked-diff tools and support separate review or PR surfaces. The current v0.1
+model remains one linear branch because rewriting an earlier stage is simpler
+when only one branch tip moves. A multi-branch design would need deterministic,
+atomic updates for every affected downstream branch, clear handling for
+partially published stacks, and protection against overwriting branches that a
+person or another tool has moved.
+
 ## Open decisions
 
 - Whether the proposed v0.1 artifact format needs changes after prototyping.
@@ -118,6 +128,8 @@ that the primary semantic review workflow is useful.
 - How review comments persist before a hosted service exists.
 - How to detect and present semantic drift after replay.
 - Which Git stack operations can be safely automated.
+- Whether semantic stages should gain persistent branch refs for stacked-diff
+  workflows.
 - Which Azure DevOps integration point gives value without duplicating pull
   requests.
 - What measurements demonstrate faster or higher-quality review.
