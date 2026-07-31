@@ -1,0 +1,15 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json",
+  "formatVersion": "0.1",
+  "reviewId": "expand-skill-user-manual",
+  "title": "Document the full semantic implementation workflow",
+  "summary": "Expand the user manual from reviewer-only usage to the complete skill lifecycle and its repository effects.",
+  "baseRevision": "4b6b32c654f1689d0027f36df0a54ca32da85d62",
+  "targetBranch": "master",
+  "requirements": [
+    "skill-user-manual"
+  ],
+  "stages": [
+    "expand-user-manual"
+  ]
+}

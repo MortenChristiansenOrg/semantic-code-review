@@ -1,0 +1,52 @@
+{
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
+  "id": "expand-user-manual",
+  "title": "Expand the skill user manual",
+  "summary": "Describe the complete agent and reviewer flow, including initialization and repository changes.",
+  "dependsOn": [],
+  "requirementRefs": [
+    "skill-user-manual#explain-initialization",
+    "skill-user-manual#explain-implementation",
+    "skill-user-manual#explain-review",
+    "skill-user-manual#explain-landing",
+    "skill-user-manual#explain-repository-effects"
+  ],
+  "change": {
+    "commit": "accb3d92256e5abf49a2ba22d61e742e60488594",
+    "files": [
+      {
+        "path": "docs/user-manual.md",
+        "kind": "modified"
+      }
+    ]
+  },
+  "rationale": "The existing manual starts at the review UI and does not explain how the skill creates the artifact and commit stack that the UI consumes.",
+  "decisions": [
+    {
+      "id": "explain-by-lifecycle-and-repository-effect",
+      "category": "requirement",
+      "summary": "Organize the manual as one end-to-end lifecycle with explicit repository effects.",
+      "rationale": "Users need to know both which action comes next and whether it creates ignored state, an implementation commit, metadata, a branch, or archived history."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "agent-runs-mechanical-commands",
+      "statement": "The coding agent normally runs the semantic-review commands while the human supplies requirements, feedback, and approvals.",
+      "riskIfWrong": "A user running the commands manually needs enough concrete examples to reproduce the same flow."
+    }
+  ],
+  "alternatives": [],
+  "failedAttempts": [],
+  "risks": [],
+  "validation": [
+    {
+      "id": "manual-workflow-coverage",
+      "type": "automated",
+      "status": "passed",
+      "summary": "The manual names every lifecycle command and distinguishes active artifacts, ignored feedback, stage commits, metadata commits, PR-ready branches, and archived artifacts.",
+      "command": "git diff --check; CLI help checks; required workflow term check"
+    }
+  ],
+  "openQuestions": []
+}
