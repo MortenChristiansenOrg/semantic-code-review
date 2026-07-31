@@ -1,127 +1,299 @@
 # Semantic Review user manual
 
-This manual is for a reviewer using the local proof-of-concept application to
-understand, comment on, and approve an AI-assisted implementation.
+Semantic Review turns one implementation into an ordered set of reviewable
+stages. The coding agent uses the `semantic-story-implementation` skill while
+it works; the reviewer uses the local web application to inspect those stages,
+leave feedback, and approve the result.
 
-## Start the application
+## What the workflow adds to the repository
 
-You need Node.js 20 or later and a repository containing an active
-`.semantic-review` artifact.
+| Repository state | Purpose | Tracked by Git? |
+| --- | --- | --- |
+| `.semantic-review/` | Active requirements, stage descriptions, reasoning, validation, and commit references | Ignored while work is active; tracked only when published |
+| `.semantic-review/.work/` | The current unfinished stage | No |
+| Semantic stage commits | The implementation, one coherent commit per stage | Yes |
+| `.semantic-review-feedback/` | Draft comments, submitted feedback, resolutions, and approvals | No |
+| Metadata commit | The validated `.semantic-review/` artifact after approval | Yes |
+| PR-ready branch | A stable branch pointing to the approved implementation and metadata | Yes |
+| `.semantic-review-history/<review-id>/` | The published artifact after the review is merged and archived | Yes |
 
-From the repository root, run:
+Version 0.1 uses one linear Git commit stack: each stage commit is the direct
+child of the previous stage. Initialization does not create a branch or change
+production code.
+
+## Roles
+
+**The coding agent** initializes the review, records context while implementing,
+creates and finalizes stage commits, applies feedback, and runs validation.
+
+**The reviewer** reads the requirements, reasoning, evidence, and diffs; submits
+feedback; approves resolutions; and approves the complete stack.
+
+The scripts own artifact structure and Git invariants. Do not hand-edit the
+manifest, finalized stage commit data, or stage order.
+
+## 1. Install the skill dependencies
+
+You need Node.js 20 or later. From the repository root, run once:
 
 ```powershell
 npm ci --prefix .\.github\skills\semantic-story-implementation
+```
+
+The commands below use:
+
+```powershell
+$semantic = ".\.github\skills\semantic-story-implementation\scripts\semantic-review.mjs"
+$feedback = ".\.github\skills\semantic-story-implementation\scripts\review-feedback.mjs"
+```
+
+## 2. Initialize the implementation review
+
+Start with a clean Git worktree. There can be only one active
+`.semantic-review` artifact.
+
+```powershell
+node $semantic init `
+  --review-id customer-order-cancellation `
+  --title "Allow customers to cancel pending orders" `
+  --summary "Add guarded cancellation and expose it through the API." `
+  --target-branch main `
+  --requirement-id cancel-order `
+  --requirement-title "Customer cancels an order" `
+  --requirement-summary "A customer can cancel before fulfilment starts." `
+  --source-kind azure-devops `
+  --source-reference "AB#4821" `
+  --source-url "https://dev.azure.com/example/project/_workitems/edit/4821" `
+  --criterion "cancel-pending=A pending order can be cancelled." `
+  --criterion "reject-shipped=A shipped order cannot be cancelled."
+```
+
+Initialization:
+
+1. Uses the current `HEAD` as the commit before the first stage. Supply
+   `--base-revision` to use another commit.
+2. Creates `.semantic-review/manifest.json`.
+3. Creates the first requirement document under
+   `.semantic-review/requirements/`.
+4. Records the target branch, source reference, and acceptance criteria.
+5. Adds `.semantic-review/` to `.git/info/exclude`, which is local repository
+   configuration and is not committed.
+6. Validates the new artifact.
+
+It does not edit application files, create a stage commit, or create the
+PR-ready branch. Add further requirements with `requirement add`.
+
+## 3. Begin a semantic stage
+
+A stage should have one coherent purpose and be suitable for one commit. Begin
+it before editing implementation files:
+
+```powershell
+node $semantic stage begin `
+  --id add-cancellation-policy `
+  --title "Define the cancellation policy" `
+  --summary "Add the domain transition and rejection outcomes." `
+  --rationale "Every caller must use the same transition rule." `
+  --requirement-ref cancel-order#cancel-pending `
+  --requirement-ref cancel-order#reject-shipped
+```
+
+For a later stage, add its direct prerequisite:
+
+```powershell
+--depends-on add-cancellation-policy
+```
+
+This creates a schema-validated working document under
+`.semantic-review/.work/stages/`. Only one stage may be working at a time.
+
+## 4. Implement and record context as it occurs
+
+The agent now edits the implementation. At the moment a decision, assumption,
+alternative, failed attempt, risk, or open question becomes relevant, it records
+that item against the working stage:
+
+```powershell
+node $semantic stage record `
+  --stage add-cancellation-policy `
+  --kind decision `
+  --item-id keep-policy-in-aggregate `
+  --category engineering `
+  --summary "Put cancellation rules on the Order aggregate." `
+  --rationale "Other callers must not bypass the rule."
+```
+
+This context is captured during implementation rather than reconstructed
+afterwards. Use the same item ID with `--replace` to correct an inaccurate
+entry.
+
+After a relevant check, record its actual result:
+
+```powershell
+node $semantic stage validation `
+  --stage add-cancellation-policy `
+  --item-id domain-tests `
+  --type automated `
+  --status passed `
+  --summary "Covers successful cancellation and rejection after shipment." `
+  --command "dotnet test tests/Orders.Domain.Tests"
+```
+
+Failures and meaningful skipped checks should also be recorded.
+
+## 5. Commit and finalize the stage
+
+Commit only the implementation paths. Do not force-add `.semantic-review/` to a
+stage commit.
+
+```powershell
+git add <implementation-paths>
+git commit -m "Define order cancellation policy"
+node $semantic stage finish --id add-cancellation-policy --commit HEAD
+```
+
+Finalization requires a clean worktree and verifies that the commit directly
+follows the previous stage or the review base. It then:
+
+- Derives the complete changed-file inventory from Git.
+- Creates `.semantic-review/stages/add-cancellation-policy.json`.
+- Adds the stage ID to the manifest.
+- Removes the working-stage document.
+- Validates the artifact and linear commit chain.
+
+Repeat steps 3–5 for each stage. The result is a linear stack of implementation
+commits, with one semantic artifact document describing each commit.
+
+## 6. Validate and inspect the active review
+
+Run full validation at any time:
+
+```powershell
+node $semantic validate
+```
+
+Before publication, use the stricter completion gate:
+
+```powershell
+node $semantic validate --publish
+```
+
+To inspect the review in the browser:
+
+```powershell
 npm start --prefix .\poc
 ```
 
-Open <http://127.0.0.1:4173>. Keep the terminal process running while you use
-the application.
+Open <http://127.0.0.1:4173>. The application shows requirements, the stage
+stack, rationale and recorded context, validation evidence, changed files, and
+Git-backed diffs. Use **Reload** after repository state changes.
 
-The header shows whether the artifact is valid and how many stages are
-finalized or still working. Use **Reload** after the implementation or review
-state changes.
+## 7. Submit reviewer feedback
 
-## Understand the review
+Open **Review queue** in the application:
 
-Start with **Requirements**. These describe the intended outcome and its
-acceptance criteria.
+1. Select **Start review**.
+2. Create and select a feedback batch.
+3. Comment on requirements, criteria, reasoning items, files, or diff lines.
+4. Edit or delete draft comments as needed.
+5. Select **Submit feedback** when the batch is complete.
 
-The **Stage stack** presents the implementation in its intended review order.
-Select a stage to see:
+One batch may contain comments for several stages. Submission freezes comment
+text, targets, stage assignments, and stage commit snapshots.
 
-- Its purpose and summary.
-- The requirements it addresses.
-- Why the approach was chosen.
-- Decisions, assumptions, alternatives, failed attempts, risks, validation
-  evidence, and open questions recorded during implementation.
-- Its changed files and Git commit.
+Feedback is stored under `.semantic-review-feedback/`. The tool adds this path
+to local Git exclusions; it is mutable review state and is not included in
+semantic stage or metadata commits.
 
-A **Working** stage is not committed and may still change. A **Finalized** stage
-has a commit and an exact patch. Select **Load unified diff** to inspect that
-patch.
+## 8. Apply feedback and rewrite affected stages
 
-The current format uses one linear Git commit stack. Each stage is one commit
-on top of the previous stage.
-
-## Add feedback
-
-Select **Review queue** in the header.
-
-1. Select **Start review** if no feedback workspace exists.
-2. Enter a title and select **Create batch**.
-3. Select that draft batch.
-4. Use **Comment** beside a requirement, criterion, reasoning item, or changed
-   file. After loading a diff, use **+** beside a line to comment on that line.
-5. Enter what should change and why, then select **Add comment**.
-
-One batch can contain comments from several stages. Draft comments can be
-edited or deleted. An empty draft batch can also be deleted.
-
-When the batch is complete, select **Submit feedback**. Submission freezes its
-comments and anchors so the implementation agent receives a stable instruction
-set.
-
-## Review the response
-
-The agent applies submitted feedback one semantic stage at a time. If an early
-stage changes, later stage commits are replayed so the final history still
-matches the stage narrative.
-
-Each addressed comment receives an **Agent resolution** containing:
-
-- A summary of how the feedback was handled.
-- The stage that changed.
-- The stage commit before and after rewriting.
-
-An original file or line anchor may be marked as rewritten. This preserves
-where the comment was made; it does not mean the resolution is invalid.
-
-Select **Approve resolution** for one response, or **Approve all resolutions**
-for every addressed response in the batch.
-
-| Batch status | Meaning |
-| --- | --- |
-| `draft` | Comments can still be edited |
-| `submitted` | Waiting for implementation |
-| `addressing` | Some comments have been handled |
-| `resolved` | Every comment has a response awaiting approval |
-| `approved` | Every response is approved |
-
-## Approve the complete change
-
-The whole-stack approval control appears at the bottom of the **Review queue**
-when either:
-
-- No feedback batches exist, or
-- Every feedback batch is approved.
-
-Confirm the proposed branch name and select **Approve changes**. This validates
-the semantic review, publishes its metadata, and creates a stable PR-ready
-branch containing the implementation and review artifact.
-
-If the control is missing, finish, approve, or delete every incomplete feedback
-batch first.
-
-The current POC does not persist a separate whole-stack approval badge in the
-UI. The created Git branch is the durable approval result.
-
-## Current limitations
-
-- The application runs only on localhost and reviews the repository from which
-  it was started.
-- Feedback state is local and Git-ignored; it is not included in the published
-  review artifact.
-- Version 0.1 keeps all stage commits on one linear branch. Branch-per-stage
-  stacked diffs are a possible future improvement.
-- The tool does not open or merge a hosted pull request.
-
-## If the review does not load
-
-Run the validator from the repository root:
+The agent processes submitted feedback from the earliest affected stage
+forward. It implements and tests one temporary fix commit on top of the current
+stack, then folds that change into the original stage:
 
 ```powershell
-node .\.github\skills\semantic-story-implementation\scripts\semantic-review.mjs validate
+node $semantic rewrite-stage `
+  --stage add-cancellation-policy `
+  --fix HEAD
+```
+
+The command recreates the affected stage commit and every downstream stage
+commit, moves the current branch only after replay succeeds, refreshes artifact
+commit references, and rolls back on validation failure. The temporary fix
+commit is not part of the resulting stack.
+
+The agent records a resolution for each addressed comment. The UI shows the
+explanation and the previous and rewritten stage commits. The reviewer selects
+**Approve resolution** or **Approve all resolutions**.
+
+## 9. Approve and publish the complete stack
+
+Whole-stack approval is available when no feedback batches exist or every
+batch is approved. In the UI, confirm the branch name and select
+**Approve changes**.
+
+The equivalent CLI command is:
+
+```powershell
+node $feedback approve-stack --branch review/order-cancellation
+```
+
+Approval:
+
+1. Validates the complete review and feedback state.
+2. Creates one metadata-only commit containing `.semantic-review/`.
+3. Creates the named PR-ready branch at that metadata commit.
+4. Refuses to overwrite an existing branch pointing elsewhere.
+
+The tool creates the branch locally; it does not push it, open a hosted pull
+request, or merge it.
+
+Without the feedback workflow, the same result can be produced explicitly:
+
+```powershell
+node $semantic publish --message "Publish order cancellation review"
+node $semantic prepare-pr --branch review/order-cancellation
+```
+
+## 10. Merge and archive
+
+Push or otherwise publish the PR-ready branch using the repository's normal
+workflow. After it is merged, switch to the updated target branch and archive
+the active review:
+
+```powershell
+node $semantic archive
+```
+
+Archival moves the tracked artifact to:
+
+```text
+.semantic-review-history/<review-id>/.semantic-review/
+```
+
+and creates an archive commit. This preserves the approved review while freeing
+`.semantic-review/` for the next implementation.
+
+## Maintenance and recovery
+
+After an external rebase or replay, update affected artifact bindings with
+`refresh`. If a process was interrupted between artifact writes, use `repair`;
+it restores only states that can be recovered without guessing.
+
+If the application cannot load the review, run:
+
+```powershell
+node $semantic validate
 ```
 
 Correct the reported artifact or Git mismatch, then select **Reload**.
+
+## Current limitations
+
+- The review application runs only on localhost.
+- Feedback state is local and is not published with the artifact.
+- Version 0.1 keeps all stage commits on one linear branch. Branch-per-stage
+  stacked diffs are a possible future improvement.
+- The UI does not persist a separate whole-stack approval badge; the created
+  Git branch is the durable approval result.
+- Hosted pull-request creation and merging remain external operations.
