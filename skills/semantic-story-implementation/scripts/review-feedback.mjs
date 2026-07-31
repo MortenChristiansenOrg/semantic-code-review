@@ -19,13 +19,15 @@ const SHA1_PATTERN = /^[0-9a-f]{40}$/;
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
+const potentialRepositoryRoot = path.resolve(skillDirectory, "..", "..");
+const skillRepositoryRoot =
+  path.basename(potentialRepositoryRoot) === ".github"
+    ? path.dirname(potentialRepositoryRoot)
+    : potentialRepositoryRoot;
 const feedbackSchemaDirectory =
   process.env.SEMANTIC_REVIEW_FEEDBACK_SCHEMA_DIR ??
   path.resolve(
-    skillDirectory,
-    "..",
-    "..",
-    "..",
+    skillRepositoryRoot,
     "standard",
     "v0.1",
     "feedback-schema",

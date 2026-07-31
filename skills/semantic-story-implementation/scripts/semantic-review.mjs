@@ -21,11 +21,13 @@ const WORK_STAGE_SCHEMA =
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
+const potentialRepositoryRoot = path.resolve(skillDirectory, "..", "..");
+const skillRepositoryRoot =
+  path.basename(potentialRepositoryRoot) === ".github"
+    ? path.dirname(potentialRepositoryRoot)
+    : potentialRepositoryRoot;
 const defaultSchemaDirectory = path.resolve(
-  skillDirectory,
-  "..",
-  "..",
-  "..",
+  skillRepositoryRoot,
   "standard",
   "v0.1",
   "schema",

@@ -99,7 +99,6 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
 export async function validateCurrentReview({ repositoryRoot }) {
   const validator = path.join(
     repositoryRoot,
-    ".github",
     "skills",
     "semantic-story-implementation",
     "scripts",

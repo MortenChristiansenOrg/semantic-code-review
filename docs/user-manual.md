@@ -37,14 +37,14 @@ manifest, finalized stage commit data, or stage order.
 You need Node.js 20 or later. From the repository root, run once:
 
 ```powershell
-npm ci --prefix .\.github\skills\semantic-story-implementation
+npm ci --prefix .\skills\semantic-story-implementation
 ```
 
 The commands below use:
 
 ```powershell
-$semantic = ".\.github\skills\semantic-story-implementation\scripts\semantic-review.mjs"
-$feedback = ".\.github\skills\semantic-story-implementation\scripts\review-feedback.mjs"
+$semantic = ".\skills\semantic-story-implementation\scripts\semantic-review.mjs"
+$feedback = ".\skills\semantic-story-implementation\scripts\review-feedback.mjs"
 ```
 
 ## 2. Initialize the implementation review

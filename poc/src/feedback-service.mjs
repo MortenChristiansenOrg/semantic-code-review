@@ -32,7 +32,6 @@ function generatedId(prefix) {
 function feedbackCli(repositoryRoot) {
   return path.join(
     repositoryRoot,
-    ".github",
     "skills",
     "semantic-story-implementation",
     "scripts",
