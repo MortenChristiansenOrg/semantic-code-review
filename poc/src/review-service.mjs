@@ -100,7 +100,7 @@ export async function validateCurrentReview({ repositoryRoot }) {
   const validator = path.join(
     repositoryRoot,
     "skills",
-    "semantic-story-implementation",
+    "semantic-flow",
     "scripts",
     "semantic-review.mjs",
   );

@@ -1,4 +1,8 @@
-# Semantif Flow Steps
+# Semantic Flow Steps
+
+Read `../scripts/API.d.ts` before invoking the bundled CLI. The examples below
+show command selection only; the generated API signature defines every
+required and optional parameter.
 
 When a new body of work is started which fits the requirements for this skill, start the flow which includes these steps which are elaborated below:
 
@@ -32,16 +36,13 @@ Capture the requirements, acceptance criteria and starting revision for the work
 
 Group changes by their purpose rather than by technical similarity. Prefer vertical slices that deliver a meaningful part of the required behavior. Avoid splitting one conceptual change across several stages when it can be reviewed more clearly as one stage.
 
-The initial plan is provisional. Discoveries made during implementation may require future stages to be added, removed, reordered or reshaped. Update the plan when this happens rather than continuing with a plan which no longer represents the work.
+The initial plan is provisional. Discoveries made during implementation may require future stages to be added, removed, reordered or reshaped. Update the plan when this happens rather than continuing with a plan which no longer represents the work. Keep future stages in the agent's task plan. Register only the next stage in the artifact, immediately before implementing it, because the CLI permits one active working stage.
 
 ### Commands
 
 ```
-// Initialize the flow artifacts describing the work
-npm run semantic-flow init { workId: 'work-xyz', name: 'Implement XYZ', ... }
-
-// Register a new stage in the flow after the last one
-npm run semantic-flow add-stage { stageId: 'do-thing-a', ... }
+# Initialize the review and its first requirement
+node <skill-root>/scripts/semantic-review.mjs init <options>
 ```
 
 ## Implement each stage
@@ -63,17 +64,17 @@ Repeat this step until all required functionality has been implemented.
 ### Commands
 
 ```
-// Begin the next planned stage
-npm run semantic-flow begin-stage { stageId: 'do-thing-a', ... }
+# Begin the next planned stage
+node <skill-root>/scripts/semantic-review.mjs stage begin <options>
 
-// Capture relevant context as it is discovered
-npm run semantic-flow record { stageId: 'do-thing-a', kind: 'decision', ... }
+# Capture relevant context as it is discovered
+node <skill-root>/scripts/semantic-review.mjs stage record <options>
 
-// Record the result of a relevant quality check
-npm run semantic-flow record-validation { stageId: 'do-thing-a', status: 'passed', ... }
+# Record the result of a relevant quality check
+node <skill-root>/scripts/semantic-review.mjs stage validation <options>
 
-// Bind the completed stage to its implementation commit
-npm run semantic-flow finalize-stage { stageId: 'do-thing-a', commit: 'HEAD' }
+# Bind the completed stage to its implementation commit
+node <skill-root>/scripts/semantic-review.mjs stage finish --id <stage-id> --commit HEAD
 ```
 
 ## Validate the complete stage stack and open review
@@ -91,11 +92,10 @@ Resolve validation failures before opening the review. Once the complete stack i
 ### Commands
 
 ```
-// Validate the complete implementation and semantic artifacts
-npm run semantic-flow validate
+# Validate the complete implementation and semantic artifacts
+node <skill-root>/scripts/semantic-review.mjs validate --publish
 
-// Launch the review experience for the completed flow
-npm run semantic-flow review
+# Launch the repository's configured review experience after validation
 ```
 
 ## Reviewer approves or submits feedback
@@ -113,11 +113,10 @@ The reviewer either approves the implementation without changes or submits a com
 ### Commands
 
 ```
-// Submit the current feedback batch for implementation
-npm run semantic-flow submit-feedback { batchId: 'review-one' }
+# Submit the current feedback batch for implementation
+node <skill-root>/scripts/review-feedback.mjs batch submit --id <batch-id>
 
-// Approve the implementation when no changes are required
-npm run semantic-flow approve
+# If no changes are required, continue to stack approval and publication
 ```
 
 ## Address submitted feedback
@@ -137,17 +136,17 @@ Do not mark feedback as resolved unless the requested change has been implemente
 ### Commands
 
 ```
-// Mark a submitted feedback batch as being addressed
-npm run semantic-flow begin-feedback { batchId: 'review-one' }
+# Load submitted feedback grouped by affected stage
+node <skill-root>/scripts/review-feedback.mjs next --json
 
-// Fold a committed fix into the affected stage and rebuild later stages
-npm run semantic-flow rewrite-stage { stageId: 'do-thing-a', fix: 'HEAD' }
+# Fold a committed fix into the affected stage and rebuild later stages
+node <skill-root>/scripts/semantic-review.mjs rewrite-stage --stage <stage-id> --fix HEAD
 
-// Record the resolution of an individual feedback item
-npm run semantic-flow resolve-feedback { feedbackId: 'clarify-behavior', ... }
+# Record the resolution of an individual feedback item
+node <skill-root>/scripts/review-feedback.mjs comment resolve <options>
 
-// Validate the rewritten stack before returning it to the reviewer
-npm run semantic-flow validate
+# Validate the rewritten stack before returning it to the reviewer
+node <skill-root>/scripts/semantic-review.mjs validate --publish
 ```
 
 ## Reviewer re-reviews the changes
@@ -165,11 +164,12 @@ If the reviewer submits additional feedback, return to the feedback processing s
 ### Commands
 
 ```
-// Submit additional feedback when further changes are required
-npm run semantic-flow submit-feedback { batchId: 'review-two' }
+# Submit additional feedback when further changes are required
+node <skill-root>/scripts/review-feedback.mjs batch submit --id <batch-id>
 
-// Approve the resolved feedback and resulting implementation
-npm run semantic-flow approve
+# Approve one resolution or every addressed resolution in a batch
+node <skill-root>/scripts/review-feedback.mjs comment approve --id <feedback-id>
+node <skill-root>/scripts/review-feedback.mjs batch approve-all --id <batch-id>
 ```
 
 ## Publish artifacts and prepare the pull request
@@ -180,18 +180,16 @@ This step should be triggered after the reviewer explicitly approves the complet
 
 ### Behavior
 
-Run publication-level validation and publish the semantic artifacts as review metadata associated with the approved implementation. The published artifacts must describe the exact stage commits which will be proposed for integration.
-
-Prepare a pull-request-ready branch containing the approved implementation and its published review metadata. Do not modify the approved stage stack while preparing the branch.
+Run publication-level validation and approve the complete stack. Stack approval
+publishes the semantic artifacts as a metadata-only commit and creates a
+pull-request-ready branch containing the approved implementation and metadata.
+Do not modify the approved stage stack while preparing the branch.
 
 ### Commands
 
 ```
-// Publish the validated semantic artifacts
-npm run semantic-flow publish { message: 'Publish semantic review for XYZ' }
-
-// Prepare a branch containing the implementation and review metadata
-npm run semantic-flow prepare-pr { branch: 'review/work-xyz' }
+# Validate feedback, publish metadata, and create the PR-ready branch
+node <skill-root>/scripts/review-feedback.mjs approve-stack --branch <branch-name>
 ```
 
 ## Land the change
@@ -232,6 +230,6 @@ Archival must produce a clean, persistent repository state and make the workspac
 ### Commands
 
 ```
-// Archive the merged and published semantic flow
-npm run semantic-flow archive
+# Archive the merged and published semantic flow
+node <skill-root>/scripts/semantic-review.mjs archive
 ```

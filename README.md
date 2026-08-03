@@ -21,11 +21,11 @@ The proposed standard includes
 [machine-readable JSON Schemas](standard/v0.1/schema) and a
 [complete example artifact set](examples/order-cancellation/README.md).
 
-The [semantic story implementation skill](skills/semantic-story-implementation/SKILL.md)
-is kept as distribution source outside `.github/skills`, so this repository
-does not load its own output while being developed. It guides coding agents
-through creating and validating these artifacts while they implement a user
-story.
+The [semantic flow skill](skills/semantic-flow/SKILL.md) is kept as
+distribution source outside `.github/skills`, so this repository does not load
+its own output while being developed. Its production CLI and generated API
+signature are compiled from the maintainable
+[TypeScript scripts project](scripts/package.json).
 
 The [local review tool proof of concept](poc/README.md) loads the active
 artifact, renders its semantic stages, invokes the validator, and shows

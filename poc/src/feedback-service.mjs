@@ -33,7 +33,7 @@ function feedbackCli(repositoryRoot) {
   return path.join(
     repositoryRoot,
     "skills",
-    "semantic-story-implementation",
+    "semantic-flow",
     "scripts",
     "review-feedback.mjs",
   );

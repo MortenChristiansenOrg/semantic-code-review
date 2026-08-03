@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "title": "Semantic Review Artifact Format requirement",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "id",
+    "title",
+    "summary",
+    "source",
+    "acceptanceCriteria"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json"
+    },
+    "id": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+    },
+    "title": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "summary": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "reference"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "azure-devops",
+            "github",
+            "url",
+            "local"
+          ]
+        },
+        "reference": {
+          "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "url"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "url"
+            ]
+          }
+        }
+      ]
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+          },
+          "text": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "extensions": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/extensions"
+    }
+  }
+}

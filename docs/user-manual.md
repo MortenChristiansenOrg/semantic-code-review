@@ -1,7 +1,7 @@
 # Semantic Review user manual
 
 Semantic Review turns one implementation into an ordered set of reviewable
-stages. The coding agent uses the `semantic-story-implementation` skill while
+stages. The coding agent uses the `semantic-flow` skill while
 it works; the reviewer uses the local web application to inspect those stages,
 leave feedback, and approve the result.
 
@@ -32,19 +32,21 @@ feedback; approves resolutions; and approves the complete stack.
 The scripts own artifact structure and Git invariants. Do not hand-edit the
 manifest, finalized stage commit data, or stage order.
 
-## 1. Install the skill dependencies
+## 1. Prepare the skill
 
-You need Node.js 20 or later. From the repository root, run once:
+The compiled skill requires Node.js 20 or later and has no runtime installation
+step. When developing this repository, regenerate the production skill with:
 
 ```powershell
-npm ci --prefix .\skills\semantic-story-implementation
+npm ci --prefix .\scripts
+npm run build --prefix .\scripts
 ```
 
 The commands below use:
 
 ```powershell
-$semantic = ".\skills\semantic-story-implementation\scripts\semantic-review.mjs"
-$feedback = ".\skills\semantic-story-implementation\scripts\review-feedback.mjs"
+$semantic = ".\skills\semantic-flow\scripts\semantic-review.mjs"
+$feedback = ".\skills\semantic-flow\scripts\review-feedback.mjs"
 ```
 
 ## 2. Initialize the implementation review

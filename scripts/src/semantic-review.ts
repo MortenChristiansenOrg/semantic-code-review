@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,22 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { parse, parseTree, printParseErrorCode } from "jsonc-parser";
+import {
+  commandOptionNames,
+  renderCliHelp,
+  semanticReviewApi,
+} from "./command-api.js";
+import {
+  assertKnownOptions,
+  flag,
+  option,
+  parseArguments,
+  repeatedOption,
+  splitPair,
+} from "./shared/arguments.js";
+import { fail } from "./shared/errors.js";
+import { git, gitRaw } from "./shared/git.js";
+import { listJsonFiles, readJson, writeJson } from "./shared/json.js";
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json";
@@ -17,19 +32,13 @@ const REQUIREMENT_SCHEMA =
 const STAGE_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json";
 const WORK_STAGE_SCHEMA =
-  "https://semantic-code-review.dev/skills/semantic-story-implementation/v0.1/work-stage.schema.json";
+  "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
-const potentialRepositoryRoot = path.resolve(skillDirectory, "..", "..");
-const skillRepositoryRoot =
-  path.basename(potentialRepositoryRoot) === ".github"
-    ? path.dirname(potentialRepositoryRoot)
-    : potentialRepositoryRoot;
 const defaultSchemaDirectory = path.resolve(
-  skillRepositoryRoot,
-  "standard",
-  "v0.1",
+  skillDirectory,
+  "references",
   "schema",
 );
 const schemaDirectory =
@@ -40,165 +49,7 @@ const workStageSchemaPath = path.join(
   "work-stage.schema.json",
 );
 
-const HELP = `Semantic review artifact CLI
-
-Usage:
-  semantic-review.mjs init [options]
-  semantic-review.mjs requirement add [options]
-  semantic-review.mjs stage begin [options]
-  semantic-review.mjs stage set [options]
-  semantic-review.mjs stage record [options]
-  semantic-review.mjs stage validation [options]
-  semantic-review.mjs stage finish [options]
-  semantic-review.mjs stage discard --id <stage-id>
-  semantic-review.mjs rewrite-stage --stage <id> [--fix <revision>]
-  semantic-review.mjs refresh [--base <revision>] --stage <id>=<revision> [...]
-  semantic-review.mjs repair
-  semantic-review.mjs publish [--message <commit-message>]
-  semantic-review.mjs prepare-pr --branch <branch-name> [--check-only]
-  semantic-review.mjs archive [--destination <path>] [--message <commit-message>]
-  semantic-review.mjs validate [--schema-only] [--publish]
-
-Common repeated options:
-  --criterion <id>=<text>
-  --requirement-ref <requirement-id>#<criterion-id>
-  --depends-on <stage-id>
-  --stage <stage-id>=<revision>   (refresh only)
-
-Run from the target Git repository.`;
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function parseArguments(values) {
-  const positionals = [];
-  const options = new Map();
-
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (!value.startsWith("--")) {
-      positionals.push(value);
-      continue;
-    }
-
-    const separator = value.indexOf("=");
-    let name;
-    let optionValue;
-    if (separator > 2) {
-      name = value.slice(2, separator);
-      optionValue = value.slice(separator + 1);
-    } else {
-      name = value.slice(2);
-      const next = values[index + 1];
-      if (next === undefined || next.startsWith("--")) {
-        optionValue = true;
-      } else {
-        optionValue = next;
-        index += 1;
-      }
-    }
-
-    const existing = options.get(name) ?? [];
-    existing.push(optionValue);
-    options.set(name, existing);
-  }
-
-  return { positionals, options };
-}
-
-function option(options, name, { required = false, defaultValue } = {}) {
-  const values = options.get(name);
-  if (!values || values.length === 0) {
-    if (required) {
-      fail(`Missing required option --${name}.`);
-    }
-    return defaultValue;
-  }
-  if (values.length !== 1) {
-    fail(`Option --${name} may only be specified once.`);
-  }
-  if (values[0] === true) {
-    fail(`Option --${name} requires a value.`);
-  }
-  return values[0];
-}
-
-function repeatedOption(options, name) {
-  return (options.get(name) ?? []).map((value) => {
-    if (value === true) {
-      fail(`Option --${name} requires a value.`);
-    }
-    return value;
-  });
-}
-
-function flag(options, name) {
-  const values = options.get(name);
-  if (!values) {
-    return false;
-  }
-  if (values.length !== 1 || values[0] !== true) {
-    fail(`Option --${name} is a flag and does not take a value.`);
-  }
-  return true;
-}
-
-function assertKnownOptions(options, allowed) {
-  for (const name of options.keys()) {
-    if (!allowed.has(name)) {
-      fail(`Unknown option --${name}.`);
-    }
-  }
-}
-
-function splitPair(value, label) {
-  const separator = value.indexOf("=");
-  if (separator < 1 || separator === value.length - 1) {
-    fail(`${label} must use <id>=<value>.`);
-  }
-  return [value.slice(0, separator), value.slice(separator + 1)];
-}
-
-function git(args, { cwd, allowFailure = false, encoding = "utf8" } = {}) {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  } catch (error) {
-    if (allowFailure) {
-      return null;
-    }
-    const detail = error.stderr?.toString().trim();
-    fail(`git ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
-  }
-}
-
-function gitRaw(
-  args,
-  { cwd, input, env = {}, allowFailure = false, encoding = "utf8" } = {},
-) {
-  const result = spawnSync("git", args, {
-    cwd,
-    input,
-    encoding,
-    env: {
-      ...process.env,
-      ...env,
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  if (result.status !== 0) {
-    if (allowFailure) return null;
-    const detail = result.stderr?.toString().trim();
-    fail(`git ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
-  }
-  return typeof result.stdout === "string"
-    ? result.stdout.trim()
-    : result.stdout;
-}
+const HELP = renderCliHelp(semanticReviewApi);
 
 function repositoryRoot() {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
@@ -225,77 +76,6 @@ function formatPath(value) {
   return value.split(path.sep).join("/");
 }
 
-function findDuplicateKeys(node, file, errors) {
-  if (!node) {
-    return;
-  }
-  if (node.type === "object") {
-    const keys = new Set();
-    for (const property of node.children ?? []) {
-      const keyNode = property.children?.[0];
-      const key = keyNode?.value;
-      if (keys.has(key)) {
-        errors.push(`${file}: duplicate object key "${key}".`);
-      }
-      keys.add(key);
-      findDuplicateKeys(property.children?.[1], file, errors);
-    }
-    return;
-  }
-  for (const child of node.children ?? []) {
-    findDuplicateKeys(child, file, errors);
-  }
-}
-
-function readJson(file) {
-  let text;
-  try {
-    text = fs.readFileSync(file, "utf8");
-  } catch (error) {
-    fail(`Cannot read ${file}: ${error.message}`);
-  }
-
-  if (text.charCodeAt(0) === 0xfeff) {
-    fail(`${file}: UTF-8 byte-order marks are not allowed.`);
-  }
-
-  const parseErrors = [];
-  const value = parse(text, parseErrors, {
-    allowTrailingComma: false,
-    disallowComments: true,
-  });
-  if (parseErrors.length > 0) {
-    const details = parseErrors
-      .map(
-        (error) =>
-          `${printParseErrorCode(error.error)} at character ${error.offset}`,
-      )
-      .join(", ");
-    fail(`${file}: invalid JSON: ${details}.`);
-  }
-
-  const duplicateErrors = [];
-  findDuplicateKeys(
-    parseTree(text, [], {
-      allowTrailingComma: false,
-      disallowComments: true,
-    }),
-    file,
-    duplicateErrors,
-  );
-  if (duplicateErrors.length > 0) {
-    fail(duplicateErrors.join("\n"));
-  }
-  return value;
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(temporary, file);
-}
-
 function schemaValidator() {
   const required = [
     "common.schema.json",
@@ -306,7 +86,7 @@ function schemaValidator() {
   for (const file of required) {
     if (!fs.existsSync(path.join(schemaDirectory, file))) {
       fail(
-        `Schema ${file} was not found in ${schemaDirectory}. Set SEMANTIC_REVIEW_SCHEMA_DIR when the skill is installed separately.`,
+        `Schema ${file} was not found in ${schemaDirectory}. Rebuild the semantic-flow skill or set SEMANTIC_REVIEW_SCHEMA_DIR.`,
       );
     }
   }
@@ -344,17 +124,6 @@ function validateDocument(ajv, value, file) {
       .join("\n");
     fail(errors);
   }
-}
-
-function listJsonFiles(directory) {
-  if (!fs.existsSync(directory)) {
-    return [];
-  }
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(directory, entry.name))
-    .sort();
 }
 
 function loadArtifact(paths, { includeWork = true } = {}) {
@@ -792,7 +561,7 @@ function requirementFromOptions(options) {
     fail("At least one --criterion <id>=<text> is required.");
   }
 
-  const source = {
+  const source: Record<string, unknown> = {
     kind: option(options, "source-kind", { required: true }),
     reference: option(options, "source-reference", { required: true }),
   };
@@ -812,23 +581,7 @@ function requirementFromOptions(options) {
 }
 
 function initialize(paths, options) {
-  assertKnownOptions(
-    options,
-    new Set([
-      "review-id",
-      "title",
-      "summary",
-      "base-revision",
-      "target-branch",
-      "requirement-id",
-      "requirement-title",
-      "requirement-summary",
-      "source-kind",
-      "source-reference",
-      "source-url",
-      "criterion",
-    ]),
-  );
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "init"));
   if (fs.existsSync(paths.manifest)) {
     fail(`A semantic review already exists at ${paths.manifest}.`);
   }
@@ -877,15 +630,7 @@ function initialize(paths, options) {
 function addRequirement(paths, options) {
   assertKnownOptions(
     options,
-    new Set([
-      "requirement-id",
-      "requirement-title",
-      "requirement-summary",
-      "source-kind",
-      "source-reference",
-      "source-url",
-      "criterion",
-    ]),
+    commandOptionNames(semanticReviewApi, "requirement add"),
   );
   const artifact = validateArtifact(paths, { quiet: true });
   const requirement = requirementFromOptions(options);
@@ -911,14 +656,7 @@ function addRequirement(paths, options) {
 function beginStage(paths, options) {
   assertKnownOptions(
     options,
-    new Set([
-      "id",
-      "title",
-      "summary",
-      "rationale",
-      "depends-on",
-      "requirement-ref",
-    ]),
+    commandOptionNames(semanticReviewApi, "stage begin"),
   );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Beginning a stage");
@@ -1015,14 +753,7 @@ function updateStageContext(paths, id, finalized, update) {
 function setStage(paths, options) {
   assertKnownOptions(
     options,
-    new Set([
-      "id",
-      "title",
-      "summary",
-      "rationale",
-      "depends-on",
-      "requirement-ref",
-    ]),
+    commandOptionNames(semanticReviewApi, "stage set"),
   );
   const id = option(options, "id", { required: true });
   const title = option(options, "title");
@@ -1098,7 +829,7 @@ function itemForKind(kind, options) {
         allowed: ["approach", "outcome", "lesson"],
       };
     case "risk": {
-      const value = {
+      const value: Record<string, unknown> = {
         id,
         summary: option(options, "summary", { required: true }),
       };
@@ -1127,6 +858,10 @@ function itemForKind(kind, options) {
 }
 
 function recordStageItem(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "stage record"),
+  );
   const stageId = option(options, "stage", { required: true });
   const kind = option(options, "kind", { required: true });
   const item = itemForKind(kind, options);
@@ -1172,21 +907,12 @@ function recordStageItem(paths, options) {
 function recordValidation(paths, options) {
   assertKnownOptions(
     options,
-    new Set([
-      "stage",
-      "item-id",
-      "type",
-      "status",
-      "summary",
-      "command",
-      "replace",
-      "finalized",
-    ]),
+    commandOptionNames(semanticReviewApi, "stage validation"),
   );
   const stageId = option(options, "stage", { required: true });
   const replace = flag(options, "replace");
   const finalized = flag(options, "finalized");
-  const value = {
+  const value: Record<string, unknown> = {
     id: option(options, "item-id", { required: true }),
     type: option(options, "type", { required: true }),
     status: option(options, "status", { required: true }),
@@ -1246,7 +972,10 @@ function canonicalStage(workStage, commit, files) {
 }
 
 function finishStage(paths, options) {
-  assertKnownOptions(options, new Set(["id", "commit"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "stage finish"),
+  );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Finalizing a stage");
   const id = option(options, "id", { required: true });
@@ -1288,7 +1017,10 @@ function finishStage(paths, options) {
 }
 
 function discardStage(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "stage discard"),
+  );
   const id = option(options, "id", { required: true });
   validateArtifact(paths, { quiet: true, validateGit: false });
   const { file } = workingStage(paths, id);
@@ -1298,7 +1030,7 @@ function discardStage(paths, options) {
 }
 
 function refreshStages(paths, options) {
-  assertKnownOptions(options, new Set(["base", "stage"]));
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "refresh"));
   const baseRevision = option(options, "base");
   const bindings = new Map(
     repeatedOption(options, "stage").map((value) =>
@@ -1420,7 +1152,10 @@ function applyCommitPatch({
 }
 
 function rewriteStage(paths, options) {
-  assertKnownOptions(options, new Set(["stage", "fix"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "rewrite-stage"),
+  );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Stage rewriting");
   const stageId = option(options, "stage", { required: true });
@@ -1541,7 +1276,7 @@ function rewriteStage(paths, options) {
 }
 
 function repairArtifact(paths, options) {
-  assertKnownOptions(options, new Set());
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "repair"));
   if (!fs.existsSync(paths.manifest)) {
     fail(`No semantic review manifest exists at ${paths.manifest}.`);
   }
@@ -1657,7 +1392,7 @@ function reviewHeadState(paths, artifact) {
 }
 
 function publishArtifact(paths, options) {
-  assertKnownOptions(options, new Set(["message"]));
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "publish"));
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Artifact publication");
   const { stageTip, metadataCommit } = reviewHeadState(paths, artifact);
@@ -1705,7 +1440,10 @@ function publishArtifact(paths, options) {
 }
 
 function preparePrBranch(paths, options) {
-  assertKnownOptions(options, new Set(["branch", "check-only"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "prepare-pr"),
+  );
   const branch = option(options, "branch", { required: true });
   const checkOnly = flag(options, "check-only");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
@@ -1742,7 +1480,7 @@ function preparePrBranch(paths, options) {
 }
 
 function archiveReview(paths, options) {
-  assertKnownOptions(options, new Set(["destination", "message"]));
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "archive"));
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Review archival");
   reviewHeadState(paths, artifact);
@@ -1894,7 +1632,10 @@ function dispatch(paths, positionals, options) {
     return;
   }
   if (command === "validate" && subcommand === undefined) {
-    assertKnownOptions(options, new Set(["schema-only", "publish"]));
+    assertKnownOptions(
+      options,
+      commandOptionNames(semanticReviewApi, "validate"),
+    );
     if (options.has("schema-only") && options.has("publish")) {
       fail("--schema-only and --publish cannot be combined.");
     }

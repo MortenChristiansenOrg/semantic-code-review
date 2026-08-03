@@ -11,4 +11,24 @@ Scope: The semantic flow is intended to be used for the implementation of a full
 
 See docs/Steps.md for a description of the steps in the semantic flow.
 
-> TODO: Describe install process here if there is one
+## Bundled CLI
+
+Use the production CLI bundled in `scripts/` for every artifact or feedback
+mutation. Run them from the target Git repository root.
+
+Before invoking a command, read `scripts/API.d.ts`. It is the authoritative,
+generated signature for every command, parameter, flag, default, and
+conditional option.
+
+Do not inspect `scripts/semantic-review.mjs` or
+`scripts/review-feedback.mjs` to discover usage. The bundles are generated
+implementation details. Read their implementation only as a last resort when
+the API signature, skill guidance, and observed command error cannot resolve a
+tool defect or undocumented behavior.
+
+```text
+node <skill-root>/scripts/semantic-review.mjs <command>
+node <skill-root>/scripts/review-feedback.mjs <command>
+```
+
+The bundles require Node.js 20 or later and include their runtime dependencies.

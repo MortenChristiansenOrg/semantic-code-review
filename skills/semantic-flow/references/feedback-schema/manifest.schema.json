@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json",
+  "title": "Semantic review feedback manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "formatVersion",
+    "reviewId",
+    "batches"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json"
+    },
+    "formatVersion": {
+      "const": "0.1"
+    },
+    "reviewId": {
+      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
+    },
+    "batches": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
+      }
+    }
+  }
+}

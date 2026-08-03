@@ -7,7 +7,19 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
-import { parse, parseTree, printParseErrorCode } from "jsonc-parser";
+import {
+  commandOptionNames,
+  renderCliHelp,
+  reviewFeedbackApi,
+} from "./command-api.js";
+import {
+  assertKnownOptions,
+  option,
+  parseArguments,
+} from "./shared/arguments.js";
+import { fail } from "./shared/errors.js";
+import { git } from "./shared/git.js";
+import { readJson, writeJson } from "./shared/json.js";
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
@@ -19,116 +31,16 @@ const SHA1_PATTERN = /^[0-9a-f]{40}$/;
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
-const potentialRepositoryRoot = path.resolve(skillDirectory, "..", "..");
-const skillRepositoryRoot =
-  path.basename(potentialRepositoryRoot) === ".github"
-    ? path.dirname(potentialRepositoryRoot)
-    : potentialRepositoryRoot;
 const feedbackSchemaDirectory =
   process.env.SEMANTIC_REVIEW_FEEDBACK_SCHEMA_DIR ??
   path.resolve(
-    skillRepositoryRoot,
-    "standard",
-    "v0.1",
+    skillDirectory,
+    "references",
     "feedback-schema",
   );
 const semanticCli = path.join(scriptDirectory, "semantic-review.mjs");
 
-const HELP = `Semantic review feedback CLI
-
-Usage:
-  review-feedback.mjs init
-  review-feedback.mjs batch create --id <id> --title <title>
-  review-feedback.mjs batch delete --id <id>
-  review-feedback.mjs comment add [target options]
-  review-feedback.mjs comment edit --id <feedback-id> --body <body>
-  review-feedback.mjs comment delete --id <feedback-id>
-  review-feedback.mjs comment assign --id <feedback-id> --stage <stage-id>
-  review-feedback.mjs batch submit --id <batch-id>
-  review-feedback.mjs next [--json]
-  review-feedback.mjs comment resolve --id <feedback-id> [resolution options]
-  review-feedback.mjs resolution rebind --stage <id> --previous <sha> --rewritten <sha>
-  review-feedback.mjs comment approve --id <feedback-id>
-  review-feedback.mjs batch approve-all --id <batch-id>
-  review-feedback.mjs approve-stack --branch <branch-name>
-  review-feedback.mjs validate
-
-Comment target options:
-  --target-kind requirement --requirement <id>
-  --target-kind criterion --requirement <id> --criterion <id>
-  --target-kind stage --stage <id>
-  --target-kind context --stage <id> --collection <name> --item <id>
-  --target-kind file --stage <id> --path <repository-path>
-  --target-kind line --stage <id> --path <repository-path> --side <old|new> --line <n>
-
-All comment commands also require --batch, --id, --body, and --label.`;
-
-function fail(message) {
-  throw new Error(message);
-}
-
-function parseArguments(values) {
-  const positionals = [];
-  const options = new Map();
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index];
-    if (!value.startsWith("--")) {
-      positionals.push(value);
-      continue;
-    }
-    const separator = value.indexOf("=");
-    let name;
-    let optionValue;
-    if (separator > 2) {
-      name = value.slice(2, separator);
-      optionValue = value.slice(separator + 1);
-    } else {
-      name = value.slice(2);
-      const next = values[index + 1];
-      if (next === undefined || next.startsWith("--")) {
-        optionValue = true;
-      } else {
-        optionValue = next;
-        index += 1;
-      }
-    }
-    const existing = options.get(name) ?? [];
-    existing.push(optionValue);
-    options.set(name, existing);
-  }
-  return { positionals, options };
-}
-
-function option(options, name, { required = false, defaultValue } = {}) {
-  const values = options.get(name);
-  if (!values?.length) {
-    if (required) fail(`Missing required option --${name}.`);
-    return defaultValue;
-  }
-  if (values.length !== 1) fail(`Option --${name} may only be specified once.`);
-  if (values[0] === true) fail(`Option --${name} requires a value.`);
-  return values[0];
-}
-
-function assertKnownOptions(options, allowed) {
-  for (const name of options.keys()) {
-    if (!allowed.has(name)) fail(`Unknown option --${name}.`);
-  }
-}
-
-function git(args, { cwd, allowFailure = false } = {}) {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-  } catch (error) {
-    if (allowFailure) return null;
-    const detail = error.stderr?.toString().trim();
-    fail(`git ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
-  }
-}
+const HELP = renderCliHelp(reviewFeedbackApi);
 
 function repositoryRoot() {
   return path.resolve(git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() }));
@@ -206,58 +118,6 @@ function withFeedbackLock(paths, action) {
   }
 }
 
-function findDuplicateKeys(node, file, errors) {
-  if (!node) return;
-  if (node.type === "object") {
-    const keys = new Set();
-    for (const property of node.children ?? []) {
-      const key = property.children?.[0]?.value;
-      if (keys.has(key)) errors.push(`${file}: duplicate object key "${key}".`);
-      keys.add(key);
-      findDuplicateKeys(property.children?.[1], file, errors);
-    }
-    return;
-  }
-  for (const child of node.children ?? []) {
-    findDuplicateKeys(child, file, errors);
-  }
-}
-
-function readJson(file) {
-  const text = fs.readFileSync(file, "utf8");
-  if (text.charCodeAt(0) === 0xfeff) fail(`${file}: byte-order marks are invalid.`);
-  const errors = [];
-  const value = parse(text, errors, {
-    allowTrailingComma: false,
-    disallowComments: true,
-  });
-  if (errors.length) {
-    fail(
-      `${file}: ${errors
-        .map((error) => `${printParseErrorCode(error.error)} at ${error.offset}`)
-        .join(", ")}.`,
-    );
-  }
-  const duplicates = [];
-  findDuplicateKeys(
-    parseTree(text, [], {
-      allowTrailingComma: false,
-      disallowComments: true,
-    }),
-    file,
-    duplicates,
-  );
-  if (duplicates.length) fail(duplicates.join("\n"));
-  return value;
-}
-
-function writeJson(file, value) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(temporary, file);
-}
-
 function listJsonIds(directory) {
   if (!fs.existsSync(directory)) return [];
   return fs
@@ -272,13 +132,13 @@ function semanticArtifact(paths) {
     fail("No active .semantic-review artifact exists.");
   }
   const manifest = readJson(path.join(paths.semantic, "manifest.json"));
-  const requirements = new Map(
+  const requirements = new Map<string, any>(
     manifest.requirements.map((id) => [
       id,
       readJson(path.join(paths.semantic, "requirements", `${id}.json`)),
     ]),
   );
-  const stages = new Map(
+  const stages = new Map<string, any>(
     manifest.stages.map((id) => [
       id,
       readJson(path.join(paths.semantic, "stages", `${id}.json`)),
@@ -511,7 +371,7 @@ function ensureExcluded(root) {
 }
 
 function initialize(paths, options) {
-  assertKnownOptions(options, new Set());
+  assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "init"));
   if (fs.existsSync(paths.feedbackManifest)) fail("Feedback state already exists.");
   const semantic = semanticArtifact(paths);
   ensureExcluded(paths.root);
@@ -526,7 +386,10 @@ function initialize(paths, options) {
 }
 
 function createBatch(paths, options) {
-  assertKnownOptions(options, new Set(["id", "title"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "batch create"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   if (feedback.batches.has(id)) fail(`Batch ${id} already exists.`);
@@ -556,7 +419,7 @@ function createBatch(paths, options) {
 
 function buildTarget(options, semantic) {
   const kind = option(options, "target-kind", { required: true });
-  const target = {
+  const target: Record<string, any> = {
     kind,
     label: option(options, "label", { required: true }),
   };
@@ -592,22 +455,7 @@ function buildTarget(options, semantic) {
 function addComment(paths, options) {
   assertKnownOptions(
     options,
-    new Set([
-      "batch",
-      "id",
-      "body",
-      "label",
-      "target-kind",
-      "requirement",
-      "criterion",
-      "stage",
-      "collection",
-      "item",
-      "path",
-      "side",
-      "line",
-      "assigned-stage",
-    ]),
+    commandOptionNames(reviewFeedbackApi, "comment add"),
   );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const batchId = option(options, "batch", { required: true });
@@ -616,7 +464,7 @@ function addComment(paths, options) {
   if (batch.status !== "draft") fail(`Batch ${batchId} is not editable.`);
   const id = option(options, "id", { required: true });
   if (feedback.items.has(id)) fail(`Feedback item ${id} already exists.`);
-  const item = {
+  const item: Record<string, any> = {
     $schema: ITEM_SCHEMA,
     id,
     batchId,
@@ -649,7 +497,10 @@ function addComment(paths, options) {
 }
 
 function editComment(paths, options) {
-  assertKnownOptions(options, new Set(["id", "body"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "comment edit"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const item = feedback.items.get(id);
@@ -662,7 +513,10 @@ function editComment(paths, options) {
 }
 
 function deleteComment(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "comment delete"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const item = feedback.items.get(id);
@@ -677,7 +531,10 @@ function deleteComment(paths, options) {
 }
 
 function assignComment(paths, options) {
-  assertKnownOptions(options, new Set(["id", "stage"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "comment assign"),
+  );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const stageId = option(options, "stage", { required: true });
@@ -710,7 +567,10 @@ function updateBatchStatus(batch, feedback) {
 }
 
 function submitBatch(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "batch submit"),
+  );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
@@ -739,7 +599,10 @@ function submitBatch(paths, options) {
 }
 
 function deleteBatch(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "batch delete"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
@@ -757,7 +620,7 @@ function deleteBatch(paths, options) {
 }
 
 function nextFeedback(paths, options) {
-  assertKnownOptions(options, new Set(["json"]));
+  assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "next"));
   const json = options.has("json");
   if (
     json &&
@@ -815,7 +678,7 @@ function nextFeedback(paths, options) {
 function resolveComment(paths, options) {
   assertKnownOptions(
     options,
-    new Set(["id", "summary", "stage", "previous", "rewritten"]),
+    commandOptionNames(reviewFeedbackApi, "comment resolve"),
   );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
@@ -865,7 +728,10 @@ function resolveComment(paths, options) {
 }
 
 function approveComment(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "comment approve"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const item = feedback.items.get(id);
@@ -884,7 +750,7 @@ function approveComment(paths, options) {
 function rebindResolutions(paths, options) {
   assertKnownOptions(
     options,
-    new Set(["stage", "previous", "rewritten"]),
+    commandOptionNames(reviewFeedbackApi, "resolution rebind"),
   );
   const { semantic, feedback } = validateFeedback(paths, {
     quiet: true,
@@ -918,7 +784,10 @@ function rebindResolutions(paths, options) {
 }
 
 function approveAll(paths, options) {
-  assertKnownOptions(options, new Set(["id"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "batch approve-all"),
+  );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
@@ -945,7 +814,10 @@ function approveAll(paths, options) {
 }
 
 function approveStack(paths, options) {
-  assertKnownOptions(options, new Set(["branch"]));
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "approve-stack"),
+  );
   const branch = option(options, "branch", { required: true });
   if (loadFeedback(paths, { required: false })) {
     const { feedback } = validateFeedback(paths, { quiet: true });
@@ -982,7 +854,11 @@ function approveStack(paths, options) {
 function dispatch(paths, positionals, options) {
   const [command, subcommand, ...extra] = positionals;
   if (extra.length) fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
-  if (!command || command === "help") {
+  if (!command || command === "help" || options.has("help")) {
+    const help = options.get("help");
+    if (help && (help.length !== 1 || help[0] !== true)) {
+      fail("--help is a flag.");
+    }
     console.log(HELP);
     return;
   }
@@ -1001,7 +877,10 @@ function dispatch(paths, positionals, options) {
   if (command === "batch" && subcommand === "approve-all") return approveAll(paths, options);
   if (command === "approve-stack" && !subcommand) return approveStack(paths, options);
   if (command === "validate" && !subcommand) {
-    assertKnownOptions(options, new Set());
+    assertKnownOptions(
+      options,
+      commandOptionNames(reviewFeedbackApi, "validate"),
+    );
     validateFeedback(paths);
     return;
   }
@@ -1014,6 +893,7 @@ try {
   const readOnly =
     positionals.length === 0 ||
     positionals[0] === "help" ||
+    options.has("help") ||
     positionals[0] === "next" ||
     positionals[0] === "validate";
   if (readOnly) {

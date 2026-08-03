@@ -5,7 +5,8 @@ Requires Node.js 20 or later.
 Run from the repository root:
 
 ```powershell
-npm ci --prefix .\skills\semantic-story-implementation
+npm ci --prefix .\scripts
+npm run build --prefix .\scripts
 npm start --prefix .\poc
 ```
 

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json",
+  "title": "Semantic story implementation working stage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "id",
+    "title",
+    "summary",
+    "dependsOn",
+    "requirementRefs",
+    "rationale",
+    "decisions",
+    "assumptions",
+    "alternatives",
+    "failedAttempts",
+    "risks",
+    "validation",
+    "openQuestions"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json"
+    },
+    "id": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+    },
+    "title": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "summary": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "dependsOn": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+      }
+    },
+    "requirementRefs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/requirementRef"
+      }
+    },
+    "rationale": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/decision"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/assumption"
+      }
+    },
+    "alternatives": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/alternative"
+      }
+    },
+    "failedAttempts": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/failedAttempt"
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/risk"
+      }
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/validation"
+      }
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/openQuestion"
+      }
+    }
+  }
+}
