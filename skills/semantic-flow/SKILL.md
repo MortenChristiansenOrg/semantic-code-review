@@ -1,34 +1,72 @@
 ---
 name: semantic-flow
-description: When implementing a full feature or user story, use this skill continually during the implementation to generate a semantic documentation artifact. This artifact will be used be the developer to review the final implementation.
+description: Use when implementing a substantial feature or user story that should be reviewed as ordered, intent-based stages. Invoke before implementation starts and keep using it through planning, coding, validation, feedback revisions, and publication. Do not use for small fixes, investigations, review-only tasks, or routine refactors.
 ---
 
-# Purpose
+# Semantic Flow
 
-The semantic development flow is an approach to produce structured metadata about the implementation of a bigger set of functionality such as a user story or feature. The goal is to split the work into a sequence of individual implementation stages, each with a coherent and self-contained scope and semantic meaning. Once the implementation is completed, the user will be able to review each stage individually rather than as one big change set.
+Produce a trustworthy semantic review artifact while implementing the work.
+The artifact must describe what actually happened, not a reconstruction created
+after the code is finished.
 
-Scope: The semantic flow is intended to be used for the implementation of a full feature or user story. It is not intended to be used for small changes or bug fixes.
+Read `docs/Steps.md` and `scripts/API.d.ts` before changing application code or
+invoking the CLI. `docs/Steps.md` defines the operating procedure.
+`scripts/API.d.ts` is the authoritative command signature.
 
-See docs/Steps.md for a description of the steps in the semantic flow.
+## Non-negotiable rules
+
+- Run all commands from the target Git repository root.
+- Use the bundled CLI for every artifact and feedback mutation. Never hand-edit
+  `.semantic-review/` or `.semantic-review-feedback/`.
+- Resume an existing active review instead of initializing another one.
+- Start new work only in a clean, isolated worktree on the intended work
+  branch and base revision. Never stash, discard, or absorb unrelated user
+  changes to satisfy the workflow.
+- Keep future stages in the agent's task plan. Register only the stage about to
+  be implemented because only one working stage may exist.
+- Begin a stage before editing its implementation. Keep its code, tests, and
+  documentation limited to one coherent intent.
+- Commit only that stage's implementation, then finalize it against the commit.
+  Semantic metadata must not be included in a stage commit.
+- Record review-relevant conclusions when they arise. Do not invent decisions,
+  alternatives, failed attempts, risks, or validation after the fact, and do
+  not record private chain-of-thought.
+- Record validation only after it ran, with the exact command and observed
+  result. Preserve relevant failures and skipped checks.
+- Treat review, approval, publication, push, merge, and archive as explicit
+  human gates. Never approve on the reviewer's behalf or publish/land/archive
+  without the required user instruction.
+
+## Artifact quality
+
+A strong stage lets a reviewer answer:
+
+1. What requirement or acceptance criterion does this satisfy?
+2. What coherent behavior changed?
+3. Why is this stage boundary and implementation approach appropriate?
+4. What evidence supports it, and what deserves reviewer attention?
+
+Prefer vertical, behavior-oriented stages over file-, layer-, or activity-based
+stages. Keep tests with the behavior they validate. Split work only when each
+stage is independently understandable and leaves the repository in a valid
+state. Do not create artificial stages or a catch-all cleanup stage merely to
+make the artifact look detailed.
+
+Rationale must explain the approach or boundary rather than repeat the summary.
+Requirement references must identify criteria genuinely addressed by the
+stage. Dependencies must list only direct prerequisites.
 
 ## Bundled CLI
 
-Use the production CLI bundled in `scripts/` for every artifact or feedback
-mutation. Run them from the target Git repository root.
-
-Before invoking a command, read `scripts/API.d.ts`. It is the authoritative,
-generated signature for every command, parameter, flag, default, and
-conditional option.
-
-Do not inspect `scripts/semantic-review.mjs` or
-`scripts/review-feedback.mjs` to discover usage. The bundles are generated
-implementation details. Read their implementation only as a last resort when
-the API signature, skill guidance, and observed command error cannot resolve a
-tool defect or undocumented behavior.
+The production CLI is self-contained in `scripts/` and requires Node.js 20 or
+later:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs <command>
 node <skill-root>/scripts/review-feedback.mjs <command>
 ```
 
-The bundles require Node.js 20 or later and include their runtime dependencies.
+Do not inspect the generated `.mjs` bundles to discover usage. Read their
+implementation only as a last resort when the API signature, skill guidance,
+and an observed command error cannot explain a tool defect or undocumented
+behavior.

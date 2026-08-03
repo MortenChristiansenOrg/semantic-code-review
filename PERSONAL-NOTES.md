@@ -25,3 +25,9 @@ Maybe there is a code file describing the signature for the CLI calls, including
 Should the skill just stop before the PR? What about cleanup?
 
 Is anything gitignored and if so, how does that work when checking out a different branch?
+
+There are some things specific to azure devops in the vison and document format. I should consider a review making this completely neutral with regards to the tooling you use.
+
+Should we specify that versions 0.X of the schema should all be treated as major revisions?
+
+Is the format for review feedback detailed enough so that you can provide all the feedback you need to?
