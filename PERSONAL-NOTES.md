@@ -31,3 +31,5 @@ There are some things specific to azure devops in the vison and document format.
 Should we specify that versions 0.X of the schema should all be treated as major revisions?
 
 Is the format for review feedback detailed enough so that you can provide all the feedback you need to?
+
+How does manual adjustments fit into this system? Sometimes you just want to edit a file yourself, but that does not really work with the single-commit approach. You could enter it as verbatim edit instructions in feedback, but you really want to do this in the IDE where you can see that it works. Is this an argument for stacked PRs?
