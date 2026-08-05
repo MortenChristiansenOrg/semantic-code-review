@@ -39,6 +39,8 @@ Plan coherent, ordered stages:
 - Keep tests and directly related documentation with the behavior.
 - Make every stage independently understandable and valid.
 - Split only when each resulting branch diff is easier to review.
+- Treat `depends-on` as a direct behavioral prerequisite. Do not mirror Git
+  ancestry or list a stage merely because it happened earlier.
 
 Keep future stages in the agent's task plan. Register only the next stage.
 
@@ -115,6 +117,10 @@ node <skill-root>/scripts/semantic-review.mjs stage validation <options>
 
 ### D. Commit and finalize
 
+Before committing, inspect the complete stage diff and use `stage set` if its
+boundary, rationale, requirement references, or direct dependencies changed.
+Do not finalize with a known acceptance gap that belongs to this stage.
+
 Commit the stage's implementation on its branch. Multiple linear commits are
 allowed; merge commits are not. Exclude `.semantic-review/` and
 `.semantic-review-feedback/`.
@@ -136,9 +142,20 @@ Then begin the next stage from this branch.
 After all stages:
 
 1. Confirm every criterion is covered.
-2. Run whole-stack checks.
-3. Attach final evidence to the relevant finalized stage.
-4. Run:
+2. Exercise the complete acceptance path using the repository's available
+   runtime workflow, not only isolated tests. For user-facing changes, inspect
+   representative desktop and mobile browser states. For reactive interfaces,
+   verify mutation pending/success/error states and confirm live server updates
+   do not erase unsaved local input.
+3. If this review finds an omission or defect that belongs to a finalized
+   stage, check out the earliest responsible stage branch, implement and commit
+   the correction there, then run `restack --from <stage>`. Add updated context
+   or validation to that finalized stage with the CLI. Do not create a later
+   cleanup, stabilization, or acceptance-gap stage unless it introduces a
+   genuinely new independently reviewable behavior.
+4. Run whole-stack checks.
+5. Attach final evidence to the relevant finalized stage.
+6. Run:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs validate --publish

@@ -34,6 +34,12 @@ invoking the CLI. `docs/Steps.md` defines the operating procedure.
   not record private chain-of-thought.
 - Record validation only after it ran, with the exact command and observed
   result. Preserve relevant failures and skipped checks.
+- Before finalizing a stage, verify its requirement references and direct
+  dependencies describe the implemented behavior. Git ancestry or earlier
+  chronology alone is not a semantic dependency.
+- Correct implementation omissions in the earliest responsible stage and
+  restack later branches. Do not append cleanup, stabilization, or acceptance
+  gap stages when the change belongs inside an existing stage boundary.
 - Treat review, approval, metadata publication, local preparation, and archive
   as explicit human gates. Stop after local preparation; remote push, hosted
   review creation, and landing require a separate user instruction.
@@ -59,6 +65,13 @@ make the artifact look detailed.
 Rationale must explain the approach or boundary rather than repeat the summary.
 Requirement references must identify criteria genuinely addressed by the
 stage. Dependencies must list only direct prerequisites.
+
+Before requesting review, exercise the implemented acceptance path rather than
+relying only on isolated tests. For user-facing work, use the project's
+available runtime or browser workflow at representative viewport sizes. For
+reactive interfaces, verify that server updates, mutation completion, and
+rerenders do not erase unsaved local input or report stale success. Record any
+blocked or skipped runtime validation honestly.
 
 ## Bundled CLI
 
