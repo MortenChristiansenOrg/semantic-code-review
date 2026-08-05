@@ -18,5 +18,6 @@
     "reject-unsafe-git-revisions",
     "enforce-local-host-boundary",
     "resolve-repository-root"
-  ]
+  ],
+  "branchPrefix": "semantic-review/review-tool-poc"
 }

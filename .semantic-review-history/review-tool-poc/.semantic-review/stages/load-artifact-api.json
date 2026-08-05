@@ -11,7 +11,10 @@
     "review-artifacts#process-current-review"
   ],
   "change": {
-    "commit": "121d4f8e92fe86f214268580dc10dfd0e0581718",
+    "branch": "semantic-review/review-tool-poc/01-load-artifact-api",
+    "baseBranch": "master",
+    "baseRevision": "3663fb2bd8d199b80d898d6215bacfb21c344ed6",
+    "headRevision": "121d4f8e92fe86f214268580dc10dfd0e0581718",
     "files": [
       {
         "path": "poc/package.json",

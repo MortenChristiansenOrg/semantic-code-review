@@ -19,23 +19,27 @@ invoking the CLI. `docs/Steps.md` defines the operating procedure.
 - Use the bundled CLI for every artifact and feedback mutation. Never hand-edit
   `.semantic-review/` or `.semantic-review-feedback/`.
 - Resume an existing active review instead of initializing another one.
-- Start new work only in a clean, isolated worktree on the intended work
-  branch and base revision. Never stash, discard, or absorb unrelated user
-  changes to satisfy the workflow.
+- Start new work only in a clean, isolated worktree at the target branch head.
+  Never stash, discard, or absorb unrelated user changes to satisfy the
+  workflow.
 - Keep future stages in the agent's task plan. Register only the stage about to
   be implemented because only one working stage may exist.
 - Begin a stage before editing its implementation. Keep its code, tests, and
   documentation limited to one coherent intent.
-- Commit only that stage's implementation, then finalize it against the commit.
-  Semantic metadata must not be included in a stage commit.
+- Let `stage begin` create and check out the deterministic stage branch. Commit
+  only that stage's implementation, then finalize its branch head. Semantic
+  metadata must not be included in a stage branch.
 - Record review-relevant conclusions when they arise. Do not invent decisions,
   alternatives, failed attempts, risks, or validation after the fact, and do
   not record private chain-of-thought.
 - Record validation only after it ran, with the exact command and observed
   result. Preserve relevant failures and skipped checks.
-- Treat review, approval, publication, push, merge, and archive as explicit
-  human gates. Never approve on the reviewer's behalf or publish/land/archive
-  without the required user instruction.
+- Treat review, approval, metadata publication, local preparation, and archive
+  as explicit human gates. Stop after local preparation; remote push, hosted
+  review creation, and landing require a separate user instruction.
+- Keep the branch chain linear: the first stage targets the review target
+  branch and every later stage targets the previous stage branch. When a person
+  edits a lower branch, run `restack --from <stage>` before continuing.
 
 ## Artifact quality
 

@@ -13,5 +13,6 @@
     "add-cancellation-policy",
     "persist-cancellation",
     "expose-cancellation-endpoint"
-  ]
+  ],
+  "branchPrefix": "semantic-review/customer-order-cancellation"
 }

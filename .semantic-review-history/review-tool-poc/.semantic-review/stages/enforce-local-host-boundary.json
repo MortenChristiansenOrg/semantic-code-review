@@ -11,7 +11,10 @@
     "review-artifacts#run-locally"
   ],
   "change": {
-    "commit": "62080811c619dcc6d024b013f8cb8a60d4d33a1c",
+    "branch": "semantic-review/review-tool-poc/06-enforce-local-host-boundary",
+    "baseBranch": "semantic-review/review-tool-poc/05-reject-unsafe-git-revisions",
+    "baseRevision": "f53993ea7b31b024cc9ff13aedeae4fd52fcfbd7",
+    "headRevision": "62080811c619dcc6d024b013f8cb8a60d4d33a1c",
     "files": [
       {
         "path": "poc/src/server.mjs",

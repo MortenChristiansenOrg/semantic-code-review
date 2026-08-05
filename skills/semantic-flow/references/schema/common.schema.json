@@ -17,6 +17,12 @@
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
+    "gitBranch": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^(?!/)(?!.*(?:\\.\\.|//|@\\{|\\\\|[ ~^:?*\\[]))(?!.*(?:/|\\.|\\.lock)$)[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
     "repositoryPath": {
       "type": "string",
       "minLength": 1,

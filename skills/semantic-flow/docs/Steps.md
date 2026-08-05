@@ -1,330 +1,238 @@
 # Semantic Flow Procedure
 
-Read `../scripts/API.d.ts` before invoking the bundled CLI. The command snippets
-below select commands only; the generated API signature defines every required
-parameter, conditional field, default, and flag.
+Read `../scripts/API.d.ts` before invoking the bundled CLI. It defines every
+required parameter, default, and flag.
 
 The coding agent owns initialization, stage implementation, evidence capture,
-feedback implementation, and validation. The reviewer owns feedback
-submission, resolution approval, and whole-stack approval. Do not cross those
-role boundaries without an explicit user instruction.
+feedback implementation, restacking, and validation. The reviewer owns
+feedback submission, resolution approval, and whole-stack approval.
 
 ## 0. Enter or resume the flow
 
-### Applicability
+Use this flow for a substantial feature or user story that benefits from
+intent-based review stages. Do not use it for a small fix, investigation,
+review-only request, documentation-only edit, or routine refactor.
 
-Use this flow for a substantial, self-contained feature or user story whose
-implementation benefits from intent-based review stages. Do not use it for a
-small localized fix, investigation, review-only request, documentation-only
-edit, or routine refactor.
+Before mutation:
 
-Invoke the flow before implementation starts. Do not retrofit a completed
-implementation by inventing context. If work has already begun, continue only
-when the current uncommitted changes can honestly form the next stage and the
-relevant context is still known.
-
-### Preflight
-
-Before mutating anything:
-
-1. Locate the target repository root and the installed skill root.
-2. Confirm Node.js 20 or later is available.
+1. Locate the repository and installed skill roots.
+2. Confirm Node.js 20 or later.
 3. Read `SKILL.md`, this procedure, and `scripts/API.d.ts`.
-4. Inspect the current branch, `HEAD`, worktree status, and whether
-   `.semantic-review/manifest.json` exists.
+4. Inspect the current branch, `HEAD`, worktree, and active artifact.
 
-If an active review exists, run validation and resume it. Do not run `init`
-again or replace its requirements:
+If an active review exists, run:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs validate
 ```
 
-Determine whether the review has a working stage, only finalized stages, or
-submitted feedback, then continue at the matching section below. Use CLI output
-and artifact state; do not guess.
+Resume from its working stage, finalized branches, or submitted feedback. Use
+`repair` only for unambiguous interrupted artifact writes. If a lower stage
+branch was edited manually or trunk advanced, use `restack`; never hand-edit
+branch bindings.
 
-If validation reports an interrupted mutation, use `repair` only for the
-unambiguous recovery states described by `scripts/API.d.ts`. If an external
-rebase or replay intentionally changed the base or stage commits, use `refresh`
-to supply the new bindings. Never use either command to conceal an unexplained
-artifact or Git mismatch.
+For new work, require a clean worktree at the current target branch head.
 
-For a new review, the worktree must be clean and isolated from unrelated work.
-Establish the intended work branch and correct base revision before
-initialization. If unrelated changes are present, stop and ask the user to
-provide a clean worktree or choose how to isolate them. Never stash, revert,
-delete, or include those changes automatically.
+Plan coherent, ordered stages:
 
-### Requirements and stage plan
+- Group by user-visible or architectural intent, not file or layer.
+- Keep tests and directly related documentation with the behavior.
+- Make every stage independently understandable and valid.
+- Split only when each resulting branch diff is easier to review.
 
-Translate the user request into implementation-relevant requirements and
-testable acceptance criteria. Preserve source wording and identifiers when
-available. For an untracked local request, use `local` provenance and a clear
-human-recognizable reference; do not invent a tracker URL or issue number.
+Keep future stages in the agent's task plan. Register only the next stage.
 
-Ask the user only when missing behavior materially changes the implementation.
-Do not turn implementation choices into acceptance criteria.
-
-Plan an ordered sequence of coherent stages before coding:
-
-- Group by user-visible or architectural intent, not by file, layer, or tool.
-- Keep tests and directly related documentation in the stage that introduces
-  the behavior.
-- Make every stage independently understandable and leave the repository
-  buildable and valid for all checks relevant at that point.
-- Avoid artificial setup, testing, cleanup, or "remaining changes" stages.
-- Split only when the resulting diffs are easier to review than one combined
-  stage.
-
-The plan is provisional. Keep future stages in the agent's normal task plan,
-not in the artifact. Update that plan when discoveries change the work.
-Register only the next stage immediately before implementing it.
-
-## 1. Initialize a new review
-
-Initialize before editing application code. `init` records the current `HEAD`
-as the default base revision, so verify that revision first.
+## 1. Initialize
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs init <options>
 ```
 
-Add further independent requirements before beginning a stage that references
-them:
+Initialization records the target branch head as `baseRevision` and defaults
+`branchPrefix` to:
+
+```text
+semantic-review/<review-id>
+```
+
+Every stage branch is created below this prefix:
+
+```text
+semantic-review/<review-id>/01-<stage-id>
+semantic-review/<review-id>/02-<stage-id>
+```
+
+The shared slash prefix groups the stack as folders in Git clients such as
+GitKraken.
+
+Add independent requirements before a stage references them:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs requirement add <options>
 ```
 
-Use stable kebab-case IDs. Requirement summaries describe required outcomes;
-criteria are observable conditions that can be demonstrated or tested.
+Never hand-edit generated state.
 
-Initialization creates local semantic state but no implementation commit.
-Never hand-edit the generated files.
+## 2. Implement each stage branch
 
-## 2. Implement each stage
+### A. Begin
 
-Repeat this section until the planned behavior is complete.
-
-### A. Begin the next stage
-
-Begin exactly one stage before making its code changes:
+From the current stack tip:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs stage begin <options>
 ```
 
-Choose metadata carefully:
+The command creates and checks out the next deterministic branch. The first
+stage starts at `targetBranch`; every later stage starts at the previous stage
+head. `depends-on` records semantic prerequisites, not Git ancestry.
 
-- `summary` states the coherent behavior or capability changed.
-- `rationale` explains why this approach and stage boundary are appropriate; it
-  must not merely restate the summary.
-- `requirement-ref` lists only criteria this stage materially addresses.
-- `depends-on` lists only direct semantic prerequisites, not every earlier
-  stage. In a linear commit stack, commit ancestry alone is not a semantic
-  dependency.
-
-If implementation discovery changes the active stage's intent, references, or
-dependencies, update it before continuing:
-
-```text
-node <skill-root>/scripts/semantic-review.mjs stage set <options>
-```
-
-Discard a stage only when its intent is abandoned and its implementation
-changes have already been removed or deliberately reassigned. The command does
-not revert files:
-
-```text
-node <skill-root>/scripts/semantic-review.mjs stage discard --id <stage-id>
-```
+Use `stage set` when discovery changes active metadata. Use `stage discard`
+only after implementation changes are removed or deliberately retained on the
+abandoned branch.
 
 ### B. Implement and capture context
 
-Implement only the active stage's intent. Include its targeted tests and
-directly related documentation. If the work grows into another independently
-reviewable intent, leave that work for a later stage instead of widening the
-current one.
-
-Record context when it becomes relevant:
+Implement only the active stage intent. Record reviewer-useful decisions,
+assumptions, alternatives, failed attempts, risks, and questions when they
+arise:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs stage record <options>
 ```
 
-Capture concise, reviewer-useful conclusions:
+Do not record routine choices, fabricated history, secrets, raw logs, or
+private chain-of-thought.
 
-- A decision states the chosen behavior or design and why.
-- An assumption is falsifiable and explains the impact if wrong.
-- An alternative records a real option that was considered and rejected.
-- A failed attempt records an approach actually tried, its observed outcome,
-  and the reusable lesson.
-- A risk identifies a concrete concern and, when known, its mitigation.
-- A question identifies a specific unresolved point requiring reviewer input.
+### C. Validate
 
-Do not record routine coding choices, generic best practices, speculative
-alternatives, fabricated failed attempts, raw logs, secrets, or private
-chain-of-thought. Empty context collections are valid and preferable to
-invented content.
-
-Use the same item ID with `--replace` only to correct an inaccurate entry.
-
-### C. Validate the stage
-
-Run the smallest existing checks that genuinely cover the stage, escalating
-when integration risk requires it. Record each meaningful result immediately
-after it runs:
+Run the smallest existing checks that cover the stage and record observed
+results:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs stage validation <options>
 ```
 
-For automated validation, record the exact command. The summary states what was
-checked and the observed result, not what was expected. Record relevant failed
-and not-run checks honestly. Do not finish a stage while a required check is
-failing or an unexplained validation gap remains.
+### D. Commit and finalize
 
-### D. Commit and finalize the stage
-
-Before committing:
-
-1. Inspect the complete diff and confirm every change serves the active intent.
-2. Stage exact implementation paths; do not use a broad add that can absorb
-   unrelated files.
-3. Exclude `.semantic-review/` and `.semantic-review-feedback/`.
-4. Run the relevant checks and record their actual results.
-
-Create one implementation commit. The worktree must then be clean except for
-ignored semantic state. Finalize the stage against that direct-child commit:
+Commit the stage's implementation on its branch. Multiple linear commits are
+allowed; merge commits are not. Exclude `.semantic-review/` and
+`.semantic-review-feedback/`.
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage finish --id <stage-id> --commit HEAD
+node <skill-root>/scripts/semantic-review.mjs stage finish --id <stage-id>
 ```
 
-Finalization derives the changed-file inventory from Git and binds the
-canonical stage document to the commit. If it fails, correct the reported Git
-or artifact invariant and retry; do not patch generated metadata manually.
+Finalization captures:
 
-Update the future-stage plan from what was learned, then begin the next stage.
+- Stage and base branch names.
+- Immutable base and head revisions.
+- The complete diff from the base branch snapshot to the stage head.
 
-## 3. Complete the implementation and request review
+Then begin the next stage from this branch.
 
-After every implementation stage is finalized:
+## 3. Complete and request review
 
-1. Check every acceptance criterion is covered by at least one stage.
-2. Run relevant whole-stack or integration checks.
-3. Attach new evidence to the most relevant finalized stage, usually the final
-   stage, using `stage validation --finalized`.
-4. Resolve failed checks, unfinished stages, inaccurate context, and uncovered
-   criteria.
-5. Run the publication gate:
+After all stages:
+
+1. Confirm every criterion is covered.
+2. Run whole-stack checks.
+3. Attach final evidence to the relevant finalized stage.
+4. Run:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs validate --publish
+node <skill-root>/scripts/semantic-review.mjs prepare-stack
 ```
 
-The validator checks schemas, references, dependencies, artifact state, commit
-order, and file inventories. It does not prove the implementation satisfies
-the requirement; perform that assessment separately.
+`prepare-stack` prints the hosting-neutral local branch/base/head chain. It
+does not contact a remote or create hosted reviews.
 
-Launch the repository's configured review experience only when one is
-available and the user requested it. Otherwise hand off the validated artifact
-and stage stack for review. Stop here. Do not submit feedback, approve
-resolutions, approve the stack, or publish on the reviewer's behalf.
+## 4. Address feedback and manual edits
 
-## 4. Address submitted feedback
-
-Process only submitted feedback, never drafts. Load the next actionable items:
+Load submitted feedback:
 
 ```text
 node <skill-root>/scripts/review-feedback.mjs next --json
 ```
 
-Assign each item to the stage whose intent or implementation must change.
-Process affected stages from earliest to latest so downstream replay is
-minimized.
+Process the earliest affected stage first:
 
-For each affected stage:
-
-1. Implement and validate the requested change at the top of the current stage
-   stack.
-2. Update the affected finalized stage's context or validation with
-   `--finalized` when the prior artifact is no longer accurate.
-3. Commit only the fix.
-4. Fold that fix into the assigned stage and replay downstream stages:
+1. Check out its recorded branch.
+2. Implement, validate, and commit the change directly on that branch.
+3. Update finalized context or evidence when needed.
+4. Cascade the change through every branch above it:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs rewrite-stage --stage <stage-id> --fix HEAD
+node <skill-root>/scripts/semantic-review.mjs restack --from <stage-id>
 ```
 
-5. Record a precise resolution using the submitted snapshot commit as
-   `previous` and the current rewritten stage commit as `rewritten`. Read
-   `previous` from the item returned by `next --json`; after rewriting, read
-   `rewritten` from the assigned stage's canonical `change.commit`:
+`restack` refreshes the edited branch snapshot, replays each upper branch onto
+its new base, updates all affected refs only after replay succeeds, and refreshes
+artifact heads and file inventories. This also supports changes committed
+manually by the user on any lower stage branch.
+
+If trunk advanced, check out a branch that will not be moved and run:
 
 ```text
-node <skill-root>/scripts/review-feedback.mjs comment resolve <options>
+node <skill-root>/scripts/semantic-review.mjs restack --base <target-branch>
 ```
 
-If the same stage is rewritten again after resolutions already point to its
-superseded commit, rebind those resolutions:
+Record resolutions with the submitted `previous-head` and current stage
+`rewritten-head`. If a stage changes again, use `resolution rebind`.
 
-```text
-node <skill-root>/scripts/review-feedback.mjs resolution rebind <options>
-```
-
-Do not resolve an item until its requested change is implemented, or until the
-resolution clearly explains why no code change is correct. Never mark your own
-resolution approved.
-
-After all submitted items are addressed, validate both state stores and the
-complete stack:
+Afterward:
 
 ```text
 node <skill-root>/scripts/review-feedback.mjs validate
 node <skill-root>/scripts/semantic-review.mjs validate --publish
 ```
 
-Return the rewritten stack and resolutions to the reviewer, then stop. If more
-feedback is submitted, repeat this section.
+If branches were already pushed, updating rewritten remote refs is outside this
+flow and should use lease-protected force pushes where available.
 
-## 5. Publish after explicit approval
+## 5. Approve and publish metadata
 
-Continue only after the reviewer explicitly approves the resulting complete
-implementation and all feedback resolutions. Whole-stack approval publishes a
-metadata-only commit and creates a local PR-ready branch without switching the
-current worktree:
+Only after explicit whole-stack approval:
 
 ```text
-node <skill-root>/scripts/review-feedback.mjs approve-stack --branch <branch-name>
+node <skill-root>/scripts/review-feedback.mjs approve-stack
 ```
 
-Do not call reviewer approval commands merely to make `approve-stack` pass. If
-approval is missing, return control to the reviewer.
+Approval validates feedback, creates or updates
+`<branch-prefix>/metadata`, and prints the local branch chain. The metadata
+branch is separate so review JSON never pollutes implementation diffs.
 
-Any implementation change after approval invalidates the reviewed result.
-Return to feedback processing and obtain approval again rather than modifying
-the published stack.
+## 6. Prepare local outputs and stop
 
-## 6. Land and archive
+The validated stage branches are already a stack-ready local output:
 
-Push the prepared branch and create or update the pull request only when the
-user explicitly requests those repository-hosting actions. Use the
-repository's normal commands and gates; the bundled CLI does not push, create,
-or merge pull requests.
+```text
+node <skill-root>/scripts/semantic-review.mjs prepare-stack
+```
 
-Never merge without explicit authorization and passing required checks. If
-integration review requires code changes, return to feedback processing,
-rewrite the affected stages, and repeat approval and publication.
+For one cumulative branch:
 
-Archive only after the approved PR has merged, the local target branch contains
-that merged result, and the user requests archival:
+```text
+node <skill-root>/scripts/semantic-review.mjs prepare-branch --branch <name>
+```
+
+This creates a local branch at the final reviewed stage head without switching
+the worktree and without overwriting a branch that points elsewhere.
+
+Stop here. The user may later push the cumulative branch for one normal hosted
+review, or push the stage branches for a host that supports stacked reviews.
+Remote push, review creation, linking, and merge behavior are outside the
+protocol and require separate explicit instructions.
+
+## 7. Archive after landing
+
+After the chosen external workflow has landed the code and the target branch is
+current:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs archive
 ```
 
-Archival preserves the published artifact under
-`.semantic-review-history/<review-id>/` and frees the active workspace for a
-future flow.
+Archival stores the published artifact under
+`.semantic-review-history/<review-id>/`.

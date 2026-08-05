@@ -66,12 +66,10 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
 
   const stage = review.stages[index];
   const parent = requireCommitId(
-    index === 0
-      ? review.manifest.baseRevision
-      : review.stages[index - 1].change.commit,
+    stage.change?.baseRevision,
     "Stage parent",
   );
-  const commit = requireCommitId(stage.change?.commit, "Stage commit");
+  const head = requireCommitId(stage.change?.headRevision, "Stage head");
   const { stdout } = await run(
     "git",
     [
@@ -82,7 +80,7 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
       "--find-renames=50%",
       "--unified=3",
       parent,
-      commit,
+      head,
       "--",
     ],
     repositoryRoot,
@@ -90,8 +88,10 @@ export async function readStageDiff({ repositoryRoot, stageId }) {
 
   return {
     stageId,
+    branch: stage.change.branch,
+    baseBranch: stage.change.baseBranch,
     parent,
-    commit,
+    head,
     diff: stdout,
   };
 }

@@ -25,6 +25,7 @@ test("init and requirement add create complete requirement metadata", (t) => {
     ".semantic-review/requirements/story.json",
   );
   assert.equal(manifest.baseRevision, base);
+  assert.equal(manifest.branchPrefix, "semantic-review/orders");
   assert.deepEqual(manifest.requirements, ["story"]);
   assert.equal(initial.source.url, "https://example.invalid/stories/42");
   assert.equal(initial.acceptanceCriteria.length, 2);
@@ -386,7 +387,12 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
   const stage = repository.readJson(
     ".semantic-review/stages/implementation.json",
   );
-  assert.equal(stage.change.commit, commit);
+  assert.equal(stage.change.headRevision, commit);
+  assert.equal(
+    stage.change.branch,
+    "semantic-review/test-review/01-implementation",
+  );
+  assert.equal(stage.change.baseBranch, "main");
   assert.equal(stage.title, "Updated implementation");
   assert.equal(stage.decisions[0].category, "requirement");
   assert.equal(stage.assumptions.length, 1);

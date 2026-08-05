@@ -230,7 +230,10 @@ function validateTarget(target, semantic) {
   if (["stage", "context", "file", "line"].includes(target.kind)) {
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Feedback target stage ${target.stageId} does not exist.`);
-    if (target.stageCommit === stage.change.commit) {
+    if (
+      target.stageBranch === stage.change.branch &&
+      target.stageHead === stage.change.headRevision
+    ) {
       if (
         target.kind === "context" &&
         !collectionExists(stage, target.collection, target.itemId)
@@ -318,7 +321,7 @@ function validateFeedback(
         `Feedback item ${id} is assigned to missing stage ${item.assignedStageId}.`,
       );
     }
-    if (item.status !== "draft" && !item.assignedStageCommit) {
+    if (item.status !== "draft" && !item.assignedStageHead) {
       fail(`Feedback item ${id} has no submission stage snapshot.`);
     }
     if (item.resolution) {
@@ -329,21 +332,21 @@ function validateFeedback(
           `Resolution ${id} uses stage ${item.resolution.stageId}, not assigned stage ${item.assignedStageId}.`,
         );
       }
-      if (item.resolution.previousCommit !== item.assignedStageCommit) {
+      if (item.resolution.previousHead !== item.assignedStageHead) {
         fail(
-          `Resolution ${id} previous commit does not match its submission snapshot.`,
+          `Resolution ${id} previous head does not match its submission snapshot.`,
         );
       }
       if (
         !allowStaleResolutions &&
-        stage.change.commit !== item.resolution.rewrittenCommit
+        stage.change.headRevision !== item.resolution.rewrittenHead
       ) {
         fail(
-          `Resolution ${id} points to stale rewritten commit ${item.resolution.rewrittenCommit}.`,
+          `Resolution ${id} points to stale rewritten head ${item.resolution.rewrittenHead}.`,
         );
       }
-      if (!SHA1_PATTERN.test(item.resolution.previousCommit)) {
-        fail(`Resolution ${id} has invalid previousCommit.`);
+      if (!SHA1_PATTERN.test(item.resolution.previousHead)) {
+        fail(`Resolution ${id} has invalid previousHead.`);
       }
     }
   }
@@ -433,7 +436,8 @@ function buildTarget(options, semantic) {
     target.stageId = option(options, "stage", { required: true });
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Stage ${target.stageId} does not exist.`);
-    target.stageCommit = stage.change.commit;
+    target.stageBranch = stage.change.branch;
+    target.stageHead = stage.change.headRevision;
   }
   if (kind === "context") {
     target.collection = option(options, "collection", { required: true });
@@ -587,7 +591,7 @@ function submitBatch(paths, options) {
       fail(`Feedback item ${itemId} requires a valid stage assignment before submission.`);
     }
     item.assignedStageId = stageId;
-    item.assignedStageCommit = stage.change.commit;
+    item.assignedStageHead = stage.change.headRevision;
     item.status = "submitted";
     writeItem(paths, item);
   }
@@ -650,7 +654,8 @@ function nextFeedback(paths, options) {
     if (items.length) {
       groups.push({
         stageId,
-        stageCommit: semantic.stages.get(stageId).change.commit,
+        stageBranch: semantic.stages.get(stageId).change.branch,
+        stageHead: semantic.stages.get(stageId).change.headRevision,
         items: items.map((item) => ({
           id: item.id,
           body: item.body,
@@ -668,7 +673,7 @@ function nextFeedback(paths, options) {
     return;
   }
   for (const group of groups) {
-    console.log(`${group.stageId} (${group.stageCommit}):`);
+    console.log(`${group.stageId} (${group.stageBranch} @ ${group.stageHead}):`);
     for (const item of group.items) {
       console.log(`  ${item.id}: ${item.body}`);
     }
@@ -694,29 +699,29 @@ function resolveComment(paths, options) {
   }
   const stage = semantic.stages.get(stageId);
   if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
-  const previous = option(options, "previous", { required: true });
-  const rewritten = option(options, "rewritten", { required: true });
+  const previous = option(options, "previous-head", { required: true });
+  const rewritten = option(options, "rewritten-head", { required: true });
   if (!SHA1_PATTERN.test(previous) || !SHA1_PATTERN.test(rewritten)) {
-    fail("Resolution commits must be full lowercase SHA-1 IDs.");
+    fail("Resolution heads must be full lowercase SHA-1 IDs.");
   }
-  if (stage.change.commit !== rewritten) {
-    fail(`Stage ${stageId} currently points to ${stage.change.commit}, not ${rewritten}.`);
+  if (stage.change.headRevision !== rewritten) {
+    fail(`Stage ${stageId} currently points to ${stage.change.headRevision}, not ${rewritten}.`);
   }
-  if (item.assignedStageCommit !== previous) {
+  if (item.assignedStageHead !== previous) {
     fail(
-      `Feedback item ${id} was submitted against ${item.assignedStageCommit}, not ${previous}.`,
+      `Feedback item ${id} was submitted against ${item.assignedStageHead}, not ${previous}.`,
     );
   }
   if (previous === rewritten) {
-    fail("Resolution commits must show an actual stage rewrite.");
+    fail("Resolution heads must show an actual stage rewrite.");
   }
   git(["cat-file", "-e", `${previous}^{commit}`], { cwd: paths.root });
   item.status = "addressed";
   item.resolution = {
     summary: option(options, "summary", { required: true }),
     stageId,
-    previousCommit: previous,
-    rewrittenCommit: rewritten,
+    previousHead: previous,
+    rewrittenHead: rewritten,
     addressedAt: new Date().toISOString(),
   };
   writeItem(paths, item);
@@ -757,26 +762,26 @@ function rebindResolutions(paths, options) {
     allowStaleResolutions: true,
   });
   const stageId = option(options, "stage", { required: true });
-  const previous = option(options, "previous", { required: true });
-  const rewritten = option(options, "rewritten", { required: true });
+  const previous = option(options, "previous-head", { required: true });
+  const rewritten = option(options, "rewritten-head", { required: true });
   if (!SHA1_PATTERN.test(previous) || !SHA1_PATTERN.test(rewritten)) {
-    fail("Resolution commits must be full lowercase SHA-1 IDs.");
+    fail("Resolution heads must be full lowercase SHA-1 IDs.");
   }
   const stage = semantic.stages.get(stageId);
   if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
-  if (stage.change.commit !== rewritten) {
-    fail(`Stage ${stageId} currently points to ${stage.change.commit}, not ${rewritten}.`);
+  if (stage.change.headRevision !== rewritten) {
+    fail(`Stage ${stageId} currently points to ${stage.change.headRevision}, not ${rewritten}.`);
   }
   const matching = [...feedback.items.values()].filter(
     (item) =>
       item.resolution?.stageId === stageId &&
-      item.resolution.rewrittenCommit === previous,
+      item.resolution.rewrittenHead === previous,
   );
   if (matching.length === 0) {
     fail(`No resolutions for ${stageId} point to ${previous}.`);
   }
   for (const item of matching) {
-    item.resolution.rewrittenCommit = rewritten;
+    item.resolution.rewrittenHead = rewritten;
     writeItem(paths, item);
   }
   validateFeedback(paths, { quiet: true });
@@ -818,7 +823,6 @@ function approveStack(paths, options) {
     options,
     commandOptionNames(reviewFeedbackApi, "approve-stack"),
   );
-  const branch = option(options, "branch", { required: true });
   if (loadFeedback(paths, { required: false })) {
     const { feedback } = validateFeedback(paths, { quiet: true });
     const incomplete = [...feedback.batches.values()].filter(
@@ -832,23 +836,15 @@ function approveStack(paths, options) {
       );
     }
   }
-  execFileSync(
-    process.execPath,
-    [semanticCli, "prepare-pr", "--branch", branch, "--check-only"],
-    {
-      cwd: paths.root,
-      stdio: "inherit",
-    },
-  );
   execFileSync(process.execPath, [semanticCli, "publish"], {
     cwd: paths.root,
     stdio: "inherit",
   });
-  execFileSync(process.execPath, [semanticCli, "prepare-pr", "--branch", branch], {
+  execFileSync(process.execPath, [semanticCli, "prepare-stack"], {
     cwd: paths.root,
     stdio: "inherit",
   });
-  console.log(`Approved semantic stack for ${branch}.`);
+  console.log("Approved semantic stack.");
 }
 
 function dispatch(paths, positionals, options) {

@@ -222,7 +222,10 @@ test("draft commands support every target kind and concurrent mutation", async (
     groups.map((group) => group.stageId),
     ["implementation", "follow-up"],
   );
-  assert.match(repository.feedback("next"), /implementation \([0-9a-f]{40}\):/);
+  assert.match(
+    repository.feedback("next"),
+    /implementation \(semantic-review\/test-review\/01-implementation @ [0-9a-f]{40}\):/,
+  );
   assert.equal(
     repository.readJson(
       ".semantic-review-feedback/items/requirement-target.json",

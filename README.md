@@ -1,9 +1,9 @@
 # Semantic Code Review
 
 Semantic Code Review is a proposed tool for reviewing AI-generated changes by
-intent rather than by file. It turns a large implementation into an ordered set
-of logical stages, each with its code changes, rationale, requirements,
-assumptions, decisions, and dependencies.
+intent rather than by file. It turns a large implementation into a local
+branch stack: one cumulative branch per logical stage, with its code
+changes, rationale, requirements, assumptions, decisions, and dependencies.
 
 The aim is to help a human reviewer understand and refine AI-generated work
 without asking the AI to reconstruct its reasoning after implementation.
@@ -29,7 +29,7 @@ signature are compiled from the maintainable
 
 The [local review tool proof of concept](poc/README.md) loads the active
 artifact, renders its semantic stages, invokes the validator, and shows
-Git-backed stage diffs.
+Git-backed branch-to-base diffs and feedback snapshots.
 
 The original conversation is retained in
 [Initial design discussion.md](Initial%20design%20discussion.md).

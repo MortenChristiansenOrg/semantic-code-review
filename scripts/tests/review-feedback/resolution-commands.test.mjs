@@ -34,8 +34,6 @@ function createSubmittedBatch(repository, originalCommit) {
   repository.expectFeedbackFailure(
     "Cannot approve stack; incomplete batches",
     "approve-stack",
-    "--branch",
-    "review/incomplete",
   );
   repository.expectFeedbackFailure(
     "must show an actual stage rewrite",
@@ -47,9 +45,9 @@ function createSubmittedBatch(repository, originalCommit) {
     "No rewrite.",
     "--stage",
     "implementation",
-    "--previous",
+    "--previous-head",
     originalCommit,
-    "--rewritten",
+    "--rewritten-head",
     originalCommit,
   );
 }
@@ -64,16 +62,10 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
     "implementation v2\n",
     "Address feedback",
   );
-  repository.semantic(
-    "rewrite-stage",
-    "--stage",
-    "implementation",
-    "--fix",
-    "HEAD",
-  );
-  const rewrittenCommit = repository.readJson(
+  repository.semantic("restack", "--from", "implementation");
+  const rewrittenHead = repository.readJson(
     ".semantic-review/stages/implementation.json",
-  ).change.commit;
+  ).change.headRevision;
   for (const id of ["first-comment", "second-comment"]) {
     repository.feedback(
       "comment",
@@ -84,10 +76,10 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
       "Rewrote the implementation stage.",
       "--stage",
       "implementation",
-      "--previous",
+      "--previous-head",
       originalCommit,
-      "--rewritten",
-      rewrittenCommit,
+      "--rewritten-head",
+      rewrittenHead,
     );
   }
 
@@ -96,24 +88,18 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
     "implementation v3\n",
     "Harden feedback fix",
   );
-  repository.semantic(
-    "rewrite-stage",
-    "--stage",
-    "implementation",
-    "--fix",
-    "HEAD",
-  );
+  repository.semantic("restack", "--from", "implementation");
   const finalCommit = repository.readJson(
     ".semantic-review/stages/implementation.json",
-  ).change.commit;
+  ).change.headRevision;
   repository.feedback(
     "resolution",
     "rebind",
     "--stage",
     "implementation",
-    "--previous",
-    rewrittenCommit,
-    "--rewritten",
+    "--previous-head",
+    rewrittenHead,
+    "--rewritten-head",
     finalCommit,
   );
 
@@ -129,28 +115,16 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   repository.feedback("validate");
   assert.equal(repository.feedback("next"), "No submitted feedback remains.");
 
-  repository.git("branch", "review/conflict", "HEAD");
-  repository.expectFeedbackFailure(
-    "already points to",
-    "approve-stack",
-    "--branch",
-    "review/conflict",
+  repository.feedback("approve-stack");
+  const published = repository.git(
+    "rev-parse",
+    "semantic-review/test-review/metadata",
   );
-  assert.equal(repository.git("rev-parse", "HEAD"), finalCommit);
-  repository.git("branch", "-D", "review/conflict");
-
-  repository.feedback(
-    "approve-stack",
-    "--branch",
-    "review/approved",
+  repository.feedback("approve-stack");
+  assert.equal(
+    repository.git("rev-parse", "semantic-review/test-review/metadata"),
+    published,
   );
-  const published = repository.git("rev-parse", "HEAD");
-  repository.feedback(
-    "approve-stack",
-    "--branch",
-    "review/approved",
-  );
-  assert.equal(repository.git("rev-parse", "review/approved"), published);
   assert.equal(
     repository.readJson(".semantic-review-feedback/batches/review.json").status,
     "approved",
@@ -158,20 +132,17 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   assert.equal(
     repository.readJson(
       ".semantic-review-feedback/items/second-comment.json",
-    ).resolution.rewrittenCommit,
+    ).resolution.rewrittenHead,
     finalCommit,
   );
 });
 
 test("approve-stack supports reviews with no feedback state", (t) => {
   const { repository } = createReviewWithStages(t);
-  repository.feedback(
-    "approve-stack",
-    "--branch",
-    "review/no-feedback",
-  );
+  repository.feedback("approve-stack");
   assert.equal(
-    repository.git("rev-parse", "review/no-feedback"),
-    repository.git("rev-parse", "HEAD"),
+    repository.git("rev-parse", "semantic-review/test-review/metadata^"),
+    repository.readJson(".semantic-review/stages/implementation.json").change
+      .headRevision,
   );
 });

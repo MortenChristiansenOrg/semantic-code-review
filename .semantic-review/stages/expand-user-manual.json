@@ -12,7 +12,10 @@
     "skill-user-manual#explain-repository-effects"
   ],
   "change": {
-    "commit": "accb3d92256e5abf49a2ba22d61e742e60488594",
+    "branch": "semantic-review/expand-skill-user-manual/01-expand-user-manual",
+    "baseBranch": "master",
+    "baseRevision": "4b6b32c654f1689d0027f36df0a54ca32da85d62",
+    "headRevision": "accb3d92256e5abf49a2ba22d61e742e60488594",
     "files": [
       {
         "path": "docs/user-manual.md",
@@ -20,7 +23,7 @@
       }
     ]
   },
-  "rationale": "The existing manual starts at the review UI and does not explain how the skill creates the artifact and commit stack that the UI consumes.",
+  "rationale": "The existing manual starts at the review UI and does not explain how the skill creates the artifact and stacked branch chain that the UI consumes.",
   "decisions": [
     {
       "id": "explain-by-lifecycle-and-repository-effect",
@@ -44,7 +47,7 @@
       "id": "manual-workflow-coverage",
       "type": "automated",
       "status": "passed",
-      "summary": "The manual names every lifecycle command and distinguishes active artifacts, ignored feedback, stage commits, metadata commits, PR-ready branches, and archived artifacts.",
+      "summary": "The manual names every lifecycle command and distinguishes active artifacts, ignored feedback, stage branches, head snapshots, metadata branches, and archived artifacts.",
       "command": "git diff --check; CLI help checks; required workflow term check"
     }
   ],

@@ -2,7 +2,7 @@
   "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
   "id": "review-lifecycle",
   "title": "Manage semantic review lifecycle deterministically",
-  "summary": "Approved semantic stacks can be published, prepared for a pull request, merged, and archived without ad hoc Git surgery.",
+  "summary": "Approved semantic stacks can be published, prepared locally as one branch or a stack, landed externally, and archived without ad hoc Git surgery.",
   "source": {
     "kind": "local",
     "reference": "feedback-experiment-process"
@@ -13,8 +13,8 @@
       "text": "The validated active artifact can be committed as a metadata-only commit through a script."
     },
     {
-      "id": "prepare-pr-branch",
-      "text": "A script creates a named PR-ready branch only when the stage stack and optional metadata commit are valid."
+      "id": "prepare-pr-stack",
+      "text": "A script validates the stage branch chain and emits hosting-neutral local preparation data only when the stack and metadata are valid."
     },
     {
       "id": "archive-merged-review",

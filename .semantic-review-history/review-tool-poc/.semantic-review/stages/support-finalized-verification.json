@@ -12,7 +12,10 @@
     "review-artifacts#process-current-review"
   ],
   "change": {
-    "commit": "8cc4d0664072727387cb43372cb277bfade64d86",
+    "branch": "semantic-review/review-tool-poc/02-support-finalized-verification",
+    "baseBranch": "semantic-review/review-tool-poc/01-load-artifact-api",
+    "baseRevision": "121d4f8e92fe86f214268580dc10dfd0e0581718",
+    "headRevision": "8cc4d0664072727387cb43372cb277bfade64d86",
     "files": [
       {
         "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",
@@ -42,7 +45,7 @@
       "id": "finalized-context-only",
       "category": "engineering",
       "summary": "Permit finalized updates only to narrative context and validation arrays.",
-      "rationale": "Post-finalization evidence is necessary, but commit identity, file inventory, ordering, and dependencies must remain controlled by finish and refresh commands."
+      "rationale": "Post-finalization evidence is necessary, but branch/head identity, file inventory, ordering, and dependencies must remain controlled by finish and restack commands."
     }
   ],
   "assumptions": [],
@@ -67,7 +70,7 @@
       "id": "skill-integration-tests",
       "type": "automated",
       "status": "passed",
-      "summary": "Covers finalized context updates, stage workflow, refresh, repair, and publication validation.",
+      "summary": "Covers finalized context updates, stage workflow, restacking, repair, and publication validation.",
       "command": "npm test --prefix .github/skills/semantic-story-implementation"
     },
     {

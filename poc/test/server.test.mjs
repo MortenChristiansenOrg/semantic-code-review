@@ -266,9 +266,14 @@ test("serves and mutates schema-validated feedback state", async () => {
   const hadFeedback = fs.existsSync(feedbackRoot);
   if (hadFeedback) {
     fs.cpSync(feedbackRoot, backup, { recursive: true });
-  } else {
-    await initializeFeedback({ repositoryRoot });
   }
+  fs.rmSync(feedbackRoot, { recursive: true, force: true });
+  await initializeFeedback({ repositoryRoot });
+  const activeReview = await readSemanticReview({ repositoryRoot });
+  const requirement = activeReview.requirements[0];
+  const criterion = requirement.acceptanceCriteria[0];
+  const stage = activeReview.stages[0];
+  const decision = stage.decisions[0];
   const server = await startServer({ repositoryRoot, port: 0 });
   try {
     const address = server.address();
@@ -295,9 +300,9 @@ test("serves and mutates schema-validated feedback state", async () => {
         target: {
           kind: "criterion",
           label: "Criterion: publication works",
-          requirementId: "review-lifecycle",
-          criterionId: "publish-metadata",
-          assignedStageId: "automate-review-lifecycle",
+          requirementId: requirement.id,
+          criterionId: criterion.id,
+          assignedStageId: stage.id,
         },
       },
     );
@@ -308,7 +313,7 @@ test("serves and mutates schema-validated feedback state", async () => {
     assert.equal(criterionResponse.status, 201);
     assert.equal(
       criterionItem.assignedStageId,
-      "automate-review-lifecycle",
+      stage.id,
     );
     await fetch(`${baseUrl}/api/feedback/items/${criterionItem.id}`, {
       method: "DELETE",
@@ -325,9 +330,9 @@ test("serves and mutates schema-validated feedback state", async () => {
         target: {
           kind: "context",
           label: "Decision: metadata-only publication",
-          stageId: "automate-review-lifecycle",
+          stageId: stage.id,
           collection: "decisions",
-          itemId: "metadata-only-publication",
+          itemId: decision.id,
         },
       },
     );

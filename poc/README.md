@@ -23,11 +23,11 @@ The workspace provides:
 - Rationale, decisions, assumptions, alternatives, failures, risks, evidence,
   and open questions.
 - Authoritative artifact validation through the semantic review CLI.
-- Lazy Git-backed unified diffs for finalized stages.
+- Lazy Git-backed base-branch-to-stage-head diffs.
 - Cross-stage feedback batches with requirement, context, file, and line
   anchors.
 - Submitted comment state, agent resolution tickets, individual or bulk
-  approval, and PR-branch approval.
+  approval, metadata publication, and hosting-neutral local preparation.
 
 Run tests with:
 

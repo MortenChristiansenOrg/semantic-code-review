@@ -16,7 +16,10 @@
     "review-feedback#validate-review-state"
   ],
   "change": {
-    "commit": "6d2e80f8aea28fd532adaf01cb171165acafb1d9",
+    "branch": "semantic-review/review-feedback-poc/04-add-feedback-review-workspace",
+    "baseBranch": "semantic-review/review-feedback-poc/03-automate-stage-rewrite",
+    "baseRevision": "9096124b8a7164592aa5ea6674e1d400f2313a14",
+    "headRevision": "6d2e80f8aea28fd532adaf01cb171165acafb1d9",
     "files": [
       {
         "path": ".github/skills/semantic-story-implementation/scripts/review-feedback.mjs",

@@ -1,83 +1,58 @@
 # Semantic review model
 
-## Primary artifact: the semantic stage
+## Semantic stage
 
-A semantic stage is the smallest independently reviewable unit of an
-implementation. It may touch several files, but all changes serve one intent.
+A semantic stage is the smallest independently reviewable intent. It may touch
+many files and contain several linear commits, but every change serves one
+purpose.
 
-Each stage records:
+Each stage records requirement coverage, rationale, decisions, assumptions,
+alternatives, failed attempts, risks, validation, dependencies, branch/base
+relationship, immutable head snapshot, and affected files.
 
-| Field | Purpose |
-| --- | --- |
-| Identity and title | Stable reference and concise intent |
-| Summary | What the stage changes |
-| Requirements | User story or acceptance criteria addressed |
-| Rationale | Why this approach was chosen |
-| Decisions | Requirement-driven, assumed, or engineering choices |
-| Alternatives | Notable options considered and why they were rejected |
-| Failed attempts | Useful exploration that should not be repeated |
-| Dependencies | Earlier stages required by this stage |
-| Changes | Associated commit and affected paths |
-| Validation | Tests or checks supporting the stage |
-| Open concerns | Known uncertainty or reviewer attention points |
+## Stage ordering and Git shape
 
-The repository artifact is a versioned set of JSON documents rooted at
-`.semantic-review/`. A manifest indexes separate requirement and stage files,
-which reference each other by stable IDs. See the
-[artifact format standard](artifact-format.md). JSON is an interchange
-protocol, not the long-term user interface.
+Stages form a semantic dependency DAG but are implemented as a linear local
+branch stack:
 
-## Stage ordering
+```text
+target <- stage 1 <- stage 2 <- stage 3
+```
 
-Stages form a directed acyclic graph. Their displayed order provides the review
-narrative, while dependency edges determine which later stages may need replay
-after a revision.
+Each stage has its own cumulative branch based on the branch immediately below
+it. The shared default prefix `semantic-review/<review-id>/` groups the
+branches in clients such as GitKraken.
 
-For the first version, each stage maps to one commit in a linear stack. This
-keeps the relationship between metadata, diff, and Git history understandable.
-The model may later allow multiple commits per stage or parallel branches.
+This Git shape is hosting-neutral. After local review it can be exposed as
+separate stacked changes when a remote supports them, or represented by one
+cumulative branch at the final stage head.
 
 ## End-to-end workflow
 
-1. The coding agent reads the requirement and proposes a stage plan.
-2. During implementation, it records decisions, assumptions, alternatives, and
-   validation with the stage that caused them.
-3. Scripts validate the manifest and its links to the commit stack.
-4. The reviewer walks through stages in narrative order, viewing metadata and
-   diffs together.
-5. The reviewer accepts a stage or leaves comments against the stage or its
-   code.
-6. The agent updates the affected stage only, then rebases or replays dependent
-   stages.
-7. The tool highlights downstream stages whose code or rationale changed.
-8. Once accepted, the validated artifact is published in a metadata-only commit
-   directly after the stage stack.
-9. Tooling creates a PR-ready branch without moving an existing branch. After
-   merge, the artifact is archived under its review ID so another active review
-   can begin.
+1. The agent initializes at the target branch head.
+2. `stage begin` creates and checks out the next stage branch.
+3. The agent implements, commits, records context, and finalizes the branch.
+4. The reviewer walks the stack bottom-to-top.
+5. Feedback is anchored to immutable stage head snapshots.
+6. A change is committed directly on the affected branch.
+7. `restack` cascades it through every branch above and refreshes snapshots.
+8. Approval publishes metadata on a sibling metadata branch.
+9. Tooling verifies the local stack and may create a named cumulative branch.
+10. Remote publication, review creation, and merge remain outside the flow.
 
-## Review experience
+The same restack operation handles edits made manually by a user on any lower
+branch.
 
-The default view should answer four questions quickly:
+## Responsibilities
 
-1. What requirement does this stage satisfy?
-2. What changed?
-3. Why was it implemented this way?
-4. What should I be cautious about?
+**The skill** plans stages and enforces human gates.
 
-Useful secondary views include an architecture-impact summary, a dependency
-graph, cross-cutting changes, and a narrated replay of the implementation.
+**The CLI** creates deterministic branches, validates branch/base/head
+invariants, restacks descendants, publishes metadata separately, and prepares
+hosting-neutral local outputs.
 
-## Protocol responsibilities
+**The review UI** renders semantic context and Git diffs, gathers feedback, and
+shows stale anchors after branch rewrites.
 
-**The AI skill** defines how stages are planned, recorded, committed, revised,
-and replayed.
-
-**Validation scripts** enforce schema validity, unique stage identities,
-dependency integrity, valid commit references, and required metadata.
-
-**The review UI** renders the protocol, gathers human feedback, and invokes
-local Git or AI operations through an explicit bridge.
-
-The protocol should record facts and provenance where possible. Subjective
-confidence indicators may be shown later, but must not substitute for evidence.
+**The repository host** may consume either the cumulative branch or the branch
+stack, but its review and merge model is not part of this protocol.

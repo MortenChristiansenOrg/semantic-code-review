@@ -282,6 +282,7 @@ function renderReviewHeader() {
 
   const ledger = element("dl", "review-ledger");
   ledgerEntry(ledger, "Target", review.manifest.targetBranch);
+  ledgerEntry(ledger, "Branch folder", review.manifest.branchPrefix);
   ledgerEntry(ledger, "Requirements", String(review.requirements.length));
   ledgerEntry(ledger, "Stages", String(allStages(review).length));
   ledgerEntry(
@@ -492,7 +493,7 @@ function renderChangePanel(stage) {
       section,
       "p",
       "empty-copy",
-      "This stage is still working. Its commit and exact patch are created during finalization.",
+      "This stage is still working. Its branch head and exact patch are captured during finalization.",
     );
     return section;
   }
@@ -658,14 +659,17 @@ function renderReferenceBand(stage) {
     stage.requirementRefs.join(", "),
   );
   if (stage.change) {
-    detailListEntry(band, "Commit", stage.change.commit.slice(0, 12));
+    detailListEntry(band, "Branch", stage.change.branch);
+    detailListEntry(band, "Base", stage.change.baseBranch);
+    detailListEntry(band, "Head", stage.change.headRevision.slice(0, 12));
     detailListEntry(
       band,
       "Files",
       `${stage.change.files.length} changed`,
     );
   } else {
-    detailListEntry(band, "Commit", "Awaiting finalization");
+    detailListEntry(band, "Branch", stage.branch);
+    detailListEntry(band, "Head", "Awaiting finalization");
   }
   return band;
 }
@@ -974,7 +978,7 @@ function renderFeedbackItem(item) {
         article,
         "p",
         "stale-anchor",
-        `Original anchor ${item.target.stageCommit.slice(0, 9)} has been rewritten.`,
+        `Original anchor ${item.target.stageHead.slice(0, 9)} has been rewritten.`,
       );
     }
     if (item.resolution) {
@@ -985,7 +989,7 @@ function renderFeedbackItem(item) {
         ticket,
         "p",
         "code-text resolution-commits",
-        `${item.resolution.previousCommit.slice(0, 9)} → ${item.resolution.rewrittenCommit.slice(0, 9)}`,
+        `${item.resolution.previousHead.slice(0, 9)} → ${item.resolution.rewrittenHead.slice(0, 9)}`,
       );
       article.append(ticket);
     }
@@ -1033,24 +1037,15 @@ function renderStackApproval() {
       section,
       "p",
       "",
-      "Prepare a stable branch for pull request creation.",
+      "Publish review metadata and finalize the local reviewed branch stack.",
     );
-    const form = element("form");
-    const input = element("input");
-    input.required = true;
-    input.value = `review/${review.manifest.reviewId}`;
-    input.setAttribute("aria-label", "PR branch name");
     const button = element("button", "primary-button", "Approve changes");
-    button.type = "submit";
-    form.append(input, button);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const result = await apiPost("/api/feedback/approve-stack", {
-        branch: input.value,
-      });
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      const result = await apiPost("/api/feedback/approve-stack");
       appendText(section, "p", "approval-result", result.summary);
     });
-    section.append(form);
+    section.append(button);
     return section;
 }
 

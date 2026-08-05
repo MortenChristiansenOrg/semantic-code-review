@@ -17,6 +17,14 @@ The example covers a domain rule, persistence, and an API endpoint. It includes
 requirement links, dependencies, decisions, assumptions, a failed attempt,
 risks, validation evidence, and an open question.
 
-The repeated-digit commit IDs are placeholders. The files pass schema,
-reference, and dependency validation, but Git integrity validation requires the
-artifact to be attached to a repository containing the referenced commit stack.
+The repeated-digit revisions are placeholders. The default branch family is:
+
+```text
+semantic-review/customer-order-cancellation/01-add-cancellation-policy
+semantic-review/customer-order-cancellation/02-persist-cancellation
+semantic-review/customer-order-cancellation/03-expose-cancellation-endpoint
+```
+
+Each branch is one semantic review head based on the branch below it. Git
+integrity validation requires a repository containing the referenced branches
+and revisions.

@@ -329,13 +329,11 @@ export function createReviewServer({ repositoryRoot }) {
         request.method === "POST" &&
         url.pathname === "/api/feedback/approve-stack"
       ) {
-        const body = await readRequestBody(request);
         sendJson(
           response,
           200,
           await approveFeedbackStack({
             repositoryRoot: root,
-            branch: requireText(body.branch, "branch"),
           }),
         );
         return;

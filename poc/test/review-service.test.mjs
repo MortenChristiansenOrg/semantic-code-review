@@ -48,7 +48,10 @@ test("rejects artifact revisions before they can become Git options", async () =
         dependsOn: [],
         requirementRefs: ["story#criterion"],
         change: {
-          commit: "2222222222222222222222222222222222222222",
+          branch: "semantic-review/unsafe-review/01-unsafe-stage",
+          baseBranch: "main",
+          baseRevision: "--output=overwritten.txt",
+          headRevision: "2222222222222222222222222222222222222222",
           files: [
             {
               path: "file.txt",

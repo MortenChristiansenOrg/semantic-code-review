@@ -11,7 +11,10 @@
     "review-artifacts#surface-artifact-errors"
   ],
   "change": {
-    "commit": "f53993ea7b31b024cc9ff13aedeae4fd52fcfbd7",
+    "branch": "semantic-review/review-tool-poc/05-reject-unsafe-git-revisions",
+    "baseBranch": "semantic-review/review-tool-poc/04-inspect-stage-changes",
+    "baseRevision": "2b92cc8983dc29a839f3e73bf1a0f088bd20fd20",
+    "headRevision": "f53993ea7b31b024cc9ff13aedeae4fd52fcfbd7",
     "files": [
       {
         "path": "poc/src/review-service.mjs",

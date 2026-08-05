@@ -12,7 +12,10 @@
     "review-artifacts#surface-artifact-errors"
   ],
   "change": {
-    "commit": "f17085da6479cd79ebf7f05747517083a9a6445f",
+    "branch": "semantic-review/review-tool-poc/07-resolve-repository-root",
+    "baseBranch": "semantic-review/review-tool-poc/06-enforce-local-host-boundary",
+    "baseRevision": "62080811c619dcc6d024b013f8cb8a60d4d33a1c",
+    "headRevision": "f17085da6479cd79ebf7f05747517083a9a6445f",
     "files": [
       {
         "path": "poc/src/server.mjs",

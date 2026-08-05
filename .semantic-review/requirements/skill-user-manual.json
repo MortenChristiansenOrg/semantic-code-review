@@ -2,7 +2,7 @@
   "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
   "id": "skill-user-manual",
   "title": "Explain the complete skill workflow",
-  "summary": "A user unfamiliar with the tool can understand setup, initialization, staged implementation, review feedback, publication, landing, archival, and the files and commits created in the repository.",
+  "summary": "A user unfamiliar with the tool can understand setup, initialization, stacked branch implementation, review feedback, publication, landing, archival, and the repository state created by the workflow.",
   "source": {
     "kind": "local",
     "reference": "user-request-2026-07-31"
@@ -14,7 +14,7 @@
     },
     {
       "id": "explain-implementation",
-      "text": "The manual explains beginning, recording, committing, finalizing, validating, and replaying semantic stages."
+      "text": "The manual explains creating, recording, committing, finalizing, validating, and restacking semantic stage branches."
     },
     {
       "id": "explain-review",
@@ -22,11 +22,11 @@
     },
     {
       "id": "explain-landing",
-      "text": "The manual explains publication, PR-ready branch creation, merge expectations, and archival."
+      "text": "The manual explains metadata publication, local single-branch and stack preparation, external landing boundaries, and archival."
     },
     {
       "id": "explain-repository-effects",
-      "text": "The manual clearly distinguishes ignored working state, stage commits, metadata commits, feedback state, branches, and archived artifacts."
+      "text": "The manual clearly distinguishes ignored working state, stage branches, immutable head snapshots, feedback state, metadata branches, and archived artifacts."
     }
   ]
 }

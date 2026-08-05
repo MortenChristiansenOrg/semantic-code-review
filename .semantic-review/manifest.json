@@ -11,5 +11,6 @@
   ],
   "stages": [
     "expand-user-manual"
-  ]
+  ],
+  "branchPrefix": "semantic-review/expand-skill-user-manual"
 }

@@ -13,7 +13,10 @@
     "review-documentation#manual-approval"
   ],
   "change": {
-    "commit": "c6ed48576061433882434d493f8fe153d62a8ce7",
+    "branch": "semantic-review/document-review-workflow/02-write-user-manual",
+    "baseBranch": "semantic-review/document-review-workflow/01-note-stage-branches",
+    "baseRevision": "81466220b0652487ee09b3512bb4d3a9fe11d309",
+    "headRevision": "c6ed48576061433882434d493f8fe153d62a8ce7",
     "files": [
       {
         "path": "docs/user-manual.md",
@@ -41,7 +44,7 @@
       "id": "state-poc-limitations",
       "category": "requirement",
       "summary": "State current POC limitations in the manual.",
-      "rationale": "Users need to know that feedback is local, stage commits share one branch, hosted PR operations are absent, and overall approval is represented by the created Git branch rather than a persistent UI badge."
+      "rationale": "Users need to know that feedback is local, stages use separate cumulative branches, remote hosting is outside the protocol, and approval publishes metadata separately."
     }
   ],
   "assumptions": [],

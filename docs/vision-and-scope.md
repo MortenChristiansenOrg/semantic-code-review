@@ -48,12 +48,12 @@ The first version supports a single developer reviewing an AI-produced change
 in a local Git repository:
 
 - An AI skill and scripts create and validate semantic-stage metadata.
-- Stages map to ordered or stacked commits.
+- Stages map to a linear chain of cumulative local branches.
 - A web UI displays stage narratives and diffs.
 - Review comments can be attached to a stage.
 - The coding agent can revise a stage and replay dependent stages.
-- The complete result can be published through the team's existing Azure
-  DevOps process.
+- The complete result can be prepared as one cumulative branch or as a branch
+  stack for the team's existing hosting process.
 
 ## Non-goals
 

@@ -15,7 +15,10 @@
     "review-feedback#validate-review-state"
   ],
   "change": {
-    "commit": "8ed96e0c98dafd996cd5971032bc2fabd7d29457",
+    "branch": "semantic-review/review-feedback-poc/02-define-feedback-protocol",
+    "baseBranch": "semantic-review/review-feedback-poc/01-automate-review-lifecycle",
+    "baseRevision": "87ad31f36988fe7e22298cab12bf7a2dcb2e594d",
+    "headRevision": "8ed96e0c98dafd996cd5971032bc2fabd7d29457",
     "files": [
       {
         "path": ".github/skills/semantic-story-implementation/.gitignore",
@@ -101,7 +104,7 @@
     {
       "id": "drifting-line-anchor",
       "summary": "A line number can move when earlier stage feedback rewrites history.",
-      "mitigation": "Anchor line comments to a stage ID, commit, path, side, and line; show them as stale if the stage commit changes before resolution."
+      "mitigation": "Anchor line comments to a stage ID, branch, immutable head, path, side, and line; show them as stale when the branch head changes."
     }
   ],
   "validation": [

@@ -6,13 +6,16 @@
   "dependsOn": [],
   "requirementRefs": [
     "review-lifecycle#publish-metadata",
-    "review-lifecycle#prepare-pr-branch",
+    "review-lifecycle#prepare-pr-stack",
     "review-lifecycle#archive-merged-review",
     "review-feedback#approve-stack",
     "review-feedback#validate-review-state"
   ],
   "change": {
-    "commit": "87ad31f36988fe7e22298cab12bf7a2dcb2e594d",
+    "branch": "semantic-review/review-feedback-poc/01-automate-review-lifecycle",
+    "baseBranch": "master",
+    "baseRevision": "6f99246499d16abd89b2bc09024412f736e69177",
+    "headRevision": "87ad31f36988fe7e22298cab12bf7a2dcb2e594d",
     "files": [
       {
         "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",

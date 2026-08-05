@@ -7,7 +7,7 @@ import {
   initializeReview,
 } from "../helpers/repository.mjs";
 
-test("publish, prepare-pr, and archive enforce publication boundaries", (t) => {
+test("publish, local preparation, and archive enforce boundaries", (t) => {
   const repository = createRepository(t);
   initializeReview(repository, { reviewId: "publish-review" });
   beginStage(repository);
@@ -22,30 +22,41 @@ test("publish, prepare-pr, and archive enforce publication boundaries", (t) => {
   repository.semantic("validate");
   repository.semantic("validate", "--publish");
 
+  const prepared = JSON.parse(repository.semantic("prepare-stack", "--json"));
+  assert.equal(prepared.stages[0].baseBranch, "main");
+  assert.equal(prepared.finalHeadRevision, stageTip);
+  assert.equal("github" in prepared, false);
+
   repository.semantic(
-    "prepare-pr",
+    "prepare-branch",
     "--branch",
-    "review/check-only",
-    "--check-only",
+    "review/publish-review",
   );
-  assert.notEqual(
-    repository.result("git", [
-      "rev-parse",
-      "--verify",
-      "refs/heads/review/check-only",
-    ]).status,
-    0,
+  assert.equal(repository.git("rev-parse", "review/publish-review"), stageTip);
+  repository.semantic(
+    "prepare-branch",
+    "--branch",
+    "review/publish-review",
+  );
+  repository.git("branch", "review/conflict", "main");
+  repository.expectSemanticFailure(
+    "already points to",
+    "prepare-branch",
+    "--branch",
+    "review/conflict",
   );
 
   repository.semantic("publish", "--message", "Publish test review");
-  const published = repository.git("rev-parse", "HEAD");
-  assert.equal(repository.git("rev-parse", "HEAD^"), stageTip);
+  const metadataBranch = "semantic-review/publish-review/metadata";
+  const published = repository.git("rev-parse", metadataBranch);
+  assert.equal(repository.git("rev-parse", `${metadataBranch}^`), stageTip);
+  assert.equal(repository.git("rev-parse", "HEAD"), stageTip);
   assert.match(
-    repository.git("show", "-s", "--format=%B", "HEAD"),
+    repository.git("show", "-s", "--format=%B", metadataBranch),
     /Co-authored-by: Copilot/,
   );
   const publishedPaths = repository
-    .git("diff", "--name-only", "HEAD^", "HEAD")
+    .git("diff", "--name-only", `${metadataBranch}^`, metadataBranch)
     .split(/\r?\n/)
     .filter(Boolean);
   assert.ok(
@@ -54,17 +65,7 @@ test("publish, prepare-pr, and archive enforce publication boundaries", (t) => {
   );
 
   repository.semantic("publish");
-  assert.equal(repository.git("rev-parse", "HEAD"), published);
-  repository.semantic("prepare-pr", "--branch", "review/published");
-  assert.equal(repository.git("rev-parse", "review/published"), published);
-
-  repository.git("branch", "review/conflict", stageTip);
-  repository.expectSemanticFailure(
-    "already points to",
-    "prepare-pr",
-    "--branch",
-    "review/conflict",
-  );
+  assert.equal(repository.git("rev-parse", metadataBranch), published);
   repository.expectSemanticFailure(
     "Archive destination must",
     "archive",

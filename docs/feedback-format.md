@@ -2,104 +2,57 @@
 
 **Status:** Proposal 0.1
 
-Review feedback is mutable workflow state kept separately from the semantic
-implementation artifact. It references stable IDs from `.semantic-review` but
-does not alter the meaning of requirements or stages.
+Feedback is mutable local workflow state under `.semantic-review-feedback/`.
+It references stable semantic IDs and immutable stage head snapshots.
 
-## Layout
+## Lifecycle
 
-```text
-.semantic-review-feedback/
-  manifest.json
-  batches/
-    <batch-id>.json
-  items/
-    <feedback-id>.json
-```
+Batches move through `draft`, `submitted`, `addressing`, `resolved`, and
+`approved`. Items move through `draft`, `submitted`, `addressed`, and
+`approved`.
 
-The manifest indexes every batch. Each batch indexes its feedback items.
-Readers MUST load through those indexes; unlisted JSON files are invalid.
+Submitting a batch freezes comment text, targets, assignments, and
+`assignedStageHead`. A resolution records:
 
-The format is validated by the schemas in
-[`standard/v0.1/feedback-schema`](../standard/v0.1/feedback-schema).
+- Explanation and stage ID.
+- `previousHead`: submitted stage snapshot.
+- `rewrittenHead`: current stage snapshot after restacking.
+- Addressed and optional approval timestamps.
 
-## Batch lifecycle
-
-| Status | Meaning |
-| --- | --- |
-| `draft` | Comments can be added, edited, or removed |
-| `submitted` | The batch is frozen and ready for an agent |
-| `addressing` | At least one submitted item has been addressed |
-| `resolved` | Every item has an unapproved resolution |
-| `approved` | Every resolution has reviewer approval |
-
-Submitting a batch freezes its comment bodies and targets and snapshots the
-assigned stage commit. Corrections become a new batch so the agent always
-receives an immutable instruction set.
-
-## Feedback item lifecycle
-
-| Status | Meaning |
-| --- | --- |
-| `draft` | Reviewer is still composing the comment |
-| `submitted` | Comment is waiting for implementation |
-| `addressed` | Agent recorded how and where it was resolved |
-| `approved` | Reviewer accepted the resolution |
-
-A resolution records its explanation, semantic stage, previous stage commit,
-rewritten stage commit, and timestamps. It does not claim that the reviewer has
-accepted the result until the item reaches `approved`.
-
-If a later validated fix rewrites the same stage again, tooling updates only
-the resolution's rewritten commit to the final stage tip. The original commit,
-reviewer text, target anchor, explanation, and approval timestamps remain
-unchanged.
+If the same stage changes again, resolution rebinding changes only
+`rewrittenHead`.
 
 ## Targets
 
-Every target stores a human-readable `label`. Semantic targets reference IDs;
-code targets additionally reference the stage commit used when the comment was
-created.
+Stage, context, file, and line targets store:
 
-| Kind | Required anchor |
-| --- | --- |
-| `requirement` | Requirement ID |
-| `criterion` | Requirement ID and criterion ID |
-| `stage` | Stage ID and stage commit |
-| `context` | Stage ID, stage commit, collection, and item ID |
-| `file` | Stage ID, stage commit, and repository path |
-| `line` | Stage ID, stage commit, path, side, and positive line number |
+- `stageId`
+- `stageBranch`
+- `stageHead`
 
-`context` supports decisions, assumptions, alternatives, failed attempts,
-risks, validation evidence, and open questions.
+Context targets add collection and item IDs. File targets add a path. Line
+targets add path, side, and line number.
 
-Line anchors can become stale after history rewriting. Tools SHOULD preserve
-the original anchor, show that it differs from the current stage commit, and
-display the resolution rather than silently moving the comment.
+The branch identifies the persistent PR surface; the head preserves the exact
+reviewed snapshot. Tools mark an anchor stale when the stage's current
+`headRevision` differs.
 
 ## Agent processing
 
-An agent processes submitted feedback by semantic stage:
+1. Select submitted feedback for the earliest affected stage.
+2. Check out its recorded stage branch.
+3. Implement, validate, and commit the correction there.
+4. Run `restack --from <stage>` to refresh that branch and replay every branch
+   above it.
+5. Record resolutions using the submission head and current rewritten head.
+6. Rebind older resolutions if the stage changes again.
 
-1. Select all submitted items assigned to the earliest affected stage.
-2. Implement and validate those changes in one temporary fix commit.
-3. Rewrite the target stage with that fix and replay every downstream stage.
-4. Refresh semantic artifact commit bindings.
-5. Record a resolution for each addressed item.
-6. Repeat for the next affected stage.
+This is identical whether the correction was authored by the agent or committed
+manually by the user.
 
-The reviewer can then approve resolutions individually or all at once. Stack
-approval is allowed only when no draft, submitted, addressing, or merely
-resolved feedback remains.
+Every feedback mutation and stack approval holds a repository-scoped lock.
+Stack approval requires all batches to be approved, publishes semantic metadata
+on the sibling metadata branch, and reports the local reviewed branch chain.
 
-Every mutation and stack approval MUST hold one repository-scoped,
-cross-process lock. A resolution MUST use the assigned stage commit captured at
-submission as its previous commit and a different current stage commit as its
-rewritten commit.
-
-## Storage and publication
-
-The active feedback root SHOULD be locally ignored so it cannot enter semantic
-stage commits. A product may persist it in a database or publish a snapshot in a
-separate metadata commit. The implementation artifact remains valid without
-feedback state.
+Feedback state remains independent from the implementation artifact and is not
+committed on stage branches.

@@ -228,7 +228,7 @@ export function finalizeStage(
   } = {},
 ) {
   const commit = repository.commitFile(file, contents, message);
-  repository.semantic("stage", "finish", "--id", id, "--commit", commit);
+  repository.semantic("stage", "finish", "--id", id);
   return commit;
 }
 

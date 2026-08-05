@@ -225,6 +225,50 @@ function commitParents(root, commit) {
   return output ? output.split(/\s+/) : [];
 }
 
+function branchCommit(root, branch) {
+  return commitObject(root, `refs/heads/${branch}`);
+}
+
+function currentBranch(root) {
+  return git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+    cwd: root,
+    allowFailure: true,
+  });
+}
+
+function checkedOutBranches(root) {
+  const output = git(["worktree", "list", "--porcelain"], { cwd: root });
+  return new Set(
+    output
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("branch refs/heads/"))
+      .map((line) => line.slice("branch refs/heads/".length)),
+  );
+}
+
+function isAncestor(root, ancestor, descendant) {
+  return git(["merge-base", ancestor, descendant], {
+    cwd: root,
+    allowFailure: true,
+  }) === ancestor;
+}
+
+function assertLinearRange(root, base, head, label) {
+  if (!isAncestor(root, base, head)) {
+    fail(`${label} head ${head} must descend from ${base}.`);
+  }
+  const merges = git(["rev-list", "--merges", `${base}..${head}`], {
+    cwd: root,
+  });
+  if (merges) {
+    fail(`${label} must not contain merge commits.`);
+  }
+}
+
+function stageBranchName(manifest, index, id) {
+  return `${manifest.branchPrefix}/${String(index + 1).padStart(2, "0")}-${id}`;
+}
+
 function changedFiles(root, parent, commit) {
   const result = spawnSync(
     "git",
@@ -287,7 +331,7 @@ function changedFiles(root, parent, commit) {
 
   files.sort((left, right) => left.path.localeCompare(right.path));
   if (files.length === 0) {
-    fail(`Stage commit ${commit} has no changes relative to ${parent}.`);
+    fail(`Stage head ${commit} has no changes relative to ${parent}.`);
   }
   for (const file of files) {
     if (
@@ -296,7 +340,7 @@ function changedFiles(root, parent, commit) {
       file.previousPath === ".semantic-review" ||
       file.previousPath?.startsWith(".semantic-review/")
     ) {
-      fail(`Stage commit ${commit} contains semantic review artifact files.`);
+      fail(`Stage head ${commit} contains semantic review artifact files.`);
     }
   }
   return files;
@@ -341,7 +385,8 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
 
   const dependencies = new Map();
   const seenStages = new Set();
-  const commits = new Set();
+  const branches = new Set();
+  const heads = new Set();
   const localCollections = [
     "decisions",
     "assumptions",
@@ -381,10 +426,24 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
     for (const duplicate of duplicateValues(changedPaths)) {
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
-    if (commits.has(stage.change.commit)) {
-      errors.push(`Stage ${id} repeats commit ${stage.change.commit}.`);
+    const expectedBranch = stageBranchName(
+      manifest,
+      manifest.stages.indexOf(id),
+      id,
+    );
+    if (stage.change.branch !== expectedBranch) {
+      errors.push(
+        `Stage ${id} branch ${stage.change.branch} should be ${expectedBranch}.`,
+      );
     }
-    commits.add(stage.change.commit);
+    if (branches.has(stage.change.branch)) {
+      errors.push(`Stage ${id} repeats branch ${stage.change.branch}.`);
+    }
+    if (heads.has(stage.change.headRevision)) {
+      errors.push(`Stage ${id} repeats head ${stage.change.headRevision}.`);
+    }
+    branches.add(stage.change.branch);
+    heads.add(stage.change.headRevision);
     seenStages.add(id);
   }
 
@@ -441,6 +500,12 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
           `Working stage ${id} repeats ${collection} ID ${duplicate}.`,
         );
       }
+      const expectedBranch = stageBranchName(manifest, manifest.stages.length, id);
+      if (stage.branch !== expectedBranch) {
+        errors.push(
+          `Working stage ${id} branch ${stage.branch} should be ${expectedBranch}.`,
+        );
+      }
     }
   }
   if (workStages.size > 1) {
@@ -456,26 +521,40 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
   }
 
   const base = commitObject(paths.root, manifest.baseRevision);
+  let expectedBaseBranch = manifest.targetBranch;
   let expectedParent = base;
-  for (const id of manifest.stages) {
+  for (const [index, id] of manifest.stages.entries()) {
     const stage = stages.get(id);
-    const commit = commitObject(paths.root, stage.change.commit);
-    const parents = commitParents(paths.root, commit);
-    if (parents.length !== 1) {
-      fail(`Stage ${id} commit ${commit} must have exactly one parent.`);
+    const { branch, baseBranch, baseRevision, headRevision } = stage.change;
+    if (branch !== stageBranchName(manifest, index, id)) {
+      fail(`Stage ${id} branch ${branch} does not follow the stack convention.`);
     }
-    if (parents[0] !== expectedParent) {
+    if (baseBranch !== expectedBaseBranch) {
       fail(
-        `Stage ${id} commit ${commit} must directly follow ${expectedParent}, but follows ${parents[0]}.`,
+        `Stage ${id} base branch ${baseBranch} should be ${expectedBaseBranch}.`,
       );
     }
-    const actualFiles = changedFiles(paths.root, expectedParent, commit);
+    if (baseRevision !== expectedParent) {
+      fail(
+        `Stage ${id} base revision ${baseRevision} should be ${expectedParent}.`,
+      );
+    }
+    const branchHead = branchCommit(paths.root, branch);
+    const head = commitObject(paths.root, headRevision);
+    if (branchHead !== head) {
+      fail(
+        `Stage ${id} branch ${branch} moved from ${head} to ${branchHead}; run restack --from ${id}.`,
+      );
+    }
+    assertLinearRange(paths.root, expectedParent, head, `Stage ${id}`);
+    const actualFiles = changedFiles(paths.root, expectedParent, head);
     if (!sameChanges(stage.change.files, actualFiles)) {
       fail(
         `Stage ${id} file inventory is stale.\nExpected: ${JSON.stringify(actualFiles)}\nActual:   ${JSON.stringify(stage.change.files)}`,
       );
     }
-    expectedParent = commit;
+    expectedBaseBranch = branch;
+    expectedParent = head;
   }
 }
 
@@ -596,18 +675,34 @@ function initialize(paths, options) {
   assertCleanWorkingTree(paths.root, "Initialization");
 
   const requirement = requirementFromOptions(options);
+  const reviewId = option(options, "review-id", { required: true });
+  const targetBranch = option(options, "target-branch", { required: true });
+  git(["check-ref-format", "--branch", targetBranch], { cwd: paths.root });
+  const targetHead = branchCommit(paths.root, targetBranch);
   const baseRevision = commitObject(
     paths.root,
-    option(options, "base-revision", { defaultValue: "HEAD" }),
+    option(options, "base-revision", { defaultValue: targetBranch }),
   );
+  if (baseRevision !== targetHead) {
+    fail(
+      `Base revision ${baseRevision} must equal target branch ${targetBranch} head ${targetHead}.`,
+    );
+  }
+  const branchPrefix = option(options, "branch-prefix", {
+    defaultValue: `semantic-review/${reviewId}`,
+  });
+  git(["check-ref-format", "--branch", `${branchPrefix}/01-probe`], {
+    cwd: paths.root,
+  });
   const manifest = {
     $schema: MANIFEST_SCHEMA,
     formatVersion: "0.1",
-    reviewId: option(options, "review-id", { required: true }),
+    reviewId,
     title: option(options, "title", { required: true }),
     summary: option(options, "summary", { required: true }),
     baseRevision,
-    targetBranch: option(options, "target-branch", { required: true }),
+    targetBranch,
+    branchPrefix,
     requirements: [requirement.id],
     stages: [],
   };
@@ -675,11 +770,32 @@ function beginStage(paths, options) {
     fail(`Working stage ${id} already exists.`);
   }
 
+  const branch = stageBranchName(artifact.manifest, artifact.manifest.stages.length, id);
+  git(["check-ref-format", "--branch", branch], { cwd: paths.root });
+  const existingBranch = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
+    cwd: paths.root,
+    allowFailure: true,
+  });
+  if (existingBranch) {
+    fail(`Stage branch ${branch} already exists at ${existingBranch}.`);
+  }
+  const previousId = artifact.manifest.stages.at(-1);
+  const parent = previousId
+    ? artifact.stages.get(previousId).change.headRevision
+    : artifact.manifest.baseRevision;
+  const head = commitObject(paths.root, "HEAD");
+  if (head !== parent) {
+    fail(
+      `Beginning ${id} requires HEAD at stack tip ${parent}, but HEAD is ${head}.`,
+    );
+  }
+
   const stage = {
     $schema: WORK_STAGE_SCHEMA,
     id,
     title: option(options, "title", { required: true }),
     summary: option(options, "summary", { required: true }),
+    branch,
     dependsOn: repeatedOption(options, "depends-on"),
     requirementRefs: repeatedOption(options, "requirement-ref"),
     rationale: option(options, "rationale", { required: true }),
@@ -695,14 +811,22 @@ function beginStage(paths, options) {
     fail("At least one --requirement-ref is required.");
   }
 
-  writeJson(file, stage);
+  const originalBranch = currentBranch(paths.root);
+  git(["switch", "-c", branch, parent], { cwd: paths.root });
   try {
+    writeJson(file, stage);
     validateArtifact(paths, { quiet: true });
   } catch (error) {
     fs.rmSync(file, { force: true });
+    if (originalBranch) {
+      git(["switch", originalBranch], { cwd: paths.root });
+    } else {
+      git(["switch", "--detach", parent], { cwd: paths.root });
+    }
+    git(["branch", "-D", branch], { cwd: paths.root });
     throw error;
   }
-  console.log(`Began working stage ${id}.`);
+  console.log(`Began working stage ${id} on ${branch}.`);
 }
 
 function workingStage(paths, id) {
@@ -948,7 +1072,13 @@ function recordValidation(paths, options) {
   );
 }
 
-function canonicalStage(workStage, commit, files) {
+function canonicalStage(
+  workStage,
+  baseBranch,
+  baseRevision,
+  headRevision,
+  files,
+) {
   return {
     $schema: STAGE_SCHEMA,
     id: workStage.id,
@@ -957,7 +1087,10 @@ function canonicalStage(workStage, commit, files) {
     dependsOn: workStage.dependsOn,
     requirementRefs: workStage.requirementRefs,
     change: {
-      commit,
+      branch: workStage.branch,
+      baseBranch,
+      baseRevision,
+      headRevision,
       files,
     },
     rationale: workStage.rationale,
@@ -984,20 +1117,32 @@ function finishStage(paths, options) {
     fail(`Stage ${id} is already finalized.`);
   }
 
-  const commit = commitObject(
-    paths.root,
-    option(options, "commit", { defaultValue: "HEAD" }),
-  );
-  const previousId = artifact.manifest.stages.at(-1);
-  const parent = previousId
-    ? artifact.stages.get(previousId).change.commit
-    : artifact.manifest.baseRevision;
-  const parents = commitParents(paths.root, commit);
-  if (parents.length !== 1 || parents[0] !== parent) {
-    fail(`Commit ${commit} must directly follow ${parent}.`);
+  const branch = currentBranch(paths.root);
+  if (branch !== workStage.branch) {
+    fail(
+      `Finalizing ${id} requires checked-out stage branch ${workStage.branch}, not ${branch ?? "detached HEAD"}.`,
+    );
   }
-  const files = changedFiles(paths.root, parent, commit);
-  const stage = canonicalStage(workStage, commit, files);
+  const headRevision = branchCommit(paths.root, workStage.branch);
+  if (commitObject(paths.root, "HEAD") !== headRevision) {
+    fail(`HEAD does not match stage branch ${workStage.branch}.`);
+  }
+  const previousId = artifact.manifest.stages.at(-1);
+  const baseBranch = previousId
+    ? artifact.stages.get(previousId).change.branch
+    : artifact.manifest.targetBranch;
+  const baseRevision = previousId
+    ? artifact.stages.get(previousId).change.headRevision
+    : artifact.manifest.baseRevision;
+  assertLinearRange(paths.root, baseRevision, headRevision, `Stage ${id}`);
+  const files = changedFiles(paths.root, baseRevision, headRevision);
+  const stage = canonicalStage(
+    workStage,
+    baseBranch,
+    baseRevision,
+    headRevision,
+    files,
+  );
   const stageFile = path.join(paths.stages, `${id}.json`);
   const oldManifest = structuredClone(artifact.manifest);
   artifact.manifest.stages.push(id);
@@ -1013,7 +1158,7 @@ function finishStage(paths, options) {
     writeJson(workFile, workStage);
     throw error;
   }
-  console.log(`Finalized stage ${id} at ${commit}.`);
+  console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
 }
 
 function discardStage(paths, options) {
@@ -1027,71 +1172,6 @@ function discardStage(paths, options) {
   fs.rmSync(file);
   validateArtifact(paths, { quiet: true, validateGit: false });
   console.log(`Discarded working stage ${id}.`);
-}
-
-function refreshStages(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "refresh"));
-  const baseRevision = option(options, "base");
-  const bindings = new Map(
-    repeatedOption(options, "stage").map((value) =>
-      splitPair(value, "--stage"),
-    ),
-  );
-  if (bindings.size === 0 && baseRevision === undefined) {
-    fail(
-      "refresh requires --base <revision> or at least one --stage <id>=<revision>.",
-    );
-  }
-
-  const artifact = validateArtifact(paths, {
-    schemaOnly: true,
-    quiet: true,
-  });
-  for (const id of bindings.keys()) {
-    if (!artifact.stages.has(id)) {
-      fail(`Cannot refresh unknown finalized stage ${id}.`);
-    }
-  }
-
-  const backups = new Map();
-  const oldManifest = structuredClone(artifact.manifest);
-  const newBase = baseRevision
-    ? commitObject(paths.root, baseRevision)
-    : artifact.manifest.baseRevision;
-  artifact.manifest.baseRevision = newBase;
-  let parent = newBase;
-  try {
-    for (const id of artifact.manifest.stages) {
-      const stage = artifact.stages.get(id);
-      const file = path.join(paths.stages, `${id}.json`);
-      backups.set(file, structuredClone(stage));
-      const commit = commitObject(
-        paths.root,
-        bindings.get(id) ?? stage.change.commit,
-      );
-      const parents = commitParents(paths.root, commit);
-      if (parents.length !== 1 || parents[0] !== parent) {
-        fail(`Stage ${id} commit ${commit} must directly follow ${parent}.`);
-      }
-      stage.change = {
-        commit,
-        files: changedFiles(paths.root, parent, commit),
-      };
-      writeJson(file, stage);
-      parent = commit;
-    }
-    writeJson(paths.manifest, artifact.manifest);
-    validateArtifact(paths, { quiet: true });
-  } catch (error) {
-    for (const [file, value] of backups) {
-      writeJson(file, value);
-    }
-    writeJson(paths.manifest, oldManifest);
-    throw error;
-  }
-  console.log(
-    `Refreshed ${bindings.size} stage binding(s)${baseRevision ? ` on base ${newBase}` : ""}.`,
-  );
 }
 
 function commitMetadata(root, commit) {
@@ -1151,123 +1231,209 @@ function applyCommitPatch({
   });
 }
 
-function rewriteStage(paths, options) {
-  assertKnownOptions(
-    options,
-    commandOptionNames(semanticReviewApi, "rewrite-stage"),
-  );
-  const artifact = validateArtifact(paths, { quiet: true });
-  assertCleanWorkingTree(paths.root, "Stage rewriting");
-  const stageId = option(options, "stage", { required: true });
-  const targetIndex = artifact.manifest.stages.indexOf(stageId);
-  if (targetIndex < 0) fail(`Stage ${stageId} does not exist.`);
-
-  const fixCommit = commitObject(
-    paths.root,
-    option(options, "fix", { defaultValue: "HEAD" }),
-  );
-  const head = commitObject(paths.root, "HEAD");
-  if (head !== fixCommit) fail("The fix commit must be the current HEAD.");
-  const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
-    cwd: paths.root,
-    allowFailure: true,
+function commitsInRange(root, base, head, label) {
+  assertLinearRange(root, base, head, label);
+  const output = git(["rev-list", "--reverse", `${base}..${head}`], {
+    cwd: root,
   });
-  if (!branch) fail("Stage rewriting requires a checked-out local branch.");
+  return output ? output.split(/\r?\n/) : [];
+}
 
-  const stageTip = lastStageCommit(artifact);
-  const fixParents = commitParents(paths.root, fixCommit);
-  if (fixParents.length !== 1 || fixParents[0] !== stageTip) {
-    fail(`Fix commit ${fixCommit} must directly follow stage tip ${stageTip}.`);
+function replayRange(root, indexFile, oldBase, oldHead, newBase, label) {
+  const commits = commitsInRange(root, oldBase, oldHead, label);
+  if (commits.length === 0) {
+    fail(`${label} has no commits to replay.`);
   }
-  const fixPaths = changedPathNames(paths.root, stageTip, fixCommit);
-  if (
-    fixPaths.length === 0 ||
-    fixPaths.some(
-      (file) =>
-        file === ".semantic-review" ||
-        file.startsWith(".semantic-review/") ||
-        file === ".semantic-review-feedback" ||
-        file.startsWith(".semantic-review-feedback/"),
-    )
-  ) {
-    fail("Fix commit must contain implementation changes only.");
+  let newParent = newBase;
+  for (const commit of commits) {
+    const parents = commitParents(root, commit);
+    if (parents.length !== 1) {
+      fail(`${label} commit ${commit} must have exactly one parent.`);
+    }
+    newParent = applyCommitPatch({
+      root,
+      indexFile,
+      baseTree: newParent,
+      patchParent: parents[0],
+      patchCommit: commit,
+      metadataCommit: commit,
+      newParent,
+    });
+  }
+  return newParent;
+}
+
+function updateRefsAtomically(root, updates) {
+  if (updates.length === 0) return;
+  const commands = [
+    "start",
+    ...updates.map(
+      ({ branch, next, previous }) =>
+        `update refs/heads/${branch} ${next} ${previous}`,
+    ),
+    "prepare",
+    "commit",
+    "",
+  ].join("\n");
+  gitRaw(["update-ref", "--stdin"], { cwd: root, input: commands });
+}
+
+function restack(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "restack"));
+  assertCleanWorkingTree(paths.root, "Restacking");
+  const artifact = validateArtifact(paths, {
+    schemaOnly: true,
+    quiet: true,
+  });
+  if (artifact.workStages.size > 0) {
+    fail("Restacking requires every stage to be finalized.");
   }
 
-  const stageIds = artifact.manifest.stages.slice(targetIndex);
-  const oldCommits = stageIds.map(
-    (id) => artifact.stages.get(id).change.commit,
-  );
-  const targetOldCommit = oldCommits[0];
-  const targetOldParent =
-    targetIndex === 0
-      ? artifact.manifest.baseRevision
-      : artifact.stages.get(artifact.manifest.stages[targetIndex - 1]).change
-          .commit;
+  const fromId = option(options, "from");
+  const baseOption = option(options, "base");
+  if (!fromId && !baseOption) {
+    fail("restack requires --from <stage-id> or --base <revision>.");
+  }
+  const fromIndex = fromId
+    ? artifact.manifest.stages.indexOf(fromId)
+    : artifact.manifest.stages.length;
+  if (fromId && fromIndex < 0) {
+    fail(`Stage ${fromId} does not exist.`);
+  }
+  const startIndex = baseOption ? 0 : fromIndex;
+  const newBase = baseOption
+    ? commitObject(paths.root, baseOption)
+    : artifact.manifest.baseRevision;
+  if (baseOption) {
+    const targetHead = branchCommit(paths.root, artifact.manifest.targetBranch);
+    if (newBase !== targetHead) {
+      fail(
+        `New base ${newBase} must equal target branch ${artifact.manifest.targetBranch} head ${targetHead}.`,
+      );
+    }
+  }
+
   const indexFile = path.join(
     os.tmpdir(),
-    `semantic-review-rewrite-${process.pid}-${Date.now()}.index`,
+    `semantic-review-restack-${process.pid}-${Date.now()}.index`,
   );
-  const mapping = new Map();
+  const plans = [];
+  let parentBranch = artifact.manifest.targetBranch;
+  let parentHead = newBase;
 
   try {
-    let newCommit = applyCommitPatch({
-      root: paths.root,
-      indexFile,
-      baseTree: targetOldCommit,
-      patchParent: stageTip,
-      patchCommit: fixCommit,
-      metadataCommit: targetOldCommit,
-      newParent: targetOldParent,
-    });
-    mapping.set(stageId, newCommit);
+    for (const [index, id] of artifact.manifest.stages.entries()) {
+      const stage = artifact.stages.get(id);
+      const actualHead = branchCommit(paths.root, stage.change.branch);
+      if (index < startIndex) {
+        if (actualHead !== stage.change.headRevision) {
+          fail(
+            `Stage ${id} moved before the requested restack range; start from ${id}.`,
+          );
+        }
+        parentBranch = stage.change.branch;
+        parentHead = actualHead;
+        continue;
+      }
 
-    for (let index = 1; index < stageIds.length; index += 1) {
-      const oldCommit = oldCommits[index];
-      const oldParent = oldCommits[index - 1];
-      newCommit = applyCommitPatch({
-        root: paths.root,
-        indexFile,
-        baseTree: newCommit,
-        patchParent: oldParent,
-        patchCommit: oldCommit,
-        metadataCommit: oldCommit,
-        newParent: newCommit,
+      let nextHead;
+      if (isAncestor(paths.root, parentHead, actualHead)) {
+        assertLinearRange(paths.root, parentHead, actualHead, `Stage ${id}`);
+        nextHead = actualHead;
+      } else {
+        nextHead = replayRange(
+          paths.root,
+          indexFile,
+          stage.change.baseRevision,
+          actualHead,
+          parentHead,
+          `Stage ${id}`,
+        );
+      }
+      plans.push({
+        id,
+        stage,
+        file: path.join(paths.stages, `${id}.json`),
+        branch: stage.change.branch,
+        previousHead: actualHead,
+        nextHead,
+        baseBranch: parentBranch,
+        baseRevision: parentHead,
       });
-      mapping.set(stageIds[index], newCommit);
+      parentBranch = stage.change.branch;
+      parentHead = nextHead;
     }
 
-    const newTip = mapping.get(stageIds.at(-1));
-    git(
-      [
-        "update-ref",
-        `refs/heads/${branch}`,
-        newTip,
-        fixCommit,
-      ],
-      { cwd: paths.root },
-    );
-    git(["reset", "--hard", newTip], { cwd: paths.root });
+    const refUpdates = plans
+      .filter(({ previousHead, nextHead }) => previousHead !== nextHead)
+      .map(({ branch, previousHead, nextHead }) => ({
+        branch,
+        previous: previousHead,
+        next: nextHead,
+      }));
+    const checkedOut = checkedOutBranches(paths.root);
+    const checkedOutUpdates = refUpdates
+      .map(({ branch }) => branch)
+      .filter((branch) => checkedOut.has(branch));
+    if (checkedOutUpdates.length > 0) {
+      fail(
+        `Cannot move branch(es) checked out in a worktree: ${checkedOutUpdates.join(", ")}.`,
+      );
+    }
+    if (
+      baseOption &&
+      branchCommit(paths.root, artifact.manifest.targetBranch) !== newBase
+    ) {
+      fail(
+        `Target branch ${artifact.manifest.targetBranch} moved during restacking; retry from its new head.`,
+      );
+    }
+    updateRefsAtomically(paths.root, refUpdates);
 
-    const refreshOptions = new Map([
-      [
-        "stage",
-        [...mapping].map(([id, commit]) => `${id}=${commit}`),
-      ],
-    ]);
+    const oldManifest = structuredClone(artifact.manifest);
+    const backups = new Map(
+      plans.map(({ file, stage }) => [file, structuredClone(stage)]),
+    );
+    artifact.manifest.baseRevision = newBase;
     try {
-      refreshStages(paths, refreshOptions);
+      for (const plan of plans) {
+        plan.stage.change = {
+          branch: plan.branch,
+          baseBranch: plan.baseBranch,
+          baseRevision: plan.baseRevision,
+          headRevision: plan.nextHead,
+          files: changedFiles(
+            paths.root,
+            plan.baseRevision,
+            plan.nextHead,
+          ),
+        };
+        writeJson(plan.file, plan.stage);
+      }
+      writeJson(paths.manifest, artifact.manifest);
+      validateArtifact(paths, { quiet: true });
     } catch (error) {
-      git(["update-ref", `refs/heads/${branch}`, fixCommit, newTip], {
-        cwd: paths.root,
-      });
-      git(["reset", "--hard", fixCommit], { cwd: paths.root });
+      updateRefsAtomically(
+        paths.root,
+        refUpdates.map(({ branch, previous, next }) => ({
+          branch,
+          previous: next,
+          next: previous,
+        })),
+      );
+      for (const [file, value] of backups) {
+        writeJson(file, value);
+      }
+      writeJson(paths.manifest, oldManifest);
       throw error;
     }
 
-    console.log(`Rewrote ${stageId} and ${stageIds.length - 1} downstream stage(s):`);
-    for (const id of stageIds) {
+    console.log(
+      `Restacked ${plans.length} stage branch(es)${baseOption ? ` onto ${newBase}` : ` from ${fromId}`}:`,
+    );
+    for (const plan of plans) {
       console.log(
-        `  ${id}: ${artifact.stages.get(id).change.commit} -> ${mapping.get(id)}`,
+        `  ${plan.branch}: ${plan.previousHead} -> ${plan.nextHead} (base ${plan.baseBranch})`,
       );
     }
   } finally {
@@ -1356,103 +1522,146 @@ function changedPathNames(root, from, to) {
   return output ? output.split(/\r?\n/).filter(Boolean) : [];
 }
 
-function lastStageCommit(artifact) {
+function lastStageHead(artifact) {
   const lastStageId = artifact.manifest.stages.at(-1);
   if (!lastStageId) {
     fail("The review has no finalized stages.");
   }
-  return artifact.stages.get(lastStageId).change.commit;
+  return artifact.stages.get(lastStageId).change.headRevision;
 }
 
-function reviewHeadState(paths, artifact) {
-  const stageTip = lastStageCommit(artifact);
-  const head = commitObject(paths.root, "HEAD");
-  if (head === stageTip) {
-    return { head, stageTip, metadataCommit: false };
-  }
+function metadataBranch(artifact) {
+  return `${artifact.manifest.branchPrefix}/metadata`;
+}
 
-  const parents = commitParents(paths.root, head);
-  const changedPaths = changedPathNames(paths.root, stageTip, head);
-  if (
-    parents.length === 1 &&
-    parents[0] === stageTip &&
-    changedPaths.length > 0 &&
-    changedPaths.every(
-      (file) =>
-        file === ".semantic-review" ||
-        file.startsWith(".semantic-review/"),
-    )
-  ) {
-    return { head, stageTip, metadataCommit: true };
-  }
-
-  fail(
-    `HEAD ${head} must be the final stage commit ${stageTip} or one metadata-only commit directly after it.`,
+function buildMetadataCommit(paths, parent, message) {
+  const indexFile = path.join(
+    os.tmpdir(),
+    `semantic-review-publish-${process.pid}-${Date.now()}.index`,
   );
+  const env = { GIT_INDEX_FILE: indexFile };
+  try {
+    gitRaw(["read-tree", parent], { cwd: paths.root, env });
+    gitRaw(["add", "-f", "--", ".semantic-review"], {
+      cwd: paths.root,
+      env,
+    });
+    const tree = gitRaw(["write-tree"], { cwd: paths.root, env });
+    const commit = gitRaw(["commit-tree", tree, "-p", parent], {
+      cwd: paths.root,
+      input: `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
+    });
+    return { commit, tree };
+  } finally {
+    fs.rmSync(indexFile, { force: true });
+  }
 }
 
 function publishArtifact(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticReviewApi, "publish"));
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Artifact publication");
-  const { stageTip, metadataCommit } = reviewHeadState(paths, artifact);
-  if (metadataCommit) {
-    console.log(`Semantic review metadata is already published at HEAD.`);
-    return;
-  }
-
+  const stageTip = lastStageHead(artifact);
+  const branch = metadataBranch(artifact);
+  git(["check-ref-format", "--branch", branch], { cwd: paths.root });
   const message = option(options, "message", {
     defaultValue: `Publish ${artifact.manifest.reviewId} semantic review`,
   });
-  git(["add", "-f", "--", ".semantic-review"], { cwd: paths.root });
-  const staged = git(["diff", "--cached", "--name-only"], {
+  const publication = buildMetadataCommit(paths, stageTip, message);
+  const existing = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: paths.root,
-  })
-    .split(/\r?\n/)
-    .filter(Boolean);
-  if (
-    staged.length === 0 ||
-    !staged.every((file) => file.startsWith(".semantic-review/"))
-  ) {
-    git(["reset", "--", ".semantic-review"], {
+    allowFailure: true,
+  });
+  if (existing) {
+    const existingTree = git(["show", "-s", "--format=%T", existing], {
       cwd: paths.root,
-      allowFailure: true,
     });
-    fail("Publication may stage only .semantic-review artifact files.");
+    const parents = commitParents(paths.root, existing);
+    if (parents.length === 1 && parents[0] === stageTip && existingTree === publication.tree) {
+      console.log(`Semantic review metadata is already published on ${branch}.`);
+      return;
+    }
+    const pathsChanged = parents.length === 1
+      ? changedPathNames(paths.root, parents[0], existing)
+      : [];
+    if (
+      pathsChanged.length === 0 ||
+      !pathsChanged.every(
+        (file) =>
+          file === ".semantic-review" ||
+          file.startsWith(".semantic-review/"),
+      )
+    ) {
+      fail(
+        `Metadata branch ${branch} contains changes outside .semantic-review; refusing to move it.`,
+      );
+    }
+    if (checkedOutBranches(paths.root).has(branch)) {
+      fail(`Cannot update metadata branch ${branch} while it is checked out.`);
+    }
   }
-
   git(
     [
-      "commit",
-      "-m",
-      message,
-      "-m",
-      "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+      "update-ref",
+      `refs/heads/${branch}`,
+      publication.commit,
+      existing ?? "0000000000000000000000000000000000000000",
     ],
     { cwd: paths.root },
   );
-  const head = commitObject(paths.root, "HEAD");
-  const parents = commitParents(paths.root, head);
-  if (parents.length !== 1 || parents[0] !== stageTip) {
-    fail("Published metadata commit does not directly follow the stage stack.");
-  }
-  console.log(`Published semantic review metadata at ${head}.`);
+  console.log(
+    `Published semantic review metadata on ${branch} at ${publication.commit}.`,
+  );
 }
 
-function preparePrBranch(paths, options) {
+function prepareStack(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "prepare-pr"),
+    commandOptionNames(semanticReviewApi, "prepare-stack"),
+  );
+  const json = flag(options, "json");
+  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const entries = artifact.manifest.stages.map((id, index) => {
+    const stage = artifact.stages.get(id);
+    return {
+      position: index + 1,
+      stageId: id,
+      branch: stage.change.branch,
+      baseBranch: stage.change.baseBranch,
+      headRevision: stage.change.headRevision,
+    };
+  });
+  const result = {
+    targetBranch: artifact.manifest.targetBranch,
+    branchPrefix: artifact.manifest.branchPrefix,
+    metadataBranch: metadataBranch(artifact),
+    finalHeadRevision: lastStageHead(artifact),
+    stages: entries,
+  };
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(`Local stage stack ready (${entries.length} stage(s)):`);
+  for (const entry of entries) {
+    console.log(
+      `  ${entry.position}. ${entry.branch} -> ${entry.baseBranch} (${entry.headRevision})`,
+    );
+  }
+  console.log(`Final cumulative head: ${result.finalHeadRevision}`);
+}
+
+function prepareBranch(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "prepare-branch"),
   );
   const branch = option(options, "branch", { required: true });
-  const checkOnly = flag(options, "check-only");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
-  assertCleanWorkingTree(paths.root, "PR branch preparation");
-  const { head, metadataCommit } = reviewHeadState(paths, artifact);
+  assertCleanWorkingTree(paths.root, "Single-branch preparation");
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
-
-  const reference = `refs/heads/${branch}`;
-  const existing = git(["rev-parse", "--verify", reference], {
+  const head = lastStageHead(artifact);
+  const existing = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: paths.root,
     allowFailure: true,
   });
@@ -1461,21 +1670,11 @@ function preparePrBranch(paths, options) {
       `Branch ${branch} already points to ${existing}; refusing to move it to ${head}.`,
     );
   }
-  if (checkOnly && existing && !metadataCommit) {
-    fail(
-      `Branch ${branch} already points to the unpublished stage tip; publication would move HEAD and leave the branch behind.`,
-    );
-  }
-  if (!existing && !checkOnly) {
+  if (!existing) {
     git(["branch", branch, head], { cwd: paths.root });
   }
-
-  if (checkOnly) {
-    console.log(`PR-ready branch ${branch} can point to ${head}.`);
-    return;
-  }
   console.log(
-    `PR-ready branch ${branch} points to ${head}${metadataCommit ? " with published metadata" : ""}; base is ${artifact.manifest.baseRevision}.`,
+    `Prepared local cumulative branch ${branch} at ${head}; base is ${artifact.manifest.targetBranch}.`,
   );
 }
 
@@ -1483,14 +1682,14 @@ function archiveReview(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticReviewApi, "archive"));
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Review archival");
-  reviewHeadState(paths, artifact);
-
-  const trackedManifest = git(
-    ["ls-files", "--error-unmatch", ".semantic-review/manifest.json"],
-    { cwd: paths.root, allowFailure: true },
-  );
-  if (!trackedManifest) {
-    fail("Archive requires a published, tracked semantic review artifact.");
+  const publicationBranch = metadataBranch(artifact);
+  if (
+    !git(["rev-parse", "--verify", `refs/heads/${publicationBranch}`], {
+      cwd: paths.root,
+      allowFailure: true,
+    })
+  ) {
+    fail(`Archive requires published metadata branch ${publicationBranch}.`);
   }
 
   const destinationOption = option(options, "destination", {
@@ -1523,7 +1722,6 @@ function archiveReview(paths, options) {
     const relativeDestination = formatPath(
       path.relative(paths.root, destination),
     );
-    git(["add", "-A", "--", ".semantic-review"], { cwd: paths.root });
     git(["add", "-f", "--", relativeDestination], { cwd: paths.root });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: paths.root,
@@ -1534,7 +1732,6 @@ function archiveReview(paths, options) {
       staged.length === 0 ||
       !staged.every(
         (file) =>
-          file.startsWith(".semantic-review/") ||
           file.startsWith(`${relativeDestination}/`),
       )
     ) {
@@ -1554,7 +1751,7 @@ function archiveReview(paths, options) {
       `Archived ${artifact.manifest.reviewId} at ${relativeDestination}.`,
     );
   } catch (error) {
-    git(["reset", "--", ".semantic-review", destinationOption], {
+    git(["reset", "--", destinationOption], {
       cwd: paths.root,
       allowFailure: true,
     });
@@ -1607,12 +1804,8 @@ function dispatch(paths, positionals, options) {
     discardStage(paths, options);
     return;
   }
-  if (command === "rewrite-stage" && subcommand === undefined) {
-    rewriteStage(paths, options);
-    return;
-  }
-  if (command === "refresh" && subcommand === undefined) {
-    refreshStages(paths, options);
+  if (command === "restack" && subcommand === undefined) {
+    restack(paths, options);
     return;
   }
   if (command === "repair" && subcommand === undefined) {
@@ -1623,8 +1816,12 @@ function dispatch(paths, positionals, options) {
     publishArtifact(paths, options);
     return;
   }
-  if (command === "prepare-pr" && subcommand === undefined) {
-    preparePrBranch(paths, options);
+  if (command === "prepare-stack" && subcommand === undefined) {
+    prepareStack(paths, options);
+    return;
+  }
+  if (command === "prepare-branch" && subcommand === undefined) {
+    prepareBranch(paths, options);
     return;
   }
   if (command === "archive" && subcommand === undefined) {

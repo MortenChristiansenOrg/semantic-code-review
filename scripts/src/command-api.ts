@@ -46,6 +46,7 @@ export const semanticReviewApi: CliSignature = {
         option("summary", "<summary>", { required: true }),
         option("base-revision", "<revision>"),
         option("target-branch", "<branch>", { required: true }),
+        option("branch-prefix", "<prefix>"),
         ...requirementOptions,
       ],
     },
@@ -117,37 +118,28 @@ export const semanticReviewApi: CliSignature = {
     },
     {
       command: "stage finish",
-      options: [
-        option("id", "<stage-id>", { required: true }),
-        option("commit", "<revision>"),
-      ],
+      options: [option("id", "<stage-id>", { required: true })],
     },
     {
       command: "stage discard",
       options: [option("id", "<stage-id>", { required: true })],
     },
     {
-      command: "rewrite-stage",
+      command: "restack",
       options: [
-        option("stage", "<stage-id>", { required: true }),
-        option("fix", "<revision>"),
-      ],
-    },
-    {
-      command: "refresh",
-      options: [
+        option("from", "<stage-id>"),
         option("base", "<revision>"),
-        option("stage", "<stage-id>=<revision>", { repeatable: true }),
       ],
     },
     { command: "repair" },
     { command: "publish", options: [option("message", "<commit-message>")] },
     {
-      command: "prepare-pr",
-      options: [
-        option("branch", "<branch-name>", { required: true }),
-        option("check-only"),
-      ],
+      command: "prepare-stack",
+      options: [option("json")],
+    },
+    {
+      command: "prepare-branch",
+      options: [option("branch", "<branch-name>", { required: true })],
     },
     {
       command: "archive",
@@ -232,16 +224,16 @@ export const reviewFeedbackApi: CliSignature = {
         option("id", "<feedback-id>", { required: true }),
         option("summary", "<text>", { required: true }),
         option("stage", "<stage-id>", { required: true }),
-        option("previous", "<full-sha>", { required: true }),
-        option("rewritten", "<full-sha>", { required: true }),
+        option("previous-head", "<full-sha>", { required: true }),
+        option("rewritten-head", "<full-sha>", { required: true }),
       ],
     },
     {
       command: "resolution rebind",
       options: [
         option("stage", "<stage-id>", { required: true }),
-        option("previous", "<full-sha>", { required: true }),
-        option("rewritten", "<full-sha>", { required: true }),
+        option("previous-head", "<full-sha>", { required: true }),
+        option("rewritten-head", "<full-sha>", { required: true }),
       ],
     },
     {
@@ -252,10 +244,7 @@ export const reviewFeedbackApi: CliSignature = {
       command: "batch approve-all",
       options: [option("id", "<batch-id>", { required: true })],
     },
-    {
-      command: "approve-stack",
-      options: [option("branch", "<branch-name>", { required: true })],
-    },
+    { command: "approve-stack" },
     { command: "validate" },
   ],
 };

@@ -8,7 +8,10 @@
     "review-documentation#note-stage-branches"
   ],
   "change": {
-    "commit": "81466220b0652487ee09b3512bb4d3a9fe11d309",
+    "branch": "semantic-review/document-review-workflow/01-note-stage-branches",
+    "baseBranch": "master",
+    "baseRevision": "9ba8b1c452a71b3239fd1ae008b4a1c7f323631a",
+    "headRevision": "81466220b0652487ee09b3512bb4d3a9fe11d309",
     "files": [
       {
         "path": "docs/architecture-and-roadmap.md",
@@ -21,8 +24,8 @@
     {
       "id": "preserve-v01-linear-topology",
       "category": "engineering",
-      "summary": "Keep the v0.1 linear commit stack unchanged.",
-      "rationale": "Branch-per-stage refs can improve visibility and stacked-PR integration, but require deterministic downstream ref movement and publication semantics that the current protocol does not define."
+      "summary": "Use a deterministic linear stage-branch stack in v0.1.",
+      "rationale": "Branch-per-stage refs improve local visibility and remain compatible with stacked remote reviews, but require deterministic downstream ref movement and hosting-neutral preparation."
     }
   ],
   "assumptions": [],

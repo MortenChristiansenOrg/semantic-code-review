@@ -13,7 +13,10 @@
     "review-artifacts#process-current-review"
   ],
   "change": {
-    "commit": "2b92cc8983dc29a839f3e73bf1a0f088bd20fd20",
+    "branch": "semantic-review/review-tool-poc/04-inspect-stage-changes",
+    "baseBranch": "semantic-review/review-tool-poc/03-render-review-workspace",
+    "baseRevision": "5af33fc8040304259fc9b15a79aed79d91182213",
+    "headRevision": "2b92cc8983dc29a839f3e73bf1a0f088bd20fd20",
     "files": [
       {
         "path": "poc/public/app.js",

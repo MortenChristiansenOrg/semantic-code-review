@@ -12,6 +12,7 @@
     "summary",
     "baseRevision",
     "targetBranch",
+    "branchPrefix",
     "requirements",
     "stages"
   ],
@@ -36,6 +37,9 @@
     },
     "targetBranch": {
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
+    "branchPrefix": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"
     },
     "requirements": {
       "type": "array",

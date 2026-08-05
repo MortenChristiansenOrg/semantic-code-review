@@ -53,11 +53,23 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "commit",
+        "branch",
+        "baseBranch",
+        "baseRevision",
+        "headRevision",
         "files"
       ],
       "properties": {
-        "commit": {
+        "branch": {
+          "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"
+        },
+        "baseBranch": {
+          "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"
+        },
+        "baseRevision": {
+          "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
+        },
+        "headRevision": {
           "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
         },
         "files": {

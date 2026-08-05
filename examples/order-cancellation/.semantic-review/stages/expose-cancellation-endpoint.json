@@ -11,7 +11,10 @@
     "cancel-order#return-conflict"
   ],
   "change": {
-    "commit": "4444444444444444444444444444444444444444",
+    "branch": "semantic-review/customer-order-cancellation/03-expose-cancellation-endpoint",
+    "baseBranch": "semantic-review/customer-order-cancellation/02-persist-cancellation",
+    "baseRevision": "3333333333333333333333333333333333333333",
+    "headRevision": "4444444444444444444444444444444444444444",
     "files": [
       {
         "path": "src/Orders/Api/CancelOrderEndpoint.cs",

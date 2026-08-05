@@ -32,7 +32,7 @@ test("repair removes unambiguous interrupted writes", (t) => {
   );
 });
 
-test("rewrite-stage rebuilds the target and downstream stack", (t) => {
+test("restack refreshes an edited stage branch and rebuilds branches above it", (t) => {
   const repository = createRepository(t);
   initializeReview(repository);
   beginStage(repository, { id: "policy" });
@@ -51,23 +51,27 @@ test("rewrite-stage rebuilds the target and downstream stack", (t) => {
     contents: "persistence v1\n",
   });
 
+  repository.git("switch", "semantic-review/test-review/01-policy");
   repository.commitFile("policy.txt", "policy v2\n", "Fix policy");
-  repository.semantic("rewrite-stage", "--stage", "policy", "--fix", "HEAD");
+  repository.semantic("restack", "--from", "policy");
 
   const rewrittenPolicy = repository.readJson(
     ".semantic-review/stages/policy.json",
-  ).change.commit;
+  ).change.headRevision;
   const rewrittenPersistence = repository.readJson(
     ".semantic-review/stages/persistence.json",
-  ).change.commit;
+  ).change.headRevision;
   assert.notEqual(rewrittenPolicy, originalPolicy);
   assert.notEqual(rewrittenPersistence, originalPersistence);
-  assert.equal(repository.git("rev-parse", "HEAD"), rewrittenPersistence);
+  assert.equal(
+    repository.git("rev-parse", "semantic-review/test-review/02-persistence"),
+    rewrittenPersistence,
+  );
   assert.equal(repository.read("policy.txt"), "policy v2\n");
   repository.semantic("validate", "--publish");
 });
 
-test("refresh updates a rebased base and every stage binding", (t) => {
+test("restack rebases every stage branch onto an advanced target", (t) => {
   const repository = createRepository(t);
   initializeReview(repository);
   const originalBase = repository.git("rev-parse", "HEAD");
@@ -79,44 +83,37 @@ test("refresh updates a rebased base and every stage binding", (t) => {
   });
   const persistence = finalizeStage(repository, { id: "persistence" });
 
-  repository.expectSemanticFailure(
-    "refresh requires --base",
-    "refresh",
-  );
-  repository.git("checkout", "--detach", originalBase);
+  repository.expectSemanticFailure("restack requires --from", "restack");
+  repository.git("switch", "main");
   const newBase = repository.commitFile(
     "base-update.txt",
     "new base\n",
     "Advance base",
   );
-  repository.git("cherry-pick", "--no-commit", policy);
-  repository.git("commit", "-m", "Rebase policy");
-  const rebasedPolicy = repository.git("rev-parse", "HEAD");
-  repository.git("cherry-pick", "--no-commit", persistence);
-  repository.git("commit", "-m", "Rebase persistence");
-  const rebasedPersistence = repository.git("rev-parse", "HEAD");
-
-  repository.semantic(
-    "refresh",
-    "--base",
-    newBase,
-    "--stage",
-    `policy=${rebasedPolicy}`,
-    "--stage",
-    `persistence=${rebasedPersistence}`,
+  repository.semantic("restack", "--base", "main");
+  const rebasedPolicy = repository.git(
+    "rev-parse",
+    "semantic-review/test-review/01-policy",
+  );
+  const rebasedPersistence = repository.git(
+    "rev-parse",
+    "semantic-review/test-review/02-persistence",
   );
   assert.equal(
     repository.readJson(".semantic-review/manifest.json").baseRevision,
     newBase,
   );
   assert.equal(
-    repository.readJson(".semantic-review/stages/policy.json").change.commit,
+    repository.readJson(".semantic-review/stages/policy.json").change.headRevision,
     rebasedPolicy,
   );
   assert.equal(
     repository.readJson(".semantic-review/stages/persistence.json").change
-      .commit,
+      .headRevision,
     rebasedPersistence,
   );
+  assert.notEqual(rebasedPolicy, policy);
+  assert.notEqual(rebasedPersistence, persistence);
+  assert.notEqual(newBase, originalBase);
   repository.semantic("validate", "--publish");
 });

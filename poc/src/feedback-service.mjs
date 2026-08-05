@@ -80,8 +80,8 @@ export async function readFeedback({ repositoryRoot }) {
     readJson(paths.manifest),
     readSemanticReview({ repositoryRoot }),
   ]);
-  const currentCommits = new Map(
-    review.stages.map((stage) => [stage.id, stage.change.commit]),
+  const currentHeads = new Map(
+    review.stages.map((stage) => [stage.id, stage.change.headRevision]),
   );
   const batches = [];
   for (const batchId of manifest.batches) {
@@ -92,8 +92,8 @@ export async function readFeedback({ repositoryRoot }) {
       items.push({
         ...item,
         anchorStale:
-          Boolean(item.target.stageCommit) &&
-          currentCommits.get(item.target.stageId) !== item.target.stageCommit,
+          Boolean(item.target.stageHead) &&
+          currentHeads.get(item.target.stageId) !== item.target.stageHead,
       });
     }
     batches.push({ ...batch, feedbackItems: items });
@@ -226,14 +226,10 @@ export async function approveAllFeedback({ repositoryRoot, batchId }) {
   return readFeedback({ repositoryRoot });
 }
 
-export async function approveFeedbackStack({ repositoryRoot, branch }) {
-  const output = await runFeedbackCommand(repositoryRoot, [
-    "approve-stack",
-    `--branch=${branch}`,
-  ]);
+export async function approveFeedbackStack({ repositoryRoot }) {
+  const output = await runFeedbackCommand(repositoryRoot, ["approve-stack"]);
   return {
     status: "approved",
-    branch,
     summary: output,
   };
 }

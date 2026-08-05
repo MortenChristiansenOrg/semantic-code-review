@@ -34,7 +34,7 @@
     },
     {
       "id": "approve-stack",
-      "text": "When all feedback is resolved and approved, the stack can be deterministically prepared on a PR-ready branch."
+      "text": "When all feedback is resolved and approved, metadata is published separately and the deterministic stage branches are ready for hosting-neutral use."
     },
     {
       "id": "validate-review-state",

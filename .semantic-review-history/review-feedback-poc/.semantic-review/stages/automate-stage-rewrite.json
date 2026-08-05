@@ -2,7 +2,7 @@
   "$schema": "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json",
   "id": "automate-stage-rewrite",
   "title": "Rewrite one semantic stage and replay downstream history",
-  "summary": "Add a transactional CLI command that folds a fix commit into a selected stage, recreates downstream commits, moves the current branch, and refreshes artifact bindings.",
+  "summary": "Add a transactional CLI command that accepts edits on a selected stage branch, replays downstream branches, atomically moves their refs, and refreshes artifact snapshots.",
   "dependsOn": [
     "define-feedback-protocol"
   ],
@@ -12,7 +12,10 @@
     "review-feedback#validate-review-state"
   ],
   "change": {
-    "commit": "9096124b8a7164592aa5ea6674e1d400f2313a14",
+    "branch": "semantic-review/review-feedback-poc/03-automate-stage-rewrite",
+    "baseBranch": "semantic-review/review-feedback-poc/02-define-feedback-protocol",
+    "baseRevision": "8ed96e0c98dafd996cd5971032bc2fabd7d29457",
+    "headRevision": "9096124b8a7164592aa5ea6674e1d400f2313a14",
     "files": [
       {
         "path": ".github/skills/semantic-story-implementation/scripts/semantic-review.mjs",
@@ -66,7 +69,7 @@
       "id": "rewrite-integration-tests",
       "type": "automated",
       "status": "passed",
-      "summary": "Covers fix folding, downstream replay, artifact refresh, feedback resolution, and PR branch approval through rewrite-stage.",
+      "summary": "Covers lower-branch edits, downstream restacking, artifact snapshot refresh, feedback resolution, and local stack approval.",
       "command": "npm test --prefix .github/skills/semantic-story-implementation"
     }
   ],

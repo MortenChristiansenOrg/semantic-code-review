@@ -16,10 +16,12 @@ export interface InitializeReviewOptions {
     title: string;
     /** Concise summary of the review scope. */
     summary: string;
-    /** Git revision immediately before the first semantic stage. @defaultValue "HEAD" */
+    /** Target branch revision immediately before the first semantic stage. @defaultValue "<target-branch>" */
     "base-revision"?: string;
     /** Branch into which the completed implementation is intended to merge. */
     "target-branch": string;
+    /** Folder-like prefix shared by every stage branch. @defaultValue "semantic-review/<review-id>" */
+    "branch-prefix"?: string;
     /** Stable kebab-case identifier for the initial requirement. */
     "requirement-id": string;
     /** Human-readable title for the initial requirement. */
@@ -172,11 +174,9 @@ export declare function recordValidation(options: RecordValidationOptions): void
 export interface FinishStageOptions {
     /** Working stage to finalize. */
     id: string;
-    /** Direct child implementation commit to bind to the stage. @defaultValue "HEAD" */
-    commit?: string;
 }
 /**
- * Finalizes a working stage against its implementation commit.
+ * Finalizes a working stage against the current stage branch head.
  * @cli semantic-review.mjs
  * @command stage finish
  */
@@ -191,31 +191,18 @@ export interface DiscardStageOptions {
  * @command stage discard
  */
 export declare function discardStage(options: DiscardStageOptions): void;
-export interface RewriteStageOptions {
-    /** Finalized stage that should absorb the fix. */
-    stage: string;
-    /** Fix commit directly after the current stage stack. @defaultValue "HEAD" */
-    fix?: string;
-}
-/**
- * Folds one fix commit into a stage and replays every downstream stage.
- * @cli semantic-review.mjs
- * @command rewrite-stage
- */
-export declare function rewriteStage(options: RewriteStageOptions): void;
-export interface RefreshStagesOptions {
-    /** Replacement base revision when the stack was rebased. */
+export interface RestackOptions {
+    /** Earliest stage branch that was edited manually. */
+    from?: string;
+    /** Replacement trunk revision, usually the current target branch head. */
     base?: string;
-    /** Replacement bindings formatted as `<stage-id>=<revision>`. */
-    stage?: readonly string[];
 }
 /**
- * Refreshes stage commit bindings after an external rewrite or rebase.
- * Supply `base`, at least one `stage` entry, or both.
+ * Refreshes an edited stage branch and rebases every branch above it.
  * @cli semantic-review.mjs
- * @command refresh
+ * @command restack
  */
-export declare function refreshStages(options: RefreshStagesOptions): void;
+export declare function restack(options: RestackOptions): void;
 /**
  * Repairs unambiguous interrupted artifact mutations.
  * @cli semantic-review.mjs
@@ -232,18 +219,26 @@ export interface PublishArtifactOptions {
  * @command publish
  */
 export declare function publishArtifact(options?: PublishArtifactOptions): void;
-export interface PreparePrOptions {
-    /** Local PR-ready branch to create or verify. */
-    branch: string;
-    /** Performs all preflight checks without creating the branch. */
-    "check-only"?: true;
+export interface PrepareStackOptions {
+    /** Emits machine-readable local stack information. */
+    json?: true;
 }
 /**
- * Creates a local PR-ready branch without switching the current worktree.
+ * Verifies stage branches and prints their local base chain.
  * @cli semantic-review.mjs
- * @command prepare-pr
+ * @command prepare-stack
  */
-export declare function preparePr(options: PreparePrOptions): void;
+export declare function prepareStack(options?: PrepareStackOptions): void;
+export interface PrepareBranchOptions {
+    /** Local cumulative branch to create at the final reviewed stage head. */
+    branch: string;
+}
+/**
+ * Creates a local single-branch review head without changing the worktree.
+ * @cli semantic-review.mjs
+ * @command prepare-branch
+ */
+export declare function prepareBranch(options: PrepareBranchOptions): void;
 export interface ArchiveReviewOptions {
     /** Repository-relative archive directory ending in `.semantic-review`. @defaultValue ".semantic-review-history/<review-id>/.semantic-review" */
     destination?: string;
@@ -395,10 +390,10 @@ export interface ResolveFeedbackCommentOptions {
     summary: string;
     /** Stage rewritten to resolve the feedback. */
     stage: string;
-    /** Full stage commit captured when the feedback was submitted. */
-    previous: string;
-    /** Full current rewritten commit for the assigned stage. */
-    rewritten: string;
+    /** Full stage head captured when the feedback was submitted. */
+    "previous-head": string;
+    /** Full current rewritten head for the assigned stage. */
+    "rewritten-head": string;
 }
 /**
  * Records how a submitted feedback item was addressed.
@@ -409,10 +404,10 @@ export declare function resolveFeedbackComment(options: ResolveFeedbackCommentOp
 export interface RebindResolutionsOptions {
     /** Stage that was rewritten again. */
     stage: string;
-    /** Superseded rewritten commit. */
-    previous: string;
-    /** Current rewritten commit. */
-    rewritten: string;
+    /** Superseded rewritten head. */
+    "previous-head": string;
+    /** Current rewritten head. */
+    "rewritten-head": string;
 }
 /**
  * Moves existing resolutions to a later rewrite of the same stage.
@@ -440,16 +435,12 @@ export interface ApproveFeedbackBatchOptions {
  * @command batch approve-all
  */
 export declare function approveFeedbackBatch(options: ApproveFeedbackBatchOptions): void;
-export interface ApproveStackOptions {
-    /** Local PR-ready branch created after publication. */
-    branch: string;
-}
 /**
- * Validates feedback, publishes semantic metadata, and creates a PR-ready branch.
+ * Validates feedback, publishes semantic metadata, and reports the local stack.
  * @cli review-feedback.mjs
  * @command approve-stack
  */
-export declare function approveStack(options: ApproveStackOptions): void;
+export declare function approveStack(): void;
 /**
  * Validates feedback schemas, targets, statuses, and resolutions.
  * @cli review-feedback.mjs

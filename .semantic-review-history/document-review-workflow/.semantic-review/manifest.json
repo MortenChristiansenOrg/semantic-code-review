@@ -12,5 +12,6 @@
   "stages": [
     "note-stage-branches",
     "write-user-manual"
-  ]
+  ],
+  "branchPrefix": "semantic-review/document-review-workflow"
 }
