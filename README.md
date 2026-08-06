@@ -27,6 +27,11 @@ its own output while being developed. Its production CLI and generated API
 signature are compiled from the maintainable
 [TypeScript scripts project](scripts/package.json).
 
+The [semantic flow repair skill](skills/semantic-flow-repair/SKILL.md) is
+distributed alongside it. It guides an agent that encounters a defect in
+another repository to reproduce the problem there and repair the maintained
+sources in this repository.
+
 The [local review tool proof of concept](poc/README.md) loads the active
 artifact, renders its semantic stages, invokes the validator, and shows
 Git-backed branch-to-base diffs and feedback snapshots.
