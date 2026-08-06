@@ -1,6 +1,6 @@
 ---
 name: semantic-flow
-description: Use when implementing a substantial feature or user story that should be reviewed as ordered, intent-based stages. Invoke before implementation starts and keep using it through planning, coding, validation, feedback revisions, and publication. Do not use for small fixes, investigations, review-only tasks, or routine refactors.
+description: Use when implementing a substantial feature or user story that should be reviewed as ordered, intent-based stages. Invoke before implementation starts and keep using it through planning, coding, validation, feedback revisions, and publication. Only use when requested by the user.
 ---
 
 # Semantic Flow
