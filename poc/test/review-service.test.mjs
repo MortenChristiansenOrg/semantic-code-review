@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   readStageDiff,
+  readStageFileDiff,
   ReviewServiceError,
 } from "../src/review-service.mjs";
 
@@ -67,6 +68,16 @@ test("rejects artifact revisions before they can become Git options", async () =
       readStageDiff({
         repositoryRoot: root,
         stageId: "unsafe-stage",
+      }),
+      (error) =>
+        error instanceof ReviewServiceError &&
+        error.code === "invalid-git-revision",
+    );
+    await assert.rejects(
+      readStageFileDiff({
+        repositoryRoot: root,
+        stageId: "unsafe-stage",
+        filePath: "file.txt",
       }),
       (error) =>
         error instanceof ReviewServiceError &&

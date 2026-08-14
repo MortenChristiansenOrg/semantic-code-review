@@ -347,6 +347,23 @@ a:focus-visible {
   font-size: 0.72rem;
 }
 
+.criterion-copy {
+  min-width: 0;
+}
+
+.criterion-stage-list {
+  display: inline;
+  margin-left: 0.55rem;
+  color: var(--structure);
+  font-size: 0.64rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.criterion-stage-unaddressed {
+  color: #85540d;
+}
+
 .stage-workspace {
   display: grid;
   grid-template-columns: minmax(280px, 0.72fr) minmax(0, 2.3fr);
@@ -543,40 +560,102 @@ a:focus-visible {
   font: 620 1.25rem/1.2 "Bahnschrift", "Segoe UI", sans-serif;
 }
 
-.diff-button {
-  min-height: 38px;
-  padding: 0 0.9rem;
-  border: 1px solid var(--structure);
+.change-instruction {
+  margin: 0;
+  color: var(--muted);
+  font: 0.7rem/1.4 "Cascadia Code", Consolas, monospace;
+}
+
+.file-ledger {
+  display: grid;
+  gap: 1.2rem;
+  margin-top: 1.5rem;
+}
+
+.project-file-group {
+  border: 1px solid var(--line-strong);
+  background: #f8fafd;
+}
+
+.project-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 60px;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--line-strong);
+  background:
+    linear-gradient(90deg, rgb(22 166 182 / 10%), transparent 32%),
+    #edf2fa;
+}
+
+.project-file-header h4 {
+  margin: 0;
+  font: 620 0.98rem/1.2 "Bahnschrift", "Segoe UI", sans-serif;
+}
+
+.project-root {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.project-file-count {
   color: var(--structure);
+  font-size: 0.66rem;
+}
+
+.file-entry + .file-entry {
+  border-top: 1px solid var(--line);
+}
+
+.file-entry.is-expanded {
+  box-shadow: inset 4px 0 var(--cyan);
+}
+
+.file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  min-height: 58px;
+  background: var(--paper);
+}
+
+.file-row:hover,
+.file-entry.is-expanded .file-row {
+  background: #f2f7fc;
+}
+
+.file-row-toggle {
+  display: grid;
+  grid-template-columns: 28px 76px minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.75rem 1rem;
+  border: 0;
+  color: var(--ink);
+  text-align: left;
   background: transparent;
   cursor: pointer;
 }
 
-.diff-button:hover {
-  color: var(--paper);
-  background: var(--structure);
-}
-
-.diff-button:disabled {
-  cursor: wait;
-  opacity: 0.6;
-}
-
-.file-list {
+.file-disclosure {
   display: grid;
-  gap: 0.45rem;
-  margin: 1rem 0 0;
-  padding: 0;
-  list-style: none;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  color: var(--structure);
+  background: var(--paper);
+  font: 600 1rem/1 "Cascadia Code", Consolas, monospace;
 }
 
-.file-list li {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr) auto;
-  gap: 0.8rem;
-  align-items: baseline;
-  padding: 0.45rem 0;
-  border-bottom: 1px solid var(--line);
+.file-entry.is-expanded .file-disclosure {
+  border-color: var(--cyan);
+  color: var(--ink);
+  background: var(--cyan-soft);
 }
 
 .file-kind {
@@ -597,78 +676,319 @@ a:focus-visible {
   color: var(--fault);
 }
 
-.file-path {
+.file-path-group {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
   overflow-wrap: anywhere;
   font-size: 0.74rem;
 }
 
-.diff-output {
-  margin-top: 1rem;
+.file-directory {
+  color: var(--muted);
 }
 
-.unified-diff {
-  overflow: auto;
-  max-height: 620px;
+.file-name {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.previous-file-path {
+  width: 100%;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.62rem;
+}
+
+.file-row > .comment-action {
+  align-self: center;
+  margin-right: 1rem;
+}
+
+.file-diff-viewer {
+  min-width: 0;
+  border-top: 1px solid #314158;
+  color: #dce7f6;
+  background: #172033;
+  animation: unfold-diff 160ms ease-out both;
+}
+
+@keyframes unfold-diff {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.diff-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  min-height: 110px;
+  padding: 1.2rem;
+  color: #aebbd0;
+}
+
+.diff-loading p {
   margin: 0;
-  border: 1px solid var(--line-strong);
-  color: #dbe5f5;
-  background: #1e293b;
+  font-size: 0.72rem;
+}
+
+.diff-loading-mark {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgb(255 255 255 / 18%);
+  border-top-color: var(--cyan);
+  border-radius: 50%;
+  animation: diff-spin 700ms linear infinite;
+}
+
+@keyframes diff-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.diff-failure {
+  padding: 1rem;
+}
+
+.diff-viewer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+  min-height: 88px;
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid #35445c;
+  background:
+    linear-gradient(90deg, rgb(22 166 182 / 10%), transparent 42%),
+    #1c273b;
+}
+
+.diff-viewer-title {
+  min-width: 0;
+}
+
+.diff-viewer-title .eyebrow {
+  color: #80d7e1;
+}
+
+.diff-viewer-title h5 {
+  overflow: hidden;
+  margin: 0;
+  color: #f4f7fb;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-metrics {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0.45rem 0 0;
+  color: #8fa0b9;
+  font-size: 0.66rem;
+}
+
+.metric-addition {
+  color: #74dda8;
+}
+
+.metric-deletion {
+  color: #ff9898;
+}
+
+.diff-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(76px, 1fr));
+  flex: 0 0 auto;
+  padding: 4px;
+  border: 1px solid #405069;
+  background: #121a29;
+}
+
+.diff-mode-button {
+  min-height: 34px;
+  padding: 0 1rem;
+  border: 0;
+  color: #91a0b7;
+  background: transparent;
+  cursor: pointer;
+}
+
+.diff-mode-button:hover {
+  color: #fff;
+}
+
+.diff-mode-button.is-active {
+  color: #172033;
+  background: var(--cyan-soft);
+  box-shadow: 0 0 0 1px rgb(22 166 182 / 42%);
+}
+
+.diff-code-shell {
+  overflow: auto;
+  max-height: min(76vh, 860px);
+  background:
+    linear-gradient(90deg, transparent 132px, rgb(22 166 182 / 20%) 133px, transparent 134px),
+    #172033;
   tab-size: 2;
 }
 
-.unified-diff code {
+.diff-code {
   display: grid;
   min-width: max-content;
-  padding: 0.8rem 0;
-  font: 0.72rem/1.55 "Cascadia Code", Consolas, monospace;
+  padding: 0.75rem 0 1rem;
+  font: 0.72rem/1.58 "Cascadia Code", Consolas, monospace;
 }
 
-.unified-diff .diff-row {
+.code-row {
+  display: grid;
+  grid-template-columns: 34px 50px 50px 24px minmax(600px, 1fr);
+  min-height: 1.55rem;
+}
+
+.code-row:hover {
+  background-color: rgb(255 255 255 / 4%);
+}
+
+.line-number,
+.change-marker {
+  padding: 0 0.55rem;
+  color: #6f8099;
+  text-align: right;
+  user-select: none;
+}
+
+.change-marker {
+  padding: 0;
+  color: #8fa0b9;
+  text-align: center;
+}
+
+.source-line {
   display: block;
-  min-height: 1.1em;
-  padding-left: 1rem;
+  padding: 0 3.5rem 0 0.8rem;
+  color: #dce7f6;
   white-space: pre;
 }
 
-.diff-row {
-  position: relative;
+.code-addition {
+  background: rgb(38 119 78 / 26%);
 }
 
-.diff-line-copy {
-  display: inline-block;
-  padding-right: 3.5rem;
+.code-addition .new-line-number,
+.code-addition .change-marker {
+  color: #74dda8;
 }
 
-.diff-row > .comment-action {
-  position: sticky;
-  right: 0.35rem;
-  float: right;
-  min-width: 24px;
+.code-deletion {
+  background: rgb(182 65 65 / 24%);
+}
+
+.code-deletion .old-line-number,
+.code-deletion .change-marker {
+  color: #ff9898;
+}
+
+.code-context .source-line {
+  color: #ced8e7;
+}
+
+.hunk-row {
+  margin: 0.35rem 0;
+  color: #9de3eb;
+  background: rgb(22 166 182 / 12%);
+}
+
+.hunk-label {
+  grid-column: 5;
+  padding: 0 0.8rem;
+  color: #9de3eb;
+}
+
+.line-comment-space {
+  display: block;
+}
+
+.line-comment-action {
+  align-self: center;
+  justify-self: center;
+  min-width: 20px;
   min-height: 20px;
-  margin: 0.08rem 0.3rem 0 0.5rem;
   padding: 0;
-  border-color: currentColor;
-  color: inherit;
-  background: #1e293b;
+  border-color: #65758d;
+  color: #dce7f6;
+  background: #1d2a3f;
+  opacity: 0;
 }
 
-.diff-row.diff-addition {
-  color: #d9f8e5;
-  background: rgb(38 119 78 / 32%);
+.code-row:hover .line-comment-action,
+.line-comment-action:focus-visible {
+  opacity: 1;
 }
 
-.diff-row.diff-deletion {
-  color: #ffdede;
-  background: rgb(182 65 65 / 28%);
+.diff-gap-row {
+  grid-template-columns: 34px minmax(70px, 1fr) auto minmax(70px, 1fr);
+  align-items: center;
+  min-height: 2.6rem;
 }
 
-.diff-row.diff-hunk {
-  color: #b9ecf2;
-  background: rgb(22 166 182 / 14%);
+.diff-gap-rule {
+  height: 1px;
+  background: #35445c;
 }
 
-.diff-row.diff-file {
-  color: #ffd89f;
+.diff-gap-label {
+  padding: 0 1rem;
+  color: #8292aa;
+  font-size: 0.64rem;
+}
+
+.diff-empty,
+.binary-notice {
+  margin: 0;
+  padding: 2rem 1.2rem;
+  color: #aebbd0;
+}
+
+.syntax-comment {
+  color: #7f91aa;
+  font-style: italic;
+}
+
+.syntax-keyword {
+  color: #74c9ff;
+}
+
+.syntax-literal,
+.syntax-number {
+  color: #f7bd72;
+}
+
+.syntax-string {
+  color: #b9df9a;
+}
+
+.syntax-property {
+  color: #8ddce5;
+}
+
+.syntax-type,
+.syntax-tag {
+  color: #e6a5d0;
+}
+
+.file-path {
+  overflow-wrap: anywhere;
+  font-size: 0.74rem;
 }
 
 .inline-error {
@@ -719,10 +1039,12 @@ a:focus-visible {
 
 .context-list {
   display: grid;
+  min-width: 0;
 }
 
 .context-item {
   position: relative;
+  min-width: 0;
   padding: 1rem 0;
   border-bottom: 1px solid var(--line);
 }
@@ -764,8 +1086,10 @@ a:focus-visible {
 
 .context-primary,
 .context-secondary {
+  min-width: 0;
   margin: 0;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .context-primary {
@@ -777,6 +1101,41 @@ a:focus-visible {
   margin-top: 0.35rem;
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+.validation-status {
+  display: inline-flex;
+  width: fit-content;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid currentColor;
+  font: 0.64rem/1 "Cascadia Code", Consolas, monospace;
+  text-transform: uppercase;
+}
+
+.validation-passed {
+  color: #26774e;
+  background: #e2f3e9;
+}
+
+.validation-failed {
+  color: var(--fault);
+  background: var(--fault-soft);
+}
+
+.validation-not-run {
+  color: #85540d;
+  background: var(--amber-soft);
+}
+
+.context-command {
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--line-strong);
+  color: #40506a;
+  background: #edf2fa;
+  font-size: 0.68rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .empty-copy {
@@ -1175,6 +1534,44 @@ a:focus-visible {
     flex-direction: column;
   }
 
+  .project-file-header,
+  .diff-viewer-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .file-row-toggle {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .file-row-toggle .file-kind {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .file-path-group {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .file-row > .comment-action {
+    margin-right: 0.6rem;
+  }
+
+  .diff-mode-switch {
+    width: 100%;
+  }
+
+  .code-row {
+    grid-template-columns: 30px 42px 42px 20px minmax(420px, 1fr);
+  }
+
+  .diff-code-shell {
+    background:
+      linear-gradient(90deg, transparent 112px, rgb(22 166 182 / 20%) 113px, transparent 114px),
+      #172033;
+  }
+
   .feedback-panel {
     width: 100vw;
   }
@@ -1187,5 +1584,10 @@ a:focus-visible {
 
   .feedback-panel {
     transition: none;
+  }
+
+  .file-diff-viewer,
+  .diff-loading-mark {
+    animation: none;
   }
 }

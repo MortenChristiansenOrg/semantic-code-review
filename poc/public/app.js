@@ -18,6 +18,9 @@ let selectedStageId;
 let selectedBatchId;
 let pendingCommentTarget;
 let editingFeedbackItem;
+const fileDiffCache = new Map();
+const expandedStageFiles = new Map();
+const stageFileModes = new Map();
 
 reloadButton.addEventListener("click", () => loadReview());
 reviewToggle.addEventListener("click", () => {
@@ -92,6 +95,7 @@ async function loadReview() {
       );
     }
     review = reviewBody;
+    fileDiffCache.clear();
     validation = validationResponse.ok
       ? validationBody
       : {
@@ -244,16 +248,6 @@ function openCommentEdit(item) {
   commentBody.focus();
 }
 
-function parseUnifiedDiffPath(value) {
-  const raw = value.trimEnd();
-  if (raw === "/dev/null") return undefined;
-  const decoded =
-    raw.startsWith('"') && raw.endsWith('"') ? JSON.parse(raw) : raw;
-  return decoded.startsWith("a/") || decoded.startsWith("b/")
-    ? decoded.slice(2)
-    : decoded;
-}
-
 function renderValidationBanner() {
   const banner = element(
     "section",
@@ -302,6 +296,13 @@ function ledgerEntry(list, label, value, code = false) {
   list.append(group);
 }
 
+function stagesAddressingCriterion(value, requirementId, criterionId) {
+  const reference = `${requirementId}#${criterionId}`;
+  return allStages(value).filter(({ stage }) =>
+    stage.requirementRefs.includes(reference),
+  );
+}
+
 function renderRequirementStrip() {
   const section = element("section", "requirement-strip");
   const heading = element("div", "section-heading");
@@ -333,7 +334,26 @@ function renderRequirementStrip() {
         "criterion-id code-text",
         criterion.id,
       );
-      appendText(item, "span", "", criterion.text);
+      const criterionCopy = element("span", "criterion-copy");
+      criterionCopy.append(document.createTextNode(criterion.text));
+      const addressedStages = stagesAddressingCriterion(
+        review,
+        requirement.id,
+        criterion.id,
+      );
+      const stageList = element(
+        "span",
+        `criterion-stage-list code-text${
+          addressedStages.length ? "" : " criterion-stage-unaddressed"
+        }`,
+        addressedStages.length
+          ? `[Addressed in ${addressedStages
+              .map(({ order }) => order)
+              .join(", ")}]`
+          : "[Not yet addressed]",
+      );
+      criterionCopy.append(stageList);
+      item.append(criterionCopy);
       item.append(
         commentAction(
           {
@@ -484,7 +504,7 @@ function renderChangePanel(stage) {
   const heading = element("div", "change-heading");
   const title = element("div");
   appendText(title, "p", "eyebrow", "Git evidence");
-  appendText(title, "h3", "", "Files and patch");
+  appendText(title, "h3", "", "Changed files");
   heading.append(title);
   section.append(heading);
 
@@ -498,152 +518,611 @@ function renderChangePanel(stage) {
     return section;
   }
 
-  const fileList = element("ul", "file-list");
-  for (const file of stage.change.files) {
-    const item = element("li");
-    appendText(item, "span", `file-kind kind-${file.kind}`, file.kind);
-    const pathCopy = file.previousPath
-      ? `${file.previousPath} → ${file.path}`
-      : file.path;
-    appendText(item, "span", "code-text file-path", pathCopy);
-    item.append(
-      commentAction(
-        {
-          kind: "file",
-          label: `File: ${pathCopy}`,
-          stageId: stage.id,
-          path: file.path,
-        },
-        "Comment",
-      ),
-    );
-    fileList.append(item);
-  }
-
-  const button = element("button", "diff-button", "Load unified diff");
-  button.type = "button";
-  const output = element("div", "diff-output");
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    button.textContent = "Loading diff";
-    output.replaceChildren(
-      element("p", "empty-copy", "Reading patch from Git…"),
-    );
-    try {
-      const response = await fetch(
-        `/api/stages/${encodeURIComponent(stage.id)}/diff`,
-      );
-      const body = await response.json();
-      if (!response.ok) {
-        throw new Error(body.error?.message ?? "Diff request failed.");
-      }
-      renderUnifiedDiff(output, body.diff, stage);
-      button.textContent = "Reload unified diff";
-    } catch (error) {
-      output.replaceChildren(
-        element("p", "inline-error", error.message),
-      );
-      button.textContent = "Retry unified diff";
-    } finally {
-      button.disabled = false;
-    }
-  });
-
-  heading.append(button);
-  section.append(fileList, output);
+  appendText(
+    heading,
+    "p",
+    "change-instruction",
+    `${stage.change.files.length} files · Select a file to inspect its stage diff`,
+  );
+  section.append(renderFileLedger(stage));
   return section;
 }
 
-function renderUnifiedDiff(container, diff, stage) {
-  const pre = element("pre", "unified-diff");
-  const code = element("code");
-  for (const parsed of parseUnifiedDiffRows(diff)) {
-    const row = element("span", `diff-row ${parsed.kind}`);
-    appendText(row, "span", "diff-line-copy", parsed.line || " ");
-    if (parsed.target) {
-      row.append(
-        commentAction(
-          {
-            kind: "line",
-            label: `${parsed.target.path}:${parsed.target.line} (${parsed.target.side})`,
-            stageId: stage.id,
-            path: parsed.target.path,
-            side: parsed.target.side,
-            line: parsed.target.line,
-          },
-          "+",
-        ),
-      );
+function groupStageFiles(files) {
+  const groups = new Map();
+  for (const file of files) {
+    const project = file.project ?? {
+      root: ".",
+      name: "Repository root",
+    };
+    const key = `${project.root}\0${project.name}`;
+    if (!groups.has(key)) {
+      groups.set(key, { project, files: [] });
     }
-    code.append(row);
+    groups.get(key).files.push(file);
   }
-  pre.append(code);
-  container.replaceChildren(pre);
+  return [...groups.values()];
 }
 
-function parseUnifiedDiffRows(diff) {
-  const rows = [];
-  let oldPath;
-  let newPath;
+function renderFileLedger(stage) {
+  const ledger = element("div", "file-ledger");
+  const expandedPath = expandedStageFiles.get(stage.id);
+  for (const { project, files } of groupStageFiles(stage.change.files)) {
+    const group = element("section", "project-file-group");
+    const header = element("header", "project-file-header");
+    const identity = element("div");
+    appendText(identity, "h4", "", project.name);
+    appendText(
+      identity,
+      "p",
+      "code-text project-root",
+      project.root === "." ? "repository root" : project.root,
+    );
+    appendText(
+      header,
+      "span",
+      "project-file-count code-text",
+      `${files.length} ${files.length === 1 ? "file" : "files"}`,
+    );
+    header.prepend(identity);
+    group.append(header);
+    for (const file of files) {
+      group.append(renderFileEntry(stage, file, expandedPath === file.path));
+    }
+    ledger.append(group);
+  }
+  return ledger;
+}
+
+function projectRelativePath(file) {
+  const root = file.project?.root;
+  return root && root !== "." && file.path.startsWith(`${root}/`)
+    ? file.path.slice(root.length + 1)
+    : file.path;
+}
+
+function renderFileEntry(stage, file, expanded) {
+  const article = element(
+    "article",
+    `file-entry${expanded ? " is-expanded" : ""}`,
+  );
+  const row = element("div", "file-row");
+  const toggle = element("button", "file-row-toggle");
+  toggle.type = "button";
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute(
+    "aria-label",
+    `${expanded ? "Collapse" : "Expand"} diff for ${file.path}`,
+  );
+  appendText(toggle, "span", "file-disclosure", expanded ? "−" : "+");
+  appendText(toggle, "span", `file-kind kind-${file.kind}`, file.kind);
+  const pathGroup = element("span", "file-path-group");
+  const relativePath = projectRelativePath(file);
+  const slash = relativePath.lastIndexOf("/");
+  if (slash >= 0) {
+    appendText(
+      pathGroup,
+      "span",
+      "code-text file-directory",
+      relativePath.slice(0, slash + 1),
+    );
+  }
+  appendText(
+    pathGroup,
+    "span",
+    "code-text file-name",
+    relativePath.slice(slash + 1),
+  );
+  if (file.previousPath) {
+    appendText(
+      pathGroup,
+      "span",
+      "code-text previous-file-path",
+      `from ${file.previousPath}`,
+    );
+  }
+  toggle.append(pathGroup);
+  toggle.addEventListener("click", () => {
+    if (expandedStageFiles.get(stage.id) === file.path) {
+      expandedStageFiles.delete(stage.id);
+    } else {
+      expandedStageFiles.set(stage.id, file.path);
+    }
+    const ledger = article.closest(".file-ledger");
+    const replacement = renderFileLedger(stage);
+    ledger.replaceWith(replacement);
+    if (expandedStageFiles.get(stage.id)) {
+      requestAnimationFrame(() => {
+        replacement
+          .querySelector(".file-entry.is-expanded")
+          ?.scrollIntoView({
+            behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")
+              .matches
+              ? "auto"
+              : "smooth",
+            block: "nearest",
+          });
+      });
+    }
+  });
+  const pathCopy = file.previousPath
+    ? `${file.previousPath} → ${file.path}`
+    : file.path;
+  const fileComment = commentAction(
+    {
+      kind: "file",
+      label: `File: ${pathCopy}`,
+      stageId: stage.id,
+      path: file.path,
+    },
+    "Comment",
+  );
+  row.append(toggle, fileComment);
+  article.append(row);
+
+  if (expanded) {
+    const viewer = element("section", "file-diff-viewer");
+    viewer.setAttribute("aria-label", `Diff for ${file.path}`);
+    viewer.append(renderDiffLoading(file.path));
+    article.append(viewer);
+    queueMicrotask(() => loadFileDiff(viewer, stage, file));
+  }
+  return article;
+}
+
+function renderDiffLoading(filePath) {
+  const state = element("div", "diff-loading");
+  appendText(state, "span", "diff-loading-mark", "");
+  appendText(state, "p", "code-text", `Reading ${filePath} from Git…`);
+  return state;
+}
+
+function fileDiffKey(stage, file) {
+  return `${stage.id}\0${file.path}`;
+}
+
+async function loadFileDiff(viewer, stage, file) {
+  const key = fileDiffKey(stage, file);
+  if (!fileDiffCache.has(key)) {
+    fileDiffCache.set(
+      key,
+      fetch(
+        `/api/stages/${encodeURIComponent(stage.id)}/file-diff?path=${encodeURIComponent(file.path)}`,
+        { headers: { accept: "application/json" } },
+      ).then(async (response) => {
+        const body = await response.json();
+        if (!response.ok) {
+          throw new Error(body.error?.details || body.error?.message);
+        }
+        return body;
+      }),
+    );
+  }
+  try {
+    const data = await fileDiffCache.get(key);
+    if (viewer.isConnected) renderFileDiffViewer(viewer, stage, file, data);
+  } catch (error) {
+    fileDiffCache.delete(key);
+    if (!viewer.isConnected) return;
+    const retry = element("button", "secondary-button", "Retry file diff");
+    retry.type = "button";
+    retry.addEventListener("click", () => {
+      viewer.replaceChildren(renderDiffLoading(file.path));
+      loadFileDiff(viewer, stage, file);
+    });
+    const failure = element("div", "diff-failure");
+    appendText(failure, "p", "inline-error", error.message);
+    failure.append(retry);
+    viewer.replaceChildren(failure);
+  }
+}
+
+function renderFileDiffViewer(viewer, stage, file, data) {
+  const key = fileDiffKey(stage, file);
+  const availableModes = diffModesForFile(data.kind);
+  const preferredMode = stageFileModes.get(key);
+  const mode = availableModes.some(([value]) => value === preferredMode)
+    ? preferredMode
+    : availableModes[0][0];
+  const header = element("header", "diff-viewer-header");
+  const title = element("div", "diff-viewer-title");
+  appendText(title, "p", "eyebrow", mode === "patch" ? "Stage patch" : "Full file");
+  appendText(title, "h5", "code-text", file.path);
+  const metrics = element("p", "diff-metrics code-text");
+  if (data.binary) {
+    metrics.textContent = "Binary file";
+  } else {
+    appendText(metrics, "span", "metric-addition", `+${data.additions}`);
+    appendText(metrics, "span", "metric-deletion", `−${data.deletions}`);
+    metrics.append(
+      document.createTextNode(
+        mode === "patch" ? " · changed lines" : " · changes inline",
+      ),
+    );
+  }
+  title.append(metrics);
+
+  header.append(title);
+  if (availableModes.length > 1) {
+    const switcher = element("div", "diff-mode-switch");
+    switcher.setAttribute("role", "group");
+    switcher.setAttribute("aria-label", "Diff view");
+    for (const [value, label] of availableModes) {
+      const button = element(
+        "button",
+        `diff-mode-button${mode === value ? " is-active" : ""}`,
+        label,
+      );
+      button.type = "button";
+      button.setAttribute("aria-pressed", String(mode === value));
+      button.addEventListener("click", () => {
+        stageFileModes.set(key, value);
+        renderFileDiffViewer(viewer, stage, file, data);
+      });
+      switcher.append(button);
+    }
+    header.append(switcher);
+  }
+
+  const body = element("div", "diff-code-shell");
+  if (data.binary) {
+    appendText(
+      body,
+      "p",
+      "binary-notice",
+      "This binary change cannot be displayed as text.",
+    );
+  } else if (mode === "patch") {
+    body.append(renderPatchView(stage, file, data));
+  } else {
+    body.append(renderFullFileView(stage, file, data));
+  }
+  viewer.replaceChildren(header, body);
+}
+
+function diffModesForFile(kind) {
+  return kind === "added"
+    ? [["file", "File"]]
+    : [
+        ["patch", "Patch"],
+        ["file", "File"],
+      ];
+}
+
+function parseFilePatch(patch) {
+  const hunks = [];
+  let hunk;
   let oldLine;
   let newLine;
-  let inHunk = false;
-  for (const line of diff.split("\n")) {
-    let kind = "diff-context";
-    let lineTarget;
-    if (line.startsWith("diff --git ")) {
-      oldPath = undefined;
-      newPath = undefined;
-      oldLine = undefined;
-      newLine = undefined;
-      inHunk = false;
-      kind = "diff-file";
-    } else if (
-      !inHunk &&
-      (line.startsWith("+++ ") || line.startsWith("--- "))
-    ) {
-      kind = "diff-file";
-      const normalized = parseUnifiedDiffPath(line.slice(4));
-      if (line.startsWith("+++ ")) newPath = normalized;
-      if (line.startsWith("--- ")) oldPath = normalized;
-    } else if (line.startsWith("@@")) {
-      kind = "diff-hunk";
-      inHunk = true;
-      const match = line.match(
-        /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/,
-      );
-      if (match) {
-        oldLine = Number(match[1]);
-        newLine = Number(match[2]);
-      }
-    } else if (line.startsWith("+")) {
-      kind = "diff-addition";
-      lineTarget = { path: newPath, side: "new", line: newLine };
+  for (const line of patch.split("\n")) {
+    const match = line.match(
+      /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/,
+    );
+    if (match) {
+      hunk = {
+        header: line,
+        oldStart: Number(match[1]),
+        oldCount: match[2] === undefined ? 1 : Number(match[2]),
+        newStart: Number(match[3]),
+        newCount: match[4] === undefined ? 1 : Number(match[4]),
+        context: match[5].trim(),
+        rows: [],
+      };
+      oldLine = hunk.oldStart;
+      newLine = hunk.newStart;
+      hunks.push(hunk);
+      continue;
+    }
+    if (!hunk || line.startsWith("\\ No newline")) continue;
+    if (line.startsWith("+")) {
+      hunk.rows.push({
+        kind: "addition",
+        content: line.slice(1),
+        newLine,
+      });
       newLine += 1;
     } else if (line.startsWith("-")) {
-      kind = "diff-deletion";
-      lineTarget = { path: oldPath, side: "old", line: oldLine };
+      hunk.rows.push({
+        kind: "deletion",
+        content: line.slice(1),
+        oldLine,
+      });
       oldLine += 1;
-    } else if (
-      oldLine !== undefined &&
-      newLine !== undefined &&
-      !line.startsWith("\\")
-    ) {
-      lineTarget = {
-        path: newPath ?? oldPath,
-        side: "new",
-        line: newLine,
-      };
+    } else if (line.startsWith(" ")) {
+      hunk.rows.push({
+        kind: "context",
+        content: line.slice(1),
+        oldLine,
+        newLine,
+      });
       oldLine += 1;
       newLine += 1;
     }
+  }
+  return hunks;
+}
+
+function contentLines(content) {
+  if (content === undefined || content === "") return [];
+  const lines = content.replaceAll("\r\n", "\n").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function buildFullFileRows(data) {
+  const oldLines = contentLines(data.oldContent);
+  const newLines = contentLines(data.newContent);
+  if (data.kind === "deleted") {
+    return oldLines.map((content, index) => ({
+      kind: "deletion",
+      content,
+      oldLine: index + 1,
+    }));
+  }
+  if (data.kind === "added") {
+    return newLines.map((content, index) => ({
+      kind: "addition",
+      content,
+      newLine: index + 1,
+    }));
+  }
+
+  const rows = [];
+  let newCursor = 1;
+  let oldOffset = 0;
+  for (const hunk of parseFilePatch(data.patch)) {
+    while (newCursor < hunk.newStart) {
+      rows.push({
+        kind: "context",
+        content: newLines[newCursor - 1] ?? "",
+        oldLine: newCursor + oldOffset,
+        newLine: newCursor,
+      });
+      newCursor += 1;
+    }
+    for (const row of hunk.rows) {
+      if (row.kind === "deletion") {
+        rows.push(row);
+      } else {
+        rows.push({
+          ...row,
+          content: newLines[row.newLine - 1] ?? row.content,
+        });
+        newCursor = row.newLine + 1;
+      }
+    }
+    oldOffset += hunk.oldCount - hunk.newCount;
+  }
+  while (newCursor <= newLines.length) {
     rows.push({
-      line,
-      kind,
-      target: lineTarget?.path ? lineTarget : undefined,
+      kind: "context",
+      content: newLines[newCursor - 1],
+      oldLine: newCursor + oldOffset,
+      newLine: newCursor,
     });
+    newCursor += 1;
   }
   return rows;
+}
+
+function renderPatchView(stage, file, data) {
+  const code = element("div", "diff-code");
+  const hunks = parseFilePatch(data.patch);
+  if (!hunks.length) {
+    appendText(
+      code,
+      "p",
+      "diff-empty",
+      "No textual hunks were recorded for this file.",
+    );
+    return code;
+  }
+  hunks.forEach((hunk, index) => {
+    if (index > 0) {
+      const previous = hunks[index - 1];
+      const skipped = Math.max(
+        0,
+        hunk.newStart - (previous.newStart + previous.newCount),
+      );
+      if (skipped > 0) code.append(renderDiffGap(skipped));
+    }
+    code.append(renderHunkHeader(hunk));
+    for (const row of hunk.rows) {
+      code.append(renderCodeRow(stage, file, data.language, row));
+    }
+  });
+  return code;
+}
+
+function renderFullFileView(stage, file, data) {
+  const code = element("div", "diff-code full-file-code");
+  const rows = buildFullFileRows(data);
+  if (!rows.length) {
+    appendText(code, "p", "diff-empty", "This file has no text content.");
+    return code;
+  }
+  for (const row of rows) {
+    code.append(renderCodeRow(stage, file, data.language, row));
+  }
+  return code;
+}
+
+function renderHunkHeader(hunk) {
+  const row = element("div", "code-row hunk-row");
+  appendText(row, "span", "line-comment-space", "");
+  appendText(row, "span", "line-number", "···");
+  appendText(row, "span", "line-number", "···");
+  appendText(row, "span", "change-marker", "@@");
+  appendText(
+    row,
+    "span",
+    "hunk-label code-text",
+    hunk.context || `${hunk.oldStart} → ${hunk.newStart}`,
+  );
+  return row;
+}
+
+function renderDiffGap(skipped) {
+  const row = element("div", "code-row diff-gap-row");
+  appendText(row, "span", "line-comment-space", "");
+  appendText(row, "span", "diff-gap-rule", "");
+  appendText(
+    row,
+    "span",
+    "diff-gap-label code-text",
+    `${skipped} unchanged ${skipped === 1 ? "line" : "lines"}`,
+  );
+  appendText(row, "span", "diff-gap-rule", "");
+  return row;
+}
+
+function renderCodeRow(stage, file, language, row) {
+  const line = element("div", `code-row code-${row.kind}`);
+  const target =
+    row.kind === "deletion"
+      ? {
+          path: file.previousPath ?? file.path,
+          side: "old",
+          line: row.oldLine,
+        }
+      : {
+          path: file.path,
+          side: "new",
+          line: row.newLine,
+        };
+  if (target.line) {
+    const action = commentAction(
+      {
+        kind: "line",
+        label: `${target.path}:${target.line} (${target.side})`,
+        stageId: stage.id,
+        path: target.path,
+        side: target.side,
+        line: target.line,
+      },
+      "+",
+    );
+    action.classList.add("line-comment-action");
+    action.setAttribute(
+      "aria-label",
+      `Comment on ${target.path} line ${target.line}`,
+    );
+    line.append(action);
+  } else {
+    appendText(line, "span", "line-comment-space", "");
+  }
+  appendText(
+    line,
+    "span",
+    "line-number old-line-number",
+    row.oldLine ? String(row.oldLine) : "",
+  );
+  appendText(
+    line,
+    "span",
+    "line-number new-line-number",
+    row.newLine ? String(row.newLine) : "",
+  );
+  appendText(
+    line,
+    "span",
+    "change-marker",
+    row.kind === "addition" ? "+" : row.kind === "deletion" ? "−" : "",
+  );
+  const source = element("span", "source-line");
+  appendHighlightedCode(source, row.content, language);
+  line.append(source);
+  return line;
+}
+
+const LANGUAGE_KEYWORDS = {
+  csharp: new Set(
+    "abstract as async await base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params partial private protected public readonly record ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while yield var dynamic required init".split(
+      " ",
+    ),
+  ),
+  javascript: new Set(
+    "async await break case catch class const continue debugger default delete do else export extends false finally for from function get if import in instanceof let new null of return set static super switch this throw true try typeof undefined var void while with yield".split(
+      " ",
+    ),
+  ),
+  typescript: new Set(
+    "abstract any as async await boolean break case catch class const constructor continue declare default delete do else enum export extends false finally for from function get if implements import in infer instanceof interface keyof let namespace never new null number object of private protected public readonly return set static string super switch symbol this throw true try type typeof undefined unknown var void while with yield".split(
+      " ",
+    ),
+  ),
+  python: new Set(
+    "and as assert async await break class continue def del elif else except false finally for from global if import in is lambda none nonlocal not or pass raise return true try while with yield".split(
+      " ",
+    ),
+  ),
+  sql: new Set(
+    "add alter and as asc begin between by case check column commit constraint create database default delete desc distinct drop else end exists foreign from full group having in index inner insert into is join key left like limit not null on or order outer primary references right rollback select set table then union unique update values view when where".split(
+      " ",
+    ),
+  ),
+};
+
+function syntaxTokenClass(token, source, index, language) {
+  if (
+    token.startsWith("//") ||
+    token.startsWith("<!--") ||
+    (token.startsWith("#") && language !== "csharp")
+  ) {
+    return "syntax-comment";
+  }
+  if (/^["'`]/.test(token)) {
+    const tail = source.slice(index + token.length);
+    return language === "json" && /^\s*:/.test(tail)
+      ? "syntax-property"
+      : "syntax-string";
+  }
+  if (/^\d/.test(token)) return "syntax-number";
+  const normalized = token.toLowerCase();
+  const keywords =
+    LANGUAGE_KEYWORDS[language] ??
+    (language === "typescript"
+      ? LANGUAGE_KEYWORDS.javascript
+      : LANGUAGE_KEYWORDS.csharp);
+  if (keywords?.has(normalized)) {
+    return ["true", "false", "null", "undefined", "none"].includes(normalized)
+      ? "syntax-literal"
+      : "syntax-keyword";
+  }
+  if (
+    ["xml", "html"].includes(language) &&
+    source.lastIndexOf("<", index) > source.lastIndexOf(">", index)
+  ) {
+    return "syntax-tag";
+  }
+  if (/^[A-Z][A-Za-z0-9_]*$/.test(token)) return "syntax-type";
+  return "";
+}
+
+function appendHighlightedCode(container, source, language) {
+  const pattern =
+    /(\/\/.*$|#[^\n]*$|<!--.*?-->|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b)/gm;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) {
+      container.append(document.createTextNode(source.slice(cursor, match.index)));
+    }
+    const className = syntaxTokenClass(
+      match[0],
+      source,
+      match.index,
+      language,
+    );
+    if (className) {
+      appendText(container, "span", className, match[0]);
+    } else {
+      container.append(document.createTextNode(match[0]));
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < source.length) {
+    container.append(document.createTextNode(source.slice(cursor)));
+  }
 }
 
 function renderReferenceBand(stage) {
@@ -760,10 +1239,19 @@ function renderCollection(title, items, linesFor, tone = "") {
     appendText(card, "p", "context-id code-text", item.id);
     const lines = linesFor(item).filter(Boolean);
     lines.forEach((line, index) => {
+      const classNames = [
+        index === 0 ? "context-primary" : "context-secondary",
+      ];
+      if (title === "Validation" && index === 1) {
+        classNames.push("validation-status", `validation-${item.status}`);
+      }
+      if (title === "Validation" && index === 2) {
+        classNames.push("context-command", "code-text");
+      }
       appendText(
         card,
         "p",
-        index === 0 ? "context-primary" : "context-secondary",
+        classNames.join(" "),
         line,
       );
     });

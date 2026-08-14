@@ -14,12 +14,21 @@ Open <http://127.0.0.1:4173>. The server reads the repository's
 `.semantic-review` artifact on every request, so finalized and working-stage
 changes appear without restarting it.
 
+To review another project, pass its absolute or relative path:
+
+```powershell
+npm start --prefix .\poc -- C:\Code\project
+npm start --prefix .\poc -- ..\project
+```
+
 See the [user manual](../docs/user-manual.md) for the reviewer workflow.
 
 The workspace provides:
 
 - Manifest-indexed requirements and semantic stages.
 - Working and finalized stage state.
+- Project-grouped changed files with expandable syntax-highlighted patch and
+  full-file diff views.
 - Rationale, decisions, assumptions, alternatives, failures, risks, evidence,
   and open questions.
 - Authoritative artifact validation through the semantic review CLI.

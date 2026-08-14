@@ -6,6 +6,7 @@ import process from "node:process";
 import { promisify } from "node:util";
 import { readSemanticReview } from "./artifact-reader.mjs";
 import { ReviewServiceError } from "./review-service.mjs";
+import { reviewFeedbackCli } from "./semantic-flow-tools.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,21 +30,11 @@ function generatedId(prefix) {
     .toString("hex")}`;
 }
 
-function feedbackCli(repositoryRoot) {
-  return path.join(
-    repositoryRoot,
-    "skills",
-    "semantic-flow",
-    "scripts",
-    "review-feedback.mjs",
-  );
-}
-
 async function runFeedbackCommand(repositoryRoot, args) {
   try {
     const { stdout } = await execFileAsync(
       process.execPath,
-      [feedbackCli(repositoryRoot), ...args],
+      [reviewFeedbackCli, ...args],
       {
         cwd: repositoryRoot,
         encoding: "utf8",

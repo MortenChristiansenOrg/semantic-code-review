@@ -5,7 +5,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { ArtifactError, readSemanticReview } from "./artifact-reader.mjs";
 import {
+  annotateReviewProjects,
   readStageDiff,
+  readStageFileDiff,
   ReviewServiceError,
   validateCurrentReview,
 } from "./review-service.mjs";
@@ -32,6 +34,19 @@ const defaultRepositoryRoot = path.resolve(
 );
 const LOCAL_HOST_PATTERN =
   /^(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$|^\[::1\](?::\d{1,5})?$/i;
+
+export function resolveRepositoryRootArgument(
+  args,
+  {
+    cwd = process.cwd(),
+    environmentRoot = process.env.REPOSITORY_ROOT,
+  } = {},
+) {
+  if (args.length > 1) {
+    throw new Error("Usage: npm start --prefix .\\poc -- [project-path]");
+  }
+  return path.resolve(cwd, args[0] ?? environmentRoot ?? defaultRepositoryRoot);
+}
 
 function sendJson(response, status, body) {
   const content = `${JSON.stringify(body, null, 2)}\n`;
@@ -180,7 +195,9 @@ export function createReviewServer({ repositoryRoot }) {
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/review") {
-        const review = await readSemanticReview({ repositoryRoot: root });
+        const review = await annotateReviewProjects(
+          await readSemanticReview({ repositoryRoot: root }),
+        );
         sendJson(response, 200, review);
         return;
       }
@@ -341,6 +358,18 @@ export function createReviewServer({ repositoryRoot }) {
       const diffMatch = url.pathname.match(
         /^\/api\/stages\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/diff$/,
       );
+      const fileDiffMatch = url.pathname.match(
+        /^\/api\/stages\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/file-diff$/,
+      );
+      if (request.method === "GET" && fileDiffMatch) {
+        const diff = await readStageFileDiff({
+          repositoryRoot: root,
+          stageId: fileDiffMatch[1],
+          filePath: url.searchParams.get("path"),
+        });
+        sendJson(response, 200, diff);
+        return;
+      }
       if (request.method === "GET" && diffMatch) {
         const diff = await readStageDiff({
           repositoryRoot: root,
@@ -409,9 +438,18 @@ export async function startServer({
 }
 
 if (path.resolve(process.argv[1] ?? "") === modulePath) {
-  const server = await startServer();
-  const address = server.address();
-  console.log(
-    `Semantic Review Tool POC listening at http://${address.address}:${address.port}`,
-  );
+  try {
+    const repositoryRoot = resolveRepositoryRootArgument(
+      process.argv.slice(2),
+    );
+    const server = await startServer({ repositoryRoot });
+    const address = server.address();
+    console.log(
+      `Semantic Review Tool POC listening at http://${address.address}:${address.port}`,
+    );
+    console.log(`Project: ${repositoryRoot}`);
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+  }
 }

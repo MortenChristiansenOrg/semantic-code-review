@@ -8,7 +8,10 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { readSemanticReview } from "../src/artifact-reader.mjs";
 import { initializeFeedback } from "../src/feedback-service.mjs";
-import { startServer } from "../src/server.mjs";
+import {
+  resolveRepositoryRootArgument,
+  startServer,
+} from "../src/server.mjs";
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(testDirectory, "..", "..");
@@ -38,6 +41,41 @@ function requestWithHost({ port, host, requestPath }) {
     request.on("error", reject);
   });
 }
+
+test("resolves optional absolute and relative project arguments", () => {
+  const cwd = path.join(repositoryRoot, "fixtures");
+  const absolute = path.join(repositoryRoot, "external-project");
+
+  assert.equal(
+    resolveRepositoryRootArgument([absolute], {
+      cwd,
+      environmentRoot: undefined,
+    }),
+    absolute,
+  );
+  assert.equal(
+    resolveRepositoryRootArgument([".."], {
+      cwd,
+      environmentRoot: undefined,
+    }),
+    repositoryRoot,
+  );
+  assert.equal(
+    resolveRepositoryRootArgument([], {
+      cwd,
+      environmentRoot: absolute,
+    }),
+    absolute,
+  );
+  assert.throws(
+    () =>
+      resolveRepositoryRootArgument(["first", "second"], {
+        cwd,
+        environmentRoot: undefined,
+      }),
+    /Usage:/,
+  );
+});
 
 async function postJson(url, body = {}) {
   return fetch(url, {
@@ -131,7 +169,7 @@ test("keeps feedback browser handlers in page scope", () => {
     .readFileSync(appPath, "utf8")
     .replace(
       /loadReview\(\);\s*$/,
-      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, parseUnifiedDiffRows, parseUnifiedDiffPath };",
+      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, stagesAddressingCriterion, diffModesForFile, parseFilePatch, buildFullFileRows };",
     );
   const node = {
     addEventListener() {},
@@ -153,26 +191,66 @@ test("keeps feedback browser handlers in page scope", () => {
   assert.equal(typeof context.browserHandlers.renderFeedbackPanel, "function");
   assert.equal(typeof context.browserHandlers.openCommentEdit, "function");
   assert.equal(typeof context.browserHandlers.apiRequest, "function");
-  const deletedRows = context.browserHandlers.parseUnifiedDiffRows(
-    "diff --git a/deleted.txt b/deleted.txt\n--- a/deleted.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-old value",
-  );
-  assert.equal(deletedRows.at(-1).target.path, "deleted.txt");
-  assert.equal(deletedRows.at(-1).target.side, "old");
+  const requirementStages =
+    context.browserHandlers.stagesAddressingCriterion(
+      {
+        stages: [
+          {
+            id: "first-stage",
+            requirementRefs: ["story#first"],
+          },
+          {
+            id: "second-stage",
+            requirementRefs: ["other#criterion"],
+          },
+        ],
+        workingStages: [
+          {
+            id: "third-stage",
+            requirementRefs: ["story#second"],
+          },
+        ],
+      },
+      "story",
+      "first",
+    );
   assert.equal(
-    context.browserHandlers.parseUnifiedDiffPath(
-      "b/Initial design discussion.md\t",
-    ),
-    "Initial design discussion.md",
+    JSON.stringify(requirementStages.map(({ stage }) => stage.id)),
+    JSON.stringify(["first-stage"]),
   );
   assert.equal(
-    context.browserHandlers.parseUnifiedDiffPath('"b/a path.txt"'),
-    "a path.txt",
+    JSON.stringify(context.browserHandlers.diffModesForFile("added")),
+    JSON.stringify([["file", "File"]]),
   );
-  const headerLikeContent = context.browserHandlers.parseUnifiedDiffRows(
-    "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n--- old content\n+++ new content",
+  assert.equal(
+    JSON.stringify(context.browserHandlers.diffModesForFile("modified")),
+    JSON.stringify([
+      ["patch", "Patch"],
+      ["file", "File"],
+    ]),
   );
-  assert.equal(headerLikeContent.at(-2).target.side, "old");
-  assert.equal(headerLikeContent.at(-1).target.side, "new");
+  const hunks = context.browserHandlers.parseFilePatch(
+    "@@ -1,2 +1,2 @@\n-old value\n+new value\n stable",
+  );
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].rows[0].kind, "deletion");
+  assert.equal(hunks[0].rows[0].oldLine, 1);
+  assert.equal(hunks[0].rows[1].kind, "addition");
+  assert.equal(hunks[0].rows[1].newLine, 1);
+  const fullRows = context.browserHandlers.buildFullFileRows({
+    kind: "modified",
+    oldContent: "old value\nstable\n",
+    newContent: "new value\nstable\n",
+    patch: "@@ -1,2 +1,2 @@\n-old value\n+new value\n stable",
+  });
+  assert.equal(
+    JSON.stringify(fullRows.map((row) => [row.kind, row.content])),
+    JSON.stringify([
+      ["deletion", "old value"],
+      ["addition", "new value"],
+      ["context", "stable"],
+    ]),
+  );
 });
 
 test("serves authoritative validation and a finalized stage diff", async () => {
@@ -198,6 +276,38 @@ test("serves authoritative validation and a finalized stage diff", async () => {
     assert.equal(diff.stageId, firstStage.id);
     assert.ok(diff.diff.length > 0);
     assert.ok(diff.diff.includes(firstStage.change.files[0].path));
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
+test("serves project-grouped files and a focused stage file diff", async () => {
+  const expected = await readSemanticReview({ repositoryRoot });
+  const firstStage = expected.stages[0];
+  const firstFile = firstStage.change.files[0];
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const [reviewResponse, fileResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/review`),
+      fetch(
+        `${baseUrl}/api/stages/${firstStage.id}/file-diff?path=${encodeURIComponent(firstFile.path)}`,
+      ),
+    ]);
+    const [reviewBody, fileDiff] = await Promise.all([
+      reviewResponse.json(),
+      fileResponse.json(),
+    ]);
+
+    assert.equal(reviewResponse.status, 200);
+    assert.ok(reviewBody.stages[0].change.files[0].project.name);
+    assert.equal(fileResponse.status, 200);
+    assert.equal(fileDiff.path, firstFile.path);
+    assert.ok(fileDiff.patch.includes(firstFile.path));
+    assert.ok(fileDiff.oldContent !== undefined || fileDiff.newContent !== undefined);
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
