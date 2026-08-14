@@ -86,6 +86,17 @@ node <skill-root>/scripts/semantic-review.mjs <command>
 node <skill-root>/scripts/review-feedback.mjs <command>
 ```
 
+All commands accept `--input <json-file>` or `--input -` for stdin. The JSON
+contains one object whose keys are CLI option names in camelCase or kebab-case;
+arrays represent repeated options and `true` represents a flag. Explicit
+command-line options may be used instead, but the same option cannot be supplied
+in both places. Prefer stdin or an operating-system temporary file so inputs do
+not violate clean-worktree checks.
+
+Commands that operate on the active working stage infer it when `--stage` or
+`--id` is omitted. `current` is accepted explicitly. Finalized-stage updates
+still require an explicit stage ID.
+
 Do not inspect the generated `.mjs` bundles to discover usage. Read their
 implementation only as a last resort when the API signature, skill guidance,
 and an observed command error cannot explain a tool defect or undocumented

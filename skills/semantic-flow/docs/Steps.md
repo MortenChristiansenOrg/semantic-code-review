@@ -50,6 +50,11 @@ Keep future stages in the agent's task plan. Register only the next stage.
 node <skill-root>/scripts/semantic-review.mjs init <options>
 ```
 
+Long commands may put options in a JSON object and pass `--input <json-file>`,
+or pipe the object to `--input -`; camelCase and kebab-case keys are accepted,
+arrays supply repeated options, and `true` supplies a flag. Prefer stdin or an
+operating-system temporary file so inputs do not dirty the repository.
+
 Initialization records the target branch head as `baseRevision` and defaults
 `branchPrefix` to:
 
@@ -82,7 +87,7 @@ Never hand-edit generated state.
 From the current stack tip:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage begin <options>
+node <skill-root>/scripts/semantic-review.mjs stage begin --input -
 ```
 
 The command creates and checks out the next deterministic branch. The first
@@ -100,7 +105,7 @@ assumptions, alternatives, failed attempts, risks, and questions when they
 arise:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage record <options>
+node <skill-root>/scripts/semantic-review.mjs stage record --input -
 ```
 
 Do not record routine choices, fabricated history, secrets, raw logs, or
@@ -112,7 +117,7 @@ Run the smallest existing checks that cover the stage and record observed
 results:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage validation <options>
+node <skill-root>/scripts/semantic-review.mjs stage validation --input -
 ```
 
 ### D. Commit and finalize
@@ -126,7 +131,7 @@ allowed; merge commits are not. Exclude `.semantic-review/` and
 `.semantic-review-feedback/`.
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage finish --id <stage-id>
+node <skill-root>/scripts/semantic-review.mjs stage finish
 ```
 
 Finalization captures:

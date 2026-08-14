@@ -15,6 +15,7 @@ import {
 } from "./command-api.js";
 import {
   assertKnownOptions,
+  expandInputOptions,
   flag,
   option,
   parseArguments,
@@ -837,6 +838,21 @@ function workingStage(paths, id) {
   return { file, stage: readJson(file) };
 }
 
+function selectedWorkingStageId(artifact, requested, optionName) {
+  if (requested && requested !== "current") {
+    return requested;
+  }
+  if (artifact.workStages.size === 0) {
+    fail(`No active working stage exists; specify --${optionName} explicitly.`);
+  }
+  if (artifact.workStages.size > 1) {
+    fail(
+      `More than one working stage exists; repair the artifact before using --${optionName} current.`,
+    );
+  }
+  return artifact.workStages.keys().next().value;
+}
+
 function updateWorkingStage(paths, id, update) {
   validateArtifact(paths, { quiet: true, validateGit: false });
   const { file, stage } = workingStage(paths, id);
@@ -879,7 +895,11 @@ function setStage(paths, options) {
     options,
     commandOptionNames(semanticReviewApi, "stage set"),
   );
-  const id = option(options, "id", { required: true });
+  const artifact = validateArtifact(paths, {
+    quiet: true,
+    validateGit: false,
+  });
+  const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
   const title = option(options, "title");
   const summary = option(options, "summary");
   const rationale = option(options, "rationale");
@@ -986,11 +1006,20 @@ function recordStageItem(paths, options) {
     options,
     commandOptionNames(semanticReviewApi, "stage record"),
   );
-  const stageId = option(options, "stage", { required: true });
+  const finalized = flag(options, "finalized");
+  const requestedStage = option(options, "stage");
+  if (finalized && (!requestedStage || requestedStage === "current")) {
+    fail("--finalized requires an explicit --stage <stage-id>.");
+  }
+  const artifact = finalized
+    ? undefined
+    : validateArtifact(paths, { quiet: true, validateGit: false });
+  const stageId = finalized
+    ? requestedStage
+    : selectedWorkingStageId(artifact, requestedStage, "stage");
   const kind = option(options, "kind", { required: true });
   const item = itemForKind(kind, options);
   const replace = flag(options, "replace");
-  const finalized = flag(options, "finalized");
   assertKnownOptions(
     options,
     new Set([
@@ -1033,9 +1062,18 @@ function recordValidation(paths, options) {
     options,
     commandOptionNames(semanticReviewApi, "stage validation"),
   );
-  const stageId = option(options, "stage", { required: true });
-  const replace = flag(options, "replace");
   const finalized = flag(options, "finalized");
+  const requestedStage = option(options, "stage");
+  if (finalized && (!requestedStage || requestedStage === "current")) {
+    fail("--finalized requires an explicit --stage <stage-id>.");
+  }
+  const artifact = finalized
+    ? undefined
+    : validateArtifact(paths, { quiet: true, validateGit: false });
+  const stageId = finalized
+    ? requestedStage
+    : selectedWorkingStageId(artifact, requestedStage, "stage");
+  const replace = flag(options, "replace");
   const value: Record<string, unknown> = {
     id: option(options, "item-id", { required: true }),
     type: option(options, "type", { required: true }),
@@ -1111,7 +1149,7 @@ function finishStage(paths, options) {
   );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Finalizing a stage");
-  const id = option(options, "id", { required: true });
+  const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
   const { file: workFile, stage: workStage } = workingStage(paths, id);
   if (artifact.stages.has(id)) {
     fail(`Stage ${id} is already finalized.`);
@@ -1166,8 +1204,11 @@ function discardStage(paths, options) {
     options,
     commandOptionNames(semanticReviewApi, "stage discard"),
   );
-  const id = option(options, "id", { required: true });
-  validateArtifact(paths, { quiet: true, validateGit: false });
+  const artifact = validateArtifact(paths, {
+    quiet: true,
+    validateGit: false,
+  });
+  const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
   const { file } = workingStage(paths, id);
   fs.rmSync(file);
   validateArtifact(paths, { quiet: true, validateGit: false });
@@ -1852,7 +1893,11 @@ try {
     process.exit(0);
   }
   const root = repositoryRoot();
-  dispatch(pathsFor(root), parsed.positionals, parsed.options);
+  dispatch(
+    pathsFor(root),
+    parsed.positionals,
+    expandInputOptions(parsed.options, process.cwd()),
+  );
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);

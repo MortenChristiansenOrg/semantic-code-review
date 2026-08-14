@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { fail } from "./errors.js";
 
 export type OptionValue = string | true;
@@ -11,6 +13,41 @@ export interface ParsedArguments {
 export interface OptionSettings {
   required?: boolean;
   defaultValue?: string;
+}
+
+function inputOptionName(name: string): string {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .replace(/_/g, "-")
+    .toLowerCase();
+}
+
+function inputOptionValues(name: string, value: unknown): OptionValue[] {
+  if (value === true) {
+    return [true];
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return [String(value)];
+  }
+  if (Array.isArray(value) && value.length > 0) {
+    return value.map((item) => {
+      if (typeof item === "string") {
+        return item;
+      }
+      if (typeof item === "number" && Number.isFinite(item)) {
+        return String(item);
+      }
+      fail(
+        `Input option ${name} arrays may contain only strings or finite numbers.`,
+      );
+    });
+  }
+  fail(
+    `Input option ${name} must be a string, finite number, true, or a non-empty array of strings or numbers.`,
+  );
 }
 
 export function parseArguments(values: string[]): ParsedArguments {
@@ -47,6 +84,42 @@ export function parseArguments(values: string[]): ParsedArguments {
   }
 
   return { positionals, options };
+}
+
+export function expandInputOptions(options: Options, cwd: string): Options {
+  const input = option(options, "input");
+  if (!input) {
+    return options;
+  }
+
+  const file = input === "-" ? "standard input" : path.resolve(cwd, input);
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      input === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(file, "utf8"),
+    );
+  } catch (error) {
+    fail(`Could not read JSON input ${file}: ${error.message}`);
+  }
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    fail(`JSON input ${file} must contain one object.`);
+  }
+
+  const expanded: Options = new Map(options);
+  expanded.delete("input");
+  for (const [rawName, rawValue] of Object.entries(value)) {
+    const name = inputOptionName(rawName);
+    if (name === "input" || name === "help") {
+      fail(`JSON input may not set --${name}.`);
+    }
+    if (expanded.has(name)) {
+      fail(
+        `Option --${name} is set both on the command line and in ${file}.`,
+      );
+    }
+    expanded.set(name, inputOptionValues(rawName, rawValue));
+  }
+  return expanded;
 }
 
 export function option(

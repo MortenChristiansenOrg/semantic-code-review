@@ -14,6 +14,7 @@ import {
 } from "./command-api.js";
 import {
   assertKnownOptions,
+  expandInputOptions,
   option,
   parseArguments,
 } from "./shared/arguments.js";
@@ -884,7 +885,10 @@ function dispatch(paths, positionals, options) {
 }
 
 try {
-  const { positionals, options } = parseArguments(process.argv.slice(2));
+  const { positionals, options: parsedOptions } = parseArguments(
+    process.argv.slice(2),
+  );
+  const options = expandInputOptions(parsedOptions, process.cwd());
   const paths = pathsFor(repositoryRoot());
   const readOnly =
     positionals.length === 0 ||

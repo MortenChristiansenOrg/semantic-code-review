@@ -36,7 +36,7 @@ const requirementOptions: OptionSignature[] = [
 export const semanticReviewApi: CliSignature = {
   executable: "semantic-review.mjs",
   title: "Semantic review artifact CLI",
-  globalOptions: [option("help")],
+  globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     {
       command: "init",
@@ -68,7 +68,7 @@ export const semanticReviewApi: CliSignature = {
     {
       command: "stage set",
       options: [
-        option("id", "<stage-id>", { required: true }),
+        option("id", "<stage-id|current>"),
         option("title", "<title>"),
         option("summary", "<summary>"),
         option("rationale", "<text>"),
@@ -81,7 +81,7 @@ export const semanticReviewApi: CliSignature = {
     {
       command: "stage record",
       options: [
-        option("stage", "<stage-id>", { required: true }),
+        option("stage", "<stage-id|current>"),
         option(
           "kind",
           "<decision|assumption|alternative|failed-attempt|risk|question>",
@@ -106,7 +106,7 @@ export const semanticReviewApi: CliSignature = {
     {
       command: "stage validation",
       options: [
-        option("stage", "<stage-id>", { required: true }),
+        option("stage", "<stage-id|current>"),
         option("item-id", "<id>", { required: true }),
         option("type", "<automated|manual|analysis>", { required: true }),
         option("status", "<passed|failed|not-run>", { required: true }),
@@ -118,11 +118,11 @@ export const semanticReviewApi: CliSignature = {
     },
     {
       command: "stage finish",
-      options: [option("id", "<stage-id>", { required: true })],
+      options: [option("id", "<stage-id|current>")],
     },
     {
       command: "stage discard",
-      options: [option("id", "<stage-id>", { required: true })],
+      options: [option("id", "<stage-id|current>")],
     },
     {
       command: "restack",
@@ -158,7 +158,7 @@ export const semanticReviewApi: CliSignature = {
 export const reviewFeedbackApi: CliSignature = {
   executable: "review-feedback.mjs",
   title: "Semantic review feedback CLI",
-  globalOptions: [option("help")],
+  globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     { command: "init" },
     {

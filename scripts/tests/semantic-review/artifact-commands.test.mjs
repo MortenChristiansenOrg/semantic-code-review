@@ -165,6 +165,90 @@ test("semantic IDs may start with digits", (t) => {
   );
 });
 
+test("JSON input and current stage simplify mutations", (t) => {
+  const repository = createRepository(t);
+  repository.write(
+    "review-input.json",
+    `${JSON.stringify(
+      {
+        reviewId: "easy-flow",
+        title: "Easy flow",
+        summary: "Exercise concise command forms.",
+        targetBranch: "main",
+        requirementId: "story",
+        requirementTitle: "Story",
+        requirementSummary: "Use concise commands.",
+        sourceKind: "local",
+        sourceReference: "easy-flow",
+        criterion: ["works=Concise commands work."],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  repository.write(
+    "stage-input.json",
+    `${JSON.stringify(
+      {
+        id: "implementation",
+        title: "Implement behavior",
+        summary: "Add the implementation.",
+        rationale: "Keep the change independently reviewable.",
+        requirementRef: ["story#works"],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  repository.git("add", "review-input.json", "stage-input.json");
+  repository.git("commit", "-m", "Add semantic input");
+
+  repository.semantic("init", "--input", "review-input.json");
+  assert.equal(repository.git("status", "--short"), "");
+  repository.semantic(
+    "stage",
+    "begin",
+    "--input",
+    "stage-input.json",
+  );
+  repository.semantic(
+    "stage",
+    "record",
+    "--kind",
+    "decision",
+    "--item-id",
+    "concise-command",
+    "--category",
+    "engineering",
+    "--summary",
+    "Infer the active stage.",
+    "--rationale",
+    "Only one working stage can exist.",
+  );
+  repository.semantic(
+    "stage",
+    "validation",
+    "--stage",
+    "current",
+    "--item-id",
+    "command-test",
+    "--type",
+    "analysis",
+    "--status",
+    "passed",
+    "--summary",
+    "The concise command path worked.",
+  );
+
+  repository.commitFile("implementation.txt", "implementation\n", "Implement");
+  repository.semantic("stage", "finish");
+  assert.equal(
+    repository.readJson(".semantic-review/stages/implementation.json")
+      .decisions[0].id,
+    "concise-command",
+  );
+});
+
 test("stage commands cover metadata, every context kind, and validation", (t) => {
   const repository = createRepository(t);
   initializeReview(repository);

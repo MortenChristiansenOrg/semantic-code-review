@@ -51,6 +51,42 @@ Initialization records `main`'s current head as `baseRevision`. Override the
 default branch folder with `--branch-prefix`; otherwise it is
 `semantic-review/customer-order-cancellation`.
 
+For long mutations, place options in JSON and use `--input`:
+
+```json
+{
+  "id": "add-cancellation-policy",
+  "title": "Define the cancellation policy",
+  "summary": "Add the domain transition and rejection outcomes.",
+  "rationale": "Every caller must use the same transition rule.",
+  "requirementRef": [
+    "cancel-order#cancel-pending",
+    "cancel-order#reject-shipped"
+  ]
+}
+```
+
+```powershell
+node $semantic stage begin --input $env:TEMP\semantic-stage.json
+```
+
+To avoid creating a file, pipe JSON through stdin:
+
+```powershell
+@'
+{
+  "id": "add-cancellation-policy",
+  "title": "Define the cancellation policy",
+  "summary": "Add the domain transition and rejection outcomes.",
+  "rationale": "Every caller must use the same transition rule.",
+  "requirementRef": [
+    "cancel-order#cancel-pending",
+    "cancel-order#reject-shipped"
+  ]
+}
+'@ | node $semantic stage begin --input -
+```
+
 ## 3. Begin a stage
 
 ```powershell
@@ -83,7 +119,6 @@ Record context when it becomes relevant:
 
 ```powershell
 node $semantic stage record `
-  --stage add-cancellation-policy `
   --kind decision `
   --item-id keep-policy-in-aggregate `
   --category engineering `
@@ -95,7 +130,6 @@ Record observed validation:
 
 ```powershell
 node $semantic stage validation `
-  --stage add-cancellation-policy `
   --item-id domain-tests `
   --type automated `
   --status passed `
@@ -108,7 +142,7 @@ node $semantic stage validation `
 ```powershell
 git add <implementation-paths>
 git commit -m "Define order cancellation policy"
-node $semantic stage finish --id add-cancellation-policy
+node $semantic stage finish
 ```
 
 A stage may contain several linear commits. Finalization rejects merge commits,

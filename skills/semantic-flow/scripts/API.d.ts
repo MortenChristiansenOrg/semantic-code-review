@@ -8,6 +8,8 @@ export type DiffSide = "old" | "new";
 export interface GlobalCliOptions {
     /** Prints command help without mutating repository state. */
     help?: true;
+    /** Loads command options from one JSON object; camelCase and kebab-case keys are accepted. */
+    input?: string;
 }
 export interface InitializeReviewOptions {
     /** Stable kebab-case identifier for the complete review. */
@@ -86,8 +88,8 @@ export interface BeginStageOptions {
  */
 export declare function beginStage(options: BeginStageOptions): void;
 export interface SetStageOptions {
-    /** Working stage to update. */
-    id: string;
+    /** Working stage to update; omitted or `current` selects the only active stage. */
+    id?: string;
     /** Replacement stage title. */
     title?: string;
     /** Replacement implementation intent. */
@@ -107,8 +109,8 @@ export interface SetStageOptions {
  */
 export declare function setStage(options: SetStageOptions): void;
 export interface RecordStageContextOptions {
-    /** Stage receiving the context item. */
-    stage: string;
+    /** Stage receiving the context item; omitted or `current` selects the only active stage. */
+    stage?: string;
     /** Context item shape, which determines the required conditional fields. */
     kind: ContextKind;
     /** Stable identifier within the selected context collection. */
@@ -148,8 +150,8 @@ export interface RecordStageContextOptions {
  */
 export declare function recordStageContext(options: RecordStageContextOptions): void;
 export interface RecordValidationOptions {
-    /** Stage receiving the validation evidence. */
-    stage: string;
+    /** Stage receiving the validation evidence; omitted or `current` selects the only active stage. */
+    stage?: string;
     /** Stable identifier for this validation result. */
     "item-id": string;
     /** How the validation was performed. */
@@ -172,8 +174,8 @@ export interface RecordValidationOptions {
  */
 export declare function recordValidation(options: RecordValidationOptions): void;
 export interface FinishStageOptions {
-    /** Working stage to finalize. */
-    id: string;
+    /** Working stage to finalize; omitted or `current` selects the only active stage. */
+    id?: string;
 }
 /**
  * Finalizes a working stage against the current stage branch head.
@@ -182,8 +184,8 @@ export interface FinishStageOptions {
  */
 export declare function finishStage(options: FinishStageOptions): void;
 export interface DiscardStageOptions {
-    /** Working stage to delete without reverting implementation files. */
-    id: string;
+    /** Working stage to delete without reverting implementation files; omitted or `current` selects the only active stage. */
+    id?: string;
 }
 /**
  * Deletes an unfinished working stage without reverting code changes.
