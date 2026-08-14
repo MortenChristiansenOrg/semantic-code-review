@@ -35,7 +35,7 @@ self-referential. A writer MAY publish it on a separate metadata branch.
 ## Common rules
 
 - UTF-8 JSON, two-space indentation, final newline.
-- IDs match `^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`.
+- IDs match `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
 - Repository paths use `/` and are relative to the repository root.
 - Revisions are full lowercase 40-character SHA-1 IDs in version 0.1.
 - Branch names must pass `git check-ref-format --branch`.

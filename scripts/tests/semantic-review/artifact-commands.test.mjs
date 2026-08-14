@@ -12,7 +12,7 @@ test("init and requirement add create complete requirement metadata", (t) => {
   const base = repository.git("rev-parse", "HEAD");
 
   initializeReview(repository, {
-    reviewId: "orders",
+    reviewId: "42-orders",
     sourceUrl: "https://example.invalid/stories/42",
     criteria: [
       ["cancel", "Pending orders can be cancelled."],
@@ -25,7 +25,7 @@ test("init and requirement add create complete requirement metadata", (t) => {
     ".semantic-review/requirements/story.json",
   );
   assert.equal(manifest.baseRevision, base);
-  assert.equal(manifest.branchPrefix, "semantic-review/orders");
+  assert.equal(manifest.branchPrefix, "semantic-review/42-orders");
   assert.deepEqual(manifest.requirements, ["story"]);
   assert.equal(initial.source.url, "https://example.invalid/stories/42");
   assert.equal(initial.acceptanceCriteria.length, 2);
@@ -128,6 +128,41 @@ test("init rejects dirty repositories and rolls back invalid requirements", (t) 
     "story",
   );
   assert.equal(repository.exists(".semantic-review"), false);
+});
+
+test("semantic IDs may start with digits", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository, {
+    reviewId: "1-review",
+    requirementId: "2-requirement",
+    criteria: [["3-criterion", "Numeric-leading IDs work."]],
+  });
+  beginStage(repository, {
+    id: "4-stage",
+    requirementRefs: ["2-requirement#3-criterion"],
+  });
+  repository.semantic(
+    "stage",
+    "record",
+    "--stage",
+    "4-stage",
+    "--kind",
+    "decision",
+    "--item-id",
+    "5-decision",
+    "--category",
+    "engineering",
+    "--summary",
+    "Use numeric-leading semantic IDs.",
+    "--rationale",
+    "All semantic IDs share one format.",
+  );
+  finalizeStage(repository, { id: "4-stage" });
+
+  assert.deepEqual(
+    repository.readJson(".semantic-review/manifest.json").stages,
+    ["4-stage"],
+  );
 });
 
 test("stage commands cover metadata, every context kind, and validation", (t) => {

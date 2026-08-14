@@ -232,9 +232,13 @@ export function finalizeStage(
   return commit;
 }
 
-export function createReviewWithStages(t, stageIds = ["implementation"]) {
+export function createReviewWithStages(
+  t,
+  stageIds = ["implementation"],
+  reviewOptions = {},
+) {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeReview(repository, reviewOptions);
   const commits = new Map();
   for (const [index, id] of stageIds.entries()) {
     beginStage(repository, {

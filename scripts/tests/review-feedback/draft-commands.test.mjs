@@ -1,12 +1,64 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReviewWithStages } from "../helpers/repository.mjs";
+import {
+  beginStage,
+  createRepository,
+  createReviewWithStages,
+  finalizeStage,
+  initializeReview,
+} from "../helpers/repository.mjs";
+
+test("feedback IDs may start with digits", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository, {
+    reviewId: "1-review",
+    requirementId: "2-requirement",
+    criteria: [["3-criterion", "Numeric-leading IDs work."]],
+  });
+  beginStage(repository, {
+    id: "4-stage",
+    requirementRefs: ["2-requirement#3-criterion"],
+  });
+  finalizeStage(repository, { id: "4-stage" });
+
+  repository.feedback("init");
+  repository.feedback(
+    "batch",
+    "create",
+    "--id",
+    "5-batch",
+    "--title",
+    "Numeric IDs",
+  );
+  repository.feedback(
+    "comment",
+    "add",
+    "--batch",
+    "5-batch",
+    "--id",
+    "6-comment",
+    "--body",
+    "Numeric-leading IDs work.",
+    "--label",
+    "Criterion",
+    "--target-kind",
+    "criterion",
+    "--requirement",
+    "2-requirement",
+    "--criterion",
+    "3-criterion",
+    "--assigned-stage",
+    "4-stage",
+  );
+});
 
 test("draft commands support every target kind and concurrent mutation", async (t) => {
   const { repository } = createReviewWithStages(t, [
     "implementation",
     "follow-up",
-  ]);
+  ], {
+    reviewId: "42-feedback",
+  });
   repository.semantic(
     "stage",
     "record",
@@ -224,7 +276,7 @@ test("draft commands support every target kind and concurrent mutation", async (
   );
   assert.match(
     repository.feedback("next"),
-    /implementation \(semantic-review\/test-review\/01-implementation @ [0-9a-f]{40}\):/,
+    /implementation \(semantic-review\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   assert.equal(
     repository.readJson(
