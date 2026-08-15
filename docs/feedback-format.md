@@ -31,7 +31,8 @@ Stage, context, file, and line targets store:
 - `stageHead`
 
 Context targets add collection and item IDs. File targets add a path. Line
-targets add path, side, and line number.
+targets add path, side, and a line number that exists in that side's immutable
+Git snapshot.
 
 The branch identifies the persistent PR surface; the head preserves the exact
 reviewed snapshot. Tools mark an anchor stale when the stage's current

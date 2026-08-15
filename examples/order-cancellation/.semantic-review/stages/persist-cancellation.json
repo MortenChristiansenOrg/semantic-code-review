@@ -9,6 +9,30 @@
   "requirementRefs": [
     "cancel-order#persist-state"
   ],
+  "nodes": [
+    {
+      "id": "persist-cancelled-state",
+      "description": "Extend persistence for the cancelled state and verify its database round trip.",
+      "changes": [
+        {
+          "path": "src/Orders/Infrastructure/Migrations/202607291020_AddCancelledOrderState.cs",
+          "classification": "migration"
+        },
+        {
+          "path": "src/Orders/Infrastructure/Migrations/OrdersDbContextModelSnapshot.cs",
+          "classification": "generated"
+        },
+        {
+          "path": "src/Orders/Infrastructure/OrderConfiguration.cs",
+          "classification": "configuration"
+        },
+        {
+          "path": "tests/Orders.Infrastructure.Tests/OrderPersistenceTests.cs",
+          "classification": "test"
+        }
+      ]
+    }
+  ],
   "change": {
     "branch": "semantic-review/customer-order-cancellation/02-persist-cancellation",
     "baseBranch": "semantic-review/customer-order-cancellation/01-add-cancellation-policy",
@@ -39,7 +63,10 @@
       "id": "store-state-as-string",
       "category": "engineering",
       "summary": "Keep storing order state as its string name.",
-      "rationale": "This matches the existing mapping and makes the new Cancelled value backward-compatible without renumbering enum values."
+      "rationale": "This matches the existing mapping and makes the new Cancelled value backward-compatible without renumbering enum values.",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     }
   ],
   "assumptions": [],
@@ -47,7 +74,10 @@
     {
       "id": "no-migration",
       "approach": "Rely on the existing string column accepting the new value without a migration.",
-      "reasonRejected": "The database check constraint enumerates allowed values and must be updated."
+      "reasonRejected": "The database check constraint enumerates allowed values and must be updated.",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     }
   ],
   "failedAttempts": [
@@ -55,14 +85,20 @@
       "id": "generated-migration-in-wrong-project",
       "approach": "Run dotnet ef migrations add from the API project.",
       "outcome": "The command could not locate the design-time OrdersDbContext.",
-      "lesson": "Run migrations with Orders.Infrastructure as the target project and Orders.Api as the startup project."
+      "lesson": "Run migrations with Orders.Infrastructure as the target project and Orders.Api as the startup project.",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     }
   ],
   "risks": [
     {
       "id": "deployment-order",
       "summary": "Application instances using Cancelled must not start before the constraint migration is applied.",
-      "mitigation": "Use the existing migrate-before-deploy release step."
+      "mitigation": "Use the existing migrate-before-deploy release step.",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     }
   ],
   "validation": [
@@ -71,13 +107,19 @@
       "type": "automated",
       "status": "passed",
       "summary": "Confirms a cancelled order can be saved and loaded.",
-      "command": "dotnet test tests/Orders.Infrastructure.Tests/Orders.Infrastructure.Tests.csproj --filter OrderPersistenceTests"
+      "command": "dotnet test tests/Orders.Infrastructure.Tests/Orders.Infrastructure.Tests.csproj --filter OrderPersistenceTests",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     },
     {
       "id": "migration-review",
       "type": "manual",
       "status": "passed",
-      "summary": "Verified that the migration only extends the allowed state constraint."
+      "summary": "Verified that the migration only extends the allowed state constraint.",
+      "nodeRefs": [
+        "persist-cancelled-state"
+      ]
     }
   ],
   "openQuestions": []

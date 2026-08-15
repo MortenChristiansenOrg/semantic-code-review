@@ -19,7 +19,7 @@ import {
   parseArguments,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
-import { git } from "./shared/git.js";
+import { git, gitRaw } from "./shared/git.js";
 import { readJson, writeJson } from "./shared/json.js";
 
 const MANIFEST_SCHEMA =
@@ -207,7 +207,56 @@ function collectionExists(stage, collection, itemId) {
     stage[collection].some((item) => item.id === itemId);
 }
 
-function validateTarget(target, semantic) {
+function lineCountAtRevision(root, revision, repositoryPath) {
+  const contents = gitRaw(["show", `${revision}:${repositoryPath}`], {
+    cwd: root,
+    encoding: "buffer",
+  });
+  if (contents.includes(0)) {
+    fail(`Feedback line target ${repositoryPath} is binary.`);
+  }
+  if (contents.length === 0) return 0;
+  let lineBreaks = 0;
+  for (const byte of contents) {
+    if (byte === 0x0a) lineBreaks += 1;
+  }
+  return contents.at(-1) === 0x0a ? lineBreaks : lineBreaks + 1;
+}
+
+function validateLineTarget(target, stage, root) {
+  const file = stage.change.files.find(
+    (candidate) =>
+      candidate.path === target.path || candidate.previousPath === target.path,
+  );
+  if (!file) return;
+
+  const oldPath = file.previousPath ?? file.path;
+  const snapshot =
+    target.side === "old"
+      ? {
+          revision: stage.change.baseRevision,
+          path: oldPath,
+          missing: file.kind === "added",
+        }
+      : {
+          revision: stage.change.headRevision,
+          path: file.path,
+          missing: file.kind === "deleted",
+        };
+  if (snapshot.missing || target.path !== snapshot.path) {
+    fail(
+      `Feedback ${target.side} line target ${target.path} does not exist on that diff side.`,
+    );
+  }
+  const lineCount = lineCountAtRevision(root, snapshot.revision, snapshot.path);
+  if (target.line > lineCount) {
+    fail(
+      `Feedback line ${target.line} exceeds ${snapshot.path}'s ${lineCount} line(s) on the ${target.side} side.`,
+    );
+  }
+}
+
+function validateTarget(target, semantic, root) {
   const requirement = target.requirementId
     ? semantic.requirements.get(target.requirementId)
     : undefined;
@@ -243,14 +292,20 @@ function validateTarget(target, semantic) {
           `Feedback context ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
         );
       }
-      if (
+      const changedFile =
         ["file", "line"].includes(target.kind) &&
-        !stage.change.files.some(
+        stage.change.files.find(
           (file) =>
             file.path === target.path || file.previousPath === target.path,
-        )
+        );
+      if (
+        ["file", "line"].includes(target.kind) &&
+        !changedFile
       ) {
         fail(`Feedback path ${target.path} is not changed by ${target.stageId}.`);
+      }
+      if (target.kind === "line") {
+        validateLineTarget(target, stage, root);
       }
     }
   }
@@ -313,7 +368,7 @@ function validateFeedback(
     if (!batch?.items.includes(id)) {
       fail(`Feedback item ${id} is not indexed by batch ${item.batchId}.`);
     }
-    validateTarget(item.target, semantic);
+    validateTarget(item.target, semantic, paths.root);
     if (
       item.assignedStageId &&
       !semantic.stages.has(item.assignedStageId)
@@ -377,15 +432,28 @@ function ensureExcluded(root) {
 function initialize(paths, options) {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "init"));
   if (fs.existsSync(paths.feedbackManifest)) fail("Feedback state already exists.");
+  if (
+    fs.existsSync(paths.feedback) &&
+    fs.readdirSync(paths.feedback).length > 0
+  ) {
+    fail(
+      `${paths.feedback} already contains files but has no manifest. Inspect or remove it before initialization.`,
+    );
+  }
   const semantic = semanticArtifact(paths);
   ensureExcluded(paths.root);
-  writeJson(paths.feedbackManifest, {
-    $schema: MANIFEST_SCHEMA,
-    formatVersion: "0.1",
-    reviewId: semantic.manifest.reviewId,
-    batches: [],
-  });
-  validateFeedback(paths, { quiet: true });
+  try {
+    writeJson(paths.feedbackManifest, {
+      $schema: MANIFEST_SCHEMA,
+      formatVersion: "0.1",
+      reviewId: semantic.manifest.reviewId,
+      batches: [],
+    });
+    validateFeedback(paths, { quiet: true });
+  } catch (error) {
+    fs.rmSync(paths.feedback, { recursive: true, force: true });
+    throw error;
+  }
   console.log(`Initialized feedback for ${semantic.manifest.reviewId}.`);
 }
 
@@ -422,7 +490,7 @@ function createBatch(paths, options) {
   console.log(`Created feedback batch ${id}.`);
 }
 
-function buildTarget(options, semantic) {
+function buildTarget(options, semantic, root) {
   const kind = option(options, "target-kind", { required: true });
   const target: Record<string, any> = {
     kind,
@@ -454,7 +522,7 @@ function buildTarget(options, semantic) {
     if (!Number.isInteger(line) || line < 1) fail("--line must be a positive integer.");
     target.line = line;
   }
-  validateTarget(target, semantic);
+  validateTarget(target, semantic, root);
   return target;
 }
 
@@ -476,7 +544,7 @@ function addComment(paths, options) {
     batchId,
     status: "draft",
     body: option(options, "body", { required: true }),
-    target: buildTarget(options, semantic),
+    target: buildTarget(options, semantic, paths.root),
     createdAt: new Date().toISOString(),
   };
   const assignedStageId =

@@ -51,7 +51,7 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   const published = repository.git("rev-parse", metadataBranch);
   assert.equal(repository.git("rev-parse", `${metadataBranch}^`), stageTip);
   assert.equal(repository.git("rev-parse", "HEAD"), stageTip);
-  assert.match(
+  assert.doesNotMatch(
     repository.git("show", "-s", "--format=%B", metadataBranch),
     /Co-authored-by: Copilot/,
   );
@@ -66,6 +66,45 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
 
   repository.semantic("publish");
   assert.equal(repository.git("rev-parse", metadataBranch), published);
+  repository.expectSemanticFailure(
+    "Archive requires checked-out target branch main",
+    "archive",
+  );
+  repository.git("switch", "main");
+  repository.expectSemanticFailure(
+    "to contain final stage head",
+    "archive",
+  );
+
+  repository.semantic(
+    "stage",
+    "record",
+    "--stage",
+    "implementation",
+    "--finalized",
+    "--kind",
+    "decision",
+    "--item-id",
+    "archive-current-metadata",
+    "--category",
+    "engineering",
+    "--summary",
+    "Archive only current metadata.",
+    "--rationale",
+    "The archive is the durable copy of the review artifact.",
+    "--node-ref",
+    "implementation-change",
+  );
+  repository.git(
+    "merge",
+    "--ff-only",
+    "semantic-review/publish-review/01-implementation",
+  );
+  repository.expectSemanticFailure(
+    "does not publish the current semantic review",
+    "archive",
+  );
+  repository.semantic("publish");
   repository.expectSemanticFailure(
     "Archive destination must",
     "archive",
@@ -87,8 +126,49 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     ),
     true,
   );
-  assert.match(
+  assert.doesNotMatch(
     repository.git("show", "-s", "--format=%B", "HEAD"),
     /Co-authored-by: Copilot/,
+  );
+});
+
+test("publication rejects target drift until the stack is restacked", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+
+  repository.git("switch", "main");
+  repository.commitFile("trunk.txt", "advanced\n", "Advance trunk");
+  repository.expectSemanticFailure(
+    "Target branch main moved",
+    "validate",
+    "--publish",
+  );
+  repository.expectSemanticFailure(
+    "Target branch main moved",
+    "prepare-stack",
+  );
+
+  repository.semantic("restack", "--base", "main");
+  repository.semantic("validate", "--publish");
+});
+
+test("publication requires every acceptance criterion to be covered", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository, {
+    criteria: [
+      ["covered", "Covered by the implementation."],
+      ["missing", "Must not be omitted."],
+    ],
+  });
+  beginStage(repository, { requirementRefs: ["story#covered"] });
+  finalizeStage(repository);
+
+  repository.semantic("validate");
+  repository.expectSemanticFailure(
+    "uncovered acceptance criteria: story#missing",
+    "validate",
+    "--publish",
   );
 });

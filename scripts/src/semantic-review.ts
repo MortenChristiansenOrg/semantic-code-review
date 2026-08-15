@@ -596,7 +596,11 @@ function sameChanges(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function validateSemantic(paths, artifact, { validateGit = true } = {}) {
+function validateSemantic(
+  paths,
+  artifact,
+  { validateGit = true, allowLandedTarget = false } = {},
+) {
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
 
@@ -758,6 +762,20 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
   }
 
   const base = commitObject(paths.root, manifest.baseRevision);
+  const targetHead = branchCommit(paths.root, manifest.targetBranch);
+  const finalStageId = manifest.stages.at(-1);
+  const finalStageHead = finalStageId
+    ? stages.get(finalStageId).change.headRevision
+    : undefined;
+  const targetContainsLandedStack =
+    allowLandedTarget &&
+    finalStageHead !== undefined &&
+    isAncestor(paths.root, finalStageHead, targetHead);
+  if (targetHead !== base && !targetContainsLandedStack) {
+    fail(
+      `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; run restack --base ${manifest.targetBranch}.`,
+    );
+  }
   let expectedBaseBranch = manifest.targetBranch;
   let expectedParent = base;
   for (const [index, id] of manifest.stages.entries()) {
@@ -810,6 +828,7 @@ function validateArtifact(
     publish = false,
     quiet = false,
     validateGit = true,
+    allowLandedTarget = false,
   } = {},
 ) {
   const ajv = schemaValidator();
@@ -831,7 +850,7 @@ function validateArtifact(
   }
 
   if (!schemaOnly) {
-    validateSemantic(paths, artifact, { validateGit });
+    validateSemantic(paths, artifact, { validateGit, allowLandedTarget });
   }
 
   if (publish) {
@@ -841,6 +860,21 @@ function validateArtifact(
     if (artifact.workStages.size > 0) {
       fail(
         `Publication validation found unfinished stages: ${[...artifact.workStages.keys()].join(", ")}.`,
+      );
+    }
+    const covered = new Set(
+      [...artifact.stages.values()].flatMap((stage) => stage.requirementRefs),
+    );
+    const missing = [];
+    for (const [requirementId, requirement] of artifact.requirements) {
+      for (const criterion of requirement.acceptanceCriteria) {
+        const reference = `${requirementId}#${criterion.id}`;
+        if (!covered.has(reference)) missing.push(reference);
+      }
+    }
+    if (missing.length > 0) {
+      fail(
+        `Publication validation found uncovered acceptance criteria: ${missing.join(", ")}.`,
       );
     }
   }
@@ -1972,10 +2006,10 @@ function metadataBranch(artifact) {
   return `${artifact.manifest.branchPrefix}/metadata`;
 }
 
-function buildMetadataCommit(paths, parent, message) {
+function buildMetadataTree(paths, parent) {
   const indexFile = path.join(
     os.tmpdir(),
-    `semantic-review-publish-${process.pid}-${Date.now()}.index`,
+    `semantic-review-metadata-${process.pid}-${Date.now()}.index`,
   );
   const env = { GIT_INDEX_FILE: indexFile };
   try {
@@ -1984,20 +2018,28 @@ function buildMetadataCommit(paths, parent, message) {
       cwd: paths.root,
       env,
     });
-    const tree = gitRaw(["write-tree"], { cwd: paths.root, env });
-    const commit = gitRaw(["commit-tree", tree, "-p", parent], {
-      cwd: paths.root,
-      input: `${message}\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>\n`,
-    });
-    return { commit, tree };
+    return gitRaw(["write-tree"], { cwd: paths.root, env });
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
 }
 
+function buildMetadataCommit(paths, parent, message) {
+  const tree = buildMetadataTree(paths, parent);
+  const commit = gitRaw(["commit-tree", tree, "-p", parent], {
+    cwd: paths.root,
+    input: `${message}\n`,
+  });
+  return { commit, tree };
+}
+
 function publishArtifact(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticReviewApi, "publish"));
-  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const artifact = validateArtifact(paths, {
+    publish: true,
+    quiet: true,
+    allowLandedTarget: true,
+  });
   assertCleanWorkingTree(paths.root, "Artifact publication");
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
@@ -2118,16 +2160,47 @@ function prepareBranch(paths, options) {
 
 function archiveReview(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticReviewApi, "archive"));
-  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const artifact = validateArtifact(paths, {
+    publish: true,
+    quiet: true,
+    allowLandedTarget: true,
+  });
   assertCleanWorkingTree(paths.root, "Review archival");
+  const current = currentBranch(paths.root);
+  if (current !== artifact.manifest.targetBranch) {
+    fail(
+      `Archive requires checked-out target branch ${artifact.manifest.targetBranch}, not ${current ?? "detached HEAD"}.`,
+    );
+  }
+  const stageTip = lastStageHead(artifact);
+  const targetHead = branchCommit(paths.root, artifact.manifest.targetBranch);
+  if (!isAncestor(paths.root, stageTip, targetHead)) {
+    fail(
+      `Archive requires target branch ${artifact.manifest.targetBranch} to contain final stage head ${stageTip}.`,
+    );
+  }
   const publicationBranch = metadataBranch(artifact);
-  if (
-    !git(["rev-parse", "--verify", `refs/heads/${publicationBranch}`], {
-      cwd: paths.root,
-      allowFailure: true,
-    })
-  ) {
+  const publicationHead = git(
+    ["rev-parse", "--verify", `refs/heads/${publicationBranch}`],
+    { cwd: paths.root, allowFailure: true },
+  );
+  if (!publicationHead) {
     fail(`Archive requires published metadata branch ${publicationBranch}.`);
+  }
+  const publicationParents = commitParents(paths.root, publicationHead);
+  const publicationTree = git(
+    ["show", "-s", "--format=%T", publicationHead],
+    { cwd: paths.root },
+  );
+  const expectedTree = buildMetadataTree(paths, stageTip);
+  if (
+    publicationParents.length !== 1 ||
+    publicationParents[0] !== stageTip ||
+    publicationTree !== expectedTree
+  ) {
+    fail(
+      `Metadata branch ${publicationBranch} does not publish the current semantic review; run publish again before archiving.`,
+    );
   }
 
   const destinationOption = option(options, "destination", {
@@ -2176,13 +2249,7 @@ function archiveReview(paths, options) {
       fail("Archival staged files outside the active and destination artifacts.");
     }
     git(
-      [
-        "commit",
-        "-m",
-        message,
-        "-m",
-        "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
-      ],
+      ["commit", "-m", message],
       { cwd: paths.root },
     );
     console.log(
@@ -2290,6 +2357,8 @@ function dispatch(paths, positionals, options) {
 try {
   const parsed = parseArguments(process.argv.slice(2));
   if (parsed.options.has("help") && parsed.positionals.length === 0) {
+    assertKnownOptions(parsed.options, new Set(["help"]));
+    flag(parsed.options, "help");
     console.log(HELP);
     process.exit(0);
   }

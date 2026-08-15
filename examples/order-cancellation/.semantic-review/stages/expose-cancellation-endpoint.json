@@ -10,6 +10,26 @@
     "cancel-order#cancel-pending",
     "cancel-order#return-conflict"
   ],
+  "nodes": [
+    {
+      "id": "expose-cancellation-endpoint",
+      "description": "Expose authenticated cancellation and map domain outcomes to stable HTTP responses.",
+      "changes": [
+        {
+          "path": "src/Orders/Api/CancelOrderEndpoint.cs",
+          "classification": "behavior"
+        },
+        {
+          "path": "src/Orders/Api/OrderErrors.cs",
+          "classification": "behavior"
+        },
+        {
+          "path": "tests/Orders.Api.Tests/CancelOrderEndpointTests.cs",
+          "classification": "test"
+        }
+      ]
+    }
+  ],
   "change": {
     "branch": "semantic-review/customer-order-cancellation/03-expose-cancellation-endpoint",
     "baseBranch": "semantic-review/customer-order-cancellation/02-persist-cancellation",
@@ -36,27 +56,39 @@
       "id": "use-conflict-response",
       "category": "requirement",
       "summary": "Return HTTP 409 when the current order state disallows cancellation.",
-      "rationale": "The request is valid but conflicts with the current resource state, matching acceptance criterion return-conflict."
+      "rationale": "The request is valid but conflicts with the current resource state, matching acceptance criterion return-conflict.",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     },
     {
       "id": "hide-foreign-orders",
       "category": "engineering",
       "summary": "Return HTTP 404 when the order belongs to another customer.",
-      "rationale": "This follows the existing orders API convention and avoids disclosing another customer's order IDs."
+      "rationale": "This follows the existing orders API convention and avoids disclosing another customer's order IDs.",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     }
   ],
   "assumptions": [
     {
       "id": "no-request-body",
       "statement": "Cancellation does not require a reason in this story.",
-      "riskIfWrong": "The endpoint contract and persistence model will need an additional cancellation-reason field."
+      "riskIfWrong": "The endpoint contract and persistence model will need an additional cancellation-reason field.",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     }
   ],
   "alternatives": [
     {
       "id": "delete-endpoint",
       "approach": "Model cancellation as DELETE /orders/{id}.",
-      "reasonRejected": "The order remains queryable for audit and customer history, so it is not deleted."
+      "reasonRejected": "The order remains queryable for audit and customer history, so it is not deleted.",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     }
   ],
   "failedAttempts": [],
@@ -64,7 +96,10 @@
     {
       "id": "concurrent-fulfilment",
       "summary": "Fulfilment could start between loading and saving the order.",
-      "mitigation": "The existing optimistic concurrency token converts the race into HTTP 409."
+      "mitigation": "The existing optimistic concurrency token converts the race into HTTP 409.",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     }
   ],
   "validation": [
@@ -73,7 +108,10 @@
       "type": "automated",
       "status": "passed",
       "summary": "Covers success, foreign ownership, missing order, forbidden state, and concurrency conflict.",
-      "command": "dotnet test tests/Orders.Api.Tests/Orders.Api.Tests.csproj --filter CancelOrderEndpointTests"
+      "command": "dotnet test tests/Orders.Api.Tests/Orders.Api.Tests.csproj --filter CancelOrderEndpointTests",
+      "nodeRefs": [
+        "expose-cancellation-endpoint"
+      ]
     }
   ],
   "openQuestions": []

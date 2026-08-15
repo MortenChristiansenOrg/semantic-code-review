@@ -8,6 +8,26 @@
     "cancel-order#cancel-pending",
     "cancel-order#reject-shipped"
   ],
+  "nodes": [
+    {
+      "id": "enforce-cancellation-policy",
+      "description": "Define the guarded cancellation transition and verify its domain outcomes.",
+      "changes": [
+        {
+          "path": "src/Orders/Domain/Order.cs",
+          "classification": "behavior"
+        },
+        {
+          "path": "src/Orders/Domain/OrderCancellationResult.cs",
+          "classification": "behavior"
+        },
+        {
+          "path": "tests/Orders.Domain.Tests/OrderCancellationTests.cs",
+          "classification": "test"
+        }
+      ]
+    }
+  ],
   "change": {
     "branch": "semantic-review/customer-order-cancellation/01-add-cancellation-policy",
     "baseBranch": "main",
@@ -34,27 +54,39 @@
       "id": "keep-policy-in-aggregate",
       "category": "engineering",
       "summary": "Put cancellation rules on the Order aggregate.",
-      "rationale": "The transition depends only on current order state and must be enforced independently of the API."
+      "rationale": "The transition depends only on current order state and must be enforced independently of the API.",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     },
     {
       "id": "reject-after-fulfilment",
       "category": "requirement",
       "summary": "Treat any fulfilment state as non-cancellable.",
-      "rationale": "Acceptance criterion reject-shipped forbids cancellation once fulfilment has started."
+      "rationale": "Acceptance criterion reject-shipped forbids cancellation once fulfilment has started.",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ],
   "assumptions": [
     {
       "id": "pending-means-not-fulfilled",
       "statement": "All states before Fulfilling are safe to cancel.",
-      "riskIfWrong": "A paid or reserved order may require compensation before cancellation."
+      "riskIfWrong": "A paid or reserved order may require compensation before cancellation.",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ],
   "alternatives": [
     {
       "id": "service-level-policy",
       "approach": "Implement the guard only in the application command handler.",
-      "reasonRejected": "Other future callers could bypass the rule and create an invalid transition."
+      "reasonRejected": "Other future callers could bypass the rule and create an invalid transition.",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ],
   "failedAttempts": [],
@@ -62,7 +94,10 @@
     {
       "id": "state-model-may-grow",
       "summary": "Future fulfilment states could make the current ordinal-style guard unsafe.",
-      "mitigation": "The implementation uses an explicit allow-list of cancellable states."
+      "mitigation": "The implementation uses an explicit allow-list of cancellable states.",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ],
   "validation": [
@@ -71,13 +106,19 @@
       "type": "automated",
       "status": "passed",
       "summary": "Covers successful cancellation, repeated cancellation, and rejection after fulfilment.",
-      "command": "dotnet test tests/Orders.Domain.Tests/Orders.Domain.Tests.csproj --filter OrderCancellationTests"
+      "command": "dotnet test tests/Orders.Domain.Tests/Orders.Domain.Tests.csproj --filter OrderCancellationTests",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ],
   "openQuestions": [
     {
       "id": "payment-compensation",
-      "question": "Should a paid but unfulfilled order trigger a refund in this story or a later one?"
+      "question": "Should a paid but unfulfilled order trigger a refund in this story or a later one?",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
     }
   ]
 }

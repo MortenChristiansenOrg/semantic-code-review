@@ -1,4 +1,8 @@
-export type RequirementSourceKind = "local" | "azure-devops" | string;
+export type RequirementSourceKind =
+  | "azure-devops"
+  | "github"
+  | "url"
+  | "local";
 export type ContextKind =
   | "decision"
   | "assumption"
@@ -330,6 +334,8 @@ export interface ArchiveReviewOptions {
 
 /**
  * Moves a merged and published review into repository history.
+ * The target branch must be checked out, contain the final stage head, and have
+ * a metadata branch that exactly matches the current artifact.
  * @cli semantic-review.mjs
  * @command archive
  */

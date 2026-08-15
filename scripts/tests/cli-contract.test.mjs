@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -75,6 +76,8 @@ test("production build exposes every documented command", () => {
   }
 
   assert.equal(fs.existsSync(path.join(scriptsDirectory, "API.md")), false);
+  assert.match(api, /"azure-devops"\s*\|\s*"github"\s*\|\s*"url"\s*\|\s*"local"/);
+  assert.doesNotMatch(api, /RequirementSourceKind[^;]*\|\s*string/);
 });
 
 test("command parsing rejects unknown commands, options, and malformed flags", () => {
@@ -101,6 +104,39 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
   );
   assert.notEqual(valuedHelp.status, 0);
   assert.match(valuedHelp.stderr, /--help is a flag and does not take a value/);
+
+  const topLevelValuedHelp = spawnSync(
+    process.execPath,
+    [semanticCli, "--help=true"],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(topLevelValuedHelp.status, 0);
+  assert.match(
+    topLevelValuedHelp.stderr,
+    /--help is a flag and does not take a value/,
+  );
+});
+
+test("the bundled example conforms to the published schemas", (t) => {
+  const repositoryRoot = path.resolve(scriptsDirectory, "..", "..", "..");
+  const example = path.join(
+    repositoryRoot,
+    "examples",
+    "order-cancellation",
+    ".semantic-review",
+  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-example-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.cpSync(example, path.join(root, ".semantic-review"), { recursive: true });
+  execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
+
+  const result = spawnSync(
+    process.execPath,
+    [semanticCli, "validate", "--schema-only"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /schema validation passed/);
 });
 
 test("skill routes OS invocation details without duplicating the workflow", () => {

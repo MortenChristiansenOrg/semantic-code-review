@@ -101,6 +101,27 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
   );
 });
 
+test("feedback init does not strand a manifest among pre-existing files", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.write(
+    ".semantic-review-feedback/batches/orphan.json",
+    "{}\n",
+  );
+
+  repository.expectFeedbackFailure(
+    "already contains files but has no manifest",
+    "init",
+  );
+  assert.equal(
+    repository.exists(".semantic-review-feedback/manifest.json"),
+    false,
+  );
+
+  repository.remove(".semantic-review-feedback");
+  repository.feedback("init");
+  repository.feedback("validate");
+});
+
 test("draft commands support every target kind and concurrent mutation", async (t) => {
   const { repository } = createReviewWithStages(t, [
     "implementation",
@@ -236,6 +257,29 @@ test("draft commands support every target kind and concurrent mutation", async (
     "new",
     "--line",
     "0",
+  );
+  repository.expectFeedbackFailure(
+    "exceeds implementation.txt's 1 line(s)",
+    "comment",
+    "add",
+    "--batch",
+    "review",
+    "--id",
+    "missing-line",
+    "--body",
+    "The anchor must exist.",
+    "--label",
+    "Missing line",
+    "--target-kind",
+    "line",
+    "--stage",
+    "implementation",
+    "--path",
+    "implementation.txt",
+    "--side",
+    "new",
+    "--line",
+    "999999",
   );
   await Promise.all([
     repository.feedbackAsync(
