@@ -28,38 +28,61 @@ file becomes unapproved while remaining marked as previously approved.
 
 ## 1. Build the bundled CLI
 
-```powershell
-npm ci --prefix .\scripts
-npm run build --prefix .\scripts
-
-$semantic = ".\skills\semantic-flow\scripts\semantic-review.mjs"
-$feedback = ".\skills\semantic-flow\scripts\review-feedback.mjs"
+```text
+npm ci --prefix ./scripts
+npm run build --prefix ./scripts
 ```
+
+Before continuing, follow the operating-system selection in
+`skills/semantic-flow/SKILL.md` and read either
+`skills/semantic-flow/docs/os/linux.md` or
+`skills/semantic-flow/docs/os/windows.md`. The examples below reuse the
+platform guide's concrete invocations as:
+
+```text
+<semantic-review> <command>
+<review-feedback> <command>
+```
+
+Substitute the selected guide's invocation; do not run these placeholders
+literally.
 
 ## 2. Initialize at trunk
 
 Start with a clean worktree at the local target branch head:
 
-```powershell
-node $semantic init `
-  --review-id customer-order-cancellation `
-  --title "Allow customers to cancel pending orders" `
-  --summary "Add guarded cancellation and expose it through the API." `
-  --target-branch main `
-  --requirement-id cancel-order `
-  --requirement-title "Customer cancels an order" `
-  --requirement-summary "A customer can cancel before fulfilment starts." `
-  --source-kind local `
-  --source-reference "customer-order-cancellation" `
-  --criterion "cancel-pending=A pending order can be cancelled." `
-  --criterion "reject-shipped=A shipped order cannot be cancelled."
+```json
+{
+  "reviewId": "customer-order-cancellation",
+  "title": "Allow customers to cancel pending orders",
+  "summary": "Add guarded cancellation and expose it through the API.",
+  "targetBranch": "main",
+  "requirementId": "cancel-order",
+  "requirementTitle": "Customer cancels an order",
+  "requirementSummary": "A customer can cancel before fulfilment starts.",
+  "sourceKind": "local",
+  "sourceReference": "customer-order-cancellation",
+  "criterion": [
+    "cancel-pending=A pending order can be cancelled.",
+    "reject-shipped=A shipped order cannot be cancelled."
+  ]
+}
+```
+
+Pass that document from an operating-system temporary file or through stdin as
+described by the selected platform guide:
+
+```text
+<semantic-review> init --input <review-input.json>
 ```
 
 Initialization records `main`'s current head as `baseRevision`. Override the
 default branch folder with `--branch-prefix`; otherwise it is
 `semantic-review/customer-order-cancellation`.
 
-For long mutations, place options in JSON and use `--input`:
+## 3. Begin a stage
+
+Place long mutation options in JSON:
 
 ```json
 {
@@ -74,37 +97,8 @@ For long mutations, place options in JSON and use `--input`:
 }
 ```
 
-```powershell
-node $semantic stage begin --input $env:TEMP\semantic-stage.json
-```
-
-To avoid creating a file, pipe JSON through stdin:
-
-```powershell
-@'
-{
-  "id": "add-cancellation-policy",
-  "title": "Define the cancellation policy",
-  "summary": "Add the domain transition and rejection outcomes.",
-  "rationale": "Every caller must use the same transition rule.",
-  "requirementRef": [
-    "cancel-order#cancel-pending",
-    "cancel-order#reject-shipped"
-  ]
-}
-'@ | node $semantic stage begin --input -
-```
-
-## 3. Begin a stage
-
-```powershell
-node $semantic stage begin `
-  --id add-cancellation-policy `
-  --title "Define the cancellation policy" `
-  --summary "Add the domain transition and rejection outcomes." `
-  --rationale "Every caller must use the same transition rule." `
-  --requirement-ref cancel-order#cancel-pending `
-  --requirement-ref cancel-order#reject-shipped
+```text
+<semantic-review> stage begin --input <semantic-stage.json>
 ```
 
 The command creates and checks out:
@@ -125,13 +119,18 @@ It starts at stage 1's head and records stage 1 as its base branch.
 
 Record context when it becomes relevant:
 
-```powershell
-node $semantic stage record `
-  --kind decision `
-  --item-id keep-policy-in-aggregate `
-  --category engineering `
-  --summary "Put cancellation rules on the Order aggregate." `
-  --rationale "Other callers must not bypass the rule."
+```json
+{
+  "kind": "decision",
+  "itemId": "keep-policy-in-aggregate",
+  "category": "engineering",
+  "summary": "Put cancellation rules on the Order aggregate.",
+  "rationale": "Other callers must not bypass the rule."
+}
+```
+
+```text
+<semantic-review> stage record --input <decision.json>
 ```
 
 Commit the implementation, then describe its causal change nodes in an
@@ -168,8 +167,8 @@ organization document:
 }
 ```
 
-```powershell
-node $semantic stage organize --file $env:TEMP\stage-organization.json
+```text
+<semantic-review> stage organize --file <stage-organization.json>
 ```
 
 Every changed file belongs to a node. If multiple nodes share one file, each
@@ -180,18 +179,20 @@ covering every changed hunk or line exactly once.
 
 Record observed validation and link it to the relevant nodes:
 
-```powershell
-node $semantic stage validation `
-  --item-id domain-tests `
-  --type automated `
-  --status passed `
-  --summary "Covers cancellation and rejection after shipment." `
-  --command "dotnet test tests/Orders.Domain.Tests" `
-  --node-ref enforce-cancellation-policy
+```json
+{
+  "itemId": "domain-tests",
+  "type": "automated",
+  "status": "passed",
+  "summary": "Covers cancellation and rejection after shipment.",
+  "command": "dotnet test tests/Orders.Domain.Tests",
+  "nodeRef": ["enforce-cancellation-policy"]
+}
 ```
 
-```powershell
-node $semantic stage finish
+```text
+<semantic-review> stage validation --input <validation.json>
+<semantic-review> stage finish
 ```
 
 A stage may contain several linear commits. Finalization rejects merge commits,
@@ -207,10 +208,13 @@ Repeat begin, implement, commit, and finish for each stage.
 
 ## 6. Validate and review
 
+```text
+<semantic-review> validate
+<semantic-review> validate --publish
+<semantic-review> prepare-stack
+```
+
 ```powershell
-node $semantic validate
-node $semantic validate --publish
-node $semantic prepare-stack
 npm start --prefix .\poc
 ```
 
@@ -231,11 +235,11 @@ stale anchor after restacking.
 
 The agent or user may check out any stage branch and commit a correction:
 
-```powershell
+```text
 git switch semantic-review/customer-order-cancellation/01-add-cancellation-policy
 # edit, test
 git commit -am "Handle paid pending orders"
-node $semantic restack --from add-cancellation-policy
+<semantic-review> restack --from add-cancellation-policy
 ```
 
 The command:
@@ -249,10 +253,10 @@ The command:
 
 If trunk advanced:
 
-```powershell
+```text
 git switch main
 git pull --ff-only
-node $semantic restack --base main
+<semantic-review> restack --base main
 ```
 
 Do not run a restack while an upper branch that must move is checked out.
@@ -264,20 +268,25 @@ hosting operation and should use lease-protected force pushes where available.
 
 Get work grouped by stage:
 
-```powershell
-node $feedback next --json
+```text
+<review-feedback> next --json
 ```
 
 After restacking, resolve each item with the submission snapshot and current
 head:
 
-```powershell
-node $feedback comment resolve `
-  --id <feedback-id> `
-  --summary "Updated the cancellation rule." `
-  --stage add-cancellation-policy `
-  --previous-head <submitted-head> `
-  --rewritten-head <current-head>
+```json
+{
+  "id": "<feedback-id>",
+  "summary": "Updated the cancellation rule.",
+  "stage": "add-cancellation-policy",
+  "previousHead": "<submitted-head>",
+  "rewrittenHead": "<current-head>"
+}
+```
+
+```text
+<review-feedback> comment resolve --input <resolution.json>
 ```
 
 If the stage changes again, use `resolution rebind` with
@@ -287,8 +296,8 @@ If the stage changes again, use `resolution rebind` with
 
 After explicit approval:
 
-```powershell
-node $feedback approve-stack
+```text
+<review-feedback> approve-stack
 ```
 
 This publishes `.semantic-review/` to:
@@ -302,14 +311,14 @@ from implementation branches.
 
 The reviewed stack is now ready locally:
 
-```powershell
-node $semantic prepare-stack
+```text
+<semantic-review> prepare-stack
 ```
 
 To create a single cumulative branch for a conventional remote review:
 
-```powershell
-node $semantic prepare-branch --branch review/customer-order-cancellation
+```text
+<semantic-review> prepare-branch --branch review/customer-order-cancellation
 ```
 
 This creates the named branch at the final reviewed stage head without
@@ -325,8 +334,8 @@ tool does not assume how reviews are created or merged.
 After the chosen remote workflow has landed the code and the target branch is
 current:
 
-```powershell
-node $semantic archive
+```text
+<semantic-review> archive
 ```
 
 ## Recovery

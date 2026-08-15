@@ -16,14 +16,17 @@ review-only request, documentation-only edit, or routine refactor.
 Before mutation:
 
 1. Locate the repository and installed skill roots.
-2. Confirm Node.js 20 or later.
-3. Read `SKILL.md`, this procedure, and `scripts/API.d.ts`.
+2. Complete the required reading selected by `SKILL.md`, including the one
+   operating-system guide for the current environment.
+3. Complete that guide's preflight, confirm Node.js 20 or later and Git are
+   available, and define the concrete `<semantic-review>` and
+   `<review-feedback>` invocations.
 4. Inspect the current branch, `HEAD`, worktree, and active artifact.
 
 If an active review exists, run:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs validate
+<semantic-review> validate
 ```
 
 Resume from its working stage, finalized branches, or submitted feedback. Use
@@ -47,7 +50,7 @@ Keep future stages in the agent's task plan. Register only the next stage.
 ## 1. Initialize
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs init <options>
+<semantic-review> init <options>
 ```
 
 Long commands may put options in a JSON object and pass `--input <json-file>`,
@@ -75,7 +78,7 @@ GitKraken.
 Add independent requirements before a stage references them:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs requirement add <options>
+<semantic-review> requirement add <options>
 ```
 
 Never hand-edit generated state.
@@ -87,7 +90,7 @@ Never hand-edit generated state.
 From the current stack tip:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage begin --input -
+<semantic-review> stage begin --input -
 ```
 
 The command creates and checks out the next deterministic branch. The first
@@ -105,7 +108,7 @@ assumptions, alternatives, failed attempts, risks, and questions when they
 arise:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage record --input -
+<semantic-review> stage record --input -
 ```
 
 Do not record routine choices, fabricated history, secrets, raw logs, or
@@ -118,7 +121,7 @@ Multiple linear commits are allowed; merge commits are not. Exclude
 `.semantic-review/` and `.semantic-review-feedback/`.
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage organize --file <organization-json>
+<semantic-review> stage organize --file <organization-json>
 ```
 
 The organization document uses
@@ -142,7 +145,7 @@ Run the smallest existing checks that cover the organized stage and record
 observed results with `--node-ref` for every relevant node:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage validation --input -
+<semantic-review> stage validation --input -
 ```
 
 Inspect the complete stage diff and use `stage set` if its boundary, rationale,
@@ -152,7 +155,7 @@ document before finalizing. Do not finalize with a known acceptance gap that
 belongs to this stage.
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs stage finish
+<semantic-review> stage finish
 ```
 
 Finalization captures:
@@ -186,8 +189,8 @@ After all stages:
 6. Run:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs validate --publish
-node <skill-root>/scripts/semantic-review.mjs prepare-stack
+<semantic-review> validate --publish
+<semantic-review> prepare-stack
 ```
 
 `prepare-stack` prints the hosting-neutral local branch/base/head chain. It
@@ -198,7 +201,7 @@ does not contact a remote or create hosted reviews.
 Load submitted feedback:
 
 ```text
-node <skill-root>/scripts/review-feedback.mjs next --json
+<review-feedback> next --json
 ```
 
 Process the earliest affected stage first:
@@ -209,7 +212,7 @@ Process the earliest affected stage first:
 4. Cascade the change through every branch above it:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs restack --from <stage-id>
+<semantic-review> restack --from <stage-id>
 ```
 
 `restack` refreshes the edited branch snapshot, replays each upper branch onto
@@ -222,7 +225,7 @@ supports changes committed manually by the user on any lower stage branch.
 If trunk advanced, check out a branch that will not be moved and run:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs restack --base <target-branch>
+<semantic-review> restack --base <target-branch>
 ```
 
 Record resolutions with the submitted `previous-head` and current stage
@@ -231,8 +234,8 @@ Record resolutions with the submitted `previous-head` and current stage
 Afterward:
 
 ```text
-node <skill-root>/scripts/review-feedback.mjs validate
-node <skill-root>/scripts/semantic-review.mjs validate --publish
+<review-feedback> validate
+<semantic-review> validate --publish
 ```
 
 If branches were already pushed, updating rewritten remote refs is outside this
@@ -243,7 +246,7 @@ flow and should use lease-protected force pushes where available.
 Only after explicit whole-stack approval:
 
 ```text
-node <skill-root>/scripts/review-feedback.mjs approve-stack
+<review-feedback> approve-stack
 ```
 
 Approval validates feedback, creates or updates
@@ -255,13 +258,13 @@ branch is separate so review JSON never pollutes implementation diffs.
 The validated stage branches are already a stack-ready local output:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs prepare-stack
+<semantic-review> prepare-stack
 ```
 
 For one cumulative branch:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs prepare-branch --branch <name>
+<semantic-review> prepare-branch --branch <name>
 ```
 
 This creates a local branch at the final reviewed stage head without switching
@@ -278,7 +281,7 @@ After the chosen external workflow has landed the code and the target branch is
 current:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs archive
+<semantic-review> archive
 ```
 
 Archival stores the published artifact under

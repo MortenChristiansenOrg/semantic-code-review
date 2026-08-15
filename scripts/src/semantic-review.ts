@@ -93,6 +93,10 @@ function formatPath(value) {
   return value.split(path.sep).join("/");
 }
 
+function compareOrdinal(left: string, right: string) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function schemaValidator() {
   const required = [
     "common.schema.json",
@@ -347,7 +351,7 @@ function changedFiles(root, parent, commit) {
     index += 1;
   }
 
-  files.sort((left, right) => left.path.localeCompare(right.path));
+  files.sort((left, right) => compareOrdinal(left.path, right.path));
   if (files.length === 0) {
     fail(`Stage head ${commit} has no changes relative to ${parent}.`);
   }
@@ -948,6 +952,10 @@ function initialize(paths, options) {
     stages: [],
   };
 
+  const ajv = schemaValidator();
+  validateDocument(ajv, requirement, "Requirement input");
+  validateDocument(ajv, manifest, "Manifest input");
+
   ensureArtifactExcluded(paths.root);
   try {
     writeJson(
@@ -973,6 +981,7 @@ function addRequirement(paths, options) {
   if (artifact.requirements.has(requirement.id)) {
     fail(`Requirement ${requirement.id} already exists.`);
   }
+  validateDocument(schemaValidator(), requirement, "Requirement input");
 
   const file = path.join(paths.requirements, `${requirement.id}.json`);
   const oldManifest = structuredClone(artifact.manifest);
@@ -1052,6 +1061,7 @@ function beginStage(paths, options) {
   if (stage.requirementRefs.length === 0) {
     fail("At least one --requirement-ref is required.");
   }
+  validateDocument(schemaValidator(), stage, "Stage input");
 
   const originalBranch = currentBranch(paths.root);
   git(["switch", "-c", branch, parent], { cwd: paths.root });

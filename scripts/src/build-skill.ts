@@ -35,6 +35,10 @@ await build({
   logLevel: "info",
 });
 
+for (const file of ["semantic-review.mjs", "review-feedback.mjs"]) {
+  fs.chmodSync(path.join(outputDirectory, file), 0o644);
+}
+
 fs.writeFileSync(
   path.join(outputDirectory, "API.d.ts"),
   compileApiDefinition(path.join(scriptsRoot, "src", "api.ts"), cliApis),

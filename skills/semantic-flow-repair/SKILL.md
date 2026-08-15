@@ -93,12 +93,12 @@ supported workflow changes.
 From the source repository, run:
 
 ```text
-npm test --prefix .\scripts
+npm test --prefix ./scripts
 ```
 
 This type-checks, rebuilds the distributed skill, validates the command
 contract, and runs the CLI tests. Install dependencies with
-`npm ci --prefix .\scripts` only when they are unavailable or the lockfile
+`npm ci --prefix ./scripts` only when they are unavailable or the lockfile
 changed.
 
 Inspect the source-repository diff after the build. Generated outputs must
@@ -117,8 +117,8 @@ Run the rebuilt CLI directly from the source checkout while the current
 directory remains the target repository root:
 
 ```text
-node <source-repository>\skills\semantic-flow\scripts\semantic-review.mjs <command>
-node <source-repository>\skills\semantic-flow\scripts\review-feedback.mjs <command>
+node "<source-repository>/skills/semantic-flow/scripts/semantic-review.mjs" <command>
+node "<source-repository>/skills/semantic-flow/scripts/review-feedback.mjs" <command>
 ```
 
 Repeat the original failing operation and the nearest unaffected workflow.

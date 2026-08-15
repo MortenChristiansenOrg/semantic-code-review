@@ -406,6 +406,7 @@ function createBatch(paths, options) {
     items: [],
     createdAt: now,
   };
+  validateDocument(schemaValidator(), batch, "Feedback batch input");
   const oldManifest = structuredClone(feedback.manifest);
   feedback.manifest.batches.push(id);
   const file = path.join(paths.batches, `${id}.json`);
@@ -486,6 +487,7 @@ function addComment(paths, options) {
     }
     item.assignedStageId = assignedStageId;
   }
+  validateDocument(schemaValidator(), item, "Feedback item input");
   const file = path.join(paths.items, `${id}.json`);
   const oldBatch = structuredClone(batch);
   batch.items.push(id);

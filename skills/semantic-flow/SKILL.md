@@ -12,9 +12,24 @@ Produce a trustworthy semantic review artifact while implementing the work.
 The artifact must describe what actually happened, not a reconstruction created
 after the code is finished.
 
-Read `docs/Steps.md` and `scripts/API.d.ts` before changing application code or
-invoking the CLI. `docs/Steps.md` defines the operating procedure.
-`scripts/API.d.ts` is the authoritative command signature.
+## Required reading and operating system selection
+
+Before changing application code or invoking the CLI:
+
+1. Determine the operating system of the environment that will run the CLI.
+   If it is not already certain, run `node -p "process.platform"`.
+2. Read `docs/Steps.md` and `scripts/API.d.ts` completely.
+   `docs/Steps.md` defines the shared operating procedure and
+   `scripts/API.d.ts` is the authoritative command signature.
+3. Read exactly one operating-system guide completely:
+   - `linux`: read `docs/os/linux.md`.
+   - `win32` (Windows): read `docs/os/windows.md`.
+
+Treat WSL and Linux containers as Linux because their Node.js platform is
+`linux`. Select the guide from the current execution environment, never from
+the repository's path style or origin. If Node.js reports another platform,
+stop before mutation and explain that this skill currently supports only Linux
+and Windows. Do not load the guide for the other operating system.
 
 ## Non-negotiable rules
 
@@ -92,19 +107,24 @@ blocked or skipped runtime validation honestly.
 ## Bundled CLI
 
 The production CLI is self-contained in `scripts/` and requires Node.js 20 or
-later:
+later. The selected operating-system guide defines the concrete invocations
+represented throughout the shared procedure as:
 
 ```text
-node <skill-root>/scripts/semantic-review.mjs <command>
-node <skill-root>/scripts/review-feedback.mjs <command>
+<semantic-review> <command>
+<review-feedback> <command>
 ```
+
+Substitute the selected guide's invocation; never run the angle-bracket
+placeholder literally. Keep repository paths stored in artifacts or passed to
+`--path` in Git's canonical forward-slash form on every operating system.
 
 All commands accept `--input <json-file>` or `--input -` for stdin. The JSON
 contains one object whose keys are CLI option names in camelCase or kebab-case;
 arrays represent repeated options and `true` represents a flag. Explicit
 command-line options may be used instead, but the same option cannot be supplied
-in both places. Prefer stdin or an operating-system temporary file so inputs do
-not violate clean-worktree checks.
+in both places. Follow the selected operating-system guide for stdin and
+temporary JSON so inputs do not violate clean-worktree checks.
 
 Commands that operate on the active working stage infer it when `--stage` or
 `--id` is omitted. `current` is accepted explicitly. Finalized-stage updates

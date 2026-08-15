@@ -36,7 +36,7 @@
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
     },
     "targetBranch": {
-      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"
     },
     "branchPrefix": {
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"

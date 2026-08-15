@@ -166,6 +166,120 @@ test("semantic IDs may start with digits", (t) => {
   );
 });
 
+test("Windows-reserved semantic identifiers are rejected before mutation", (t) => {
+  const repository = createRepository(t);
+  const expectInvalidInit = (reviewId, branchPrefix) => {
+    const args = [
+      "init",
+      "--review-id",
+      reviewId,
+      "--title",
+      "Portable review",
+      "--summary",
+      "Reject identifiers that cannot become Windows filenames.",
+      "--target-branch",
+      "main",
+      "--requirement-id",
+      "story",
+      "--requirement-title",
+      "Story",
+      "--requirement-summary",
+      "Remain portable.",
+      "--source-kind",
+      "local",
+      "--source-reference",
+      "portable-review",
+      "--criterion",
+      "works=Portable identifiers work.",
+    ];
+    if (branchPrefix) args.push("--branch-prefix", branchPrefix);
+    repository.expectSemanticFailure("must match pattern", ...args);
+  };
+
+  for (const reviewId of ["con", "aux", "com1", "lpt9"]) {
+    expectInvalidInit(reviewId);
+  }
+
+  expectInvalidInit("portable-review", "semantic-review/CON");
+  assert.equal(repository.exists(".semantic-review"), false);
+
+  initializeReview(repository, { reviewId: "portable-review" });
+  repository.expectSemanticFailure(
+    "must match pattern",
+    "requirement",
+    "add",
+    "--requirement-id",
+    "aux",
+    "--requirement-title",
+    "Invalid",
+    "--requirement-summary",
+    "Invalid on Windows.",
+    "--source-kind",
+    "local",
+    "--source-reference",
+    "invalid",
+    "--criterion",
+    "works=Works",
+  );
+  assert.equal(
+    repository.exists(".semantic-review/requirements/aux.json"),
+    false,
+  );
+
+  repository.expectSemanticFailure(
+    "must match pattern",
+    "stage",
+    "begin",
+    "--id",
+    "nul",
+    "--title",
+    "Invalid",
+    "--summary",
+    "Invalid on Windows.",
+    "--rationale",
+    "Verify portable filenames.",
+    "--requirement-ref",
+    "story#works",
+  );
+  assert.equal(repository.git("branch", "--show-current"), "main");
+  assert.equal(
+    repository.exists(".semantic-review/.work/stages/nul.json"),
+    false,
+  );
+});
+
+test("stage file inventories use locale-independent ordering", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository);
+  beginStage(repository);
+  repository.write("z.txt", "z\n");
+  repository.write("ä.txt", "a-umlaut\n");
+  repository.git("add", "z.txt", "ä.txt");
+  repository.git("commit", "-m", "Add locale-sensitive paths");
+  organizeStage(repository, {
+    nodes: [
+      {
+        id: "add-files",
+        description: "Add files whose names sort differently across locales.",
+        changes: ["z.txt", "ä.txt"].map((path) => ({
+          path,
+          classification: "test",
+        })),
+      },
+    ],
+    itemLinks: [],
+  });
+  repository.semantic("stage", "finish");
+
+  const stage = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+  assert.deepEqual(
+    stage.change.files.map((file) => file.path),
+    ["z.txt", "ä.txt"],
+  );
+});
+
 test("JSON input and current stage simplify mutations", (t) => {
   const repository = createRepository(t);
   repository.write(

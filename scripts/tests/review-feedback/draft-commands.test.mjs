@@ -52,6 +52,55 @@ test("feedback IDs may start with digits", (t) => {
   );
 });
 
+test("Windows-reserved feedback identifiers are rejected before mutation", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.feedback("init");
+
+  repository.expectFeedbackFailure(
+    "must match pattern",
+    "batch",
+    "create",
+    "--id",
+    "con",
+    "--title",
+    "Invalid",
+  );
+  assert.equal(
+    repository.exists(".semantic-review-feedback/batches/con.json"),
+    false,
+  );
+
+  repository.feedback(
+    "batch",
+    "create",
+    "--id",
+    "portable",
+    "--title",
+    "Portable IDs",
+  );
+  repository.expectFeedbackFailure(
+    "must match pattern",
+    "comment",
+    "add",
+    "--batch",
+    "portable",
+    "--id",
+    "lpt1",
+    "--body",
+    "Invalid on Windows.",
+    "--label",
+    "Invalid",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  assert.equal(
+    repository.exists(".semantic-review-feedback/items/lpt1.json"),
+    false,
+  );
+});
+
 test("draft commands support every target kind and concurrent mutation", async (t) => {
   const { repository } = createReviewWithStages(t, [
     "implementation",

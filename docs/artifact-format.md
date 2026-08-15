@@ -35,10 +35,13 @@ self-referential. A writer MAY publish it on a separate metadata branch.
 ## Common rules
 
 - UTF-8 JSON, two-space indentation, final newline.
-- IDs match `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
+- IDs match `^[a-z0-9]+(?:-[a-z0-9]+)*$` and MUST NOT equal the
+  case-insensitive Windows device names `con`, `prn`, `aux`, `nul`, `com1`
+  through `com9`, or `lpt1` through `lpt9`.
 - Repository paths use `/` and are relative to the repository root.
 - Revisions are full lowercase 40-character SHA-1 IDs in version 0.1.
-- Branch names must pass `git check-ref-format --branch`.
+- Branch names must pass `git check-ref-format --branch` and MUST NOT contain a
+  path component equal to one of those Windows device names.
 - Arrays with defined order preserve it.
 - Every document names its `$schema`.
 

@@ -1,0 +1,71 @@
+# Linux runtime details
+
+Read this file only when `node -p "process.platform"` reports `linux`. This
+includes WSL and Linux containers. Keep the semantic workflow in
+`../Steps.md`; this file defines only Linux invocation, path, and temporary-file
+details.
+
+## Preflight and CLI invocations
+
+Use a Bash-compatible shell for these examples. Resolve the installed skill
+directory to an absolute path, quote every filesystem path, and define:
+
+```bash
+skill_root="/absolute/path/to/semantic-flow"
+semantic_review="$skill_root/scripts/semantic-review.mjs"
+review_feedback="$skill_root/scripts/review-feedback.mjs"
+
+node --version
+git --version
+test -f "$semantic_review"
+test -f "$review_feedback"
+git rev-parse --show-toplevel
+git status --short --branch
+```
+
+Verify that Node.js is version 20 or later. In the shared procedure,
+substitute:
+
+```text
+<semantic-review>  => node "$semantic_review"
+<review-feedback>  => node "$review_feedback"
+```
+
+For example:
+
+```bash
+node "$semantic_review" validate
+node "$review_feedback" next --json
+```
+
+Use forward slashes for Linux filesystem paths. Also use forward slashes for
+repository paths stored in artifacts or supplied through options such as
+`--path`.
+
+## JSON input
+
+Prefer stdin for commands accepting `--input -`:
+
+```bash
+node "$semantic_review" stage begin --input - <<'JSON'
+{
+  "id": "implement-behavior",
+  "title": "Implement behavior",
+  "summary": "Add the requested behavior.",
+  "rationale": "Keep the behavior independently reviewable.",
+  "requirementRef": ["story#works"]
+}
+JSON
+```
+
+When a command requires a JSON filename, create it outside the repository with
+`mktemp`, write UTF-8 JSON using the available file-editing tool, pass the
+quoted path, and remove that exact temporary file afterward:
+
+```bash
+platform_input="$(mktemp)"
+node "$semantic_review" stage organize --file "$platform_input"
+rm -f -- "$platform_input"
+```
+
+Do not place transient command input inside the target repository.
