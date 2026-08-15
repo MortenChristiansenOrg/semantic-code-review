@@ -48,6 +48,18 @@ test("rejects artifact revisions before they can become Git options", async () =
         id: "unsafe-stage",
         dependsOn: [],
         requirementRefs: ["story#criterion"],
+        nodes: [
+          {
+            id: "unsafe-change",
+            description: "Exercise revision validation before Git execution.",
+            changes: [
+              {
+                path: "file.txt",
+                classification: "behavior",
+              },
+            ],
+          },
+        ],
         change: {
           branch: "semantic-review/unsafe-review/01-unsafe-stage",
           baseBranch: "main",

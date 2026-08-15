@@ -209,6 +209,62 @@ function validateStageReferences(stage, criteria, availableStages, label) {
       );
     }
   }
+
+  const nodes = stage.nodes ?? [];
+  const nodeIds = new Set();
+  const changedPaths = new Set(stage.change?.files?.map((file) => file.path) ?? []);
+  for (const node of nodes) {
+    requireObject(node, `Node in ${label.toLowerCase()} ${stage.id}`);
+    requireId(node.id, `Node ID in ${label.toLowerCase()} ${stage.id}`);
+    if (nodeIds.has(node.id)) {
+      throw new ArtifactError(
+        "duplicate-id",
+        `${label} ${stage.id} repeats node ${node.id}.`,
+      );
+    }
+    nodeIds.add(node.id);
+    for (const change of node.changes ?? []) {
+      if (stage.change && !changedPaths.has(change.path)) {
+        throw new ArtifactError(
+          "unresolved-node-path",
+          `${label} ${stage.id} node ${node.id} references unchanged path ${change.path}.`,
+        );
+      }
+    }
+  }
+
+  if (stage.change && nodes.length === 0) {
+    throw new ArtifactError(
+      "missing-nodes",
+      `${label} ${stage.id} must contain change nodes.`,
+    );
+  }
+  for (const collection of [
+    "decisions",
+    "assumptions",
+    "alternatives",
+    "failedAttempts",
+    "risks",
+    "validation",
+    "openQuestions",
+  ]) {
+    for (const item of stage[collection] ?? []) {
+      if (stage.change && !item.nodeRefs?.length) {
+        throw new ArtifactError(
+          "missing-node-reference",
+          `${label} ${stage.id} ${collection} item ${item.id} has no node refs.`,
+        );
+      }
+      for (const nodeRef of item.nodeRefs ?? []) {
+        if (!nodeIds.has(nodeRef)) {
+          throw new ArtifactError(
+            "unresolved-node-reference",
+            `${label} ${stage.id} ${collection} item ${item.id} references missing node ${nodeRef}.`,
+          );
+        }
+      }
+    }
+  }
 }
 
 export async function readSemanticReview({

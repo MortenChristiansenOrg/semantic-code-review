@@ -5,6 +5,7 @@ import {
   createRepository,
   finalizeStage,
   initializeReview,
+  organizeStage,
 } from "../helpers/repository.mjs";
 
 test("init and requirement add create complete requirement metadata", (t) => {
@@ -241,6 +242,7 @@ test("JSON input and current stage simplify mutations", (t) => {
   );
 
   repository.commitFile("implementation.txt", "implementation\n", "Implement");
+  organizeStage(repository);
   repository.semantic("stage", "finish");
   assert.equal(
     repository.readJson(".semantic-review/stages/implementation.json")
@@ -486,6 +488,8 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     "post-finalization",
     "--summary",
     "Finalized metadata remains mutable through the explicit flag.",
+    "--node-ref",
+    "implementation-change",
   );
   repository.semantic(
     "stage",
@@ -501,6 +505,8 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     "passed",
     "--summary",
     "The canonical stage remains valid.",
+    "--node-ref",
+    "implementation-change",
   );
 
   const stage = repository.readJson(
@@ -531,4 +537,80 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     false,
   );
   repository.semantic("validate", "--publish");
+});
+
+test("stage organization partitions multi-cause files by diff hunk", (t) => {
+  const repository = createRepository(t);
+  repository.write(
+    "service.txt",
+    "imports\nstable-a\nstable-b\nstable-c\nbehavior\n",
+  );
+  repository.git("add", "service.txt");
+  repository.git("commit", "-m", "Add service fixture");
+  initializeReview(repository);
+  beginStage(repository);
+  repository.write(
+    "service.txt",
+    "updated imports\nstable-a\nstable-b\nstable-c\nupdated behavior\n",
+  );
+  repository.git("add", "service.txt");
+  repository.git("commit", "-m", "Update service fixture");
+  repository.semantic(
+    "stage",
+    "record",
+    "--kind",
+    "decision",
+    "--item-id",
+    "split-causes",
+    "--category",
+    "engineering",
+    "--summary",
+    "Separate import maintenance from behavior.",
+    "--rationale",
+    "The file contains two independently meaningful changes.",
+  );
+
+  const nodes = [
+    {
+      id: "refresh-imports",
+      description: "Update imports needed by the new implementation.",
+      changes: [
+        {
+          path: "service.txt",
+          classification: "trivial",
+          hunks: [1],
+        },
+      ],
+    },
+    {
+      id: "change-behavior",
+      description: "Replace the service behavior with the requested flow.",
+      changes: [
+        {
+          path: "service.txt",
+          classification: "behavior",
+          hunks: [2],
+        },
+      ],
+    },
+  ];
+  const itemLinks = [
+    {
+      collection: "decisions",
+      itemId: "split-causes",
+      nodeRefs: ["refresh-imports", "change-behavior"],
+    },
+  ];
+  organizeStage(repository, { nodes, itemLinks });
+  repository.semantic("stage", "finish");
+
+  const stage = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+  assert.equal(stage.nodes.length, 2);
+  assert.deepEqual(stage.decisions[0].nodeRefs, [
+    "refresh-imports",
+    "change-behavior",
+  ]);
+  assert.deepEqual(stage.nodes[0].changes[0].hunks, [1]);
 });

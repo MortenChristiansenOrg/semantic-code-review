@@ -12,6 +12,7 @@
     "branch",
     "dependsOn",
     "requirementRefs",
+    "nodes",
     "rationale",
     "decisions",
     "assumptions",
@@ -50,6 +51,12 @@
       "uniqueItems": true,
       "items": {
         "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/requirementRef"
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/changeNode"
       }
     },
     "rationale": {

@@ -169,7 +169,7 @@ test("keeps feedback browser handlers in page scope", () => {
     .readFileSync(appPath, "utf8")
     .replace(
       /loadReview\(\);\s*$/,
-      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, stagesAddressingCriterion, diffModesForFile, parseFilePatch, buildFullFileRows };",
+      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, stagesAddressingCriterion, diffModesForFile, parseFilePatch, buildFullFileRows, membershipScope };",
     );
   const node = {
     addEventListener() {},
@@ -228,6 +228,13 @@ test("keeps feedback browser handlers in page scope", () => {
       ["patch", "Patch"],
       ["file", "File"],
     ]),
+  );
+  assert.equal(
+    context.browserHandlers.membershipScope(
+      { classification: "trivial", hunks: [1, 3] },
+      { kind: "modified" },
+    ),
+    "modified · hunks 1, 3",
   );
   const hunks = context.browserHandlers.parseFilePatch(
     "@@ -1,2 +1,2 @@\n-old value\n+new value\n stable",
@@ -447,10 +454,14 @@ test("serves and mutates schema-validated feedback state", async () => {
       },
     );
     const commentState = await commentResponse.json();
+    assert.equal(
+      commentResponse.status,
+      201,
+      JSON.stringify(commentState),
+    );
     const updatedBatch = commentState.batches.find(
       (candidate) => candidate.id === batch.id,
     );
-    assert.equal(commentResponse.status, 201);
     assert.equal(updatedBatch.feedbackItems.length, 1);
     assert.equal(updatedBatch.feedbackItems[0].status, "draft");
 

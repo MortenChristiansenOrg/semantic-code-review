@@ -34,6 +34,17 @@ const STAGE_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json";
 const WORK_STAGE_SCHEMA =
   "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json";
+const STAGE_ORGANIZATION_SCHEMA =
+  "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json";
+const CONTEXT_COLLECTIONS = [
+  "decisions",
+  "assumptions",
+  "alternatives",
+  "failedAttempts",
+  "risks",
+  "validation",
+  "openQuestions",
+];
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -48,6 +59,11 @@ const workStageSchemaPath = path.join(
   skillDirectory,
   "references",
   "work-stage.schema.json",
+);
+const stageOrganizationSchemaPath = path.join(
+  skillDirectory,
+  "references",
+  "stage-organization.schema.json",
 );
 
 const HELP = renderCliHelp(semanticReviewApi);
@@ -104,6 +120,7 @@ function schemaValidator() {
     ajv.addSchema(readJson(path.join(schemaDirectory, file)));
   }
   ajv.addSchema(readJson(workStageSchemaPath));
+  ajv.addSchema(readJson(stageOrganizationSchemaPath));
   return ajv;
 }
 
@@ -347,6 +364,230 @@ function changedFiles(root, parent, commit) {
   return files;
 }
 
+function diffChangeShape(root, parent, commit, file) {
+  const paths = [...new Set([file.previousPath, file.path].filter(Boolean))];
+  const patch = gitRaw(
+    [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "--no-ext-diff",
+      "--find-renames=50%",
+      "--unified=0",
+      parent,
+      commit,
+      "--",
+      ...paths,
+    ],
+    { cwd: root },
+  );
+  const hunks = [];
+  for (const line of patch.split(/\r?\n/)) {
+    const match = line.match(
+      /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
+    );
+    if (!match) continue;
+    hunks.push({
+      oldStart: Number(match[1]),
+      oldCount: match[2] === undefined ? 1 : Number(match[2]),
+      newStart: Number(match[3]),
+      newCount: match[4] === undefined ? 1 : Number(match[4]),
+    });
+  }
+  return {
+    binary: /(?:Binary files|GIT binary patch)/.test(patch),
+    hunks,
+  };
+}
+
+function addLines(target, start, count) {
+  for (let line = start; line < start + count; line += 1) {
+    target.add(line);
+  }
+}
+
+function sameNumberSets(left, right) {
+  return (
+    left.size === right.size &&
+    [...left].every((value) => right.has(value))
+  );
+}
+
+function stageNodeErrors(stage, files, diffContext = undefined) {
+  const errors = [];
+  const nodes = stage.nodes ?? [];
+  const nodeIds = nodes.map((node) => node.id);
+  const knownNodeIds = new Set(nodeIds);
+  for (const duplicate of duplicateValues(nodeIds)) {
+    errors.push(`Stage ${stage.id} repeats node ID ${duplicate}.`);
+  }
+
+  for (const collection of CONTEXT_COLLECTIONS) {
+    for (const item of stage[collection]) {
+      if (!Array.isArray(item.nodeRefs) || item.nodeRefs.length === 0) {
+        errors.push(
+          `Stage ${stage.id} ${collection} item ${item.id} has no node refs.`,
+        );
+        continue;
+      }
+      for (const nodeRef of item.nodeRefs) {
+        if (!knownNodeIds.has(nodeRef)) {
+          errors.push(
+            `Stage ${stage.id} ${collection} item ${item.id} references missing node ${nodeRef}.`,
+          );
+        }
+      }
+    }
+  }
+
+  const filesByPath = new Map(files.map((file) => [file.path, file]));
+  const memberships = new Map();
+  for (const node of nodes) {
+    const nodePaths = node.changes.map((change) => change.path);
+    for (const duplicate of duplicateValues(nodePaths)) {
+      errors.push(`Stage ${stage.id} node ${node.id} repeats path ${duplicate}.`);
+    }
+    for (const change of node.changes) {
+      if (!filesByPath.has(change.path)) {
+        errors.push(
+          `Stage ${stage.id} node ${node.id} references unchanged path ${change.path}.`,
+        );
+        continue;
+      }
+      const entries = memberships.get(change.path) ?? [];
+      entries.push({ node, change });
+      memberships.set(change.path, entries);
+    }
+  }
+
+  for (const file of files) {
+    const entries = memberships.get(file.path) ?? [];
+    if (entries.length === 0) {
+      errors.push(`Stage ${stage.id} does not assign changed path ${file.path} to a node.`);
+      continue;
+    }
+    if (entries.length === 1) {
+      const change = entries[0].change;
+      if (change.hunks || change.lineRanges) {
+        errors.push(
+          `Stage ${stage.id} path ${file.path} belongs to one node and must use whole-file membership.`,
+        );
+      }
+      continue;
+    }
+
+    const selectorKinds = new Set(
+      entries.map(({ change }) =>
+        change.hunks
+          ? "hunks"
+          : change.lineRanges
+            ? "lineRanges"
+            : "missing",
+      ),
+    );
+    if (selectorKinds.has("missing")) {
+      errors.push(
+        `Stage ${stage.id} path ${file.path} belongs to multiple nodes; every membership needs hunks or lineRanges.`,
+      );
+      continue;
+    }
+    if (selectorKinds.size !== 1) {
+      errors.push(
+        `Stage ${stage.id} path ${file.path} must use one selector type across all node memberships.`,
+      );
+      continue;
+    }
+    if (!diffContext) continue;
+
+    const shape = diffChangeShape(
+      diffContext.root,
+      diffContext.baseRevision,
+      diffContext.headRevision,
+      file,
+    );
+    if (shape.binary || shape.hunks.length === 0) {
+      errors.push(
+        `Stage ${stage.id} path ${file.path} cannot be split across nodes because it has no textual hunks.`,
+      );
+      continue;
+    }
+
+    if (selectorKinds.has("hunks")) {
+      const owners = new Map();
+      for (const { node, change } of entries) {
+        for (const hunk of change.hunks) {
+          if (hunk > shape.hunks.length) {
+            errors.push(
+              `Stage ${stage.id} node ${node.id} selects missing hunk ${hunk} of ${file.path}.`,
+            );
+          } else if (owners.has(hunk)) {
+            errors.push(
+              `Stage ${stage.id} path ${file.path} hunk ${hunk} belongs to both ${owners.get(hunk)} and ${node.id}.`,
+            );
+          } else {
+            owners.set(hunk, node.id);
+          }
+        }
+      }
+      for (let hunk = 1; hunk <= shape.hunks.length; hunk += 1) {
+        if (!owners.has(hunk)) {
+          errors.push(
+            `Stage ${stage.id} path ${file.path} hunk ${hunk} is not assigned to a node.`,
+          );
+        }
+      }
+      continue;
+    }
+
+    const actualOld = new Set();
+    const actualNew = new Set();
+    for (const hunk of shape.hunks) {
+      addLines(actualOld, hunk.oldStart, hunk.oldCount);
+      addLines(actualNew, hunk.newStart, hunk.newCount);
+    }
+    const selectedOld = new Set();
+    const selectedNew = new Set();
+    const owners = new Map();
+    for (const { node, change } of entries) {
+      for (const range of change.lineRanges) {
+        for (const side of ["old", "new"]) {
+          const span = range[side];
+          if (!span) continue;
+          if (span.end < span.start) {
+            errors.push(
+              `Stage ${stage.id} node ${node.id} has an inverted ${side} line range for ${file.path}.`,
+            );
+            continue;
+          }
+          const selected = side === "old" ? selectedOld : selectedNew;
+          const actual = side === "old" ? actualOld : actualNew;
+          for (let line = span.start; line <= span.end; line += 1) {
+            const key = `${side}:${line}`;
+            if (!actual.has(line)) {
+              errors.push(
+                `Stage ${stage.id} node ${node.id} selects unchanged ${side} line ${line} of ${file.path}.`,
+              );
+            } else if (owners.has(key)) {
+              errors.push(
+                `Stage ${stage.id} path ${file.path} ${side} line ${line} belongs to both ${owners.get(key)} and ${node.id}.`,
+              );
+            } else {
+              owners.set(key, node.id);
+              selected.add(line);
+            }
+          }
+        }
+      }
+    }
+    if (!sameNumberSets(actualOld, selectedOld) || !sameNumberSets(actualNew, selectedNew)) {
+      errors.push(
+        `Stage ${stage.id} path ${file.path} line ranges do not cover every changed line exactly once.`,
+      );
+    }
+  }
+  return errors;
+}
+
 function sameChanges(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -388,16 +629,6 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
   const seenStages = new Set();
   const branches = new Set();
   const heads = new Set();
-  const localCollections = [
-    "decisions",
-    "assumptions",
-    "alternatives",
-    "failedAttempts",
-    "risks",
-    "validation",
-    "openQuestions",
-  ];
-
   for (const id of manifest.stages) {
     const stage = stages.get(id);
     if (stage.id !== id) {
@@ -417,7 +648,7 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
         errors.push(`Stage ${id} has unresolved requirement ref ${reference}.`);
       }
     }
-    for (const collection of localCollections) {
+    for (const collection of CONTEXT_COLLECTIONS) {
       const ids = stage[collection].map((item) => item.id);
       for (const duplicate of duplicateValues(ids)) {
         errors.push(`Stage ${id} repeats ${collection} ID ${duplicate}.`);
@@ -427,6 +658,7 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
     for (const duplicate of duplicateValues(changedPaths)) {
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
+    errors.push(...stageNodeErrors(stage, stage.change.files));
     const expectedBranch = stageBranchName(
       manifest,
       manifest.stages.indexOf(id),
@@ -494,7 +726,7 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
         );
       }
     }
-    for (const collection of localCollections) {
+    for (const collection of CONTEXT_COLLECTIONS) {
       const ids = stage[collection].map((item) => item.id);
       for (const duplicate of duplicateValues(ids)) {
         errors.push(
@@ -553,6 +785,14 @@ function validateSemantic(paths, artifact, { validateGit = true } = {}) {
       fail(
         `Stage ${id} file inventory is stale.\nExpected: ${JSON.stringify(actualFiles)}\nActual:   ${JSON.stringify(stage.change.files)}`,
       );
+    }
+    const nodeErrors = stageNodeErrors(stage, actualFiles, {
+      root: paths.root,
+      baseRevision: expectedParent,
+      headRevision: head,
+    });
+    if (nodeErrors.length > 0) {
+      fail(nodeErrors.join("\n"));
     }
     expectedBaseBranch = branch;
     expectedParent = head;
@@ -799,6 +1039,7 @@ function beginStage(paths, options) {
     branch,
     dependsOn: repeatedOption(options, "depends-on"),
     requirementRefs: repeatedOption(options, "requirement-ref"),
+    nodes: [],
     rationale: option(options, "rationale", { required: true }),
     decisions: [],
     assumptions: [],
@@ -1001,6 +1242,19 @@ function itemForKind(kind, options) {
   }
 }
 
+function validateRecordedNodeRefs(stage, item) {
+  if (!stage.nodes?.length) return;
+  if (!item.nodeRefs?.length) {
+    fail("Recording context after stage organization requires --node-ref.");
+  }
+  const knownNodeIds = new Set(stage.nodes.map((node) => node.id));
+  for (const nodeRef of item.nodeRefs) {
+    if (!knownNodeIds.has(nodeRef)) {
+      fail(`Stage ${stage.id} has no node ${nodeRef}.`);
+    }
+  }
+}
+
 function recordStageItem(paths, options) {
   assertKnownOptions(
     options,
@@ -1019,6 +1273,11 @@ function recordStageItem(paths, options) {
     : selectedWorkingStageId(artifact, requestedStage, "stage");
   const kind = option(options, "kind", { required: true });
   const item = itemForKind(kind, options);
+  const nodeRefs = repeatedOption(options, "node-ref");
+  if (nodeRefs.length > 0) {
+    item.value.nodeRefs = nodeRefs;
+  }
+  item.allowed.push("node-ref");
   const replace = flag(options, "replace");
   assertKnownOptions(
     options,
@@ -1046,6 +1305,10 @@ function recordStageItem(paths, options) {
         `Working stage ${stageId} has no ${item.collection} item ${item.value.id} to replace.`,
       );
     }
+    if (index >= 0 && !item.value.nodeRefs && stage[item.collection][index].nodeRefs) {
+      item.value.nodeRefs = stage[item.collection][index].nodeRefs;
+    }
+    validateRecordedNodeRefs(stage, item.value);
     if (index >= 0) {
       stage[item.collection][index] = item.value;
     } else {
@@ -1084,6 +1347,10 @@ function recordValidation(paths, options) {
   if (command !== undefined) {
     value.command = command;
   }
+  const nodeRefs = repeatedOption(options, "node-ref");
+  if (nodeRefs.length > 0) {
+    value.nodeRefs = nodeRefs;
+  }
 
   updateStageContext(paths, stageId, finalized, (stage) => {
     const index = stage.validation.findIndex(
@@ -1099,6 +1366,10 @@ function recordValidation(paths, options) {
         `Working stage ${stageId} has no validation item ${value.id} to replace.`,
       );
     }
+    if (index >= 0 && !value.nodeRefs && stage.validation[index].nodeRefs) {
+      value.nodeRefs = stage.validation[index].nodeRefs;
+    }
+    validateRecordedNodeRefs(stage, value);
     if (index >= 0) {
       stage.validation[index] = value;
     } else {
@@ -1107,6 +1378,121 @@ function recordValidation(paths, options) {
   });
   console.log(
     `${replace ? "Replaced" : "Recorded"} validation ${value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
+  );
+}
+
+function applyOrganization(stage, organization) {
+  const links = new Map();
+  for (const link of organization.itemLinks) {
+    const key = `${link.collection}\0${link.itemId}`;
+    if (links.has(key)) {
+      fail(
+        `Stage organization repeats link ${link.collection}/${link.itemId}.`,
+      );
+    }
+    links.set(key, link.nodeRefs);
+  }
+
+  for (const collection of CONTEXT_COLLECTIONS) {
+    for (const item of stage[collection]) {
+      const key = `${collection}\0${item.id}`;
+      const nodeRefs = links.get(key);
+      if (!nodeRefs) {
+        fail(
+          `Stage organization has no link for ${collection}/${item.id}.`,
+        );
+      }
+      item.nodeRefs = nodeRefs;
+      links.delete(key);
+    }
+  }
+  if (links.size > 0) {
+    const [key] = links.keys();
+    const [collection, itemId] = key.split("\0");
+    fail(`Stage organization links missing item ${collection}/${itemId}.`);
+  }
+  stage.nodes = organization.nodes;
+}
+
+function organizeStage(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticReviewApi, "stage organize"),
+  );
+  const finalized = flag(options, "finalized");
+  const requestedStage = option(options, "stage");
+  if (finalized && (!requestedStage || requestedStage === "current")) {
+    fail("--finalized requires an explicit --stage <stage-id>.");
+  }
+  const inputFile = path.resolve(
+    paths.root,
+    option(options, "file", { required: true }),
+  );
+  const organization = readJson(inputFile);
+  const ajv = schemaValidator();
+  validateDocument(ajv, organization, inputFile);
+
+  const artifact = validateArtifact(paths, {
+    quiet: true,
+    validateGit: false,
+  });
+  const stageId = finalized
+    ? requestedStage
+    : selectedWorkingStageId(artifact, requestedStage, "stage");
+  const stage = finalized
+    ? artifact.stages.get(stageId)
+    : artifact.workStages.get(stageId);
+  if (!stage) {
+    fail(`${finalized ? "Finalized" : "Working"} stage ${stageId} does not exist.`);
+  }
+
+  let baseRevision;
+  let headRevision;
+  let files;
+  if (finalized) {
+    baseRevision = stage.change.baseRevision;
+    headRevision = stage.change.headRevision;
+    files = stage.change.files;
+  } else {
+    const previousId = artifact.manifest.stages.at(-1);
+    baseRevision = previousId
+      ? artifact.stages.get(previousId).change.headRevision
+      : artifact.manifest.baseRevision;
+    headRevision = branchCommit(paths.root, stage.branch);
+    if (currentBranch(paths.root) !== stage.branch || commitObject(paths.root, "HEAD") !== headRevision) {
+      fail(`Organizing ${stageId} requires checked-out stage branch ${stage.branch}.`);
+    }
+    assertLinearRange(paths.root, baseRevision, headRevision, `Stage ${stageId}`);
+    files = changedFiles(paths.root, baseRevision, headRevision);
+  }
+
+  const updated = structuredClone(stage);
+  applyOrganization(updated, organization);
+  const errors = stageNodeErrors(updated, files, {
+    root: paths.root,
+    baseRevision,
+    headRevision,
+  });
+  if (errors.length > 0) {
+    fail(errors.join("\n"));
+  }
+
+  const file = finalized
+    ? path.join(paths.stages, `${stageId}.json`)
+    : path.join(paths.workStages, `${stageId}.json`);
+  const oldStage = structuredClone(stage);
+  try {
+    writeJson(file, updated);
+    validateArtifact(paths, {
+      quiet: true,
+      validateGit: finalized,
+    });
+  } catch (error) {
+    writeJson(file, oldStage);
+    throw error;
+  }
+  console.log(
+    `Organized ${finalized ? "finalized " : ""}stage ${stageId} into ${updated.nodes.length} node(s).`,
   );
 }
 
@@ -1124,6 +1510,7 @@ function canonicalStage(
     summary: workStage.summary,
     dependsOn: workStage.dependsOn,
     requirementRefs: workStage.requirementRefs,
+    nodes: workStage.nodes,
     change: {
       branch: workStage.branch,
       baseBranch,
@@ -1452,7 +1839,7 @@ function restack(paths, options) {
         writeJson(plan.file, plan.stage);
       }
       writeJson(paths.manifest, artifact.manifest);
-      validateArtifact(paths, { quiet: true });
+      validateArtifact(paths, { quiet: true, validateGit: false });
     } catch (error) {
       updateRefsAtomically(
         paths.root,
@@ -1831,6 +2218,10 @@ function dispatch(paths, positionals, options) {
   }
   if (command === "stage" && subcommand === "record") {
     recordStageItem(paths, options);
+    return;
+  }
+  if (command === "stage" && subcommand === "organize") {
+    organizeStage(paths, options);
     return;
   }
   if (command === "stage" && subcommand === "validation") {

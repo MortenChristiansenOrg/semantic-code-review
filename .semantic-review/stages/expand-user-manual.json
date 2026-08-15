@@ -11,6 +11,18 @@
     "skill-user-manual#explain-landing",
     "skill-user-manual#explain-repository-effects"
   ],
+  "nodes": [
+    {
+      "id": "document-complete-review-lifecycle",
+      "description": "Expand the user manual from a reviewer-only guide into an end-to-end lifecycle covering initialization, staged implementation, feedback, publication, landing, and repository effects.",
+      "changes": [
+        {
+          "path": "docs/user-manual.md",
+          "classification": "documentation"
+        }
+      ]
+    }
+  ],
   "change": {
     "branch": "semantic-review/expand-skill-user-manual/01-expand-user-manual",
     "baseBranch": "master",
@@ -29,14 +41,20 @@
       "id": "explain-by-lifecycle-and-repository-effect",
       "category": "requirement",
       "summary": "Organize the manual as one end-to-end lifecycle with explicit repository effects.",
-      "rationale": "Users need to know both which action comes next and whether it creates ignored state, an implementation commit, metadata, a branch, or archived history."
+      "rationale": "Users need to know both which action comes next and whether it creates ignored state, an implementation commit, metadata, a branch, or archived history.",
+      "nodeRefs": [
+        "document-complete-review-lifecycle"
+      ]
     }
   ],
   "assumptions": [
     {
       "id": "agent-runs-mechanical-commands",
       "statement": "The coding agent normally runs the semantic-review commands while the human supplies requirements, feedback, and approvals.",
-      "riskIfWrong": "A user running the commands manually needs enough concrete examples to reproduce the same flow."
+      "riskIfWrong": "A user running the commands manually needs enough concrete examples to reproduce the same flow.",
+      "nodeRefs": [
+        "document-complete-review-lifecycle"
+      ]
     }
   ],
   "alternatives": [],
@@ -48,7 +66,10 @@
       "type": "automated",
       "status": "passed",
       "summary": "The manual names every lifecycle command and distinguishes active artifacts, ignored feedback, stage branches, head snapshots, metadata branches, and archived artifacts.",
-      "command": "git diff --check; CLI help checks; required workflow term check"
+      "command": "git diff --check; CLI help checks; required workflow term check",
+      "nodeRefs": [
+        "document-complete-review-lifecycle"
+      ]
     }
   ],
   "openQuestions": []

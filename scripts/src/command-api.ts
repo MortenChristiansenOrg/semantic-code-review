@@ -101,6 +101,15 @@ export const semanticReviewApi: CliSignature = {
         option("lesson", "<text>"),
         option("mitigation", "<text>"),
         option("question", "<text>"),
+        option("node-ref", "<node-id>", { repeatable: true }),
+      ],
+    },
+    {
+      command: "stage organize",
+      options: [
+        option("stage", "<stage-id|current>"),
+        option("file", "<json-file>", { required: true }),
+        option("finalized"),
       ],
     },
     {
@@ -112,6 +121,7 @@ export const semanticReviewApi: CliSignature = {
         option("status", "<passed|failed|not-run>", { required: true }),
         option("summary", "<text>", { required: true }),
         option("command", "<command>"),
+        option("node-ref", "<node-id>", { repeatable: true }),
         option("replace"),
         option("finalized"),
       ],

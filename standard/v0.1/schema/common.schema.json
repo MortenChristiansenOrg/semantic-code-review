@@ -39,6 +39,129 @@
       },
       "additionalProperties": true
     },
+    "nodeRefs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "lineSpan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "lineRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "old": {
+          "$ref": "#/$defs/lineSpan"
+        },
+        "new": {
+          "$ref": "#/$defs/lineSpan"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "old"
+          ]
+        },
+        {
+          "required": [
+            "new"
+          ]
+        }
+      ]
+    },
+    "nodeFileChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "classification"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "classification": {
+          "enum": [
+            "behavior",
+            "refactor",
+            "test",
+            "documentation",
+            "configuration",
+            "dependency",
+            "migration",
+            "generated",
+            "chore",
+            "trivial"
+          ]
+        },
+        "hunks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "lineRanges": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/lineRange"
+          }
+        }
+      },
+      "not": {
+        "required": [
+          "hunks",
+          "lineRanges"
+        ]
+      }
+    },
+    "changeNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "changes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "changes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nodeFileChange"
+          }
+        }
+      }
+    },
     "fileChange": {
       "type": "object",
       "additionalProperties": false,
@@ -113,6 +236,9 @@
         },
         "rationale": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     },
@@ -133,6 +259,9 @@
         },
         "riskIfWrong": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     },
@@ -153,6 +282,9 @@
         },
         "reasonRejected": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     },
@@ -177,6 +309,9 @@
         },
         "lesson": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     },
@@ -196,6 +331,9 @@
         },
         "mitigation": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     },
@@ -231,6 +369,9 @@
         },
         "command": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       },
       "allOf": [
@@ -266,6 +407,9 @@
         },
         "question": {
           "$ref": "#/$defs/nonEmptyString"
+        },
+        "nodeRefs": {
+          "$ref": "#/$defs/nodeRefs"
         }
       }
     }

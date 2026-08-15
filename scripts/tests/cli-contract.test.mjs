@@ -18,6 +18,7 @@ const commands = new Map([
       "stage begin",
       "stage set",
       "stage record",
+      "stage organize",
       "stage validation",
       "stage finish",
       "stage discard",

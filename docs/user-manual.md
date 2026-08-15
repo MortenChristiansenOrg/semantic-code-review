@@ -113,7 +113,7 @@ semantic-review/customer-order-cancellation/02-persist-cancellation
 
 It starts at stage 1's head and records stage 1 as its base branch.
 
-## 4. Implement, record, and validate
+## 4. Implement and record context
 
 Record context when it becomes relevant:
 
@@ -126,7 +126,51 @@ node $semantic stage record `
   --rationale "Other callers must not bypass the rule."
 ```
 
-Record observed validation:
+Commit the implementation, then describe its causal change nodes in an
+organization document:
+
+```json
+{
+  "$schema": "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+  "nodes": [
+    {
+      "id": "enforce-cancellation-policy",
+      "description": "Move cancellation rules into the Order aggregate and update callers to use the guarded transition.",
+      "changes": [
+        {
+          "path": "src/Orders/Order.cs",
+          "classification": "behavior"
+        },
+        {
+          "path": "src/Orders/OrderService.cs",
+          "classification": "refactor"
+        }
+      ]
+    }
+  ],
+  "itemLinks": [
+    {
+      "collection": "decisions",
+      "itemId": "keep-policy-in-aggregate",
+      "nodeRefs": [
+        "enforce-cancellation-policy"
+      ]
+    }
+  ]
+}
+```
+
+```powershell
+node $semantic stage organize --file $env:TEMP\stage-organization.json
+```
+
+Every changed file belongs to a node. If multiple nodes share one file, each
+membership supplies `hunks` or `lineRanges`, using one selector style and
+covering every changed hunk or line exactly once.
+
+## 5. Run final validation and finalize
+
+Record observed validation and link it to the relevant nodes:
 
 ```powershell
 node $semantic stage validation `
@@ -134,14 +178,11 @@ node $semantic stage validation `
   --type automated `
   --status passed `
   --summary "Covers cancellation and rejection after shipment." `
-  --command "dotnet test tests/Orders.Domain.Tests"
+  --command "dotnet test tests/Orders.Domain.Tests" `
+  --node-ref enforce-cancellation-policy
 ```
 
-## 5. Commit and finalize the branch
-
 ```powershell
-git add <implementation-paths>
-git commit -m "Define order cancellation policy"
 node $semantic stage finish
 ```
 
@@ -151,6 +192,8 @@ requires the recorded stage branch to be checked out, and captures:
 - Stage and base branch.
 - Immutable base and head revisions.
 - Exact changed-file inventory for the stage-only diff.
+- Descriptive nodes with classified whole-file, hunk, or line-range ownership.
+- Node references on every recorded context and validation item.
 
 Repeat begin, implement, commit, and finish for each stage.
 
@@ -163,8 +206,9 @@ node $semantic prepare-stack
 npm start --prefix .\poc
 ```
 
-The UI shows each stage's branch, base, head snapshot, semantic context, and
-Git-backed diff.
+The UI leads with each stage's node descriptions, then shows their classified
+file or hunk membership, linked semantic context, branch snapshots, and
+Git-backed diffs.
 
 `prepare-stack --json` emits machine-readable branch, base, and head entries.
 It neither contacts a remote nor creates hosted reviews.
@@ -191,7 +235,8 @@ The command:
 1. Accepts the edited lower branch's current head.
 2. Replays every branch above it, bottom-up.
 3. Moves all affected refs only after every replay succeeds.
-4. Refreshes base/head snapshots and file inventories.
+4. Refreshes base/head snapshots and file inventories while requiring node
+   partitions to remain valid for the rewritten diffs.
 5. Leaves the edited branch checked out.
 
 If trunk advanced:

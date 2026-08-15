@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+  "title": "Semantic story stage organization input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "nodes",
+    "itemLinks"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/changeNode"
+      }
+    },
+    "itemLinks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "itemId",
+          "nodeRefs"
+        ],
+        "properties": {
+          "collection": {
+            "enum": [
+              "decisions",
+              "assumptions",
+              "alternatives",
+              "failedAttempts",
+              "risks",
+              "validation",
+              "openQuestions"
+            ]
+          },
+          "itemId": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+          },
+          "nodeRefs": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nodeRefs"
+          }
+        }
+      }
+    }
+  }
+}

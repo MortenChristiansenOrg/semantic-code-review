@@ -10,6 +10,12 @@ Each stage records requirement coverage, rationale, decisions, assumptions,
 alternatives, failed attempts, risks, validation, dependencies, branch/base
 relationship, immutable head snapshot, and affected files.
 
+Affected files are organized into descriptive change nodes. A node represents
+one cause or coherent implementation move, such as renaming an abstraction and
+updating its consumers. Each file-to-node link has a predefined classification.
+A file owned by multiple causes is partitioned by changed hunks or line ranges.
+Every recorded context item links back to the nodes it explains.
+
 ## Stage ordering and Git shape
 
 Stages form a semantic dependency DAG but are implemented as a linear local
@@ -31,7 +37,8 @@ cumulative branch at the final stage head.
 
 1. The agent initializes at the target branch head.
 2. `stage begin` creates and checks out the next stage branch.
-3. The agent implements, commits, records context, and finalizes the branch.
+3. The agent implements, commits, groups the diff into change nodes, performs
+   final validation, and finalizes the branch.
 4. The reviewer walks the stack bottom-to-top.
 5. Feedback is anchored to immutable stage head snapshots.
 6. A change is committed directly on the affected branch.
@@ -47,11 +54,12 @@ branch.
 
 **The skill** plans stages and enforces human gates.
 
-**The CLI** creates deterministic branches, validates branch/base/head
-invariants, restacks descendants, publishes metadata separately, and prepares
-hosting-neutral local outputs.
+**The CLI** creates deterministic branches, validates branch/base/head and
+change-node coverage invariants, restacks descendants, publishes metadata
+separately, and prepares hosting-neutral local outputs.
 
-**The review UI** renders semantic context and Git diffs, gathers feedback, and
+**The review UI** leads with node descriptions, exposes their classified file
+or hunk membership, renders linked context and Git diffs, gathers feedback, and
 shows stale anchors after branch rewrites.
 
 **The repository host** may consume either the cumulative branch or the branch

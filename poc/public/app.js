@@ -504,7 +504,7 @@ function renderChangePanel(stage) {
   const heading = element("div", "change-heading");
   const title = element("div");
   appendText(title, "p", "eyebrow", "Git evidence");
-  appendText(title, "h3", "", "Changed files");
+  appendText(title, "h3", "", "Change nodes");
   heading.append(title);
   section.append(heading);
 
@@ -522,54 +522,86 @@ function renderChangePanel(stage) {
     heading,
     "p",
     "change-instruction",
-    `${stage.change.files.length} files · Select a file to inspect its stage diff`,
+    `${stage.nodes.length} nodes · ${stage.change.files.length} files · Select a file to inspect its stage diff`,
   );
-  section.append(renderFileLedger(stage));
+  section.append(renderNodeLedger(stage));
   return section;
 }
 
-function groupStageFiles(files) {
+function groupNodeChanges(stage, changes) {
   const groups = new Map();
-  for (const file of files) {
+  for (const membership of changes) {
+    const file = stage.change.files.find(
+      (candidate) => candidate.path === membership.path,
+    );
+    if (!file) continue;
     const project = file.project ?? {
       root: ".",
       name: "Repository root",
     };
     const key = `${project.root}\0${project.name}`;
     if (!groups.has(key)) {
-      groups.set(key, { project, files: [] });
+      groups.set(key, { project, entries: [] });
     }
-    groups.get(key).files.push(file);
+    groups.get(key).entries.push({ membership, file });
   }
   return [...groups.values()];
 }
 
-function renderFileLedger(stage) {
-  const ledger = element("div", "file-ledger");
-  const expandedPath = expandedStageFiles.get(stage.id);
-  for (const { project, files } of groupStageFiles(stage.change.files)) {
-    const group = element("section", "project-file-group");
-    const header = element("header", "project-file-header");
-    const identity = element("div");
-    appendText(identity, "h4", "", project.name);
-    appendText(
-      identity,
-      "p",
-      "code-text project-root",
-      project.root === "." ? "repository root" : project.root,
-    );
+function renderNodeLedger(stage) {
+  const ledger = element("div", "node-ledger");
+  const expandedKey = expandedStageFiles.get(stage.id);
+  for (const node of stage.nodes) {
+    const card = element("article", "change-node-card");
+    const header = element("header", "change-node-header");
+    const identity = element("div", "change-node-identity");
+    appendText(identity, "p", "change-node-id code-text", node.id);
+    appendText(identity, "h4", "", node.description);
     appendText(
       header,
       "span",
-      "project-file-count code-text",
-      `${files.length} ${files.length === 1 ? "file" : "files"}`,
+      "change-node-count code-text",
+      `${node.changes.length} ${node.changes.length === 1 ? "link" : "links"}`,
     );
     header.prepend(identity);
-    group.append(header);
-    for (const file of files) {
-      group.append(renderFileEntry(stage, file, expandedPath === file.path));
+    card.append(header);
+
+    const files = element("div", "change-node-files");
+    for (const { project, entries } of groupNodeChanges(stage, node.changes)) {
+      const group = element("section", "project-file-group");
+      const projectHeader = element("header", "project-file-header");
+      const projectIdentity = element("div");
+      appendText(projectIdentity, "h5", "", project.name);
+      appendText(
+        projectIdentity,
+        "p",
+        "code-text project-root",
+        project.root === "." ? "repository root" : project.root,
+      );
+      appendText(
+        projectHeader,
+        "span",
+        "project-file-count code-text",
+        `${entries.length} ${entries.length === 1 ? "file" : "files"}`,
+      );
+      projectHeader.prepend(projectIdentity);
+      group.append(projectHeader);
+      for (const { membership, file } of entries) {
+        const key = `${node.id}\0${file.path}`;
+        group.append(
+          renderFileEntry(
+            stage,
+            node,
+            membership,
+            file,
+            expandedKey === key,
+          ),
+        );
+      }
+      files.append(group);
     }
-    ledger.append(group);
+    card.append(files);
+    ledger.append(card);
   }
   return ledger;
 }
@@ -581,13 +613,36 @@ function projectRelativePath(file) {
     : file.path;
 }
 
-function renderFileEntry(stage, file, expanded) {
+function membershipScope(membership, file) {
+  if (membership.hunks) {
+    return `${file.kind} · hunks ${membership.hunks.join(", ")}`;
+  }
+  if (membership.lineRanges) {
+    return `${file.kind} · ${membership.lineRanges
+      .map((range) =>
+        [
+          range.old
+            ? `old ${range.old.start}-${range.old.end}`
+            : undefined,
+          range.new
+            ? `new ${range.new.start}-${range.new.end}`
+            : undefined,
+        ]
+          .filter(Boolean)
+          .join(" / "),
+      )
+      .join(", ")}`;
+  }
+  return `${file.kind} · whole file`;
+}
+
+function renderFileEntry(stage, node, membership, file, expanded) {
   const article = element(
     "article",
     `file-entry${expanded ? " is-expanded" : ""}`,
   );
   const row = element("div", "file-row");
-  const toggle = element("button", "file-row-toggle");
+  const toggle = element("button", "file-row-toggle node-file-toggle");
   toggle.type = "button";
   toggle.setAttribute("aria-expanded", String(expanded));
   toggle.setAttribute(
@@ -595,24 +650,30 @@ function renderFileEntry(stage, file, expanded) {
     `${expanded ? "Collapse" : "Expand"} diff for ${file.path}`,
   );
   appendText(toggle, "span", "file-disclosure", expanded ? "−" : "+");
-  appendText(toggle, "span", `file-kind kind-${file.kind}`, file.kind);
+  const classification = element(
+    "span",
+    `change-classification classification-${membership.classification}`,
+    membership.classification,
+  );
   const pathGroup = element("span", "file-path-group");
+  const pathLine = element("span", "file-path-line");
   const relativePath = projectRelativePath(file);
   const slash = relativePath.lastIndexOf("/");
   if (slash >= 0) {
     appendText(
-      pathGroup,
+      pathLine,
       "span",
       "code-text file-directory",
       relativePath.slice(0, slash + 1),
     );
   }
   appendText(
-    pathGroup,
+    pathLine,
     "span",
     "code-text file-name",
     relativePath.slice(slash + 1),
   );
+  pathGroup.append(pathLine);
   if (file.previousPath) {
     appendText(
       pathGroup,
@@ -621,15 +682,21 @@ function renderFileEntry(stage, file, expanded) {
       `from ${file.previousPath}`,
     );
   }
-  toggle.append(pathGroup);
+  const scope = element(
+    "span",
+    "code-text membership-scope",
+    membershipScope(membership, file),
+  );
+  toggle.append(classification, pathGroup, scope);
   toggle.addEventListener("click", () => {
-    if (expandedStageFiles.get(stage.id) === file.path) {
+    const key = `${node.id}\0${file.path}`;
+    if (expandedStageFiles.get(stage.id) === key) {
       expandedStageFiles.delete(stage.id);
     } else {
-      expandedStageFiles.set(stage.id, file.path);
+      expandedStageFiles.set(stage.id, key);
     }
-    const ledger = article.closest(".file-ledger");
-    const replacement = renderFileLedger(stage);
+    const ledger = article.closest(".node-ledger");
+    const replacement = renderNodeLedger(stage);
     ledger.replaceWith(replacement);
     if (expandedStageFiles.get(stage.id)) {
       requestAnimationFrame(() => {
@@ -665,7 +732,7 @@ function renderFileEntry(stage, file, expanded) {
     viewer.setAttribute("aria-label", `Diff for ${file.path}`);
     viewer.append(renderDiffLoading(file.path));
     article.append(viewer);
-    queueMicrotask(() => loadFileDiff(viewer, stage, file));
+    queueMicrotask(() => loadFileDiff(viewer, stage, file, membership));
   }
   return article;
 }
@@ -681,7 +748,7 @@ function fileDiffKey(stage, file) {
   return `${stage.id}\0${file.path}`;
 }
 
-async function loadFileDiff(viewer, stage, file) {
+async function loadFileDiff(viewer, stage, file, membership) {
   const key = fileDiffKey(stage, file);
   if (!fileDiffCache.has(key)) {
     fileDiffCache.set(
@@ -700,7 +767,9 @@ async function loadFileDiff(viewer, stage, file) {
   }
   try {
     const data = await fileDiffCache.get(key);
-    if (viewer.isConnected) renderFileDiffViewer(viewer, stage, file, data);
+    if (viewer.isConnected) {
+      renderFileDiffViewer(viewer, stage, file, membership, data);
+    }
   } catch (error) {
     fileDiffCache.delete(key);
     if (!viewer.isConnected) return;
@@ -708,7 +777,7 @@ async function loadFileDiff(viewer, stage, file) {
     retry.type = "button";
     retry.addEventListener("click", () => {
       viewer.replaceChildren(renderDiffLoading(file.path));
-      loadFileDiff(viewer, stage, file);
+      loadFileDiff(viewer, stage, file, membership);
     });
     const failure = element("div", "diff-failure");
     appendText(failure, "p", "inline-error", error.message);
@@ -717,7 +786,7 @@ async function loadFileDiff(viewer, stage, file) {
   }
 }
 
-function renderFileDiffViewer(viewer, stage, file, data) {
+function renderFileDiffViewer(viewer, stage, file, membership, data) {
   const key = fileDiffKey(stage, file);
   const availableModes = diffModesForFile(data.kind);
   const preferredMode = stageFileModes.get(key);
@@ -757,7 +826,7 @@ function renderFileDiffViewer(viewer, stage, file, data) {
       button.setAttribute("aria-pressed", String(mode === value));
       button.addEventListener("click", () => {
         stageFileModes.set(key, value);
-        renderFileDiffViewer(viewer, stage, file, data);
+        renderFileDiffViewer(viewer, stage, file, membership, data);
       });
       switcher.append(button);
     }
@@ -773,7 +842,7 @@ function renderFileDiffViewer(viewer, stage, file, data) {
       "This binary change cannot be displayed as text.",
     );
   } else if (mode === "patch") {
-    body.append(renderPatchView(stage, file, data));
+    body.append(renderPatchView(stage, file, membership, data));
   } else {
     body.append(renderFullFileView(stage, file, data));
   }
@@ -905,9 +974,12 @@ function buildFullFileRows(data) {
   return rows;
 }
 
-function renderPatchView(stage, file, data) {
+function renderPatchView(stage, file, membership, data) {
   const code = element("div", "diff-code");
-  const hunks = parseFilePatch(data.patch);
+  const allHunks = parseFilePatch(data.patch);
+  const hunks = membership.hunks
+    ? allHunks.filter((_, index) => membership.hunks.includes(index + 1))
+    : allHunks;
   if (!hunks.length) {
     appendText(
       code,
@@ -1255,6 +1327,21 @@ function renderCollection(title, items, linesFor, tone = "") {
         line,
       );
     });
+    if (item.nodeRefs?.length) {
+      const refs = element("div", "context-node-refs");
+      for (const nodeRef of item.nodeRefs) {
+        const node = allStages(review)
+          .find(({ stage }) => stage.id === selectedStageId)
+          ?.stage.nodes.find((candidate) => candidate.id === nodeRef);
+        appendText(
+          refs,
+          "span",
+          "context-node-ref code-text",
+          node ? node.description : nodeRef,
+        ).title = nodeRef;
+      }
+      card.append(refs);
+    }
     if (selectedStageId) {
       const selectedStage = allStages(review).find(
         ({ stage }) => stage.id === selectedStageId,

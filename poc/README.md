@@ -27,8 +27,8 @@ The workspace provides:
 
 - Manifest-indexed requirements and semantic stages.
 - Working and finalized stage state.
-- Project-grouped changed files with expandable syntax-highlighted patch and
-  full-file diff views.
+- Intent-oriented change nodes whose descriptions summarize the stage, with
+  classified file or hunk membership and expandable syntax-highlighted diffs.
 - Rationale, decisions, assumptions, alternatives, failures, risks, evidence,
   and open questions.
 - Authoritative artifact validation through the semantic review CLI.

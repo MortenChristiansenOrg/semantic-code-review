@@ -228,8 +228,98 @@ export function finalizeStage(
   } = {},
 ) {
   const commit = repository.commitFile(file, contents, message);
+  organizeStage(repository, { id });
   repository.semantic("stage", "finish", "--id", id);
   return commit;
+}
+
+export function organizeStage(
+  repository,
+  {
+    id = "implementation",
+    nodes,
+    itemLinks,
+  } = {},
+) {
+  const workStage = repository.readJson(
+    `.semantic-review/.work/stages/${id}.json`,
+  );
+  const manifest = repository.readJson(".semantic-review/manifest.json");
+  const previousStageId = manifest.stages.at(-1);
+  const baseRevision = previousStageId
+    ? repository.readJson(
+        `.semantic-review/stages/${previousStageId}.json`,
+      ).change.headRevision
+    : manifest.baseRevision;
+  const files = repository
+    .git("diff", "--name-only", baseRevision, "HEAD")
+    .split(/\r?\n/)
+    .filter(Boolean);
+  const organization = {
+    $schema:
+      "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+    nodes: nodes ?? [
+      {
+        id: "implementation-change",
+        description: "Implement the stage behavior and its directly related updates.",
+        changes: files.map((path) => ({
+          path,
+          classification: "behavior",
+        })),
+      },
+    ],
+    itemLinks: itemLinks ?? [
+      ...workStage.decisions.map((item) => ({
+        collection: "decisions",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.assumptions.map((item) => ({
+        collection: "assumptions",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.alternatives.map((item) => ({
+        collection: "alternatives",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.failedAttempts.map((item) => ({
+        collection: "failedAttempts",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.risks.map((item) => ({
+        collection: "risks",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.validation.map((item) => ({
+        collection: "validation",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+      ...workStage.openQuestions.map((item) => ({
+        collection: "openQuestions",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
+    ],
+  };
+  const input = `.semantic-review-organization-${id}.json`;
+  repository.write(input, `${JSON.stringify(organization, null, 2)}\n`);
+  try {
+    repository.semantic(
+      "stage",
+      "organize",
+      "--stage",
+      id,
+      "--file",
+      input,
+    );
+  } finally {
+    repository.remove(input);
+  }
 }
 
 export function createReviewWithStages(

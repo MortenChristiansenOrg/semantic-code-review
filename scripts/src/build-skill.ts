@@ -63,5 +63,9 @@ fs.copyFileSync(
   path.join(scriptsRoot, "schemas", "work-stage.schema.json"),
   path.join(referencesDirectory, "work-stage.schema.json"),
 );
+fs.copyFileSync(
+  path.join(scriptsRoot, "schemas", "stage-organization.schema.json"),
+  path.join(referencesDirectory, "stage-organization.schema.json"),
+);
 
 console.log(`Compiled semantic-flow skill at ${skillRoot}.`);

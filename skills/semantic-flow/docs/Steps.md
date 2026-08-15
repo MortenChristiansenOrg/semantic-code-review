@@ -111,24 +111,45 @@ node <skill-root>/scripts/semantic-review.mjs stage record --input -
 Do not record routine choices, fabricated history, secrets, raw logs, or
 private chain-of-thought.
 
-### C. Validate
+### C. Commit and organize the complete diff
 
-Run the smallest existing checks that cover the stage and record observed
-results:
+Run focused checks while implementing, then commit the stage implementation.
+Multiple linear commits are allowed; merge commits are not. Exclude
+`.semantic-review/` and `.semantic-review-feedback/`.
+
+```text
+node <skill-root>/scripts/semantic-review.mjs stage organize --file <organization-json>
+```
+
+The organization document uses
+`references/stage-organization.schema.json`. Create intent-oriented nodes whose
+descriptions collectively explain the stage. Every changed file must appear:
+
+- Once without a selector when one node owns the whole file.
+- In every relevant node with either `hunks` or `lineRanges` when causes share
+  a file. Use one selector style per shared file and cover every changed hunk
+  or line exactly once.
+
+Classify each file-to-node link as `behavior`, `refactor`, `test`,
+`documentation`, `configuration`, `dependency`, `migration`, `generated`,
+`chore`, or `trivial`. Include one `itemLinks` entry for every recorded
+decision, assumption, alternative, failed attempt, risk, validation result,
+and open question.
+
+### D. Run final validation and finalize
+
+Run the smallest existing checks that cover the organized stage and record
+observed results with `--node-ref` for every relevant node:
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs stage validation --input -
 ```
 
-### D. Commit and finalize
-
-Before committing, inspect the complete stage diff and use `stage set` if its
-boundary, rationale, requirement references, or direct dependencies changed.
-Do not finalize with a known acceptance gap that belongs to this stage.
-
-Commit the stage's implementation on its branch. Multiple linear commits are
-allowed; merge commits are not. Exclude `.semantic-review/` and
-`.semantic-review-feedback/`.
+Inspect the complete stage diff and use `stage set` if its boundary, rationale,
+requirement references, or direct dependencies changed. If any implementation
+or metadata context changed after organization, regenerate the organization
+document before finalizing. Do not finalize with a known acceptance gap that
+belongs to this stage.
 
 ```text
 node <skill-root>/scripts/semantic-review.mjs stage finish
@@ -139,6 +160,8 @@ Finalization captures:
 - Stage and base branch names.
 - Immutable base and head revisions.
 - The complete diff from the base branch snapshot to the stage head.
+- Descriptive change nodes, classified file or hunk membership, and links from
+  recorded context to the relevant nodes.
 
 Then begin the next stage from this branch.
 
@@ -190,9 +213,11 @@ node <skill-root>/scripts/semantic-review.mjs restack --from <stage-id>
 ```
 
 `restack` refreshes the edited branch snapshot, replays each upper branch onto
-its new base, updates all affected refs only after replay succeeds, and refreshes
-artifact heads and file inventories. This also supports changes committed
-manually by the user on any lower stage branch.
+its new base, updates all affected refs only after replay succeeds, and
+refreshes artifact heads and file inventories. Existing node partitions must
+still match the rewritten diffs; if a stage's causes or hunk boundaries change,
+rerun `stage organize --finalized` for that stage before continuing. This also
+supports changes committed manually by the user on any lower stage branch.
 
 If trunk advanced, check out a branch that will not be moved and run:
 

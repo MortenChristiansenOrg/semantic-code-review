@@ -75,6 +75,8 @@ test("draft commands support every target kind and concurrent mutation", async (
     "Use a text fixture.",
     "--rationale",
     "The diff remains readable.",
+    "--node-ref",
+    "implementation-change",
   );
 
   repository.feedback("init");

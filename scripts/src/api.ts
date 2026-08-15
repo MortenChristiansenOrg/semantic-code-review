@@ -9,6 +9,17 @@ export type ContextKind =
 export type DecisionCategory = "requirement" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";
 export type ValidationStatus = "passed" | "failed" | "not-run";
+export type ChangeClassification =
+  | "behavior"
+  | "refactor"
+  | "test"
+  | "documentation"
+  | "configuration"
+  | "dependency"
+  | "migration"
+  | "generated"
+  | "chore"
+  | "trivial";
 export type FeedbackTargetKind =
   | "requirement"
   | "criterion"
@@ -165,6 +176,8 @@ export interface RecordStageContextOptions {
   mitigation?: string;
   /** Open question text; required when `kind` is `question`. */
   question?: string;
+  /** Change nodes relevant to this item. Required once the stage is organized. */
+  "node-ref"?: readonly string[];
 }
 
 /**
@@ -176,6 +189,24 @@ export interface RecordStageContextOptions {
 export declare function recordStageContext(
   options: RecordStageContextOptions,
 ): void;
+
+export interface OrganizeStageOptions {
+  /** Stage to organize; omitted or `current` selects the only active stage. */
+  stage?: string;
+  /** JSON document containing nodes and links from every recorded item to relevant nodes. */
+  file: string;
+  /** Reorganizes an already finalized stage. */
+  finalized?: true;
+}
+
+/**
+ * Post-processes a committed stage diff into descriptive change nodes.
+ * Every changed file must belong to a node. Multi-node files must partition
+ * their changed hunks or line ranges.
+ * @cli semantic-review.mjs
+ * @command stage organize
+ */
+export declare function organizeStage(options: OrganizeStageOptions): void;
 
 export interface RecordValidationOptions {
   /** Stage receiving the validation evidence; omitted or `current` selects the only active stage. */
@@ -190,6 +221,8 @@ export interface RecordValidationOptions {
   summary: string;
   /** Exact command used; required when `type` is `automated`. */
   command?: string;
+  /** Change nodes relevant to this validation evidence. */
+  "node-ref"?: readonly string[];
   /** Replaces validation evidence with the same identifier. */
   replace?: true;
   /** Updates a finalized stage instead of the active working stage. */

@@ -35,6 +35,15 @@ invoking the CLI. `docs/Steps.md` defines the operating procedure.
 - Record review-relevant conclusions when they arise. Do not invent decisions,
   alternatives, failed attempts, risks, or validation after the fact, and do
   not record private chain-of-thought.
+- After committing a stage, post-process its complete diff with `stage
+  organize` before final validation. Every changed file must belong to a
+  descriptive change node. Node descriptions, read in order, must explain the
+  work without requiring the raw file list.
+- Use whole-file membership when one node owns a file. When multiple nodes
+  share a file, partition every changed hunk or changed line exactly once.
+  Classify each membership with the schema-defined change classification.
+- Link every decision, assumption, alternative, failed attempt, risk,
+  validation result, and open question to its relevant node or nodes.
 - Record validation only after it ran, with the exact command and observed
   result. Preserve relevant failures and skipped checks.
 - Before finalizing a stage, verify its requirement references and direct
@@ -58,6 +67,10 @@ A strong stage lets a reviewer answer:
 2. What coherent behavior changed?
 3. Why is this stage boundary and implementation approach appropriate?
 4. What evidence supports it, and what deserves reviewer attention?
+
+Its change nodes should provide the first-pass answer to question 2. Prefer a
+small set of causal descriptions such as "Rename the dispatcher abstraction
+and update all consumers" over project, directory, or file-type groupings.
 
 Prefer vertical, behavior-oriented stages over file-, layer-, or activity-based
 stages. Keep tests with the behavior they validate. Split work only when each

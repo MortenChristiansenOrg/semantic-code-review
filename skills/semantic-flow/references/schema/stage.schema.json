@@ -11,6 +11,7 @@
     "summary",
     "dependsOn",
     "requirementRefs",
+    "nodes",
     "change",
     "rationale",
     "decisions",
@@ -47,6 +48,13 @@
       "uniqueItems": true,
       "items": {
         "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/requirementRef"
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/changeNode"
       }
     },
     "change": {
@@ -87,43 +95,113 @@
     "decisions": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/decision"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/decision"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "assumptions": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/assumption"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/assumption"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "alternatives": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/alternative"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/alternative"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "failedAttempts": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/failedAttempt"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/failedAttempt"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "risks": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/risk"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/risk"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "validation": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/validation"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/validation"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "openQuestions": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/openQuestion"
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/openQuestion"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
       }
     },
     "extensions": {
