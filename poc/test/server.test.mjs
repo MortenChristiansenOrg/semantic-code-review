@@ -169,7 +169,7 @@ test("keeps feedback browser handlers in page scope", () => {
     .readFileSync(appPath, "utf8")
     .replace(
       /loadReview\(\);\s*$/,
-      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, stagesAddressingCriterion, diffModesForFile, parseFilePatch, buildFullFileRows, membershipScope };",
+      "globalThis.browserHandlers = { renderFeedbackPanel, openCommentEdit, apiRequest, stagesAddressingCriterion, diffModesForFile, parseFilePatch, buildFullFileRows, membershipScope, directApprovalStatus, inheritedApproval }; globalThis.setApprovals = (value) => { approvals = value; };",
     );
   const node = {
     addEventListener() {},
@@ -236,6 +236,54 @@ test("keeps feedback browser handlers in page scope", () => {
     ),
     "modified · hunks 1, 3",
   );
+  context.setApprovals({
+    changeSet: {
+      available: true,
+      approved: false,
+      previouslyApproved: false,
+    },
+    stages: {
+      "first-stage": {
+        available: true,
+        approved: true,
+        previouslyApproved: false,
+      },
+    },
+    nodes: {
+      "first-stage": {
+        "first-node": {
+          available: true,
+          approved: false,
+          previouslyApproved: true,
+        },
+      },
+    },
+    files: {
+      "first-stage": {
+        "file.txt": {
+          available: true,
+          approved: true,
+          previouslyApproved: false,
+        },
+      },
+    },
+  });
+  assert.equal(
+    context.browserHandlers.inheritedApproval({
+      kind: "node",
+      stageId: "first-stage",
+      nodeId: "first-node",
+    }),
+    "stage",
+  );
+  assert.equal(
+    context.browserHandlers.directApprovalStatus({
+      kind: "file",
+      stageId: "first-stage",
+      path: "file.txt",
+    }).approved,
+    true,
+  );
   const hunks = context.browserHandlers.parseFilePatch(
     "@@ -1,2 +1,2 @@\n-old value\n+new value\n stable",
   );
@@ -298,15 +346,17 @@ test("serves project-grouped files and a focused stage file diff", async () => {
   try {
     const address = server.address();
     const baseUrl = `http://127.0.0.1:${address.port}`;
-    const [reviewResponse, fileResponse] = await Promise.all([
+    const [reviewResponse, fileResponse, approvalsResponse] = await Promise.all([
       fetch(`${baseUrl}/api/review`),
       fetch(
         `${baseUrl}/api/stages/${firstStage.id}/file-diff?path=${encodeURIComponent(firstFile.path)}`,
       ),
+      fetch(`${baseUrl}/api/approvals`),
     ]);
-    const [reviewBody, fileDiff] = await Promise.all([
+    const [reviewBody, fileDiff, approvalState] = await Promise.all([
       reviewResponse.json(),
       fileResponse.json(),
+      approvalsResponse.json(),
     ]);
 
     assert.equal(reviewResponse.status, 200);
@@ -315,6 +365,9 @@ test("serves project-grouped files and a focused stage file diff", async () => {
     assert.equal(fileDiff.path, firstFile.path);
     assert.ok(fileDiff.patch.includes(firstFile.path));
     assert.ok(fileDiff.oldContent !== undefined || fileDiff.newContent !== undefined);
+    assert.equal(approvalsResponse.status, 200);
+    assert.equal(approvalState.reviewId, expected.manifest.reviewId);
+    assert.ok(approvalState.stages[firstStage.id]);
   } finally {
     await new Promise((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),

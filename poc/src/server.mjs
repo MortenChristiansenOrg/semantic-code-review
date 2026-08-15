@@ -24,6 +24,10 @@ import {
   readFeedback,
   submitFeedbackBatch,
 } from "./feedback-service.mjs";
+import {
+  readReviewApprovals,
+  setReviewApproval,
+} from "./approval-service.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
 const publicDirectory = path.resolve(path.dirname(modulePath), "..", "public");
@@ -210,6 +214,27 @@ export function createReviewServer({ repositoryRoot }) {
       }
       if (request.method === "GET" && url.pathname === "/api/feedback") {
         sendJson(response, 200, await readFeedback({ repositoryRoot: root }));
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/approvals") {
+        sendJson(
+          response,
+          200,
+          await readReviewApprovals({ repositoryRoot: root }),
+        );
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/approvals") {
+        const body = await readRequestBody(request);
+        sendJson(
+          response,
+          200,
+          await setReviewApproval({
+            repositoryRoot: root,
+            resource: body.resource,
+            approved: body.approved,
+          }),
+        );
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/feedback/init") {

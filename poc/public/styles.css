@@ -13,6 +13,8 @@
   --fault-soft: #f8dddd;
   --feedback: #9b3f72;
   --feedback-soft: #f7e5f0;
+  --approved: #26774e;
+  --approved-soft: #e2f2e9;
   --line: #cad5e5;
   --line-strong: #9fb0c7;
   --shadow: 0 24px 70px rgb(23 32 51 / 10%);
@@ -225,6 +227,12 @@ a:focus-visible {
   border-top: 3px solid var(--ink);
 }
 
+.review-status-rail {
+  display: grid;
+  gap: 1rem;
+  align-self: end;
+}
+
 .ledger-entry {
   padding: 1rem 0.4rem;
   border-bottom: 1px solid var(--line);
@@ -407,7 +415,7 @@ a:focus-visible {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   gap: 0.75rem;
   width: 100%;
   padding: 0.9rem 0.5rem 0.9rem 0;
@@ -423,7 +431,7 @@ a:focus-visible {
 }
 
 .stage-button.is-selected {
-  grid-template-columns: 38px minmax(0, 1fr) auto;
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
 }
 
 .stage-number {
@@ -465,6 +473,30 @@ a:focus-visible {
   align-self: center;
 }
 
+.stage-approval-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  align-self: center;
+  border: 1px solid var(--line-strong);
+  color: transparent;
+  background: var(--paper);
+  font: 700 0.72rem/1 "Cascadia Code", Consolas, monospace;
+}
+
+.stage-approval-mark.is-approved {
+  border-color: var(--approved);
+  color: var(--paper);
+  background: var(--approved);
+}
+
+.stage-approval-mark.was-approved {
+  border-color: var(--amber);
+  color: #85540d;
+  background: var(--amber-soft);
+}
+
 .stage-button.is-selected .status-badge {
   display: inline-flex;
 }
@@ -492,8 +524,11 @@ a:focus-visible {
   border-bottom: 3px solid var(--ink);
 }
 
-.stage-detail-header > .comment-action {
-  margin-left: auto;
+.stage-detail-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.65rem;
+  min-width: 190px;
 }
 
 .stage-detail h2 {
@@ -634,6 +669,12 @@ a:focus-visible {
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 0.66rem;
+}
+
+.change-node-actions {
+  display: grid;
+  justify-items: end;
+  gap: 0.65rem;
 }
 
 .change-node-files {
@@ -816,9 +857,15 @@ a:focus-visible {
   white-space: nowrap;
 }
 
-.file-row > .comment-action {
-  align-self: center;
-  margin-right: 1rem;
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding-right: 1rem;
+}
+
+.file-actions .approval-control {
+  min-width: 220px;
 }
 
 .file-diff-viewer {
@@ -1510,6 +1557,73 @@ a:focus-visible {
   cursor: pointer;
 }
 
+.approval-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+  min-width: 250px;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--line-strong);
+  background: #f7f9fd;
+}
+
+.approval-control.is-approved {
+  border-color: var(--approved);
+  background: var(--approved-soft);
+}
+
+.approval-control.was-approved:not(.is-approved) {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.approval-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.approval-label {
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.approval-state {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.58rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-button {
+  min-height: 30px;
+  padding: 0 0.65rem;
+  border: 1px solid var(--structure);
+  color: var(--structure);
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.approval-control.is-approved .approval-button {
+  border-color: var(--approved);
+  color: var(--paper);
+  background: var(--approved);
+}
+
+.approval-control.was-approved:not(.is-approved) .approval-button {
+  border-color: #85540d;
+  color: #85540d;
+}
+
+.approval-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
 .primary-button {
   border: 1px solid var(--feedback);
   color: var(--paper);
@@ -1605,7 +1719,7 @@ a:focus-visible {
   }
 
   .stage-button.is-selected {
-    grid-template-columns: 38px minmax(0, 1fr);
+    grid-template-columns: 38px minmax(0, 1fr) auto;
     border-color: var(--cyan);
   }
 
@@ -1663,6 +1777,12 @@ a:focus-visible {
     display: grid;
   }
 
+  .stage-detail-actions,
+  .change-node-actions {
+    justify-items: stretch;
+    width: 100%;
+  }
+
   .change-heading {
     align-items: stretch;
     flex-direction: column;
@@ -1702,8 +1822,21 @@ a:focus-visible {
     grid-row: 3;
   }
 
-  .file-row > .comment-action {
-    margin-right: 0.6rem;
+  .file-row {
+    grid-template-columns: 1fr;
+  }
+
+  .file-actions {
+    justify-content: space-between;
+    padding: 0.4rem 0.6rem 0.7rem 3.9rem;
+  }
+
+  .file-actions .approval-control {
+    min-width: 0;
+  }
+
+  .approval-control {
+    min-width: 0;
   }
 
   .diff-mode-switch {

@@ -14,6 +14,7 @@ const commentError = document.querySelector("#comment-error");
 let review;
 let validation;
 let feedback;
+let approvals;
 let selectedStageId;
 let selectedBatchId;
 let pendingCommentTarget;
@@ -72,7 +73,12 @@ async function loadReview() {
   statusElement.textContent = "Loading artifact";
   reloadButton.disabled = true;
   try {
-    const [reviewResponse, validationResponse, feedbackResponse] =
+    const [
+      reviewResponse,
+      validationResponse,
+      feedbackResponse,
+      approvalsResponse,
+    ] =
       await Promise.all([
       fetch("/api/review", {
         headers: { accept: "application/json" },
@@ -83,12 +89,17 @@ async function loadReview() {
       fetch("/api/feedback", {
         headers: { accept: "application/json" },
       }),
+      fetch("/api/approvals", {
+        headers: { accept: "application/json" },
+      }),
     ]);
-    const [reviewBody, validationBody, feedbackBody] = await Promise.all([
-      reviewResponse.json(),
-      validationResponse.json(),
-      feedbackResponse.json(),
-    ]);
+    const [reviewBody, validationBody, feedbackBody, approvalsBody] =
+      await Promise.all([
+        reviewResponse.json(),
+        validationResponse.json(),
+        feedbackResponse.json(),
+        approvalsResponse.json(),
+      ]);
     if (!reviewResponse.ok) {
       throw new Error(
         reviewBody.error?.message ?? "Review API request failed.",
@@ -108,6 +119,14 @@ async function loadReview() {
     feedback = feedbackResponse.ok
       ? feedbackBody
       : { initialized: false, batches: [] };
+    if (!approvalsResponse.ok) {
+      throw new Error(
+        approvalsBody.error?.details ||
+          approvalsBody.error?.message ||
+          "Approval state could not be loaded.",
+      );
+    }
+    approvals = approvalsBody;
     selectedBatchId =
       feedback.batches.find((batch) => batch.id === selectedBatchId)?.id ??
       feedback.batches.find((batch) => batch.status === "draft")?.id ??
@@ -285,8 +304,129 @@ function renderReviewHeader() {
     review.manifest.baseRevision.slice(0, 9),
     true,
   );
-  header.append(copy, ledger);
+  const reviewStatus = element("div", "review-status-rail");
+  reviewStatus.append(
+    ledger,
+    approvalControl(
+      { kind: "changeSet" },
+      {
+        label: "Entire change set",
+        unavailable:
+          review.workingStages.length > 0
+            ? "Finalize the working stage before approving the full change set."
+            : undefined,
+      },
+    ),
+  );
+  header.append(copy, reviewStatus);
   return header;
+}
+
+function directApprovalStatus(resource) {
+  if (resource.kind === "changeSet") return approvals.changeSet;
+  if (resource.kind === "stage") {
+    return approvals.stages[resource.stageId];
+  }
+  if (resource.kind === "node") {
+    return approvals.nodes[resource.stageId]?.[resource.nodeId];
+  }
+  return approvals.files[resource.stageId]?.[resource.path];
+}
+
+function inheritedApproval(resource) {
+  if (resource.kind !== "changeSet" && approvals.changeSet.approved) {
+    return "entire change set";
+  }
+  if (
+    ["node", "file"].includes(resource.kind) &&
+    approvals.stages[resource.stageId]?.approved
+  ) {
+    return "stage";
+  }
+  if (
+    resource.kind === "file" &&
+    resource.nodeId &&
+    approvals.nodes[resource.stageId]?.[resource.nodeId]?.approved
+  ) {
+    return "change node";
+  }
+  return undefined;
+}
+
+function approvalControl(resource, { label, unavailable } = {}) {
+  const direct = directApprovalStatus(resource) ?? {
+    available: false,
+    approved: false,
+    previouslyApproved: false,
+  };
+  const inherited = inheritedApproval(resource);
+  const control = element(
+    "div",
+    `approval-control${
+      direct.approved || inherited ? " is-approved" : ""
+    }${direct.previouslyApproved ? " was-approved" : ""}`,
+  );
+  const copy = element("span", "approval-copy");
+  appendText(
+    copy,
+    "span",
+    "approval-label",
+    label ?? resource.kind,
+  );
+  const state = inherited
+    ? `Approved with ${inherited}`
+    : direct.approved
+      ? "Reviewed"
+      : direct.previouslyApproved
+        ? "Changed since approval"
+        : direct.available
+          ? "Not reviewed"
+          : "Not available";
+  appendText(copy, "span", "approval-state code-text", state);
+
+  const button = element(
+    "button",
+    "approval-button",
+    inherited
+      ? "Inherited"
+      : direct.approved
+        ? "Unapprove"
+        : direct.previouslyApproved
+          ? "Approve again"
+          : "Approve",
+  );
+  button.type = "button";
+  button.disabled = Boolean(inherited || unavailable || !direct.available);
+  if (inherited) {
+    button.title = `Read-only while the ${inherited} is approved.`;
+  } else if (unavailable || !direct.available) {
+    button.title = unavailable ?? "This resource cannot be approved yet.";
+  } else {
+    button.setAttribute("aria-pressed", String(direct.approved));
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        approvals = await apiPost("/api/approvals", {
+          resource:
+            resource.kind === "file"
+              ? {
+                  kind: "file",
+                  stageId: resource.stageId,
+                  path: resource.path,
+                }
+              : resource,
+          approved: !direct.approved,
+        });
+        renderReview();
+      } catch (error) {
+        button.disabled = false;
+        button.title = error.message;
+        button.textContent = "Try again";
+      }
+    });
+  }
+  control.append(copy, button);
+  return control;
 }
 
 function ledgerEntry(list, label, value, code = false) {
@@ -444,9 +584,31 @@ function renderStageNavigation({ stage, status, order }) {
   const copy = element("span", "stage-button-copy");
   appendText(copy, "strong", "", stage.title);
   appendText(copy, "span", "code-text stage-id", stage.id);
-  button.append(copy, statusBadge(status));
+  button.append(copy, stageApprovalMark(stage), statusBadge(status));
   item.append(button);
   return item;
+}
+
+function stageApprovalMark(stage) {
+  const resource = { kind: "stage", stageId: stage.id };
+  const direct = directApprovalStatus(resource);
+  const inherited = inheritedApproval(resource);
+  const mark = element(
+    "span",
+    `stage-approval-mark${
+      direct?.approved || inherited ? " is-approved" : ""
+    }${direct?.previouslyApproved ? " was-approved" : ""}`,
+    direct?.approved || inherited ? "✓" : direct?.previouslyApproved ? "!" : "",
+  );
+  mark.setAttribute(
+    "aria-label",
+    direct?.approved || inherited
+      ? "Approved"
+      : direct?.previouslyApproved
+        ? "Changed since approval"
+        : "Not approved",
+  );
+  return mark;
 }
 
 function statusBadge(status) {
@@ -480,14 +642,26 @@ function renderStageDetail({ stage, status, order }) {
   );
   appendText(titleGroup, "h2", "", stage.title);
   appendText(titleGroup, "p", "stage-summary", stage.summary);
-  header.append(titleGroup, statusBadge(status));
-  header.append(
+  const actions = element("div", "stage-detail-actions");
+  actions.append(
+    statusBadge(status),
+    approvalControl(
+      { kind: "stage", stageId: stage.id },
+      {
+        label: "Stage",
+        unavailable:
+          status === "working"
+            ? "Finalize this stage before approving it."
+            : undefined,
+      },
+    ),
     commentAction({
       kind: "stage",
       label: `Stage: ${stage.title}`,
       stageId: stage.id,
     }),
   );
+  header.append(titleGroup, actions);
   article.append(header);
 
   article.append(
@@ -557,13 +731,22 @@ function renderNodeLedger(stage) {
     const identity = element("div", "change-node-identity");
     appendText(identity, "p", "change-node-id code-text", node.id);
     appendText(identity, "h4", "", node.description);
-    appendText(
+    const count = appendText(
       header,
       "span",
       "change-node-count code-text",
       `${node.changes.length} ${node.changes.length === 1 ? "link" : "links"}`,
     );
+    const nodeActions = element("div", "change-node-actions");
+    nodeActions.append(
+      count,
+      approvalControl(
+        { kind: "node", stageId: stage.id, nodeId: node.id },
+        { label: "Node" },
+      ),
+    );
     header.prepend(identity);
+    header.append(nodeActions);
     card.append(header);
 
     const files = element("div", "change-node-files");
@@ -724,7 +907,20 @@ function renderFileEntry(stage, node, membership, file, expanded) {
     },
     "Comment",
   );
-  row.append(toggle, fileComment);
+  const fileActions = element("div", "file-actions");
+  fileActions.append(
+    approvalControl(
+      {
+        kind: "file",
+        stageId: stage.id,
+        nodeId: node.id,
+        path: file.path,
+      },
+      { label: "File" },
+    ),
+    fileComment,
+  );
+  row.append(toggle, fileActions);
   article.append(row);
 
   if (expanded) {
@@ -1614,7 +1810,11 @@ function renderStackApproval() {
       "",
       "Publish review metadata and finalize the local reviewed branch stack.",
     );
-    const button = element("button", "primary-button", "Approve changes");
+    const button = element(
+      "button",
+      "primary-button",
+      "Publish reviewed stack",
+    );
     button.type = "button";
     button.addEventListener("click", async () => {
       const result = await apiPost("/api/feedback/approve-stack");

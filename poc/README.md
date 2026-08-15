@@ -29,6 +29,9 @@ The workspace provides:
 - Working and finalized stage state.
 - Intent-oriented change nodes whose descriptions summarize the stage, with
   classified file or hunk membership and expandable syntax-highlighted diffs.
+- Local change-set, stage, node, and stage-scoped file approvals. Parent
+  approvals make descendants read-only without replacing their explicit state,
+  and changed file patches retain a visible previous-approval marker.
 - Rationale, decisions, assumptions, alternatives, failures, risks, evidence,
   and open questions.
 - Authoritative artifact validation through the semantic review CLI.

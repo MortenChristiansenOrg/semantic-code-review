@@ -18,6 +18,14 @@ branch immediately below it.
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
 
+The review workspace stores review-progress approvals in
+`.semantic-review-feedback/approvals.json`. Approvals can be recorded for the
+complete change set, a stage, a change node, or a file within one stage.
+Approving a parent visually approves its descendants and makes their controls
+read-only; removing that parent approval restores each descendant's explicit
+status. File approvals are fingerprinted from the stage patch, so a changed
+file becomes unapproved while remaining marked as previously approved.
+
 ## 1. Build the bundled CLI
 
 ```powershell
