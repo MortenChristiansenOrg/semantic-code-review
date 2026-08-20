@@ -1,6 +1,6 @@
 ---
 name: semantic-flow
-description: Use when implementing a substantial feature or user story that should be reviewed as ordered, intent-based stages. Invoke before implementation starts and keep using it through planning, coding, validation, feedback revisions, and publication. Only use when requested by the user.
+description: Use when implementing a substantial feature or user story. Invoke before implementation starts and keep using it through planning, coding, validation, feedback revisions, and publication. Only use when requested by the user.
 ---
 
 # Semantic Flow
@@ -86,6 +86,9 @@ A strong stage lets a reviewer answer:
 Its change nodes should provide the first-pass answer to question 2. Prefer a
 small set of causal descriptions such as "Rename the dispatcher abstraction
 and update all consumers" over project, directory, or file-type groupings.
+Avoid complex or unnecessarily technical lingo for descriptions and stick
+to the project domain language as much as possible, without losing the actual
+meaning.
 
 Prefer vertical, behavior-oriented stages over file-, layer-, or activity-based
 stages. Keep tests with the behavior they validate. Split work only when each
