@@ -2,6 +2,7 @@
   "use strict";
 
   const data = window.REVIEW_DATA;
+  const fileData = window.REVIEW_FILE_DATA || { filesByStage: {}, diffs: {} };
   const concept = document.body.dataset.concept;
   const app = document.querySelector("#app");
   const storageKey = `semantic-review-mockup:${concept}`;
@@ -15,8 +16,32 @@
     "evidence-weave": "Evidence weave",
     "pocket-cards": "Pocket cards",
     "review-board": "Review board",
-    "quiet-checklist": "Quiet checklist"
+    "quiet-checklist": "Quiet checklist",
+    "quiet-inline": "Quiet inline",
+    "quiet-rail": "Quiet rail",
+    "quiet-split": "Quiet split leaf",
+    "quiet-tray": "Quiet diff tray",
+    "quiet-margin": "Quiet margin sheet"
   };
+
+  const fileConcepts = new Set(["quiet-inline", "quiet-rail", "quiet-split", "quiet-tray", "quiet-margin"]);
+  const supportsFiles = fileConcepts.has(concept);
+
+  function fileId(stageId, path) {
+    return `file|${stageId}|${path}`;
+  }
+
+  function stageFiles(stageId) {
+    return fileData.filesByStage[stageId] || [];
+  }
+
+  const fileItems = data.stages.flatMap((stage) => stageFiles(stage.id).map((file) => ({
+    kind: "file",
+    id: fileId(stage.id, file.path),
+    data: file,
+    stage
+  })));
+  const fileItemById = new Map(fileItems.map((item) => [item.id, item]));
 
   const allItems = [
     { kind: "requirement", id: data.requirement.id, data: data.requirement },
@@ -38,6 +63,9 @@
       focusIndex: 0,
       selectedStageId: data.stages[0].id,
       pocketIndex: 0,
+      activeFileId: concept === "quiet-rail" ? fileItems.find((item) => item.stage.id === "responsive-chat-shell" && item.data.path === "team-chat/app/page.tsx")?.id || fileItems[0]?.id || null : null,
+      activeNodeId: null,
+      fileTrayOpen: false,
       expandedStages: { [data.stages[0].id]: true },
       notesOpen: false,
       overviewOpen: false
@@ -67,11 +95,13 @@
   }
 
   function approvalCount() {
-    return data.stages.reduce((count, stage) => count + Number(approved(stage.id)) + stage.nodes.filter((node) => approved(node.id)).length, 0);
+    const semanticCount = data.stages.reduce((count, stage) => count + Number(approved(stage.id)) + stage.nodes.filter((node) => approved(node.id)).length, 0);
+    return semanticCount + (supportsFiles ? fileItems.filter((item) => approved(item.id)).length : 0);
   }
 
   function reviewableCount() {
-    return data.stages.reduce((count, stage) => count + 1 + stage.nodes.length, 0);
+    const semanticCount = data.stages.reduce((count, stage) => count + 1 + stage.nodes.length, 0);
+    return semanticCount + (supportsFiles ? fileItems.length : 0);
   }
 
   function progressPercent() {
@@ -81,6 +111,7 @@
   function targetLabel(kind, id) {
     if (kind === "stage") return data.stages.find((stage) => stage.id === id)?.title || id;
     if (kind === "node") return data.stages.flatMap((stage) => stage.nodes).find((node) => node.id === id)?.title || id;
+    if (kind === "file") return fileItemById.get(id)?.data.path || id;
     return data.title;
   }
 
@@ -92,7 +123,7 @@
     return `
       <header class="topbar">
         <a class="back-link" href="index.html" aria-label="Back to all directions">← <span>All directions</span></a>
-        <div class="concept-lockup"><span class="concept-index">${Object.keys(conceptNames).indexOf(concept) + 1}/10</span><strong>${conceptNames[concept]}</strong><span>${subtitle}</span></div>
+        <div class="concept-lockup"><span class="concept-index">${Object.keys(conceptNames).indexOf(concept) + 1}/15</span><strong>${conceptNames[concept]}</strong><span>${subtitle}</span></div>
         <div class="topbar-actions">
           <button class="review-toggle ${state.overviewOpen ? "is-active" : ""}" data-action="toggle-overview" type="button" aria-expanded="${state.overviewOpen}">Review <span>${approvalCount()}/${reviewableCount()}</span></button>
           <button class="notes-toggle ${state.notesOpen ? "is-active" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <span>${state.notes.length}</span></button>
@@ -107,11 +138,12 @@
   function actionButtons(kind, id, compact = false) {
     const isApproved = approved(id);
     const notes = noteCount(id);
+    const noteLabel = kind === "file" ? "Comment" : "Note";
     return `<div class="item-actions ${compact ? "compact" : ""}">
       <button class="approve-button ${isApproved ? "is-approved" : ""}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="${isApproved}">
         <span class="checkmark">${isApproved ? "✓" : "○"}</span>${isApproved ? "Approved" : "Approve"}
       </button>
-      <button class="note-button" data-action="add-note" data-kind="${kind}" data-id="${id}" type="button">＋ Note${notes ? ` <span>${notes}</span>` : ""}</button>
+      <button class="note-button" data-action="add-note" data-kind="${kind}" data-id="${id}" type="button">＋ ${noteLabel}${notes ? ` <span>${notes}</span>` : ""}</button>
     </div>`;
   }
 
@@ -135,7 +167,7 @@
   function notesPanel() {
     const notes = state.notes.length
       ? state.notes.map((note, index) => `<article class="saved-note"><div><span>${escapeHtml(note.kind)}</span><button data-action="delete-note" data-index="${index}" aria-label="Delete note" type="button">×</button></div><strong>${escapeHtml(targetLabel(note.kind, note.id))}</strong><p>${escapeHtml(note.body)}</p></article>`).join("")
-      : `<div class="empty-notes"><span>✎</span><p>No notes yet.</p><small>Add a thought from any stage or implementation step.</small></div>`;
+      : `<div class="empty-notes"><span>✎</span><p>No notes yet.</p><small>Add a thought from any stage${supportsFiles ? ", implementation step, or file" : " or implementation step"}.</small></div>`;
     return `<aside class="notes-panel side-panel ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
       <div class="notes-heading"><div><span class="eyebrow">Private to you</span><h2>Review notes</h2></div><button data-action="toggle-notes" aria-label="Close notes" type="button">×</button></div>
       <div class="saved-notes">${notes}</div>
@@ -146,16 +178,19 @@
   function approvalOverview() {
     const stages = data.stages.map((stage, stageIndex) => {
       const nodeCount = stage.nodes.filter((node) => approved(node.id)).length;
+      const files = supportsFiles ? stageFiles(stage.id) : [];
+      const approvedFiles = files.filter((file) => approved(fileId(stage.id, file.path))).length;
       return `<section class="overview-stage ${approved(stage.id) ? "is-approved" : ""}">
-        <div class="overview-stage-heading"><span>${String(stageIndex + 1).padStart(2, "0")}</span><div><strong>${escapeHtml(stage.title)}</strong><small>${nodeCount} of ${stage.nodes.length} steps approved</small></div><i>${approved(stage.id) ? "✓" : "○"}</i></div>
+        <div class="overview-stage-heading"><span>${String(stageIndex + 1).padStart(2, "0")}</span><div><strong>${escapeHtml(stage.title)}</strong><small>${nodeCount}/${stage.nodes.length} steps${supportsFiles ? ` · ${approvedFiles}/${files.length} files` : ""} approved</small></div><i>${approved(stage.id) ? "✓" : "○"}</i></div>
         <div class="overview-nodes">${stage.nodes.map((node) => `<div class="overview-node ${approved(node.id) ? "is-approved" : ""}" title="${escapeHtml(node.title)}"><span>${approved(node.id) ? "✓" : ""}</span><small>${escapeHtml(node.title)}</small></div>`).join("")}</div>
+        ${supportsFiles ? `<div class="overview-files" aria-label="${approvedFiles} of ${files.length} files approved">${files.map((file) => `<i class="${approved(fileId(stage.id, file.path)) ? "is-approved" : ""}" title="${escapeHtml(file.path)}"></i>`).join("")}</div>` : ""}
       </section>`;
     }).join("");
     return `<aside class="approval-overview side-panel ${state.overviewOpen ? "is-open" : ""}" aria-hidden="${!state.overviewOpen}" ${state.overviewOpen ? "" : "inert"}>
       <div class="overview-heading"><div><span class="eyebrow">At a glance</span><h2>Review coverage</h2></div><button data-action="toggle-overview" aria-label="Close review overview" type="button">×</button></div>
-      <div class="overview-score"><div><strong>${progressPercent()}%</strong><span>reviewed</span></div><p>${approvalCount()} of ${reviewableCount()} stage and step decisions have your approval.</p></div>
+      <div class="overview-score"><div><strong>${progressPercent()}%</strong><span>reviewed</span></div><p>${approvalCount()} of ${reviewableCount()} ${supportsFiles ? "stage, step, and file" : "stage and step"} decisions have your approval.</p></div>
       <div class="overview-list">${stages}</div>
-      <div class="overview-key"><span><i class="stage-key"></i>Stage approval</span><span><i class="node-key"></i>Step approval</span></div>
+      <div class="overview-key"><span><i class="stage-key"></i>Stage</span><span><i class="node-key"></i>Step</span>${supportsFiles ? `<span><i class="file-key"></i>File</span>` : ""}</div>
     </aside>`;
   }
 
@@ -342,6 +377,151 @@
     app.innerHTML = chrome(`<main class="quiet-shell"><section class="quiet-main"><header class="quiet-hero"><span class="eyebrow">Calm review checklist</span><h1>${escapeHtml(data.title)}</h1><p>${escapeHtml(data.summary)}</p></header>${requirementBlock()}<div class="quiet-list">${stages}</div></section><aside class="quiet-summary"><span class="eyebrow">Review at a glance</span><div class="quiet-score"><strong>${approvalCount()}</strong><span>of ${reviewableCount()} approved</span></div><div class="quiet-overview">${compactOverview}</div><p>Stage marks and step dots update as you review.</p></aside></main>`, "Minimal review checklist");
   }
 
+  function fileMembership(file, nodeId) {
+    return file.memberships.find((membership) => membership.nodeId === nodeId) || file.memberships[0];
+  }
+
+  function nodeFiles(stage, node) {
+    return stageFiles(stage.id).filter((file) => file.memberships.some((membership) => membership.nodeId === node.id));
+  }
+
+  function groupFiles(files) {
+    const groups = new Map();
+    files.forEach((file) => {
+      const key = `${file.project.root}|${file.project.name}`;
+      if (!groups.has(key)) groups.set(key, { project: file.project, files: [] });
+      groups.get(key).files.push(file);
+    });
+    return [...groups.values()];
+  }
+
+  function relativeFilePath(file) {
+    return file.project.root !== "." && file.path.startsWith(`${file.project.root}/`)
+      ? file.path.slice(file.project.root.length + 1)
+      : file.path;
+  }
+
+  function filePathMarkup(file) {
+    const relative = relativeFilePath(file);
+    const slash = relative.lastIndexOf("/");
+    const directory = slash >= 0 ? relative.slice(0, slash + 1) : "";
+    const name = slash >= 0 ? relative.slice(slash + 1) : relative;
+    return `<span class="file-path"><small>${escapeHtml(directory)}</small><strong>${escapeHtml(name)}</strong></span>`;
+  }
+
+  function renderDiffViewer(item, extraClass = "") {
+    if (!item) return `<section class="quiet-diff empty ${extraClass}"><p>Select a file to inspect its changes.</p></section>`;
+    const key = `${item.stage.id}:${item.data.path}`;
+    const diff = fileData.diffs[key];
+    const relative = relativeFilePath(item.data);
+    const lines = diff?.lines.map(([type, number, source]) => {
+      if (type === "hunk") return `<div class="diff-row diff-hunk"><span></span><code>${escapeHtml(number)}</code></div>`;
+      if (type === "gap") return `<div class="diff-row diff-gap"><span>⋯</span><code>${escapeHtml(number)}</code></div>`;
+      return `<div class="diff-row diff-${type}"><span>${escapeHtml(number)}</span><i>${type === "add" ? "+" : type === "del" ? "−" : " "}</i><code>${escapeHtml(source || " ")}</code></div>`;
+    }).join("") || "";
+    return `<section class="quiet-diff ${extraClass}" aria-label="Diff for ${escapeHtml(item.data.path)}">
+      <header><div><span class="eyebrow">${escapeHtml(item.data.project.name)} · ${escapeHtml(item.data.kind)}</span><h4>${escapeHtml(relative)}</h4>${diff ? `<p><span class="metric-addition">+${diff.additions}</span><span class="metric-deletion">−${diff.deletions}</span></p>` : ""}</div>${actionButtons("file", item.id, true)}</header>
+      ${diff ? `<div class="quiet-diff-code">${lines}</div>` : `<div class="diff-abbreviated"><span>Compact study</span><p>The full Git patch would load here. This prototype keeps uncommon setup and generated files abbreviated while preserving their individual approval and comment targets.</p></div>`}
+    </section>`;
+  }
+
+  function renderFileRow(stage, node, file, mode) {
+    const id = fileId(stage.id, file.path);
+    const membership = fileMembership(file, node.id);
+    const isActive = state.activeFileId === id;
+    const action = mode === "tray" ? "open-file-tray" : "select-file";
+    return `<article class="file-review-entry ${isActive ? "is-active" : ""} ${approved(id) ? "is-approved" : ""}">
+      <div class="file-compact-row"><button class="file-select" data-action="${action}" data-id="${id}" type="button" aria-expanded="${isActive}"><span class="file-kind kind-${file.kind}">${file.kind === "added" ? "A" : "M"}</span>${filePathMarkup(file)}<span class="file-classification classification-${membership.classification}">${escapeHtml(membership.classification)}</span><i>${isActive ? "−" : "+"}</i></button>${actionButtons("file", id, true)}</div>
+      ${mode === "inline" && isActive ? renderDiffViewer(fileItemById.get(id), "inline-diff") : ""}
+    </article>`;
+  }
+
+  function renderProjectFiles(stage, node, mode = "compact") {
+    const files = nodeFiles(stage, node);
+    return `<section class="node-file-evidence"><header><div><span class="eyebrow">Implementation detail</span><h4>${files.length} changed ${files.length === 1 ? "file" : "files"}</h4></div><small>${files.filter((file) => approved(fileId(stage.id, file.path))).length}/${files.length} approved</small></header><div class="project-file-groups">${groupFiles(files).map(({ project, files: projectFiles }) => `<section class="compact-project"><header><div><strong>${escapeHtml(project.name)}</strong><small>${project.root === "." ? "repository root" : escapeHtml(project.root)}</small></div><span>${projectFiles.length}</span></header><div>${projectFiles.map((file) => renderFileRow(stage, node, file, mode)).join("")}</div></section>`).join("")}</div></section>`;
+  }
+
+  function fileCoverageMarkup() {
+    return data.stages.map((stage, stageIndex) => {
+      const files = stageFiles(stage.id);
+      const nodeApproved = stage.nodes.filter((node) => approved(node.id)).length;
+      const fileApproved = files.filter((file) => approved(fileId(stage.id, file.path))).length;
+      return `<div class="file-coverage-stage"><div class="coverage-title"><span>${approved(stage.id) ? "✓" : stageIndex + 1}</span><div><strong>${escapeHtml(stage.title)}</strong><small>${nodeApproved}/${stage.nodes.length} steps · ${fileApproved}/${files.length} files</small></div></div><div class="coverage-bars"><span style="--coverage:${Math.round(nodeApproved / stage.nodes.length * 100)}%"></span><span class="files" style="--coverage:${Math.round(fileApproved / files.length * 100)}%"></span></div></div>`;
+    }).join("");
+  }
+
+  function quietFileSummary() {
+    const fileApproved = fileItems.filter((item) => approved(item.id)).length;
+    return `<aside class="quiet-file-summary"><span class="eyebrow">Review at a glance</span><div class="quiet-score"><strong>${approvalCount()}</strong><span>of ${reviewableCount()} approved</span></div><div class="file-coverage">${fileCoverageMarkup()}</div><div class="coverage-key"><span><i></i>Intent</span><span><i class="files"></i>Files</span></div><p>${fileApproved} of ${fileItems.length} implementation files reviewed.</p></aside>`;
+  }
+
+  function quietFileHero(label) {
+    return `<header class="quiet-hero file-hero"><span class="eyebrow">${label}</span><h1>${escapeHtml(data.title)}</h1><p>${escapeHtml(data.summary)}</p><div class="file-hero-meta"><span>${data.stages.length} stages</span><span>${data.stages.reduce((count, stage) => count + stage.nodes.length, 0)} steps</span><span>${fileItems.length} file changes</span></div></header>`;
+  }
+
+  function renderQuietFileStages(mode) {
+    return data.stages.map((stage, stageIndex) => {
+      const files = stageFiles(stage.id);
+      const filesApproved = files.filter((file) => approved(fileId(stage.id, file.path))).length;
+      const nodes = stage.nodes.map((node, nodeIndex) => {
+        const filesForNode = nodeFiles(stage, node);
+        const baseContent = `${contextCards(node.context)}${actionButtons("node", node.id)}`;
+        let content = `${baseContent}${renderProjectFiles(stage, node, mode === "inline" ? "inline" : mode === "tray" ? "tray" : "compact")}`;
+        if (mode === "split") {
+          const selected = fileItemById.get(state.activeFileId);
+          const belongsHere = selected?.stage.id === stage.id && filesForNode.some((file) => file.path === selected.data.path);
+          content = `<div class="split-leaf"><div class="split-intent">${baseContent}</div><div class="split-files">${renderProjectFiles(stage, node, "compact")}</div>${belongsHere ? renderDiffViewer(selected, "split-diff") : ""}</div>`;
+        }
+        if (mode === "rail") {
+          content = `${baseContent}<button class="rail-jump" data-action="rail-node" data-stage-id="${stage.id}" data-node-id="${node.id}" type="button"><span>${filesForNode.length} files</span>Review implementation in the rail →</button>`;
+        }
+        return `<details class="quiet-node file-quiet-node ${approved(node.id) ? "approved-item" : ""}">
+          <summary><span class="quiet-checkbox">${approved(node.id) ? "✓" : ""}</span><div><small>${stageIndex + 1}.${nodeIndex + 1} · ${filesForNode.length} files</small><h3>${escapeHtml(node.title)}</h3><p>${escapeHtml(node.description)}</p></div><i>⌄</i></summary>
+          <div class="quiet-node-body">${content}</div>
+        </details>`;
+      }).join("");
+      return `<details class="quiet-stage file-quiet-stage ${approved(stage.id) ? "approved-item" : ""}" ${stageIndex === 0 ? "open" : ""} data-stage-id="${stage.id}">
+        <summary><span class="quiet-check">${approved(stage.id) ? "✓" : String(stageIndex + 1).padStart(2, "0")}</span><div><small>Stage ${stageIndex + 1} · ${filesApproved}/${files.length} files approved</small><h2>${escapeHtml(stage.title)}</h2><p>${escapeHtml(stage.summary)}</p></div><i>⌄</i></summary>
+        <div class="quiet-stage-body"><div class="quiet-stage-meta"><p><span>Purpose</span>${escapeHtml(stage.rationale)}</p><div>${actionButtons("stage", stage.id)}${mode === "rail" ? `<button class="stage-files-button" data-action="rail-stage" data-stage-id="${stage.id}" type="button">Inspect ${files.length} files →</button>` : ""}</div></div><div class="quiet-node-list">${nodes}</div></div>
+      </details>`;
+    }).join("");
+  }
+
+  function renderQuietInline() {
+    app.innerHTML = chrome(`<main class="quiet-file-shell inline-shell"><section class="quiet-main">${quietFileHero("Quiet checklist · inline evidence")}${requirementBlock()}<div class="quiet-list">${renderQuietFileStages("inline")}</div></section>${quietFileSummary()}</main>`, "Inline file ledger");
+  }
+
+  function renderFileRail() {
+    const stage = data.stages.find((entry) => entry.id === state.selectedStageId) || data.stages[0];
+    let files = stageFiles(stage.id);
+    if (state.activeNodeId) files = files.filter((file) => file.memberships.some((membership) => membership.nodeId === state.activeNodeId));
+    if (!files.some((file) => fileId(stage.id, file.path) === state.activeFileId)) {
+      const preferred = files.find((file) => file.path === "team-chat/app/page.tsx") || files[0];
+      state.activeFileId = fileId(stage.id, preferred.path);
+    }
+    return `<aside class="file-review-rail"><header><span class="eyebrow">Implementation rail</span><h2>${escapeHtml(stage.title)}</h2><p>${state.activeNodeId ? `${files.length} files for this step` : `${files.length} changed files in this stage`} · selecting one opens the full-width code floor</p>${state.activeNodeId ? `<button data-action="rail-stage" data-stage-id="${stage.id}" type="button">Show all stage files</button>` : ""}</header><div class="rail-coverage">${fileCoverageMarkup()}</div><div class="rail-file-list">${groupFiles(files).map(({ project, files: grouped }) => `<section class="rail-project"><header><strong>${escapeHtml(project.name)}</strong><small>${project.root === "." ? "repository root" : escapeHtml(project.root)}</small></header>${grouped.map((file) => renderFileRow(stage, { id: file.memberships[0].nodeId }, file, "compact")).join("")}</section>`).join("")}</div></aside>`;
+  }
+
+  function renderQuietRail() {
+    const rail = renderFileRail();
+    const selected = fileItemById.get(state.activeFileId);
+    app.innerHTML = chrome(`<main class="quiet-rail-page"><div class="quiet-rail-shell"><section class="quiet-main">${quietFileHero("Quiet checklist · review rail")}${requirementBlock()}<div class="quiet-list">${renderQuietFileStages("rail")}</div></section>${rail}</div><section class="wide-code-floor"><div class="code-floor-label"><span>Selected implementation detail</span><p>The semantic review remains above; this floor reserves normal editor width for the patch.</p></div>${renderDiffViewer(selected, "rail-wide-diff")}</section></main>`, "Persistent rail + code floor");
+  }
+
+  function renderQuietSplit() {
+    app.innerHTML = chrome(`<main class="quiet-file-shell split-shell"><section class="quiet-main">${quietFileHero("Quiet checklist · split leaves")}${requirementBlock()}<div class="quiet-list">${renderQuietFileStages("split")}</div></section>${quietFileSummary()}</main>`, "Intent + implementation leaves");
+  }
+
+  function renderQuietTray() {
+    const selected = fileItemById.get(state.activeFileId);
+    app.innerHTML = chrome(`<main class="quiet-file-shell tray-shell"><section class="quiet-main">${quietFileHero("Quiet checklist · diff tray")}${requirementBlock()}<div class="quiet-list">${renderQuietFileStages("tray")}</div></section>${quietFileSummary()}</main><aside class="diff-tray ${state.fileTrayOpen ? "is-open" : ""}" aria-hidden="${!state.fileTrayOpen}" ${state.fileTrayOpen ? "" : "inert"}><button class="tray-close" data-action="close-file-tray" type="button" aria-label="Close diff tray">×</button>${renderDiffViewer(selected, "tray-diff")}</aside>`, "Review without losing your place");
+  }
+
+  function renderQuietMargin() {
+    const selected = fileItemById.get(state.activeFileId);
+    app.innerHTML = chrome(`<main class="quiet-margin-page"><div class="quiet-margin-shell"><section class="quiet-main">${quietFileHero("Quiet checklist · margin index")}${requirementBlock()}<div class="quiet-list">${renderQuietFileStages("margin")}</div></section><aside class="margin-sheet"><div class="margin-coverage"><span class="eyebrow">Whole review</span><strong>${approvalCount()} / ${reviewableCount()}</strong><div class="mini-progress"><span style="width:${progressPercent()}%"></span></div></div><div class="margin-selection"><span class="eyebrow">Selected file</span>${selected ? `<strong>${escapeHtml(relativeFilePath(selected.data))}</strong><p>${escapeHtml(selected.data.project.name)} · ${escapeHtml(selected.data.kind)}</p><button data-action="scroll-to-diff" type="button">Open full-width patch ↓</button>` : `<p>Choose a file from any expanded step. Its patch will unfold at full editor width below the checklist.</p>`}</div>${fileCoverageMarkup()}</aside></div><section class="wide-code-floor margin-code-floor"><div class="code-floor-label"><span>Implementation pullout</span><p>A wide continuation of the same review page—not a separate diff mode.</p></div>${renderDiffViewer(selected, "margin-wide-diff")}</section></main>`, "Margin index + wide pullout");
+  }
+
   function render() {
     const openDetails = new Set([...app.querySelectorAll("details[open]")].map((detail, index) => disclosureKey(detail, index)));
     if (concept === "chronicle") renderChronicle();
@@ -354,6 +534,11 @@
     if (concept === "pocket-cards") renderPocketCards();
     if (concept === "review-board") renderReviewBoard();
     if (concept === "quiet-checklist") renderQuietChecklist();
+    if (concept === "quiet-inline") renderQuietInline();
+    if (concept === "quiet-rail") renderQuietRail();
+    if (concept === "quiet-split") renderQuietSplit();
+    if (concept === "quiet-tray") renderQuietTray();
+    if (concept === "quiet-margin") renderQuietMargin();
     if (openDetails.size) {
       [...app.querySelectorAll("details")].forEach((detail, index) => {
         detail.open = openDetails.has(disclosureKey(detail, index));
@@ -363,8 +548,11 @@
   }
 
   function disclosureKey(detail, index) {
-    const label = detail.querySelector(":scope > summary")?.textContent.replace(/\s+/g, " ").trim().slice(0, 120);
-    return `${detail.className}:${label || index}`;
+    const summary = detail.querySelector(":scope > summary");
+    const heading = summary?.querySelector("h2, h3, h4")?.textContent;
+    const label = detail.dataset.stageId || heading || summary?.textContent.replace(/\s+/g, " ").trim().slice(0, 120);
+    const stableClasses = [...detail.classList].filter((name) => !["approved-item", "is-approved", "is-active", "is-open"].includes(name)).join(".");
+    return `${stableClasses}:${label || index}`;
   }
 
   function enhanceRenderedView() {
@@ -426,6 +614,8 @@
   function openNote(kind, id) {
     noteTarget = { kind, id };
     const modal = document.querySelector("#note-dialog");
+    modal.querySelector(".dialog-top .eyebrow").textContent = kind === "file" ? "File feedback" : "Personal note";
+    modal.querySelector("#note-title").textContent = kind === "file" ? "Comment on this file" : "Capture a thought";
     modal.querySelector("#note-target").textContent = targetLabel(kind, id);
     modal.querySelector("textarea").value = "";
     modal.showModal();
@@ -553,6 +743,45 @@
       state.pocketIndex = Math.max(0, Math.min(allItems.length - 2, state.pocketIndex + delta));
       persist();
       render();
+    } else if (action === "select-file") {
+      state.activeFileId = button.dataset.id;
+      persist();
+      render();
+      window.requestAnimationFrame(() => {
+        const wideDiff = document.querySelector(".wide-code-floor .quiet-diff:not(.empty)");
+        const localDiff = document.querySelector(".quiet-diff:not(.empty)");
+        const activeFile = document.querySelector(".file-review-entry.is-active");
+        (wideDiff || localDiff || activeFile)?.scrollIntoView({ behavior: "smooth", block: wideDiff ? "start" : "nearest" });
+      });
+    } else if (action === "rail-stage") {
+      state.selectedStageId = button.dataset.stageId;
+      state.activeNodeId = null;
+      state.activeFileId = fileId(state.selectedStageId, stageFiles(state.selectedStageId)[0].path);
+      persist();
+      render();
+    } else if (action === "rail-node") {
+      state.selectedStageId = button.dataset.stageId;
+      state.activeNodeId = button.dataset.nodeId;
+      const first = stageFiles(state.selectedStageId).find((file) => file.memberships.some((membership) => membership.nodeId === state.activeNodeId));
+      state.activeFileId = fileId(state.selectedStageId, first.path);
+      persist();
+      render();
+    } else if (action === "open-file-tray") {
+      state.activeFileId = button.dataset.id;
+      state.fileTrayOpen = true;
+      persist();
+      render();
+      window.requestAnimationFrame(() => document.querySelector(".tray-close")?.focus());
+    } else if (action === "close-file-tray") {
+      const tray = document.querySelector(".diff-tray");
+      if (tray && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        await tray.animate([{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(100%)", opacity: .5 }], { duration: 220, easing: "ease-in" }).finished.catch(() => {});
+      }
+      state.fileTrayOpen = false;
+      persist();
+      render();
+    } else if (action === "scroll-to-diff") {
+      document.querySelector(".wide-code-floor .quiet-diff:not(.empty)")?.scrollIntoView({ behavior: "smooth", block: "start" });
     } else if (action === "to-top") {
       event.preventDefault();
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -581,6 +810,12 @@
       persist();
       syncPanels();
       document.querySelector(".review-toggle")?.focus();
+      return;
+    }
+    if (event.key === "Escape" && state.fileTrayOpen) {
+      state.fileTrayOpen = false;
+      persist();
+      render();
       return;
     }
     if (concept !== "field-notes" || event.target.matches("textarea, input")) return;
