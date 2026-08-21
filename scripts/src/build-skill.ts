@@ -13,6 +13,8 @@ const repositoryRoot = path.resolve(scriptsRoot, "..");
 const skillRoot = path.join(repositoryRoot, "skills", "semantic-flow");
 const outputDirectory = path.join(skillRoot, "scripts");
 const referencesDirectory = path.join(skillRoot, "references");
+const viewerSource = path.join(repositoryRoot, "viewer");
+const viewerDestination = path.join(skillRoot, "viewer");
 
 fs.rmSync(outputDirectory, { recursive: true, force: true });
 fs.mkdirSync(outputDirectory, { recursive: true });
@@ -21,6 +23,7 @@ await build({
   entryPoints: {
     "semantic-review": path.join(scriptsRoot, "src", "semantic-review.ts"),
     "review-feedback": path.join(scriptsRoot, "src", "review-feedback.ts"),
+    "semantic-view": path.join(scriptsRoot, "src", "semantic-view.ts"),
   },
   outdir: outputDirectory,
   outExtension: { ".js": ".mjs" },
@@ -35,7 +38,11 @@ await build({
   logLevel: "info",
 });
 
-for (const file of ["semantic-review.mjs", "review-feedback.mjs"]) {
+for (const file of [
+  "semantic-review.mjs",
+  "review-feedback.mjs",
+  "semantic-view.mjs",
+]) {
   fs.chmodSync(path.join(outputDirectory, file), 0o644);
 }
 
@@ -71,5 +78,14 @@ fs.copyFileSync(
   path.join(scriptsRoot, "schemas", "stage-organization.schema.json"),
   path.join(referencesDirectory, "stage-organization.schema.json"),
 );
+
+fs.rmSync(viewerDestination, { recursive: true, force: true });
+fs.mkdirSync(viewerDestination, { recursive: true });
+for (const file of ["index.html", "app.js", "styles.css"]) {
+  fs.copyFileSync(
+    path.join(viewerSource, file),
+    path.join(viewerDestination, file),
+  );
+}
 
 console.log(`Compiled semantic-flow skill at ${skillRoot}.`);

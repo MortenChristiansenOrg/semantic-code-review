@@ -13,11 +13,13 @@ Use PowerShell. Resolve the installed skill directory, construct paths with
 $skillRoot = (Resolve-Path 'C:\absolute\path\to\semantic-flow').Path
 $semanticReview = Join-Path $skillRoot 'scripts\semantic-review.mjs'
 $reviewFeedback = Join-Path $skillRoot 'scripts\review-feedback.mjs'
+$semanticView = Join-Path $skillRoot 'scripts\semantic-view.mjs'
 
 node --version
 git --version
 Test-Path -LiteralPath $semanticReview -PathType Leaf
 Test-Path -LiteralPath $reviewFeedback -PathType Leaf
+Test-Path -LiteralPath $semanticView -PathType Leaf
 git rev-parse --show-toplevel
 git status --short --branch
 ```
@@ -28,6 +30,7 @@ substitute:
 ```text
 <semantic-review>  => node $semanticReview
 <review-feedback>  => node $reviewFeedback
+<semantic-view>    => node $semanticView
 ```
 
 For example:
@@ -35,6 +38,7 @@ For example:
 ```powershell
 node $semanticReview validate
 node $reviewFeedback next --json
+node $semanticView review
 ```
 
 Use `Join-Path` or quoted absolute paths for Windows filesystem paths. Use

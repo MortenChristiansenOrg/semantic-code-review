@@ -14,11 +14,13 @@ directory to an absolute path, quote every filesystem path, and define:
 skill_root="/absolute/path/to/semantic-flow"
 semantic_review="$skill_root/scripts/semantic-review.mjs"
 review_feedback="$skill_root/scripts/review-feedback.mjs"
+semantic_view="$skill_root/scripts/semantic-view.mjs"
 
 node --version
 git --version
 test -f "$semantic_review"
 test -f "$review_feedback"
+test -f "$semantic_view"
 git rev-parse --show-toplevel
 git status --short --branch
 ```
@@ -29,6 +31,7 @@ substitute:
 ```text
 <semantic-review>  => node "$semantic_review"
 <review-feedback>  => node "$review_feedback"
+<semantic-view>    => node "$semantic_view"
 ```
 
 For example:
@@ -36,6 +39,7 @@ For example:
 ```bash
 node "$semantic_review" validate
 node "$review_feedback" next --json
+node "$semantic_view" review
 ```
 
 Use forward slashes for Linux filesystem paths. Also use forward slashes for

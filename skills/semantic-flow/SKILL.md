@@ -134,3 +134,22 @@ Do not inspect the generated `.mjs` bundles to discover usage. Read their
 implementation only as a last resort when the API signature, skill guidance,
 and an observed command error cannot explain a tool defect or undocumented
 behavior.
+
+## Review viewer
+
+A read-only local web viewer renders the current review artifact (stages,
+change nodes, project-grouped files, and full-context diffs) as a single
+reading experience for a human reviewer. It never mutates the artifact;
+approvals and notes are kept in the browser only.
+
+Launch it from the target repository root using the selected operating-system
+guide's `<semantic-view>` invocation:
+
+```text
+<semantic-view> review
+```
+
+It serves the viewer on `http://127.0.0.1:<port>` and opens the default
+browser. Pass an optional project path to view another repository. Stop it with
+Ctrl+C. The viewer reads `.semantic-review` once at launch; restart it to pick
+up new stages.
