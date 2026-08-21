@@ -15,6 +15,24 @@ const outputDirectory = path.join(skillRoot, "scripts");
 const referencesDirectory = path.join(skillRoot, "references");
 const viewerSource = path.join(repositoryRoot, "viewer");
 const viewerDestination = path.join(skillRoot, "viewer");
+const packageManifest: unknown = JSON.parse(
+  fs.readFileSync(path.join(scriptsRoot, "package.json"), "utf8"),
+);
+
+if (
+  typeof packageManifest !== "object" ||
+  packageManifest === null ||
+  !("version" in packageManifest) ||
+  typeof packageManifest.version !== "string"
+) {
+  throw new Error("scripts/package.json must declare a string version.");
+}
+
+fs.writeFileSync(
+  path.join(skillRoot, "VERSION"),
+  `${packageManifest.version}\n`,
+  "utf8",
+);
 
 fs.rmSync(outputDirectory, { recursive: true, force: true });
 fs.mkdirSync(outputDirectory, { recursive: true });
@@ -24,6 +42,7 @@ await build({
     "semantic-review": path.join(scriptsRoot, "src", "semantic-review.ts"),
     "review-feedback": path.join(scriptsRoot, "src", "review-feedback.ts"),
     "semantic-view": path.join(scriptsRoot, "src", "semantic-view.ts"),
+    "semantic-flow": path.join(scriptsRoot, "src", "semantic-flow.ts"),
   },
   outdir: outputDirectory,
   outExtension: { ".js": ".mjs" },
@@ -42,6 +61,7 @@ for (const file of [
   "semantic-review.mjs",
   "review-feedback.mjs",
   "semantic-view.mjs",
+  "semantic-flow.mjs",
 ]) {
   fs.chmodSync(path.join(outputDirectory, file), 0o644);
 }

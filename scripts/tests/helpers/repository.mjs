@@ -23,6 +23,7 @@ export const feedbackCli = path.join(
   scriptsDirectory,
   "review-feedback.mjs",
 );
+export const flowCli = path.join(scriptsDirectory, "semantic-flow.mjs");
 
 function commandFailure(command, args, result) {
   return [
@@ -79,6 +80,7 @@ export function createRepository(t, prefix = "semantic-flow-") {
     git: (...args) => run("git", args),
     semantic: (...args) => run(process.execPath, [semanticCli, ...args]),
     feedback: (...args) => run(process.execPath, [feedbackCli, ...args]),
+    flow: (...args) => run(process.execPath, [flowCli, ...args]),
     expectSemanticFailure: (expected, ...args) =>
       expectFailure(expected, process.execPath, [semanticCli, ...args]),
     expectFeedbackFailure: (expected, ...args) =>

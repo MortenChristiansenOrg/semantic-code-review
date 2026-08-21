@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   feedbackCli,
+  flowCli,
   scriptsDirectory,
   semanticCli,
 } from "./helpers/repository.mjs";
@@ -51,6 +52,10 @@ const commands = new Map([
       "approve-stack",
       "validate",
     ],
+  ],
+  [
+    flowCli,
+    ["inspect", "validate", "status", "review", "version", "update"],
   ],
 ]);
 
@@ -139,11 +144,11 @@ test("the bundled example conforms to the published schemas", (t) => {
   assert.match(result.stdout, /schema validation passed/);
 });
 
-test("skill routes OS invocation details without duplicating the workflow", () => {
+test("skill indexes command-specific workflows", () => {
   const skillRoot = path.resolve(scriptsDirectory, "..");
   const skill = fs.readFileSync(path.join(skillRoot, "SKILL.md"), "utf8");
-  const steps = fs.readFileSync(
-    path.join(skillRoot, "docs", "Steps.md"),
+  const runtime = fs.readFileSync(
+    path.join(skillRoot, "docs", "runtime.md"),
     "utf8",
   );
   const linux = fs.readFileSync(
@@ -155,23 +160,61 @@ test("skill routes OS invocation details without duplicating the workflow", () =
     "utf8",
   );
 
-  assert.match(skill, /node -p "process\.platform"/);
-  assert.match(skill, /`linux`: read `docs\/os\/linux\.md`/);
-  assert.match(skill, /`win32` \(Windows\): read `docs\/os\/windows\.md`/);
-  assert.match(skill, /Do not load the guide for the other operating system/);
-  assert.match(skill, /git worktree list --porcelain/);
-  assert.match(skill, /If exactly one linked worktree contains an artifact, use it/);
-  assert.match(skill, /`targetBranch` differs from the current branch/);
-  assert.match(skill, /fields describe the\s+stack's merge base/);
-  assert.match(skill, /Never initialize a replacement review or copy an artifact/);
-  assert.match(steps, /<semantic-review> validate/);
-  assert.match(steps, /<review-feedback> next --json/);
-  assert.match(steps, /Review viewer section/);
-  assert.doesNotMatch(steps, /<skill-root>/);
+  const commands = [
+    "implicit",
+    "implement",
+    "review",
+    "feedback",
+    "status",
+    "continue",
+    "validate",
+    "prepare",
+    "archive",
+    "version",
+    "update",
+    "help",
+  ];
+  const commandText = new Map(
+    commands.map((command) => [
+      command,
+      fs.readFileSync(
+        path.join(skillRoot, "commands", `${command}.md`),
+        "utf8",
+      ),
+    ]),
+  );
+
+  for (const command of commands) {
+    assert.match(skill, new RegExp(`commands/${command}\\.md`));
+  }
+  assert.doesNotMatch(skill, /node -p "process\.platform"/);
+  assert.doesNotMatch(skill, /git worktree list --porcelain/);
+  assert.match(runtime, /node -p "process\.platform"/);
+  assert.match(runtime, /<semantic-flow> inspect --json/);
+  assert.match(runtime, /otherwise the only\s+matching artifact/);
+  assert.match(commandText.get("implement"), /<semantic-review> stage begin/);
+  assert.match(commandText.get("feedback"), /<review-feedback> next --json/);
+  assert.match(commandText.get("review"), /<semantic-flow> review/);
+  assert.match(commandText.get("validate"), /<semantic-flow> validate/);
+  assert.match(commandText.get("status"), /<semantic-flow> status/);
+  assert.match(commandText.get("version"), /<semantic-flow> version/);
+  assert.match(commandText.get("update"), /<semantic-flow> update/);
+  assert.match(commandText.get("help"), /installed `SKILL\.md` index/);
+  assert.match(commandText.get("help"), /Do not return a\s+prewritten description/);
+  assert.match(commandText.get("update"), /beside the target repository/);
+  const sourceScriptsRoot = path.resolve(skillRoot, "..", "..", "scripts");
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(sourceScriptsRoot, "package.json"), "utf8"),
+  );
+  assert.equal(
+    fs.readFileSync(path.join(skillRoot, "VERSION"), "utf8").trim(),
+    packageJson.version,
+  );
   assert.match(linux, /<semantic-review>\s+=> node "\$semantic_review"/);
   assert.match(windows, /<semantic-review>\s+=> node \$semanticReview/);
 
   for (const platformGuide of [linux, windows]) {
+    assert.match(platformGuide, /semantic-flow\.mjs/);
     assert.match(platformGuide, /semantic-review\.mjs/);
     assert.match(platformGuide, /review-feedback\.mjs/);
     assert.doesNotMatch(platformGuide, /## [1-7]\./);

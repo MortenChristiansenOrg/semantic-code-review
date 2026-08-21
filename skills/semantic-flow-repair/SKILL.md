@@ -37,7 +37,8 @@ Capture the smallest reproducible failure before changing source:
 
 1. Record the exact command, arguments, output, Node.js version, relevant Git
    state, and installed `semantic-flow` files or revision.
-2. Read the installed `semantic-flow/SKILL.md`, `docs/Steps.md`, and
+2. Read the installed `semantic-flow/SKILL.md`, the command file selected by
+   its index, every shared document that command requires, and
    `scripts/API.d.ts`.
 3. Distinguish an invalid invocation, unsupported workflow, damaged target
    artifact, or interrupted write from a defect in the skill.
@@ -54,8 +55,9 @@ Choose files by responsibility:
 
 | Concern | Maintained source |
 | --- | --- |
-| Invocation rules and high-level behavior | `skills/semantic-flow/SKILL.md` |
-| Step-by-step agent procedure | `skills/semantic-flow/docs/Steps.md` |
+| Command routing | `skills/semantic-flow/SKILL.md` |
+| Command workflows | `skills/semantic-flow/commands/` |
+| Shared runtime and quality rules | `skills/semantic-flow/docs/runtime.md`, `skills/semantic-flow/docs/artifact-quality.md` |
 | Semantic review CLI | `scripts/src/semantic-review.ts` |
 | Review feedback CLI | `scripts/src/review-feedback.ts` |
 | Runtime command and option definitions | `scripts/src/command-api.ts` |
@@ -73,6 +75,7 @@ API declaration is user-facing guidance.
 
 Do not directly edit generated files:
 
+- `skills/semantic-flow/VERSION`
 - `skills/semantic-flow/scripts/*.mjs`
 - `skills/semantic-flow/scripts/API.d.ts`
 - `skills/semantic-flow/references/schema/`
@@ -117,6 +120,7 @@ Run the rebuilt CLI directly from the source checkout while the current
 directory remains the target repository root:
 
 ```text
+node "<source-repository>/skills/semantic-flow/scripts/semantic-flow.mjs" <command>
 node "<source-repository>/skills/semantic-flow/scripts/semantic-review.mjs" <command>
 node "<source-repository>/skills/semantic-flow/scripts/review-feedback.mjs" <command>
 ```

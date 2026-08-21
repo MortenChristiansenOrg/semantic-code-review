@@ -1,0 +1,27 @@
+# Review command
+
+Use to open the local semantic review viewer. This command is read-only with
+respect to review artifacts and implementation branches.
+
+Read `../docs/runtime.md` and the selected operating-system guide.
+
+## Resolve and launch
+
+Launch:
+
+```text
+<semantic-flow> review [--project <repository-or-worktree-path>]
+```
+
+The helper resolves linked worktrees without requiring `targetBranch` to match
+the invoking branch, then starts the bundled viewer. Keep it running and
+confirm it is responsive at the reported local URL.
+
+The viewer renders stages, change nodes, project-grouped files, linked context,
+and full-context diffs. It reads `.semantic-review` once at launch. Restart it
+to show later artifact changes.
+
+Feedback and browser-local review state may be created through the viewer, but
+the launch command itself must not mutate the artifact, switch branches,
+approve work, or prepare outputs. Run feedback CLI commands from the resolved
+artifact worktree root.
