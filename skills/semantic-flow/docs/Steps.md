@@ -13,6 +13,10 @@ Use this flow for a substantial feature or user story that benefits from
 intent-based review stages. Do not use it for a small fix, investigation,
 review-only request, documentation-only edit, or routine refactor.
 
+For an explicit review-only request, skip this mutation procedure and follow
+`SKILL.md`'s Review viewer section. Its worktree lookup handles artifacts
+created in an isolated implementation worktree.
+
 Before mutation:
 
 1. Locate the repository and installed skill roots.

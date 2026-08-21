@@ -159,8 +159,14 @@ test("skill routes OS invocation details without duplicating the workflow", () =
   assert.match(skill, /`linux`: read `docs\/os\/linux\.md`/);
   assert.match(skill, /`win32` \(Windows\): read `docs\/os\/windows\.md`/);
   assert.match(skill, /Do not load the guide for the other operating system/);
+  assert.match(skill, /git worktree list --porcelain/);
+  assert.match(skill, /If exactly one linked worktree contains an artifact, use it/);
+  assert.match(skill, /`targetBranch` differs from the current branch/);
+  assert.match(skill, /fields describe the\s+stack's merge base/);
+  assert.match(skill, /Never initialize a replacement review or copy an artifact/);
   assert.match(steps, /<semantic-review> validate/);
   assert.match(steps, /<review-feedback> next --json/);
+  assert.match(steps, /Review viewer section/);
   assert.doesNotMatch(steps, /<skill-root>/);
   assert.match(linux, /<semantic-review>\s+=> node "\$semantic_review"/);
   assert.match(windows, /<semantic-review>\s+=> node \$semanticReview/);

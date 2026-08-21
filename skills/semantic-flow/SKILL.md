@@ -142,14 +142,42 @@ change nodes, project-grouped files, and full-context diffs) as a single
 reading experience for a human reviewer. It never mutates the artifact;
 approvals and notes are kept in the browser only.
 
-Launch it from the target repository root using the selected operating-system
-guide's `<semantic-view>` invocation:
+Resolve the artifact worktree before launching the viewer. Do not assume the
+worktree where the review request was made contains `.semantic-review/`.
+Implementation may have run in another linked worktree.
+
+1. If the user supplied a project path, use it.
+2. Otherwise, prefer `.semantic-review/manifest.json` in the current repository
+   root.
+3. If it is absent, run:
+
+   ```text
+   git worktree list --porcelain
+   ```
+
+   Inspect each linked worktree for `.semantic-review/manifest.json`.
+4. If exactly one linked worktree contains an artifact, use it. Do this even
+   when its manifest `targetBranch` differs from the current branch or its
+   `baseRevision` differs from the current `HEAD`. Those fields describe the
+   stack's merge base, not the worktree where the user invoked the original
+   prompt.
+5. If several linked worktrees contain artifacts, use branch, revision, review
+   ID, requirement source reference, and checked-out semantic stage branch only
+   as disambiguation clues. Select a candidate only when the relationship is
+   clear. Otherwise list each candidate's path, review ID, title, target
+   branch, and checked-out branch, then ask the user to select one.
+6. If no linked worktree contains an artifact, report that no active artifact
+   was found. Never initialize a replacement review or copy an artifact as
+   part of review discovery.
+
+Launch the viewer with the resolved artifact worktree path using the selected
+operating-system guide's `<semantic-view>` invocation:
 
 ```text
-<semantic-view> review
+<semantic-view> review <artifact-worktree-path>
 ```
 
 It serves the viewer on `http://127.0.0.1:<port>` and opens the default
-browser. Pass an optional project path to view another repository. Stop it with
-Ctrl+C. The viewer reads `.semantic-review` once at launch; restart it to pick
-up new stages.
+browser. Run any feedback CLI commands from the resolved artifact worktree
+root. Stop the viewer with Ctrl+C. The viewer reads `.semantic-review` once at
+launch; restart it to pick up new stages.
