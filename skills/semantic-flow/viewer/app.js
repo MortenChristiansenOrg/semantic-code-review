@@ -532,12 +532,63 @@
       <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>Files</span></div>
     </aside>`;
   }
+  function noteGroupKey(c) {
+    if (c.kind === "stage") {
+      const si = data.stages.findIndex((s) => s.id === c.id);
+      const s = data.stages[si];
+      return { si: si < 0 ? 900 : si, stageTitle: s ? s.title : c.id,
+        ni: -1, nodeKey: `${c.id}::__stage__`, nodeTitle: "Stage overview" };
+    }
+    if (c.kind === "node") {
+      for (let si = 0; si < data.stages.length; si++) {
+        const s = data.stages[si];
+        const ni = s.nodes.findIndex((n) => n.id === c.id);
+        if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${c.id}`, nodeTitle: s.nodes[ni].title };
+      }
+      return { si: 900, stageTitle: "Unknown stage", ni: 900, nodeKey: `::${c.id}`, nodeTitle: c.id };
+    }
+    const entry = fileById.get(c.id);
+    if (entry) {
+      const s = entry.stage;
+      const si = data.stages.findIndex((x) => x.id === s.id);
+      const membership = (entry.file.memberships || [])[0];
+      const nodeId = membership && membership.nodeId;
+      const ni = nodeId ? s.nodes.findIndex((n) => n.id === nodeId) : -1;
+      if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${nodeId}`, nodeTitle: s.nodes[ni].title };
+      return { si, stageTitle: s.title, ni: 800, nodeKey: `${s.id}::__files__`, nodeTitle: "Files" };
+    }
+    return { si: 900, stageTitle: "Unknown stage", ni: 900, nodeKey: "::__other__", nodeTitle: "Other" };
+  }
+  function noteDayKey(c) {
+    if (!c.createdAt) return { key: "0000-00-00", label: "Undated" };
+    const d = new Date(c.createdAt);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const label = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+    return { key, label };
+  }
+  function groupedNotes() {
+    const stageMap = new Map();
+    state.comments.forEach((c, i) => {
+      const g = noteGroupKey(c);
+      const d = noteDayKey(c);
+      if (!stageMap.has(g.si)) stageMap.set(g.si, { si: g.si, title: g.stageTitle, nodes: new Map() });
+      const st = stageMap.get(g.si);
+      if (!st.nodes.has(g.nodeKey)) st.nodes.set(g.nodeKey, { ni: g.ni, title: g.nodeTitle, days: new Map() });
+      const nd = st.nodes.get(g.nodeKey);
+      if (!nd.days.has(d.key)) nd.days.set(d.key, { key: d.key, label: d.label, items: [] });
+      nd.days.get(d.key).items.push({ c, i });
+    });
+    const stages = [...stageMap.values()].sort((a, b) => a.si - b.si);
+    for (const st of stages) {
+      st.nodesArr = [...st.nodes.values()].sort((a, b) => a.ni - b.ni);
+      for (const nd of st.nodesArr) {
+        nd.daysArr = [...nd.days.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      }
+    }
+    return stages;
+  }
   function notesPanel() {
-    const open = state.comments.filter((c) => !c.resolved);
-    const resolved = state.comments.filter((c) => c.resolved);
-    const noteCard = (c) => {
-      const i = state.comments.indexOf(c);
-      return `<article class="note mode-${c.mode || "personal"} ${c.resolved ? "is-resolved" : ""}">
+    const noteCard = ({ c, i }) => `<article class="note mode-${c.mode || "personal"} ${c.resolved ? "is-resolved" : ""}">
         <header>
           <span class="note-mode">${(c.mode || "personal") === "feedback" ? "Feedback" : "Personal"}</span>
           <span class="note-kind">${esc(c.kind)}</span>
@@ -549,9 +600,14 @@
         <strong>${esc(labelFor(c.kind, c.id))}</strong>
         <p>${esc(c.body)}</p>
       </article>`;
-    };
     const body = state.comments.length
-      ? `${open.map(noteCard).join("")}${resolved.length ? `<div class="notes-div">Resolved · ${resolved.length}</div>${resolved.map(noteCard).join("")}` : ""}`
+      ? groupedNotes().map((st) => `<section class="note-stage">
+          <h3 class="note-stage-h">${esc(st.title)}</h3>
+          ${st.nodesArr.map((nd) => `<div class="note-node">
+            <h4 class="note-node-h">${esc(nd.title)}</h4>
+            ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div>${day.items.map(noteCard).join("")}`).join("")}
+          </div>`).join("")}
+        </section>`).join("")
       : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
       <div class="side-head"><div><span class="eyebrow">Your review notes</span><h2>Notes &amp; feedback</h2></div><button data-action="toggle-notes" aria-label="Close" type="button">×</button></div>
@@ -786,7 +842,7 @@
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nd-mode"]:checked')?.value || "personal";
       if (body) {
-        state.comments.push({ ...commentTarget, body, mode, resolved: false });
+        state.comments.push({ ...commentTarget, body, mode, resolved: false, createdAt: Date.now() });
         state.openThreads[commentTarget.id] = true;
         state.lastNoteMode = mode;
         persist();
