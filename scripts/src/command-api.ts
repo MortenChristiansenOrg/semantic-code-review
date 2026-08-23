@@ -259,7 +259,51 @@ export const reviewFeedbackApi: CliSignature = {
   ],
 };
 
-export const cliApis = [semanticReviewApi, reviewFeedbackApi] as const;
+const projectSelectionOptions: OptionSignature[] = [
+  option("project", "<repository-path>"),
+  option("review-id", "<review-id>"),
+];
+
+export const semanticFlowApi: CliSignature = {
+  executable: "semantic-flow.mjs",
+  title: "Semantic flow workflow helper",
+  globalOptions: [option("help"), option("input", "<json-file>")],
+  commands: [
+    {
+      command: "inspect",
+      options: [...projectSelectionOptions, option("json")],
+    },
+    {
+      command: "validate",
+      options: [...projectSelectionOptions, option("publish")],
+    },
+    {
+      command: "status",
+      options: [...projectSelectionOptions, option("json")],
+    },
+    {
+      command: "review",
+      options: projectSelectionOptions,
+    },
+    {
+      command: "version",
+      options: [option("json")],
+    },
+    {
+      command: "update",
+      options: [
+        option("source", "<repository-path>"),
+        option("use-current-source"),
+      ],
+    },
+  ],
+};
+
+export const cliApis = [
+  semanticReviewApi,
+  reviewFeedbackApi,
+  semanticFlowApi,
+] as const;
 
 export function commandOptionNames(
   api: CliSignature,

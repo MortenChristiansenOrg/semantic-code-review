@@ -1,7 +1,7 @@
 # Windows runtime details
 
-Read this file only when `node -p "process.platform"` reports `win32`. Keep the
-semantic workflow in `../Steps.md`; this file defines only Windows invocation,
+Read this file only when `node -p "process.platform"` reports `win32`. Command
+files define workflow behavior; this file defines only Windows invocation,
 path, and temporary-file details.
 
 ## Preflight and CLI invocations
@@ -13,11 +13,15 @@ Use PowerShell. Resolve the installed skill directory, construct paths with
 $skillRoot = (Resolve-Path 'C:\absolute\path\to\semantic-flow').Path
 $semanticReview = Join-Path $skillRoot 'scripts\semantic-review.mjs'
 $reviewFeedback = Join-Path $skillRoot 'scripts\review-feedback.mjs'
+$semanticView = Join-Path $skillRoot 'scripts\semantic-view.mjs'
+$semanticFlow = Join-Path $skillRoot 'scripts\semantic-flow.mjs'
 
 node --version
 git --version
 Test-Path -LiteralPath $semanticReview -PathType Leaf
 Test-Path -LiteralPath $reviewFeedback -PathType Leaf
+Test-Path -LiteralPath $semanticView -PathType Leaf
+Test-Path -LiteralPath $semanticFlow -PathType Leaf
 git rev-parse --show-toplevel
 git status --short --branch
 ```
@@ -26,15 +30,19 @@ Verify that Node.js is version 20 or later. In the shared procedure,
 substitute:
 
 ```text
+<semantic-flow>    => node $semanticFlow
 <semantic-review>  => node $semanticReview
 <review-feedback>  => node $reviewFeedback
+<semantic-view>    => node $semanticView
 ```
 
 For example:
 
 ```powershell
+node $semanticFlow inspect --json
 node $semanticReview validate
 node $reviewFeedback next --json
+node $semanticView review
 ```
 
 Use `Join-Path` or quoted absolute paths for Windows filesystem paths. Use

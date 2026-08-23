@@ -40,12 +40,42 @@ Before continuing, follow the operating-system selection in
 platform guide's concrete invocations as:
 
 ```text
+<semantic-flow> <command>
 <semantic-review> <command>
 <review-feedback> <command>
 ```
 
 Substitute the selected guide's invocation; do not run these placeholders
 literally.
+
+The installed skill also supports intent-level commands:
+
+```text
+/semantic-flow implement
+/semantic-flow review
+/semantic-flow feedback
+/semantic-flow status
+/semantic-flow continue
+/semantic-flow validate
+/semantic-flow prepare
+/semantic-flow archive
+/semantic-flow version
+/semantic-flow update
+/semantic-flow help [command]
+```
+
+Natural-language invocation remains supported:
+
+```text
+Implement the current user story using semantic flow
+```
+
+`skills/semantic-flow/SKILL.md` indexes each command to its installed workflow
+file. `/semantic-flow help <command>` reads those installed files and explains
+the current behavior rather than returning a separately maintained help text.
+The bundled `<semantic-flow>` helper handles linked-worktree discovery,
+combined validation, status inspection, viewer launch, version reporting, and
+safe skill updates on Linux and Windows.
 
 ## 2. Initialize at trunk
 

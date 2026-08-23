@@ -472,3 +472,82 @@ export declare function approveStack(): void;
  * @command validate
  */
 export declare function validateFeedback(): void;
+export interface SelectSemanticFlowReviewOptions {
+    /** Repository or worktree used to discover linked semantic review artifacts. */
+    project?: string;
+    /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
+    "review-id"?: string;
+}
+export interface InspectSemanticFlowOptions {
+    /** Repository or worktree used to discover linked semantic review artifacts. */
+    project?: string;
+    /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
+    "review-id"?: string;
+    /** Emits machine-readable repository, candidate, and selected artifact details. */
+    json?: true;
+}
+/**
+ * Finds semantic review artifacts in the selected repository and its linked worktrees.
+ * This command does not fail when no artifact exists.
+ * @cli semantic-flow.mjs
+ * @command inspect
+ */
+export declare function inspectSemanticFlow(options?: InspectSemanticFlowOptions): void;
+export interface ValidateSemanticFlowOptions {
+    /** Repository or worktree used to discover linked semantic review artifacts. */
+    project?: string;
+    /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
+    "review-id"?: string;
+    /** Applies the stricter artifact publication validation gate. */
+    publish?: true;
+}
+/**
+ * Resolves one active artifact, validates it, and validates feedback when present.
+ * @cli semantic-flow.mjs
+ * @command validate
+ */
+export declare function validateSemanticFlow(options?: ValidateSemanticFlowOptions): void;
+export interface SemanticFlowStatusOptions {
+    /** Repository or worktree used to discover linked semantic review artifacts. */
+    project?: string;
+    /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
+    "review-id"?: string;
+    /** Emits the complete machine-readable status snapshot. */
+    json?: true;
+}
+/**
+ * Reports lifecycle state, criterion coverage, evidence, feedback, metadata,
+ * and validation results for one active semantic review.
+ * @cli semantic-flow.mjs
+ * @command status
+ */
+export declare function semanticFlowStatus(options?: SemanticFlowStatusOptions): void;
+/**
+ * Resolves one active artifact and launches its local review viewer.
+ * @cli semantic-flow.mjs
+ * @command review
+ */
+export declare function reviewSemanticFlow(options?: SelectSemanticFlowReviewOptions): void;
+export interface SemanticFlowVersionOptions {
+    /** Emits machine-readable installed skill and format versions. */
+    json?: true;
+}
+/**
+ * Reports the installed skill, artifact format, and feedback format versions.
+ * @cli semantic-flow.mjs
+ * @command version
+ */
+export declare function semanticFlowVersion(options?: SemanticFlowVersionOptions): void;
+export interface UpdateSemanticFlowOptions {
+    /** Maintained semantic-code-review source repository. */
+    source?: string;
+    /** Builds the current source checkout without pulling; requires explicit approval for questionable source state. */
+    "use-current-source"?: true;
+}
+/**
+ * Safely updates source, tests and rebuilds the skill, then replaces the installed
+ * skill as one verified directory without changing target repository artifacts.
+ * @cli semantic-flow.mjs
+ * @command update
+ */
+export declare function updateSemanticFlow(options?: UpdateSemanticFlowOptions): void;
