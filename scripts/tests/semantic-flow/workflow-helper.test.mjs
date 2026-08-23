@@ -107,7 +107,10 @@ test("update rebuilds and replaces a copied installation", (t) => {
     JSON.stringify({
       name: "semantic-flow-update-fixture",
       private: true,
-      scripts: { test: "node -e \"process.exit(0)\"" },
+      scripts: {
+        build: "node -e \"process.exit(0)\"",
+        test: "node -e \"process.exit(99)\"",
+      },
     }),
   );
   fs.writeFileSync(

@@ -21,10 +21,10 @@ elsewhere, rerun with `--source <repository-path>`. It validates the source
 layout and never searches arbitrary drives or clones a remote.
 
 For a clean source branch with an upstream, it pulls with `--ff-only`, installs
-missing dependencies, runs the full scripts test and build, verifies the built
-skill, and replaces the installation as one directory. It checks the installed
-version and key file hashes afterward. When the source skill is the active
-installation, the successful build is the update.
+missing dependencies, builds the skill without running the test suite, verifies
+the built skill, and replaces the installation as one directory. It checks the
+installed version and key file hashes afterward. When the source skill is the
+active installation, the successful build is the update.
 
 If the source is dirty, detached, or lacks an upstream, the updater stops
 without changing it. Explain the reported state and ask whether to use the

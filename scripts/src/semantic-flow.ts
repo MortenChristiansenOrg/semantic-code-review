@@ -705,7 +705,7 @@ function update(options: Options): void {
   }
   runRequired(
     npm.executable,
-    [...npm.args, "test", "--prefix", scriptsRoot],
+    [...npm.args, "run", "build", "--prefix", scriptsRoot],
     sourceRoot,
   );
 

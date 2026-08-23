@@ -49,6 +49,7 @@
   /* ---- state ------------------------------------------------------------ */
   let state = load();
   let commentTarget = null;
+  let exportState = { phase: "idle", message: "" };
 
   function defaults() {
     return {
@@ -206,8 +207,8 @@
     return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${on}">
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
-  function commentBtn(kind, id) {
-    return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" type="button">＋ Note</button>`;
+  function commentBtn(kind, id, stageId) {
+    return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Note</button>`;
   }
   function notesToggle(id) {
     const notes = elementNotes(id);
@@ -217,8 +218,8 @@
     return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${notes.length} note${notes.length === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
       ${bubble()}<b>${notes.length}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
   }
-  function noteCluster(kind, id) {
-    return `<div class="note-cluster">${commentBtn(kind, id)}${notesToggle(id)}</div>`;
+  function noteCluster(kind, id, stageId) {
+    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(id)}</div>`;
   }
   function threadInline(id, kind) {
     if (!state.openThreads[id]) return "";
@@ -457,7 +458,7 @@
       <div class="node-body">
         ${nodeReasoning(stage, node)}
         ${nodeFilesPanel(stage, node)}
-        <div class="node-foot">${approveBtn("node", node.id)}${noteCluster("node", node.id)}</div>
+        <div class="node-foot">${approveBtn("node", node.id)}${noteCluster("node", node.id, stage.id)}</div>
         ${threadInline(node.id, "node")}
       </div>
     </details>`;
@@ -587,10 +588,16 @@
     }
     return stages;
   }
+  function pendingFeedback() {
+    return state.comments
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => (c.mode === "feedback") && !c.resolved && !c.exported);
+  }
   function notesPanel() {
     const noteCard = ({ c, i }) => `<article class="note mode-${c.mode || "personal"} ${c.resolved ? "is-resolved" : ""}">
         <header>
           <span class="note-mode">${(c.mode || "personal") === "feedback" ? "Feedback" : "Personal"}</span>
+          ${c.exported ? '<span class="note-sent" title="Sent to the semantic-flow artifact">Sent</span>' : ""}
           <span class="note-kind">${esc(c.kind)}</span>
           <div class="note-act">
             <button data-action="resolve-note" data-index="${i}" type="button">${c.resolved ? "Reopen" : "Resolve"}</button>
@@ -609,9 +616,21 @@
           </div>`).join("")}
         </section>`).join("")
       : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`;
+    const pending = pendingFeedback().length;
+    const working = exportState.phase === "working";
+    const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
+    const foot = `<div class="notes-foot">
+        <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
+          ${working ? "Sending…" : `Send feedback to artifact${pending ? ` (${pending})` : ""}`}
+        </button>
+        ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
+          : `<p class="notes-export-hint">${pending ? "Feedback notes are written to the semantic-flow artifact so your agent can address them." : "Only unsent “Feedback” notes are exported. Personal notes stay local."}</p>`}
+        ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
+      </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
       <div class="side-head"><div><span class="eyebrow">Your review notes</span><h2>Notes &amp; feedback</h2></div><button data-action="toggle-notes" aria-label="Close" type="button">×</button></div>
       <div class="notes-list">${body}</div>
+      ${foot}
     </aside>`;
   }
   function labelFor(kind, id) {
@@ -796,7 +815,7 @@
     } else if (a === "close-panels") {
       state.coverageOpen = false; state.notesOpen = false; persist(); render();
     } else if (a === "comment") {
-      openComment(btn.dataset.kind, btn.dataset.id);
+      openComment(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
       state.openThreads[id] = !state.openThreads[id];
@@ -812,7 +831,52 @@
     } else if (a === "open-file") {
       toggleCinema(btn.dataset.id);
     } else if (a === "cinema-close") { state.active = null; persist(); render(); }
+    else if (a === "export-feedback") {
+      exportFeedback();
+    }
   });
+
+  async function exportFeedback() {
+    if (exportState.phase === "working") return;
+    const pending = pendingFeedback();
+    if (!pending.length) return;
+    exportState = { phase: "working", message: "" };
+    render();
+    try {
+      const res = await fetch("/api/feedback/export", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          reviewId: data.reviewId,
+          notes: pending.map(({ c, i }) => ({ ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body }))
+        })
+      });
+      let out = {};
+      try { out = await res.json(); } catch { /* non-JSON error body */ }
+      if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
+      const byRef = new Map(pending.map(({ c, i }) => [i, c]));
+      (out.exported || []).forEach((ref) => {
+        const note = byRef.get(ref);
+        if (note) note.exported = true;
+      });
+      persist();
+      const n = (out.exported || []).length;
+      const skipped = out.skipped || [];
+      const skips = skipped.map((s) => {
+        const c = state.comments[s.ref];
+        const label = c ? labelFor(c.kind, c.id) : `note ${s.ref}`;
+        return `${label} — ${s.reason}`;
+      });
+      exportState = {
+        phase: "done",
+        message: `Sent ${n} feedback note${n === 1 ? "" : "s"} to the artifact${skipped.length ? `, ${skipped.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent to address them.`,
+        skips
+      };
+    } catch (err) {
+      exportState = { phase: "error", message: err.message || "Export failed.", skips: [] };
+    }
+    render();
+  }
 
   function toggleCinema(id) {
     state.active = state.active === id ? null : id;
@@ -822,8 +886,9 @@
     });
   }
 
-  function openComment(kind, id) {
+  function openComment(kind, id, stageId) {
     commentTarget = { kind, id };
+    if (kind === "node" && stageId) commentTarget.stageId = stageId;
     const d = app.querySelector(".note-dialog");
     d.querySelector("#nd-kind").textContent = kind === "file" ? "File note" : kind === "stage" ? "Stage note" : "Step note";
     d.querySelector("#nd-target").textContent = labelFor(kind, id);

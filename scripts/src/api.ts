@@ -684,8 +684,8 @@ export interface UpdateSemanticFlowOptions {
 }
 
 /**
- * Safely updates source, tests and rebuilds the skill, then replaces the installed
- * skill as one verified directory without changing target repository artifacts.
+ * Safely updates source and rebuilds the skill without running the test suite,
+ * then replaces the installed skill without changing target repository artifacts.
  * @cli semantic-flow.mjs
  * @command update
  */

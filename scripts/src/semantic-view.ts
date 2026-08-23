@@ -373,10 +373,254 @@ const CONTENT_TYPES = {
   ".css": "text/css; charset=utf-8",
 };
 
-function serveViewer({ viewerDir, dataScript, port }) {
+// Locate the sibling review-feedback CLI produced by the skill build.
+function locateFeedbackCli() {
+  const candidate = path.join(scriptDir, "review-feedback.mjs");
+  return fs.existsSync(candidate) ? candidate : "";
+}
+
+function readRequestBody(request, limit = 8 * 1024 * 1024): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("Request body too large."));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
+}
+
+function sendJson(response, status, payload) {
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": body.length,
+    "cache-control": "no-store",
+  });
+  response.end(body);
+}
+
+// Map a browser-local note (kind: stage | node | file) onto review-feedback
+// target options. Nodes have no first-class feedback target, so they are
+// assigned to their owning stage with the node title carried in the label.
+function mapNoteTarget(note, review) {
+  if (note.kind === "stage") {
+    const stage = review.stages.find((s) => s.id === note.id);
+    if (!stage) throw new Error(`unknown stage "${note.id}"`);
+    return { "target-kind": "stage", stage: stage.id, label: stage.title };
+  }
+  if (note.kind === "node") {
+    const stages = note.stageId
+      ? review.stages.filter((s) => s.id === note.stageId)
+      : review.stages;
+    if (note.stageId && stages.length === 0) {
+      throw new Error(`unknown stage "${note.stageId}"`);
+    }
+    for (const stage of stages) {
+      const node = stage.nodes.find((n) => n.id === note.id);
+      if (node) {
+        return { "target-kind": "stage", stage: stage.id, label: node.title };
+      }
+    }
+    throw new Error(
+      `unknown node "${note.id}"${note.stageId ? ` in stage "${note.stageId}"` : ""}`,
+    );
+  }
+  if (note.kind === "file") {
+    const match = /^f:([^:]+):(.+)$/.exec(note.id || "");
+    if (!match) throw new Error(`unrecognized file id "${note.id}"`);
+    const [, stageId, filePath] = match;
+    const stage = review.stages.find((s) => s.id === stageId);
+    if (!stage) throw new Error(`unknown stage "${stageId}"`);
+    return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
+  }
+  throw new Error(`unsupported note kind "${note.kind}"`);
+}
+
+function runFeedbackCli(feedbackCli, repoRoot, args, input?: string) {
+  return execFileSync(process.execPath, [feedbackCli, ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    input,
+    windowsHide: true,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+}
+
+function cliErrorMessage(error) {
+  const text = (error.stderr || error.stdout || error.message || "").toString().trim();
+  const line = text.split(/\r?\n/).find((l) => l.startsWith("Error:")) || text.split(/\r?\n/)[0];
+  return (line || "feedback command failed").replace(/^Error:\s*/, "");
+}
+
+function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
+  if (!feedbackCli) {
+    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
+  }
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return { ok: false, error: "No feedback notes to export." };
+  }
+  // Validate every note and resolve its target BEFORE mutating any state, so a
+  // malformed payload can never leave a partial/orphaned draft batch behind.
+  const skipped: Array<{ ref: number; reason: string }> = [];
+  const planned: Array<{ ref: number; body: string; target: Record<string, any> }> = [];
+  notes.forEach((note, index) => {
+    const ref = note && Number.isInteger(note.ref) ? note.ref : index;
+    if (!note || typeof note !== "object") {
+      skipped.push({ ref, reason: "not an object" });
+      return;
+    }
+    const body = typeof note.body === "string" ? note.body.trim() : "";
+    if (!body) {
+      skipped.push({ ref, reason: "empty body" });
+      return;
+    }
+    let target;
+    try {
+      target = mapNoteTarget(note, review);
+    } catch (error) {
+      skipped.push({ ref, reason: error.message });
+      return;
+    }
+    planned.push({ ref, body, target });
+  });
+  if (planned.length === 0) {
+    return { ok: false, error: "No notes could be exported.", skipped };
+  }
+
+  const manifest = path.join(repoRoot, ".semantic-review-feedback", "manifest.json");
+  if (!fs.existsSync(manifest)) {
+    runFeedbackCli(feedbackCli, repoRoot, ["init"]);
+  }
+  const batchId = `viewer-${Date.now().toString(36)}`;
+  runFeedbackCli(
+    feedbackCli,
+    repoRoot,
+    ["batch", "create", "--input", "-"],
+    JSON.stringify({ id: batchId, title: `Reviewer feedback ${new Date().toISOString()}` }),
+  );
+  const exported: number[] = [];
+  const addedItemIds: string[] = [];
+  planned.forEach((item, index) => {
+    const itemId = `${batchId}-${String(index).padStart(3, "0")}`;
+    try {
+      runFeedbackCli(
+        feedbackCli,
+        repoRoot,
+        ["comment", "add", "--input", "-"],
+        JSON.stringify({ batch: batchId, id: itemId, body: item.body, ...item.target }),
+      );
+      exported.push(item.ref);
+      addedItemIds.push(itemId);
+    } catch (error) {
+      skipped.push({ ref: item.ref, reason: cliErrorMessage(error) });
+    }
+  });
+  if (exported.length === 0) {
+    discardBatch(feedbackCli, repoRoot, batchId, addedItemIds);
+    return { ok: false, error: "No notes could be exported.", skipped };
+  }
+  try {
+    runFeedbackCli(feedbackCli, repoRoot, ["batch", "submit", "--id", batchId]);
+  } catch (error) {
+    // Roll the draft back so a failed submit cannot leave an invisible,
+    // non-empty draft batch that blocks or confuses later exports.
+    discardBatch(feedbackCli, repoRoot, batchId, addedItemIds);
+    return { ok: false, error: cliErrorMessage(error), skipped };
+  }
+  return { ok: true, batchId, exported, skipped };
+}
+
+// Best-effort removal of a draft batch and its draft items.
+function discardBatch(feedbackCli, repoRoot, batchId, itemIds) {
+  for (const itemId of itemIds) {
+    try {
+      runFeedbackCli(feedbackCli, repoRoot, ["comment", "delete", "--id", itemId]);
+    } catch {
+      // Ignore; surfacing the original failure matters more than perfect cleanup.
+    }
+  }
+  try {
+    runFeedbackCli(feedbackCli, repoRoot, ["batch", "delete", "--id", batchId]);
+  } catch {
+    // Ignore.
+  }
+}
+
+// Reject cross-origin drivers. A local page served by this server has no
+// Origin (same-origin fetch) or an Origin matching our own host; a third-party
+// web page attempting a request will carry a foreign Origin. Combined with the
+// required application/json content type (which forces a CORS preflight this
+// server never approves), this blocks drive-by requests from other sites.
+function isTrustedRequest(request, port) {
+  const contentType = String(request.headers["content-type"] || "");
+  if (!contentType.toLowerCase().startsWith("application/json")) return false;
+  const origin = request.headers["origin"];
+  if (!origin) return true;
+  const allowed = new Set([
+    `http://${HOST}:${port}`,
+    `http://localhost:${port}`,
+  ]);
+  return allowed.has(origin);
+}
+
+async function handleFeedbackExport(request, response, context) {
+  try {
+    if (!isTrustedRequest(request, context.port)) {
+      sendJson(response, 403, {
+        ok: false,
+        error: "Feedback export requires a same-origin application/json request.",
+      });
+      return;
+    }
+    const raw = await readRequestBody(request);
+    let payload;
+    try {
+      payload = JSON.parse(raw || "{}");
+    } catch {
+      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
+      return;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
+      return;
+    }
+    if (payload.reviewId !== context.reviewId) {
+      sendJson(response, 409, {
+        ok: false,
+        error: "This viewer is showing a different review than the one being exported.",
+      });
+      return;
+    }
+    const result = exportFeedback(context, payload.notes);
+    sendJson(response, result.ok ? 200 : 422, result);
+  } catch (error) {
+    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
+  }
+}
+
+function serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCli }) {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, `http://${HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+
+    if (request.method === "POST" && pathname === "/api/feedback/export") {
+      handleFeedbackExport(request, response, {
+        repoRoot,
+        review,
+        reviewId: review.reviewId,
+        feedbackCli,
+        port,
+      });
+      return;
+    }
 
     if (pathname === "/review-data.js") {
       const body = Buffer.from(dataScript, "utf8");
@@ -438,13 +682,14 @@ async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
   const review = buildReviewData(repoRoot);
+  const feedbackCli = locateFeedbackCli();
   const dataScript = `window.SEMANTIC_REVIEW = ${JSON.stringify(review)};\n`;
 
   let port = DEFAULT_PORT;
   let server = null;
   for (let attempt = 0; attempt < 20 && !server; attempt += 1) {
     try {
-      server = await serveViewer({ viewerDir, dataScript, port });
+      server = await serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCli });
     } catch (error) {
       if (error && error.code === "EADDRINUSE") {
         port += 1;
@@ -462,6 +707,11 @@ async function main() {
   console.log(
     `Review: ${review.title} — ${review.stages.length} stages, ${fileCount} files`,
   );
+  if (!feedbackCli) {
+    console.log(
+      "Note: review-feedback CLI not found; exporting reviewer feedback is disabled.",
+    );
+  }
   console.log("Press Ctrl+C to stop.");
   openBrowser(url);
 }
