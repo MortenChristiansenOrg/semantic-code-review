@@ -395,17 +395,19 @@
 
   /* ---- chrome ----------------------------------------------------------- */
   function topbar() {
-    return `<header class="topbar">
-      <div class="lockup">
-        <span class="vindex">◆</span>
-        <div><strong>Semantic review</strong><span>${esc(data.reviewId)}</span></div>
-      </div>
-      <div class="tb-actions">
-        <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
-        <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${state.comments.length}</b></button>
-      </div>
-    </header>
-    <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>`;
+    return `<div class="topbar-wrap">
+      <header class="topbar">
+        <div class="lockup">
+          <span class="vindex">◆</span>
+          <div><strong>Semantic review</strong><span>${esc(data.reviewId)}</span></div>
+        </div>
+        <div class="tb-actions">
+          <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
+          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${state.comments.length}</b></button>
+        </div>
+      </header>
+      <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
+    </div>`;
   }
 
   function hero() {
@@ -908,7 +910,6 @@
       const mode = e.target.querySelector('input[name="nd-mode"]:checked')?.value || "personal";
       if (body) {
         state.comments.push({ ...commentTarget, body, mode, resolved: false, createdAt: Date.now() });
-        state.openThreads[commentTarget.id] = true;
         state.lastNoteMode = mode;
         persist();
       }

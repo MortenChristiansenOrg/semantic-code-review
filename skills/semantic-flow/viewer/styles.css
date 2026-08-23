@@ -89,10 +89,12 @@ h1, h2, h3 { font-family: var(--display); margin: 0; letter-spacing: -.01em; }
 button { font-family: inherit; cursor: pointer; }
 
 /* ---- topbar ----------------------------------------------------------- */
-.topbar {
+.topbar-wrap {
   position: sticky;
   top: 0;
   z-index: 40;
+}
+.topbar {
   display: flex;
   align-items: center;
   gap: 20px;
@@ -150,9 +152,6 @@ button { font-family: inherit; cursor: pointer; }
 .tb-btn.is-on { border-color: var(--signal); background: var(--signal-soft); color: var(--text); }
 
 .progressbar {
-  position: sticky;
-  top: 55px;
-  z-index: 39;
   height: 2px;
   background: var(--line-soft);
 }
