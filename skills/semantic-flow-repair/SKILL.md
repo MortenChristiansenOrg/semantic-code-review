@@ -107,13 +107,6 @@ changed.
 Inspect the source-repository diff after the build. Generated outputs must
 match their sources, and unrelated generated churn must not be included.
 
-If the repair affects the proof-of-concept reader or review UI, also run its
-existing tests:
-
-```text
-npm test --prefix .\poc
-```
-
 ## Verify from the target repository
 
 Run the rebuilt CLI directly from the source checkout while the current

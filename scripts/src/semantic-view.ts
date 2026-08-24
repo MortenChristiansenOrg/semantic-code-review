@@ -370,7 +370,7 @@ function buildReviewData(repoRoot) {
 
 // Load submitted/resolved/approved feedback threads from the local
 // `.semantic-review-feedback` store so the viewer can render the reviewer <->
-// implementation-agent conversation. Draft threads stay private to the POC
+// implementation-agent conversation. Draft threads stay private to the viewer
 // workspace; only threads that have been submitted are surfaced here. A thread
 // is flagged stale when the stage head it was anchored against has since been
 // rewritten.

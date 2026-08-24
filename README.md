@@ -32,9 +32,5 @@ distributed alongside it. It guides an agent that encounters a defect in
 another repository to reproduce the problem there and repair the maintained
 sources in this repository.
 
-The [local review tool proof of concept](poc/README.md) loads the active
-artifact, renders its semantic stages, invokes the validator, and shows
-Git-backed branch-to-base diffs and feedback snapshots.
-
 The original conversation is retained in
 [Initial design discussion.md](Initial%20design%20discussion.md).

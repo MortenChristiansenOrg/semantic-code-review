@@ -244,8 +244,8 @@ Repeat begin, implement, commit, and finish for each stage.
 <semantic-review> prepare-stack
 ```
 
-```powershell
-npm start --prefix .\poc
+```text
+<semantic-flow> review
 ```
 
 The UI leads with each stage's node descriptions, then shows their classified

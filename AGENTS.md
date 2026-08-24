@@ -2,7 +2,7 @@
 
 This project includes a standardized schema describing changes to a code base as a result of implementing a user story or similar
 piece of work. It offers a CLI for creating artifacts following the schema as well as an AI skill describing a stacked-PR based workflow
-using the CLI. In addition, a POC implementation of a viewer is included that allows a reviewer to view and responds to the implementation artifacts.
+using the CLI.
 
 The content of this project is cross platform and not tailored to any specific LLM or harness but may contain reference implementations and tooling for
 specific platforms, harnesses, etc.
