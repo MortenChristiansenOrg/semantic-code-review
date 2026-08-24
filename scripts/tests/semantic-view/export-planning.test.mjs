@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { scriptsDirectory } from "../helpers/repository.mjs";
+import {
+  createReviewWithStages,
+  scriptsDirectory,
+} from "../helpers/repository.mjs";
 
 const moduleUrl = pathToFileURL(
   path.join(scriptsDirectory, "semantic-view.mjs"),
 ).href;
-const { planFeedbackThreads, mapNoteTarget } = await import(moduleUrl);
+const { createReviewDataScript, planFeedbackThreads, mapNoteTarget } = await import(moduleUrl);
 
 const review = {
   stages: [
@@ -105,4 +108,56 @@ test("planFeedbackThreads falls back to array index when ref is absent", () => {
 
 test("planFeedbackThreads tolerates a non-array payload", () => {
   assert.deepEqual(planFeedbackThreads(null, review), { planned: [], skipped: [] });
+});
+
+test("createReviewDataScript reloads feedback from disk", (t) => {
+  const { repository } = createReviewWithStages(t);
+  const readData = () => {
+    const script = createReviewDataScript(repository.root);
+    return JSON.parse(script.match(/^window\.SEMANTIC_REVIEW = (.*);\n$/s)[1]);
+  };
+
+  assert.deepEqual(readData().feedback, []);
+
+  repository.feedback("init");
+  repository.feedback("batch", "create", "--id", "review", "--title", "Review");
+  repository.feedback(
+    "thread",
+    "add",
+    "--batch",
+    "review",
+    "--id",
+    "reload-feedback",
+    "--comment-id",
+    "reload-feedback-comment",
+    "--body",
+    "Show this after refresh.",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  repository.feedback("batch", "submit", "--id", "review");
+
+  assert.equal(readData().feedback[0].comments.length, 1);
+
+  repository.feedback(
+    "thread",
+    "resolve",
+    "--id",
+    "reload-feedback",
+    "--comment-id",
+    "reload-feedback-response",
+    "--body",
+    "This reply should appear after refresh.",
+  );
+
+  const refreshed = readData();
+  assert.equal(refreshed.feedback[0].comments.length, 2);
+  assert.equal(
+    refreshed.feedback[0].comments[1].body,
+    "This reply should appear after refresh.",
+  );
 });

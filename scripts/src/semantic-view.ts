@@ -368,6 +368,10 @@ function buildReviewData(repoRoot) {
   };
 }
 
+export function createReviewDataScript(repoRoot) {
+  return `window.SEMANTIC_REVIEW = ${JSON.stringify(buildReviewData(repoRoot))};\n`;
+}
+
 // Load submitted/resolved/approved feedback threads from the local
 // `.semantic-review-feedback` store so the viewer can render the reviewer <->
 // implementation-agent conversation. Draft threads stay private to the viewer
@@ -656,21 +660,22 @@ async function handleFeedbackExport(request, response, context) {
       sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
       return;
     }
-    if (payload.reviewId !== context.reviewId) {
+    const review = buildReviewData(context.repoRoot);
+    if (payload.reviewId !== review.reviewId) {
       sendJson(response, 409, {
         ok: false,
         error: "This viewer is showing a different review than the one being exported.",
       });
       return;
     }
-    const result = exportFeedback(context, payload.notes);
+    const result = exportFeedback({ ...context, review }, payload.notes);
     sendJson(response, result.ok ? 200 : 422, result);
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
 }
 
-function serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCli }) {
+function serveViewer({ viewerDir, port, repoRoot, feedbackCli }) {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, `http://${HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
@@ -678,8 +683,6 @@ function serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCl
     if (request.method === "POST" && pathname === "/api/feedback/export") {
       handleFeedbackExport(request, response, {
         repoRoot,
-        review,
-        reviewId: review.reviewId,
         feedbackCli,
         port,
       });
@@ -687,13 +690,21 @@ function serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCl
     }
 
     if (pathname === "/review-data.js") {
-      const body = Buffer.from(dataScript, "utf8");
-      response.writeHead(200, {
-        "content-type": "text/javascript; charset=utf-8",
-        "content-length": body.length,
-        "cache-control": "no-store",
-      });
-      response.end(body);
+      try {
+        const body = Buffer.from(createReviewDataScript(repoRoot), "utf8");
+        response.writeHead(200, {
+          "content-type": "text/javascript; charset=utf-8",
+          "content-length": body.length,
+          "cache-control": "no-store",
+        });
+        response.end(body);
+      } catch (error) {
+        response.writeHead(500, {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        response.end(`Failed to refresh review data: ${cliErrorMessage(error)}`);
+      }
       return;
     }
 
@@ -747,13 +758,12 @@ async function main() {
   const viewerDir = locateViewerDir();
   const review = buildReviewData(repoRoot);
   const feedbackCli = locateFeedbackCli();
-  const dataScript = `window.SEMANTIC_REVIEW = ${JSON.stringify(review)};\n`;
 
   let port = DEFAULT_PORT;
   let server = null;
   for (let attempt = 0; attempt < 20 && !server; attempt += 1) {
     try {
-      server = await serveViewer({ viewerDir, dataScript, port, repoRoot, review, feedbackCli });
+      server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli });
     } catch (error) {
       if (error && error.code === "EADDRINUSE") {
         port += 1;

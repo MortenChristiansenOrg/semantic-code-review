@@ -22,6 +22,8 @@
   --signal-soft: rgba(255, 106, 69, .13);
   --ok: #45d6ac;
   --ok-soft: rgba(69, 214, 172, .14);
+  --warn: #e0b054;
+  --warn-soft: rgba(224, 176, 84, .14);
   --add: #5bd6a0;
   --add-bg: rgba(91, 214, 160, .09);
   --add-ln: rgba(91, 214, 160, .5);
@@ -855,6 +857,7 @@ button { font-family: inherit; cursor: pointer; }
 .frow.is-active { background: var(--signal-soft); box-shadow: inset 0 0 0 1px rgba(255, 106, 69, .35); }
 .frow.is-approved { opacity: .48; }
 .frow.is-approved:hover { opacity: 1; }
+.frow.is-stale { box-shadow: inset 2px 0 0 var(--warn); }
 .frow-open {
   flex: 1;
   min-width: 0;
@@ -925,6 +928,9 @@ button { font-family: inherit; cursor: pointer; }
 .mini-approve span { color: var(--ok); }
 .mini-approve:hover { border-color: var(--ok); color: var(--ok); }
 .mini-approve.is-on { border-color: var(--ok); background: var(--ok-soft); }
+.mini-approve.is-stale { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.mini-approve.is-stale span { color: var(--warn); font-weight: 700; }
+.mini-approve.is-stale:hover { border-color: var(--warn); color: var(--warn); }
 .mini-note:hover { border-color: var(--signal); color: var(--signal); }
 .mini-note b { font-family: var(--mono); font-size: 10px; color: var(--signal); }
 
@@ -958,6 +964,9 @@ button { font-family: inherit; cursor: pointer; }
 .approve:hover { border-color: var(--ok); }
 .approve.is-on { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .approve.is-on .check { border-color: var(--ok); background: var(--ok); color: var(--ink); }
+.approve.is-stale { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
+.approve.is-stale:hover { border-color: var(--warn); }
+.approve.is-stale .check { border-color: var(--warn); background: var(--warn); color: var(--ink); font-weight: 700; }
 .comment {
   font-family: var(--mono);
   font-size: 12px;

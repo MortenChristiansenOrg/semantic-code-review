@@ -80,7 +80,34 @@
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   }
-  const approved = (id) => Boolean(state.approvals[id]);
+  /* File approvals carry a fingerprint of the diff at approval time so we can
+     tell when a file has changed since it was approved (stale). Stage/node
+     approvals have no fingerprint and are always current once approved. Legacy
+     boolean approvals (older stored state) are trusted as approved. */
+  function hashStr(s) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+    return (h >>> 0).toString(16);
+  }
+  function fileFingerprint(entry) {
+    const f = entry.file;
+    return hashStr(JSON.stringify({
+      k: f.kind, b: !!f.binary, t: !!f.truncated,
+      lines: (f.lines || []).map((r) => [r.t, r.o, r.n, r.s])
+    }));
+  }
+  function fingerprintFor(id) {
+    const entry = fileById.get(id);
+    return entry ? fileFingerprint(entry) : null;
+  }
+  function approvalState(id) {
+    const rec = state.approvals[id];
+    if (!rec) return "none";
+    if (rec === true || rec.fp == null) return "approved";
+    return rec.fp === fingerprintFor(id) ? "approved" : "stale";
+  }
+  const approved = (id) => approvalState(id) === "approved";
+  const approvalStale = (id) => approvalState(id) === "stale";
   function elementNotes(id) {
     return state.comments.map((c, i) => ({ c, i })).filter((x) => x.c.id === id);
   }
@@ -248,7 +275,12 @@
 
   /* ---- approvals / comments UI ----------------------------------------- */
   function approveBtn(kind, id, size = "") {
-    const on = approved(id);
+    const st = approvalState(id);
+    if (st === "stale") {
+      return `<button class="approve ${size} is-stale" data-action="approve" data-id="${id}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
+        <span class="check">!</span>Re-approve</button>`;
+    }
+    const on = st === "approved";
     return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${on}">
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
@@ -350,12 +382,14 @@
     const cls = classificationFor(file, node.id);
     const { name } = splitPath(file.path);
     const dir = dirShort(splitPath(file.path).dir);
-    const isOn = approved(id);
+    const st = approvalState(id);
+    const isOn = st === "approved";
+    const isStale = st === "stale";
     const isActive = state.active === id;
     const threadCount = visibleThreadCount("file", id);
     const threadOpen = Boolean(state.openThreads[id]);
     return `<div class="frow-wrap ${threadOpen ? "thread-open" : ""}">
-      <div class="frow ${isOn ? "is-approved" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
+      <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="Inspect diff (click filename to select it)">
           <span class="kind k-${file.kind}">${kindGlyph(file.kind)}</span>
           <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong></span>
@@ -364,7 +398,7 @@
         </div>
         <div class="frow-act">
           ${threadCount ? `<button class="mini-thread ${threadOpen ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${threadOpen}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
-          <button class="mini-approve ${isOn ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isOn ? "Approved" : "Approve file"}"><span>${isOn ? "✓" : ""}</span></button>
+          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
           <button class="mini-note" data-action="comment" data-kind="file" data-id="${id}" type="button" title="Add note">✎</button>
         </div>
       </div>
@@ -992,7 +1026,9 @@
 
     if (a === "approve") {
       const id = btn.dataset.id;
-      state.approvals[id] = !approved(id);
+      const st = approvalState(id);
+      if (st === "approved") delete state.approvals[id];
+      else state.approvals[id] = { fp: fingerprintFor(id), at: Date.now() };
       persist(); render();
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
