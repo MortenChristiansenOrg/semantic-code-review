@@ -319,7 +319,7 @@
     return `<article class="tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
         <div class="tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          <span class="tnote-state">${sent ? "Sent" : "Draft"}</span>
+          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
           ${acts}
         </div>
         <p>${esc(c.body)}</p>
@@ -333,7 +333,7 @@
     const rows =
       arts.map((t) => renderArtifactThread(t, false)).join("") +
       locals.map(renderLocalNote).join("");
-    return `<div class="thread">${rows}
+    return `<div class="thread" data-thread="${id}">${rows}
       <button class="thread-add" data-action="comment" data-kind="${kind}" data-id="${id}" type="button">＋ Add note</button>
     </div>`;
   }
@@ -356,12 +356,12 @@
     const threadOpen = Boolean(state.openThreads[id]);
     return `<div class="frow-wrap ${threadOpen ? "thread-open" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
-        <button class="frow-open" data-action="open-file" data-id="${id}" type="button" title="Inspect diff">
+        <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="Inspect diff (click filename to select it)">
           <span class="kind k-${file.kind}">${kindGlyph(file.kind)}</span>
           <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong></span>
           ${classBadge(cls)}
           ${fileMetrics(file)}
-        </button>
+        </div>
         <div class="frow-act">
           ${threadCount ? `<button class="mini-thread ${threadOpen ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${threadOpen}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
           <button class="mini-approve ${isOn ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isOn ? "Approved" : "Approve file"}"><span>${isOn ? "✓" : ""}</span></button>
@@ -414,9 +414,72 @@
 
   /* ---- diff renderer (shared, big view) --------------------------------- */
   function fileViewMode(id) { return state.fileView[id] === "full" ? "full" : "hunk"; }
-  function drowHtml(r) {
+
+  /* ---- lightweight per-line syntax highlighting ------------------------- */
+  const HL_KEYWORDS = new Set(
+    ("abstract as async await base bool break byte case catch char checked class const continue " +
+     "decimal default delegate do double else enum event explicit extern false finally fixed float " +
+     "for foreach function get goto if implicit in int interface internal is let lock long namespace " +
+     "new null object operator out override params private protected public readonly record ref return " +
+     "sbyte sealed set short sizeof stackalloc static string struct switch this throw true try typeof " +
+     "uint ulong unchecked unsafe ushort using var virtual void volatile while yield await async " +
+     "export import extends implements instanceof of with from type keyof readonly never unknown any " +
+     "boolean number undefined def elif except lambda pass raise global nonlocal None True False and " +
+     "or not in").split(/\s+/),
+  );
+  const HL_HASH = new Set(["py", "rb", "sh", "bash", "yml", "yaml", "toml", "ps1", "r", "pl", "ini", "cfg"]);
+  function langFor(path) {
+    return String(path || "").split(".").pop().toLowerCase();
+  }
+  function highlightCode(src, lang) {
+    const s = String(src);
+    const n = s.length;
+    const hash = HL_HASH.has(lang);
+    const isIdStart = (c) => /[A-Za-z_$@#]/.test(c);
+    const isId = (c) => /[A-Za-z0-9_$]/.test(c);
+    let out = "";
+    let i = 0;
+    while (i < n) {
+      const c = s[i];
+      if (!hash && c === "/" && s[i + 1] === "/") { out += `<span class="tok-com">${esc(s.slice(i))}</span>`; break; }
+      if (hash && c === "#") { out += `<span class="tok-com">${esc(s.slice(i))}</span>`; break; }
+      if (c === "/" && s[i + 1] === "*") {
+        const end = s.indexOf("*/", i + 2);
+        const stop = end < 0 ? n : end + 2;
+        out += `<span class="tok-com">${esc(s.slice(i, stop))}</span>`; i = stop; continue;
+      }
+      if (c === '"' || c === "'" || c === "`") {
+        let j = i + 1;
+        while (j < n && s[j] !== c) { if (s[j] === "\\") j++; j++; }
+        j = Math.min(j + 1, n);
+        out += `<span class="tok-str">${esc(s.slice(i, j))}</span>`; i = j; continue;
+      }
+      if (/[0-9]/.test(c) && (i === 0 || !isId(s[i - 1]))) {
+        let j = i + 1;
+        while (j < n && /[0-9a-fA-FxXbBoO._]/.test(s[j])) j++;
+        out += `<span class="tok-num">${esc(s.slice(i, j))}</span>`; i = j; continue;
+      }
+      if (isIdStart(c)) {
+        let j = i + 1;
+        while (j < n && isId(s[j])) j++;
+        const word = s.slice(i, j);
+        out += HL_KEYWORDS.has(word) ? `<span class="tok-key">${esc(word)}</span>` : esc(word);
+        i = j; continue;
+      }
+      out += esc(c); i++;
+    }
+    return out || esc(" ");
+  }
+
+  function drowHtml(r, lang) {
     const sign = r.t === "add" ? "+" : r.t === "del" ? "−" : "";
-    return `<div class="drow d-${r.t}"><span class="ln">${r.o || ""}</span><span class="ln">${r.n || ""}</span><i>${sign}</i><code>${esc(r.s || " ")}</code></div>`;
+    const code = highlightCode(r.s || " ", lang);
+    return `<div class="drow d-${r.t}"><span class="ln">${r.o || ""}</span><span class="ln">${r.n || ""}</span><i>${sign}</i><code>${code}</code></div>`;
+  }
+  function newFileRowHtml(r, lang) {
+    const num = r.n || r.o || "";
+    const code = highlightCode(r.s || " ", lang);
+    return `<div class="drow d-newline"><span class="ln"></span><span class="ln">${num}</span><i></i><code>${code}</code></div>`;
   }
   function gapHtml(count) {
     return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} ⋯</code></div>`;
@@ -425,9 +488,15 @@
     if (file.binary) return `<div class="diff-empty">Binary file — not shown.</div>`;
     const lines = file.lines || [];
     if (!lines.length) return `<div class="diff-empty">No line changes recorded for this file.</div>`;
+    const lang = langFor(file.path);
     const out = [];
-    if (mode === "full") {
-      lines.forEach((r) => out.push(drowHtml(r)));
+    if (file.kind === "added") {
+      // Added file: content is identical in both views, so render the full file
+      // once as neutral lines (not an all-green wall) with a clear "new file" banner.
+      out.push(`<div class="drow d-newfile"><span class="ln"></span><span class="ln"></span><i>＋</i><code>New file — full contents</code></div>`);
+      lines.forEach((r) => out.push(newFileRowHtml(r, lang)));
+    } else if (mode === "full") {
+      lines.forEach((r) => out.push(drowHtml(r, lang)));
     } else {
       const CTX = 3;
       const n = lines.length;
@@ -439,7 +508,7 @@
       }
       let i = 0;
       while (i < n) {
-        if (keep[i]) { out.push(drowHtml(lines[i])); i++; }
+        if (keep[i]) { out.push(drowHtml(lines[i], lang)); i++; }
         else { let j = i; while (j < n && !keep[j]) j++; out.push(gapHtml(j - i)); i = j; }
       }
     }
@@ -467,7 +536,7 @@
         <span class="diff-stage">${esc(stage.title)}</span>
       </div>
       <div class="diff-actions">
-        ${viewToggle(id)}
+        ${file.kind === "added" ? "" : viewToggle(id)}
         ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
         ${approveBtn("file", id, "sm")}
         ${commentBtn("file", id)}
@@ -483,9 +552,10 @@
     </section>`;
   }
   function diffToolbar(entry) {
+    const added = entry.file.kind === "added";
     return `<header class="diff-bar">
-      <span class="diff-bar-hint">Inline diff</span>
-      ${viewToggle(entry.id)}
+      <span class="diff-bar-hint">${added ? "New file" : "Inline diff"}</span>
+      ${added ? "" : viewToggle(entry.id)}
     </header>`;
   }
 
@@ -510,7 +580,6 @@
     const totalFiles = data.stages.reduce((a, s) => a + s.files.length, 0);
     const totalNodes = data.stages.reduce((a, s) => a + s.nodes.length, 0);
     return `<section class="hero">
-      <span class="eyebrow">Semantic review · ${esc(data.reviewId)}</span>
       <h1>${esc(data.title)}</h1>
       <p class="hero-sum">${esc(data.summary)}</p>
       <div class="hero-line">
@@ -575,21 +644,20 @@
         </button>
         <div class="stage-head">
           <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button">
-            <span class="eyebrow">Stage ${i + 1} · ${i === 0 ? "foundation" : `stacked on ${String(i).padStart(2, "0")}`}</span>
             <h2>${esc(stage.title)}</h2>
           </button>
           <p class="stage-sum">${esc(stage.summary)}</p>
+          <p class="rationale"><span class="rationale-label">Why this stage</span>${esc(stage.rationale)}</p>
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
             <span>${filesDone}/${stage.files.length} files</span>
-            ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label">AC</span>${acIds.map(acChip).join("")}</span>` : ""}
+            ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
         </div>
         <div class="stage-approve">${approveBtn("stage", stage.id, "sm")}${noteCluster("stage", stage.id)}</div>
       </div>
       ${threadInline(stage.id, "stage")}
       <div class="stage-body">
-        <p class="rationale"><span class="eyebrow">Why this stage</span>${esc(stage.rationale)}</p>
         ${reasoningSummary(stage)}
         <div class="nodes">${stage.nodes.map((n, ni) => stageNode(stage, n, ni, i)).join("")}</div>
       </div>
@@ -695,17 +763,18 @@
     const noteCard = ({ c, i }) => {
       const sent = Boolean(c.exported);
       const mode = c.mode || "personal";
+      const lbl = noteTargetLabel(c);
       return `<article class="note mode-${mode} ${sent ? "is-sent" : ""}">
         <header>
           <span class="note-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          <span class="note-state">${sent ? "Sent" : "Draft"}</span>
+          ${mode === "feedback" ? `<span class="note-state">${sent ? "Sent" : "Draft"}</span>` : ""}
           <span class="note-kind">${esc(c.kind)}</span>
           ${sent ? "" : `<div class="note-act">
             <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
             <button class="note-del" data-action="del-note" data-index="${i}" aria-label="Delete" type="button">×</button>
           </div>`}
         </header>
-        <strong>${esc(labelFor(c.kind, c.id))}</strong>
+        <strong title="${esc(lbl.title)}">${esc(lbl.text)}</strong>
         <p>${esc(c.body)}</p>
       </article>`;
     };
@@ -733,7 +802,7 @@
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
     const foot = `<div class="notes-foot">
         <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
-          ${working ? "Sending…" : `Send feedback to artifact${pending ? ` (${pending})` : ""}`}
+          ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
         </button>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
           : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Reload to see agent replies."}</p>`}
@@ -753,6 +822,15 @@
       if (n) return n.title;
     }
     return id;
+  }
+  // Notes list: show only the filename, keep the full project-relative path on hover.
+  function noteTargetLabel(c) {
+    if (c.kind === "file") {
+      const full = fileById.get(c.id)?.file.path || c.id;
+      return { text: splitPath(full).name, title: full };
+    }
+    const t = labelFor(c.kind, c.id);
+    return { text: t, title: t };
   }
   function dialog() {
     return `<dialog class="note-dialog"><form method="dialog" data-note-form>
@@ -917,21 +995,22 @@
       state.approvals[id] = !approved(id);
       persist(); render();
     } else if (a === "toggle-stage") {
-      const id = btn.dataset.id;
-      state.openStages[id] = !state.openStages[id];
-      persist(); render();
+      animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
-      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); render();
+      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); applyPanelState();
     } else if (a === "toggle-notes") {
-      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); render();
+      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); applyPanelState();
     } else if (a === "close-panels") {
-      state.coverageOpen = false; state.notesOpen = false; persist(); render();
+      state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState();
     } else if (a === "comment") {
       openComment(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
-      state.openThreads[id] = !state.openThreads[id];
-      persist(); render();
+      const opening = !state.openThreads[id];
+      state.openThreads[id] = opening;
+      persist();
+      if (opening) { render(); }
+      else { collapseThenRender(app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "set-view") {
@@ -943,7 +1022,7 @@
       if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
     } else if (a === "open-file") {
       toggleCinema(btn.dataset.id);
-    } else if (a === "cinema-close") { state.active = null; persist(); render(); }
+    } else if (a === "cinema-close") { closeCinema(); }
     else if (a === "export-feedback") {
       exportFeedback();
     }
@@ -996,12 +1075,87 @@
     render();
   }
 
+  const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
+  const motionReduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // Run `cb` once when the animation ends, with a safety timeout so a stuck or
+  // non-resolving `finished` promise can never leave the UI mid-animation.
+  function afterAnim(anim, ms, cb) {
+    let done = false;
+    const run = () => { if (done) return; done = true; cb(); };
+    anim.finished.catch(() => {}).then(run);
+    setTimeout(run, (ms || 0) + 80);
+  }
+
+  // Slide the side panels via CSS transition on the persistent DOM (a full
+  // re-render would recreate them already-open and skip the transition).
+  function applyPanelState() {
+    forceHidePop();
+    const cov = app.querySelector(".side.coverage");
+    const notes = app.querySelector(".side.notes");
+    const scrim = app.querySelector(".scrim");
+    const covBtn = app.querySelector('.tb-btn[data-action="toggle-coverage"]');
+    const notesBtn = app.querySelector('.tb-btn[data-action="toggle-notes"]');
+    const setSide = (el, open) => {
+      if (!el) return;
+      el.classList.toggle("is-open", open);
+      el.setAttribute("aria-hidden", String(!open));
+      if (open) el.removeAttribute("inert"); else el.setAttribute("inert", "");
+    };
+    setSide(cov, state.coverageOpen);
+    setSide(notes, state.notesOpen);
+    if (scrim) scrim.classList.toggle("is-on", state.coverageOpen || state.notesOpen);
+    if (covBtn) { covBtn.classList.toggle("is-on", state.coverageOpen); covBtn.setAttribute("aria-expanded", String(state.coverageOpen)); }
+    if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
+  }
+
+  // Animate a stage body open/closed in place so both directions transition.
+  function animateStageToggle(id) {
+    const open = !state.openStages[id];
+    state.openStages[id] = open;
+    persist();
+    const stageEl = app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`);
+    const body = stageEl && stageEl.querySelector(".stage-body");
+    if (!stageEl) { render(); return; }
+    stageEl.querySelectorAll('[data-action="toggle-stage"]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
+    if (motionReduced() || !body) { stageEl.classList.toggle("is-open", open); return; }
+    const start = body.getBoundingClientRect().height;
+    stageEl.classList.toggle("is-open", open);
+    const end = body.getBoundingClientRect().height;
+    body.style.overflow = "hidden";
+    const anim = body.animate([{ height: `${start}px` }, { height: `${end}px` }],
+      { duration: open ? 300 : 230, easing: ANIM_EASE });
+    afterAnim(anim, open ? 300 : 230, () => { body.style.removeProperty("overflow"); });
+  }
+
+  // Collapse an element to zero height, then re-render (used for closing
+  // element-scoped note threads and the inline diff).
+  function collapseThenRender(el, dur) {
+    if (!el || motionReduced()) { render(); return; }
+    const start = el.getBoundingClientRect().height;
+    el.style.overflow = "hidden";
+    const anim = el.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
+      { duration: dur || 200, easing: ANIM_EASE });
+    afterAnim(anim, dur || 200, () => render());
+  }
+
   function toggleCinema(id) {
-    state.active = state.active === id ? null : id;
-    persist(); render();
-    if (state.active) requestAnimationFrame(() => {
+    // Let the user select the filename text without toggling the diff.
+    if (window.getSelection && String(window.getSelection()).trim().length) return;
+    if (state.active === id) { closeCinema(); return; }
+    state.active = id; persist(); render();
+    requestAnimationFrame(() => {
       document.querySelector(`.frow[data-file="${cssEsc(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
+  }
+  function closeCinema() {
+    const holder = app.querySelector(".cinema-diff");
+    state.active = null; persist();
+    if (!holder || motionReduced()) { render(); return; }
+    const start = holder.getBoundingClientRect().height;
+    holder.style.overflow = "hidden";
+    const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
+      { duration: 210, easing: ANIM_EASE });
+    afterAnim(anim, 210, () => render());
   }
 
   function openComment(kind, id, stageId) {
@@ -1059,9 +1213,12 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
+      e.preventDefault(); toggleCinema(e.target.dataset.id); return;
+    }
     if (e.key === "Escape") {
-      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = state.notesOpen = false; persist(); render(); return; }
-      if (state.active) { state.active = null; persist(); render(); return; }
+      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
+      if (state.active) { closeCinema(); return; }
     }
   });
 

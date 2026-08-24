@@ -271,7 +271,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .stage-bar {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1fr auto;
   gap: 18px 20px;
   align-items: start;
 }
@@ -295,7 +295,7 @@ button { font-family: inherit; cursor: pointer; }
 .stop.is-approved { border-color: var(--ok); background: linear-gradient(var(--ok-soft), var(--ok-soft)), var(--panel); color: var(--ok); }
 .stage-bar { grid-column: 1 / -1; }
 
-.stage-head { grid-column: 2; min-width: 0; }
+.stage-head { grid-column: 1; min-width: 0; }
 .stage-title { display: block; text-align: left; background: none; border: 0; padding: 0; color: inherit; }
 .stage-title h2 { font-size: 24px; font-weight: 600; margin-top: 4px; transition: color .2s var(--ease); }
 .stage-title:hover h2 { color: var(--signal); }
@@ -311,7 +311,7 @@ button { font-family: inherit; cursor: pointer; }
   letter-spacing: .03em;
 }
 .sm-ac { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.sm-ac-label { color: var(--faint); }
+.sm-ac-label { color: var(--signal); font-size: 13px; line-height: 1; }
 .sm-ac .ac-chip {
   display: inline-flex;
   align-items: center;
@@ -329,34 +329,34 @@ button { font-family: inherit; cursor: pointer; }
   transition: border-color .16s var(--ease), background .16s var(--ease), color .16s var(--ease);
 }
 .sm-ac .ac-chip:hover, .sm-ac .ac-chip:focus-visible { border-color: var(--signal-soft); background: var(--signal-soft); }
-.stage-approve { grid-column: 3; display: flex; gap: 8px; align-items: center; }
+.stage-approve { grid-column: 2; display: flex; gap: 8px; align-items: center; }
 
 .stage-body {
   grid-column: 1 / -1;
   overflow: hidden;
-  max-height: 0;
+  height: 0;
   opacity: 0;
   transform: translateY(-4px);
-  transition: max-height .4s var(--ease), opacity .3s var(--ease), transform .3s var(--ease), margin .3s var(--ease);
+  transition: opacity .3s var(--ease), transform .3s var(--ease);
   margin-top: 0;
 }
 .stage.is-open .stage-body {
-  max-height: 20000px;
+  height: auto;
   opacity: 1;
   transform: none;
   margin-top: 20px;
 }
 .rationale {
   color: var(--muted);
-  font-size: 14px;
-  margin: 0 0 18px;
-  padding: 12px 16px 13px;
-  border-left: 2px solid var(--signal);
+  font-size: 13.5px;
+  margin: 12px 0 2px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--line);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: linear-gradient(90deg, var(--signal-soft), rgba(255, 106, 69, 0) 62%);
+  background: var(--ink-2);
   max-width: 74ch;
 }
-.rationale .eyebrow { display: block; margin-bottom: 5px; color: var(--signal-2); }
+.rationale-label { display: block; margin-bottom: 4px; color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 
 .stage.is-approved .stop-num,
 .node.is-approved .node-ix { }
@@ -867,7 +867,10 @@ button { font-family: inherit; cursor: pointer; }
   color: inherit;
   text-align: left;
   font-family: var(--mono);
+  cursor: pointer;
+  user-select: none;
 }
+.frow-open:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 6px; }
 .kind {
   flex: none;
   width: 18px;
@@ -884,7 +887,7 @@ button { font-family: inherit; cursor: pointer; }
 .k-deleted { color: var(--del); background: var(--del-bg); border: 1px solid var(--del-ln); }
 .fp { min-width: 0; display: flex; align-items: baseline; overflow: hidden; }
 .fp small { color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fp strong { color: var(--text); font-weight: 500; font-size: 12.5px; white-space: nowrap; flex: none; }
+.fp strong { color: var(--text); font-weight: 500; font-size: 12.5px; white-space: nowrap; flex: none; user-select: text; cursor: text; }
 .cls {
   flex: none;
   font-family: var(--mono);
@@ -1052,13 +1055,22 @@ button { font-family: inherit; cursor: pointer; }
 .drow i { text-align: center; font-style: normal; color: var(--faint); user-select: none; }
 .drow code { white-space: pre; padding-right: 24px; color: var(--text); }
 .d-add { background: var(--add-bg); }
-.d-add i, .d-add code { color: var(--add); }
+.d-add i { color: var(--add); }
 .d-del { background: var(--del-bg); }
-.d-del i, .d-del code { color: var(--del); }
+.d-del i { color: var(--del); }
 .d-gap { background: rgba(110, 168, 255, .045); }
 .d-gap code { color: var(--faint); font-style: italic; }
 .d-gap .ln { border-right-color: transparent; }
 .d-cut code { color: var(--faint); font-style: italic; }
+/* added file: full contents shown once, neutral rows + a clear banner */
+.d-newfile { background: var(--add-bg); }
+.d-newfile i { color: var(--add); }
+.d-newfile code { color: var(--add); font-style: italic; }
+/* per-line syntax highlighting tokens */
+.drow code .tok-key { color: #7aa2f7; }
+.drow code .tok-str { color: #9ece6a; }
+.drow code .tok-num { color: #e0af68; }
+.drow code .tok-com { color: var(--faint); font-style: italic; }
 .diff-empty { padding: 50px; text-align: center; color: var(--faint); font-family: var(--mono); font-size: 12.5px; }
 
 /* ---- story end -------------------------------------------------------- */
@@ -1118,7 +1130,7 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--display); font-size: 14px; font-weight: 600; color: var(--text);
   padding-bottom: 8px; border-bottom: 1px solid var(--line-soft);
 }
-.note-node { display: grid; gap: 10px; padding-left: 10px; border-left: 2px solid var(--line-soft); }
+.note-node { display: grid; gap: 10px; }
 .note-node-h {
   font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .04em;
   color: var(--muted); margin: 2px 0 0;
@@ -1302,8 +1314,16 @@ button { font-family: inherit; cursor: pointer; }
 }
 .cinema-diff {
   margin: 0 0 16px;
+  min-width: 0;
+  max-width: 100%;
   animation: cinema-in .32s var(--ease);
 }
+/* Keep the inline diff from stretching its grid/flex ancestors: without an
+   explicit min-width:0 each intermediate item defaults to min-width:auto and
+   grows to the widest code line, so the whole page overflows instead of the
+   diff scrolling internally. */
+.stage-body, .nodes, .node, .node-body, .payload, .fgroups, .fgroup, .flist,
+.frow-wrap, .cinema-diff .diff-panel { min-width: 0; max-width: 100%; }
 @keyframes cinema-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 .cinema-diff .diff-panel { box-shadow: var(--shadow); border-radius: 0 0 var(--radius) var(--radius); }
 .cinema-diff .diff-scroll { max-height: min(70vh, 680px); }
