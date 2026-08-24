@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsx src/build-skill.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run build && node --test --test-concurrency=1 tests/cli-contract.test.mjs tests/semantic-flow/workflow-helper.test.mjs tests/semantic-review/artifact-commands.test.mjs tests/semantic-review/history-commands.test.mjs tests/semantic-review/publication-commands.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs"
+    "test": "npm run typecheck && npm run build && node --test --test-concurrency=1 tests/cli-contract.test.mjs tests/semantic-flow/workflow-helper.test.mjs tests/semantic-review/artifact-commands.test.mjs tests/semantic-review/history-commands.test.mjs tests/semantic-review/publication-commands.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs tests/semantic-view/export-planning.test.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",

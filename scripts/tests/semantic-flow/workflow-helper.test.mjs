@@ -53,6 +53,7 @@ test("status reports coverage, evidence, feedback, and validation", (t) => {
   assert.deepEqual(status.criteria.missing, ["story#works"]);
   assert.deepEqual(status.evidence, {});
   assert.equal(status.feedback.exists, true);
+  assert.deepEqual(status.feedback.threads, {});
   assert.equal(status.validation.artifact.passed, true);
   assert.equal(status.validation.feedback.passed, true);
 

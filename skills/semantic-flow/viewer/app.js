@@ -49,6 +49,7 @@
   /* ---- state ------------------------------------------------------------ */
   let state = load();
   let commentTarget = null;
+  let editIndex = null;
   let exportState = { phase: "idle", message: "" };
 
   function defaults() {
@@ -80,9 +81,53 @@
       .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   }
   const approved = (id) => Boolean(state.approvals[id]);
-  const commentCount = (id) => state.comments.filter((c) => c.id === id).length;
   function elementNotes(id) {
     return state.comments.map((c, i) => ({ c, i })).filter((x) => x.c.id === id);
+  }
+
+  /* ---- artifact feedback threads (from window.SEMANTIC_REVIEW.feedback) -- */
+  const artifactThreads = Array.isArray(data.feedback) ? data.feedback : [];
+  function fileElementId(stageId, p) { return `f:${stageId}:${p}`; }
+  function artifactThreadById(tid) {
+    return tid ? artifactThreads.find((t) => t.id === tid) : undefined;
+  }
+  function artifactThreadsForElement(kind, id) {
+    return artifactThreads.filter((t) => {
+      const tk = t.target && t.target.kind;
+      if (kind === "stage") return tk === "stage" && t.target.stageId === id;
+      if (kind === "file")
+        return tk === "file" && fileElementId(t.target.stageId, t.target.path) === id;
+      return false;
+    });
+  }
+  // Local notes still worth showing: drafts, plus exported notes whose artifact
+  // thread has not been reloaded yet. Once the artifact thread is present the
+  // local marker is hidden so a sent note is never rendered twice.
+  function localVisibleForElement(id) {
+    return elementNotes(id).filter(
+      ({ c }) => !c.exported || !artifactThreadById(c.threadId),
+    );
+  }
+  function visibleThreadCount(kind, id) {
+    return (
+      artifactThreadsForElement(kind, id).length +
+      localVisibleForElement(id).length
+    );
+  }
+  function visibleLocalNotes() {
+    return state.comments
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => !c.exported || !artifactThreadById(c.threadId));
+  }
+  function fmtTime(v) {
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
   }
   function acceptanceStatus(acId) {
     const ref = `#${acId}`;
@@ -208,35 +253,86 @@
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
   function commentBtn(kind, id, stageId) {
-    return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Note</button>`;
+    return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
   }
-  function notesToggle(id) {
-    const notes = elementNotes(id);
-    if (!notes.length) return "";
+  function notesToggle(kind, id) {
+    const count = visibleThreadCount(kind, id);
+    if (!count) return "";
     const open = Boolean(state.openThreads[id]);
-    const openCount = notes.filter((x) => !x.c.resolved).length;
-    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${notes.length} note${notes.length === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
-      ${bubble()}<b>${notes.length}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
+    return `<button class="notes-toggle ${open ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${count} thread${count === 1 ? "" : "s"}">
+      ${bubble()}<b>${count}</b></button>`;
   }
   function noteCluster(kind, id, stageId) {
-    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(id)}</div>`;
+    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id)}</div>`;
+  }
+  // An exported feedback thread: an immutable reviewer <-> agent conversation.
+  function renderArtifactThread(t, withLabel) {
+    const msgs = (t.comments || [])
+      .map((cm) => {
+        const agent = cm.author === "assistant";
+        const stamp = fmtTime(cm.createdAt);
+        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
+          <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
+          <p>${esc(cm.body)}</p>
+        </div>`;
+      })
+      .join("");
+    const head = String((t.target && t.target.stageHead) || "").slice(0, 9);
+    const stale = t.anchorStale
+      ? `<p class="tthread-stale">Anchor ${esc(head)} was rewritten after this thread — context may have moved.</p>`
+      : "";
+    const res =
+      t.resolution && t.resolution.previousHead && t.resolution.rewrittenHead
+        ? `<p class="tthread-rewrite">${esc(t.resolution.previousHead.slice(0, 9))} → ${esc(t.resolution.rewrittenHead.slice(0, 9))}</p>`
+        : "";
+    const hint =
+      t.status === "resolved"
+        ? '<p class="tthread-hint">Approve resolved threads in the review workspace.</p>'
+        : "";
+    const label =
+      withLabel && t.target && t.target.label
+        ? `<strong class="tthread-label">${esc(t.target.label)}</strong>`
+        : "";
+    return `<article class="tthread status-${t.status}">
+      <div class="tthread-h">
+        <span class="tthread-kind">${esc((t.target && t.target.kind) || "thread")}</span>
+        <span class="tthread-status s-${t.status}">${esc(t.status)}</span>
+      </div>
+      ${label}
+      ${stale}
+      <div class="tthread-msgs">${msgs}</div>
+      ${res}
+      ${hint}
+    </article>`;
+  }
+  // A browser-local note. Drafts can be edited/deleted; a sent note awaiting its
+  // artifact thread is shown read-only.
+  function renderLocalNote({ c, i }) {
+    const sent = Boolean(c.exported);
+    const mode = c.mode || "personal";
+    const acts = sent
+      ? ""
+      : `<div class="tnote-act">
+          <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
+          <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
+        </div>`;
+    return `<article class="tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
+        <div class="tnote-h">
+          <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
+          <span class="tnote-state">${sent ? "Sent" : "Draft"}</span>
+          ${acts}
+        </div>
+        <p>${esc(c.body)}</p>
+      </article>`;
   }
   function threadInline(id, kind) {
     if (!state.openThreads[id]) return "";
-    const notes = elementNotes(id);
-    if (!notes.length) return "";
-    const rows = notes.map(({ c, i }) => `
-      <article class="tnote mode-${c.mode || "personal"} ${c.resolved ? "is-resolved" : ""}">
-        <div class="tnote-h">
-          <span class="tnote-mode">${(c.mode || "personal") === "feedback" ? "Feedback" : "Personal"}</span>
-          ${c.resolved ? '<span class="tnote-res">Resolved</span>' : ""}
-          <div class="tnote-act">
-            <button data-action="resolve-note" data-index="${i}" type="button">${c.resolved ? "Reopen" : "Resolve"}</button>
-            <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
-          </div>
-        </div>
-        <p>${esc(c.body)}</p>
-      </article>`).join("");
+    const arts = artifactThreadsForElement(kind, id);
+    const locals = localVisibleForElement(id);
+    if (!arts.length && !locals.length) return "";
+    const rows =
+      arts.map((t) => renderArtifactThread(t, false)).join("") +
+      locals.map(renderLocalNote).join("");
     return `<div class="thread">${rows}
       <button class="thread-add" data-action="comment" data-kind="${kind}" data-id="${id}" type="button">＋ Add note</button>
     </div>`;
@@ -256,7 +352,7 @@
     const dir = dirShort(splitPath(file.path).dir);
     const isOn = approved(id);
     const isActive = state.active === id;
-    const notes = elementNotes(id);
+    const threadCount = visibleThreadCount("file", id);
     const threadOpen = Boolean(state.openThreads[id]);
     return `<div class="frow-wrap ${threadOpen ? "thread-open" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
@@ -267,7 +363,7 @@
           ${fileMetrics(file)}
         </button>
         <div class="frow-act">
-          ${notes.length ? `<button class="mini-thread ${threadOpen ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${threadOpen}" title="${notes.length} note${notes.length === 1 ? "" : "s"}">${bubble()}<b>${notes.length}</b></button>` : ""}
+          ${threadCount ? `<button class="mini-thread ${threadOpen ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${threadOpen}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
           <button class="mini-approve ${isOn ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isOn ? "Approved" : "Approve file"}"><span>${isOn ? "✓" : ""}</span></button>
           <button class="mini-note" data-action="comment" data-kind="file" data-id="${id}" type="button" title="Add note">✎</button>
         </div>
@@ -403,7 +499,7 @@
         </div>
         <div class="tb-actions">
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
-          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${state.comments.length}</b></button>
+          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${artifactThreads.length + visibleLocalNotes().length}</b></button>
         </div>
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
@@ -569,9 +665,9 @@
     const label = d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
     return { key, label };
   }
-  function groupedNotes() {
+  function groupedNotes(entries) {
     const stageMap = new Map();
-    state.comments.forEach((c, i) => {
+    entries.forEach(({ c, i }) => {
       const g = noteGroupKey(c);
       const d = noteDayKey(c);
       if (!stageMap.has(g.si)) stageMap.set(g.si, { si: g.si, title: g.stageTitle, nodes: new Map() });
@@ -593,31 +689,45 @@
   function pendingFeedback() {
     return state.comments
       .map((c, i) => ({ c, i }))
-      .filter(({ c }) => (c.mode === "feedback") && !c.resolved && !c.exported);
+      .filter(({ c }) => c.mode === "feedback" && !c.exported);
   }
   function notesPanel() {
-    const noteCard = ({ c, i }) => `<article class="note mode-${c.mode || "personal"} ${c.resolved ? "is-resolved" : ""}">
+    const noteCard = ({ c, i }) => {
+      const sent = Boolean(c.exported);
+      const mode = c.mode || "personal";
+      return `<article class="note mode-${mode} ${sent ? "is-sent" : ""}">
         <header>
-          <span class="note-mode">${(c.mode || "personal") === "feedback" ? "Feedback" : "Personal"}</span>
-          ${c.exported ? '<span class="note-sent" title="Sent to the semantic-flow artifact">Sent</span>' : ""}
+          <span class="note-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
+          <span class="note-state">${sent ? "Sent" : "Draft"}</span>
           <span class="note-kind">${esc(c.kind)}</span>
-          <div class="note-act">
-            <button data-action="resolve-note" data-index="${i}" type="button">${c.resolved ? "Reopen" : "Resolve"}</button>
+          ${sent ? "" : `<div class="note-act">
+            <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
             <button class="note-del" data-action="del-note" data-index="${i}" aria-label="Delete" type="button">×</button>
-          </div>
+          </div>`}
         </header>
         <strong>${esc(labelFor(c.kind, c.id))}</strong>
         <p>${esc(c.body)}</p>
       </article>`;
-    const body = state.comments.length
-      ? groupedNotes().map((st) => `<section class="note-stage">
+    };
+    const localEntries = visibleLocalNotes();
+    const convos = artifactThreads.length
+      ? `<section class="note-convos">
+          <h3 class="note-stage-h">Feedback conversations</h3>
+          ${artifactThreads.map((t) => renderArtifactThread(t, true)).join("")}
+        </section>`
+      : "";
+    const localBody = localEntries.length
+      ? groupedNotes(localEntries).map((st) => `<section class="note-stage">
           <h3 class="note-stage-h">${esc(st.title)}</h3>
           ${st.nodesArr.map((nd) => `<div class="note-node">
             <h4 class="note-node-h">${esc(nd.title)}</h4>
             ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div>${day.items.map(noteCard).join("")}`).join("")}
           </div>`).join("")}
         </section>`).join("")
-      : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`;
+      : (artifactThreads.length
+          ? `<div class="notes-empty small"><small>No local drafts. Leave a note on any stage, step, or file.</small></div>`
+          : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
+    const body = `${convos}${localBody}`;
     const pending = pendingFeedback().length;
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
@@ -626,7 +736,7 @@
           ${working ? "Sending…" : `Send feedback to artifact${pending ? ` (${pending})` : ""}`}
         </button>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are written to the semantic-flow artifact so your agent can address them." : "Only unsent “Feedback” notes are exported. Personal notes stay local."}</p>`}
+          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Reload to see agent replies."}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -822,14 +932,15 @@
       const id = btn.dataset.id;
       state.openThreads[id] = !state.openThreads[id];
       persist(); render();
-    } else if (a === "resolve-note") {
-      const c = state.comments[Number(btn.dataset.index)];
-      if (c) { c.resolved = !c.resolved; persist(); render(); }
+    } else if (a === "edit-note") {
+      openNoteEdit(Number(btn.dataset.index));
     } else if (a === "set-view") {
       state.fileView[btn.dataset.id] = btn.dataset.mode;
       persist(); render();
     } else if (a === "del-note") {
-      state.comments.splice(Number(btn.dataset.index), 1); persist(); render();
+      const idx = Number(btn.dataset.index);
+      const c = state.comments[idx];
+      if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
     } else if (a === "open-file") {
       toggleCinema(btn.dataset.id);
     } else if (a === "cinema-close") { state.active = null; persist(); render(); }
@@ -857,9 +968,14 @@
       try { out = await res.json(); } catch { /* non-JSON error body */ }
       if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
       const byRef = new Map(pending.map(({ c, i }) => [i, c]));
-      (out.exported || []).forEach((ref) => {
+      (out.exported || []).forEach((entry) => {
+        const ref = typeof entry === "number" ? entry : entry && entry.ref;
         const note = byRef.get(ref);
-        if (note) note.exported = true;
+        if (note) {
+          note.exported = true;
+          if (entry && entry.threadId) note.threadId = entry.threadId;
+          if (out.batchId) note.batchId = out.batchId;
+        }
       });
       persist();
       const n = (out.exported || []).length;
@@ -871,7 +987,7 @@
       });
       exportState = {
         phase: "done",
-        message: `Sent ${n} feedback note${n === 1 ? "" : "s"} to the artifact${skipped.length ? `, ${skipped.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent to address them.`,
+        message: `Sent ${n} feedback thread${n === 1 ? "" : "s"} to the artifact${skipped.length ? `, ${skipped.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent, then reload to see replies.`,
         skips
       };
     } catch (err) {
@@ -889,6 +1005,7 @@
   }
 
   function openComment(kind, id, stageId) {
+    editIndex = null;
     commentTarget = { kind, id };
     if (kind === "node" && stageId) commentTarget.stageId = stageId;
     const d = app.querySelector(".note-dialog");
@@ -902,19 +1019,41 @@
     d.querySelector("textarea").focus();
   }
 
+  // Edit a browser-local draft note in place. Exported notes are immutable.
+  function openNoteEdit(index) {
+    const c = state.comments[index];
+    if (!c || c.exported) return;
+    editIndex = index;
+    commentTarget = null;
+    const d = app.querySelector(".note-dialog");
+    d.querySelector("#nd-kind").textContent = "Edit note";
+    d.querySelector("#nd-target").textContent = labelFor(c.kind, c.id);
+    d.querySelector("textarea").value = c.body;
+    const radio = d.querySelector(`input[name="nd-mode"][value="${c.mode || "personal"}"]`);
+    if (radio) radio.checked = true;
+    d.showModal();
+    d.querySelector("textarea").focus();
+  }
+
   document.addEventListener("submit", (e) => {
     if (!e.target.matches("[data-note-form]")) return;
     e.preventDefault();
-    if (e.submitter?.value === "save" && commentTarget) {
+    if (e.submitter?.value === "save") {
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nd-mode"]:checked')?.value || "personal";
       if (body) {
-        state.comments.push({ ...commentTarget, body, mode, resolved: false, createdAt: Date.now() });
+        if (editIndex != null) {
+          const c = state.comments[editIndex];
+          if (c && !c.exported) { c.body = body; c.mode = mode; }
+        } else if (commentTarget) {
+          state.comments.push({ ...commentTarget, body, mode, createdAt: Date.now() });
+        }
         state.lastNoteMode = mode;
         persist();
       }
     }
     commentTarget = null;
+    editIndex = null;
     e.target.closest("dialog").close();
     render();
   });

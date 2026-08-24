@@ -257,9 +257,10 @@ It neither contacts a remote nor creates hosted reviews.
 
 ## 7. Submit feedback
 
-In **Review queue**, create a batch, add comments, and submit it. Submission
-freezes the assigned stage head. This immutable snapshot lets the UI detect a
-stale anchor after restacking.
+In **Review queue**, create a batch and add notes containing change
+instructions or questions. Each note opens a draft thread and can be edited or
+deleted. Submission freezes its user comments and assigned stage head, which
+lets the UI detect a stale anchor after restacking.
 
 ## 8. Edit a lower stage and restack
 
@@ -302,13 +303,14 @@ Get work grouped by stage:
 <review-feedback> next --json
 ```
 
-After restacking, resolve each item with the submission snapshot and current
-head:
+After restacking, resolve each change-request thread with an assistant
+follow-up, the submission snapshot, and the current head:
 
 ```json
 {
-  "id": "<feedback-id>",
-  "summary": "Updated the cancellation rule.",
+  "id": "<thread-id>",
+  "commentId": "<assistant-comment-id>",
+  "body": "Updated the cancellation rule.",
   "stage": "add-cancellation-policy",
   "previousHead": "<submitted-head>",
   "rewrittenHead": "<current-head>"
@@ -316,8 +318,12 @@ head:
 ```
 
 ```text
-<review-feedback> comment resolve --input <resolution.json>
+<review-feedback> thread resolve --input <resolution.json>
 ```
+
+For a question that requires no code change, provide only `id`, `commentId`,
+and the answer in `body`. The assistant comment becomes the visible follow-up
+in the same thread.
 
 If the stage changes again, use `resolution rebind` with
 `--previous-head` and `--rewritten-head`.

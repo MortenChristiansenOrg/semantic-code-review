@@ -424,6 +424,44 @@ test("rejects cross-origin and non-JSON mutations", async () => {
   }
 });
 
+test("validates threaded feedback mutation requests", async () => {
+  const server = await startServer({ repositoryRoot, port: 0 });
+  try {
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const missingTarget = await postJson(`${baseUrl}/api/feedback/threads`, {
+      batchId: "review-batch",
+      body: "Needs a target.",
+    });
+    const missingTargetBody = await missingTarget.json();
+    assert.equal(missingTarget.status, 400);
+    assert.equal(missingTargetBody.error.code, "invalid-request");
+
+    const missingBatch = await postJson(`${baseUrl}/api/feedback/threads`, {
+      body: "No batch id.",
+      target: { kind: "requirement", label: "Requirement" },
+    });
+    assert.equal(missingBatch.status, 400);
+
+    const emptyComment = await fetch(
+      `${baseUrl}/api/feedback/threads/thread-one/comments/comment-one`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body: "   " }),
+      },
+    );
+    const emptyCommentBody = await emptyComment.json();
+    assert.equal(emptyComment.status, 400);
+    assert.equal(emptyCommentBody.error.code, "invalid-request");
+  } finally {
+    await new Promise((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("serves and mutates schema-validated feedback state", async () => {
   const feedbackRoot = path.join(
     repositoryRoot,
@@ -463,7 +501,7 @@ test("serves and mutates schema-validated feedback state", async () => {
     assert.equal(batch.status, "draft");
 
     const criterionResponse = await postJson(
-      `${baseUrl}/api/feedback/comments`,
+      `${baseUrl}/api/feedback/threads`,
       {
         batchId: batch.id,
         body: "Clarify this criterion.",
@@ -477,15 +515,15 @@ test("serves and mutates schema-validated feedback state", async () => {
       },
     );
     const criterionState = await criterionResponse.json();
-    const criterionItem = criterionState.batches
+    const criterionThread = criterionState.batches
       .find((candidate) => candidate.id === batch.id)
-      .feedbackItems.at(-1);
+      .feedbackThreads.at(-1);
     assert.equal(criterionResponse.status, 201);
-    assert.equal(
-      criterionItem.assignedStageId,
-      stage.id,
-    );
-    await fetch(`${baseUrl}/api/feedback/items/${criterionItem.id}`, {
+    assert.equal(criterionThread.status, "draft");
+    assert.equal(criterionThread.assignedStageId, stage.id);
+    assert.equal(criterionThread.comments.length, 1);
+    assert.equal(criterionThread.comments[0].author, "user");
+    await fetch(`${baseUrl}/api/feedback/threads/${criterionThread.id}`, {
       method: "DELETE",
       headers: {
         "content-type": "application/json",
@@ -493,7 +531,7 @@ test("serves and mutates schema-validated feedback state", async () => {
     });
 
     const commentResponse = await postJson(
-      `${baseUrl}/api/feedback/comments`,
+      `${baseUrl}/api/feedback/threads`,
       {
         batchId: batch.id,
         body: "Clarify the lifecycle decision.",
@@ -515,12 +553,14 @@ test("serves and mutates schema-validated feedback state", async () => {
     const updatedBatch = commentState.batches.find(
       (candidate) => candidate.id === batch.id,
     );
-    assert.equal(updatedBatch.feedbackItems.length, 1);
-    assert.equal(updatedBatch.feedbackItems[0].status, "draft");
+    assert.equal(updatedBatch.feedbackThreads.length, 1);
+    assert.equal(updatedBatch.feedbackThreads[0].status, "draft");
 
-    const item = updatedBatch.feedbackItems[0];
+    const thread = updatedBatch.feedbackThreads[0];
+    const openingComment = thread.comments[0];
+    assert.equal(openingComment.author, "user");
     const editResponse = await fetch(
-      `${baseUrl}/api/feedback/items/${item.id}`,
+      `${baseUrl}/api/feedback/threads/${thread.id}/comments/${openingComment.id}`,
       {
         method: "PATCH",
         headers: {
@@ -534,12 +574,12 @@ test("serves and mutates schema-validated feedback state", async () => {
     const editState = await editResponse.json();
     const edited = editState.batches
       .find((candidate) => candidate.id === batch.id)
-      .feedbackItems.find((candidate) => candidate.id === item.id);
+      .feedbackThreads.find((candidate) => candidate.id === thread.id);
     assert.equal(editResponse.status, 200);
-    assert.match(edited.body, /tradeoff/);
+    assert.match(edited.comments[0].body, /tradeoff/);
 
     const deleteResponse = await fetch(
-      `${baseUrl}/api/feedback/items/${item.id}`,
+      `${baseUrl}/api/feedback/threads/${thread.id}`,
       {
         method: "DELETE",
         headers: {
@@ -552,7 +592,7 @@ test("serves and mutates schema-validated feedback state", async () => {
       (candidate) => candidate.id === batch.id,
     );
     assert.equal(deleteResponse.status, 200);
-    assert.equal(afterDelete.feedbackItems.length, 0);
+    assert.equal(afterDelete.feedbackThreads.length, 0);
 
     const deleteBatchResponse = await fetch(
       `${baseUrl}/api/feedback/batches/${batch.id}`,

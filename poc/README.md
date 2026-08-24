@@ -36,10 +36,10 @@ The workspace provides:
   and open questions.
 - Authoritative artifact validation through the semantic review CLI.
 - Lazy Git-backed base-branch-to-stage-head diffs.
-- Cross-stage feedback batches with requirement, context, file, and line
-  anchors.
-- Submitted comment state, agent resolution tickets, individual or bulk
-  approval, metadata publication, and hosting-neutral local preparation.
+- Cross-stage feedback batches with threaded requirement, context, file, and
+  line anchors.
+- Editable draft notes, assistant follow-ups, thread resolution and approval,
+  metadata publication, and hosting-neutral local preparation.
 
 Run tests with:
 

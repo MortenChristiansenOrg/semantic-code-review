@@ -395,12 +395,14 @@ export declare function deleteFeedbackBatch(
   options: DeleteFeedbackBatchOptions,
 ): void;
 
-export interface AddFeedbackCommentOptions {
-  /** Draft batch receiving the comment. */
+export interface AddFeedbackThreadOptions {
+  /** Draft batch receiving the thread. */
   batch: string;
-  /** Stable identifier for the feedback item. */
+  /** Stable identifier for the feedback thread. */
   id: string;
-  /** Actionable reviewer feedback. */
+  /** Stable identifier for the opening user comment. */
+  "comment-id": string;
+  /** Opening change instruction or question. */
   body: string;
   /** Human-readable label for the anchor. */
   label: string;
@@ -422,29 +424,31 @@ export interface AddFeedbackCommentOptions {
   side?: DiffSide;
   /** Positive line number for a line target. */
   line?: string;
-  /** Stage responsible for resolution when it differs from the anchor stage. */
+  /** Stage responsible for resolving the thread when it differs from the anchor stage. */
   "assigned-stage"?: string;
 }
 
 /**
- * Adds a draft comment anchored to semantic or diff context.
+ * Adds a draft feedback thread with an opening user comment.
  * Target-specific parameters are required by `target-kind`.
  * @cli review-feedback.mjs
- * @command comment add
+ * @command thread add
  */
-export declare function addFeedbackComment(
-  options: AddFeedbackCommentOptions,
+export declare function addFeedbackThread(
+  options: AddFeedbackThreadOptions,
 ): void;
 
 export interface EditFeedbackCommentOptions {
-  /** Draft feedback item to edit. */
+  /** Draft feedback thread containing the comment. */
+  thread: string;
+  /** User comment to edit. */
   id: string;
-  /** Replacement feedback body. */
+  /** Replacement comment body. */
   body: string;
 }
 
 /**
- * Replaces the body of a draft feedback comment.
+ * Replaces a user comment before its thread is submitted.
  * @cli review-feedback.mjs
  * @command comment edit
  */
@@ -452,34 +456,34 @@ export declare function editFeedbackComment(
   options: EditFeedbackCommentOptions,
 ): void;
 
-export interface DeleteFeedbackCommentOptions {
-  /** Draft feedback item to delete. */
+export interface DeleteFeedbackThreadOptions {
+  /** Draft feedback thread to delete. */
   id: string;
 }
 
 /**
- * Deletes a draft feedback comment.
+ * Deletes a draft feedback thread.
  * @cli review-feedback.mjs
- * @command comment delete
+ * @command thread delete
  */
-export declare function deleteFeedbackComment(
-  options: DeleteFeedbackCommentOptions,
+export declare function deleteFeedbackThread(
+  options: DeleteFeedbackThreadOptions,
 ): void;
 
-export interface AssignFeedbackCommentOptions {
-  /** Draft feedback item to assign. */
+export interface AssignFeedbackThreadOptions {
+  /** Draft feedback thread to assign. */
   id: string;
-  /** Stage responsible for resolving the feedback. */
+  /** Stage responsible for resolving the thread. */
   stage: string;
 }
 
 /**
- * Assigns a draft feedback comment to its resolution stage.
+ * Assigns a draft feedback thread to its resolution stage.
  * @cli review-feedback.mjs
- * @command comment assign
+ * @command thread assign
  */
-export declare function assignFeedbackComment(
-  options: AssignFeedbackCommentOptions,
+export declare function assignFeedbackThread(
+  options: AssignFeedbackThreadOptions,
 ): void;
 
 export interface SubmitFeedbackBatchOptions {
@@ -502,32 +506,35 @@ export interface NextFeedbackOptions {
 }
 
 /**
- * Lists submitted feedback grouped by resolution stage.
+ * Lists submitted feedback threads grouped by resolution stage.
  * @cli review-feedback.mjs
  * @command next
  */
 export declare function nextFeedback(options?: NextFeedbackOptions): void;
 
-export interface ResolveFeedbackCommentOptions {
-  /** Submitted feedback item being resolved. */
+export interface ResolveFeedbackThreadOptions {
+  /** Submitted feedback thread being resolved. */
   id: string;
-  /** Explanation of how the feedback was addressed. */
-  summary: string;
-  /** Stage rewritten to resolve the feedback. */
-  stage: string;
-  /** Full stage head captured when the feedback was submitted. */
-  "previous-head": string;
+  /** Stable identifier for the assistant follow-up comment. */
+  "comment-id": string;
+  /** Answer or explanation of how the request was handled. */
+  body: string;
+  /** Stage rewritten to resolve a change request. */
+  stage?: string;
+  /** Full stage head captured when the thread was submitted. */
+  "previous-head"?: string;
   /** Full current rewritten head for the assigned stage. */
-  "rewritten-head": string;
+  "rewritten-head"?: string;
 }
 
 /**
- * Records how a submitted feedback item was addressed.
+ * Adds an assistant follow-up and resolves a submitted thread.
+ * Omit all rewrite options when the follow-up only answers a question.
  * @cli review-feedback.mjs
- * @command comment resolve
+ * @command thread resolve
  */
-export declare function resolveFeedbackComment(
-  options: ResolveFeedbackCommentOptions,
+export declare function resolveFeedbackThread(
+  options: ResolveFeedbackThreadOptions,
 ): void;
 
 export interface RebindResolutionsOptions {
@@ -548,27 +555,27 @@ export declare function rebindResolutions(
   options: RebindResolutionsOptions,
 ): void;
 
-export interface ApproveFeedbackCommentOptions {
-  /** Addressed feedback item to approve. */
+export interface ApproveFeedbackThreadOptions {
+  /** Resolved feedback thread to approve. */
   id: string;
 }
 
 /**
- * Approves one addressed feedback resolution.
+ * Approves one resolved feedback thread.
  * @cli review-feedback.mjs
- * @command comment approve
+ * @command thread approve
  */
-export declare function approveFeedbackComment(
-  options: ApproveFeedbackCommentOptions,
+export declare function approveFeedbackThread(
+  options: ApproveFeedbackThreadOptions,
 ): void;
 
 export interface ApproveFeedbackBatchOptions {
-  /** Batch whose addressed resolutions should be approved. */
+  /** Batch whose resolved threads should be approved. */
   id: string;
 }
 
 /**
- * Approves every addressed resolution in a feedback batch.
+ * Approves every resolved thread in a feedback batch.
  * @cli review-feedback.mjs
  * @command batch approve-all
  */

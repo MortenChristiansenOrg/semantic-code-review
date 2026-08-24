@@ -31,12 +31,14 @@ test("feedback IDs may start with digits", (t) => {
     "Numeric IDs",
   );
   repository.feedback(
-    "comment",
+    "thread",
     "add",
     "--batch",
     "5-batch",
     "--id",
-    "6-comment",
+    "6-thread",
+    "--comment-id",
+    "7-comment",
     "--body",
     "Numeric-leading IDs work.",
     "--label",
@@ -80,12 +82,14 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
   );
   repository.expectFeedbackFailure(
     "must match pattern",
-    "comment",
+    "thread",
     "add",
     "--batch",
     "portable",
     "--id",
     "lpt1",
+    "--comment-id",
+    "valid-comment",
     "--body",
     "Invalid on Windows.",
     "--label",
@@ -96,7 +100,7 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
     "implementation",
   );
   assert.equal(
-    repository.exists(".semantic-review-feedback/items/lpt1.json"),
+    repository.exists(".semantic-review-feedback/threads/lpt1.json"),
     false,
   );
 });
@@ -219,12 +223,14 @@ test("draft commands support every target kind and concurrent mutation", async (
   ];
   for (const [id, kind, ...options] of targets) {
     repository.feedback(
-      "comment",
+      "thread",
       "add",
       "--batch",
       "review",
       "--id",
       id,
+      "--comment-id",
+      `${id}-note`,
       "--body",
       `Feedback for ${kind}.`,
       "--label",
@@ -237,12 +243,14 @@ test("draft commands support every target kind and concurrent mutation", async (
 
   repository.expectFeedbackFailure(
     "--line must be a positive integer",
-    "comment",
+    "thread",
     "add",
     "--batch",
     "review",
     "--id",
     "invalid-line",
+    "--comment-id",
+    "invalid-line-note",
     "--body",
     "Invalid.",
     "--label",
@@ -260,12 +268,14 @@ test("draft commands support every target kind and concurrent mutation", async (
   );
   repository.expectFeedbackFailure(
     "exceeds implementation.txt's 1 line(s)",
-    "comment",
+    "thread",
     "add",
     "--batch",
     "review",
     "--id",
     "missing-line",
+    "--comment-id",
+    "missing-line-note",
     "--body",
     "The anchor must exist.",
     "--label",
@@ -283,12 +293,14 @@ test("draft commands support every target kind and concurrent mutation", async (
   );
   await Promise.all([
     repository.feedbackAsync(
-      "comment",
+      "thread",
       "add",
       "--batch",
       "review",
       "--id",
       "concurrent-one",
+      "--comment-id",
+      "concurrent-one-note",
       "--body",
       "First concurrent comment.",
       "--label",
@@ -299,12 +311,14 @@ test("draft commands support every target kind and concurrent mutation", async (
       "implementation",
     ),
     repository.feedbackAsync(
-      "comment",
+      "thread",
       "add",
       "--batch",
       "review",
       "--id",
       "concurrent-two",
+      "--comment-id",
+      "concurrent-two-note",
       "--body",
       "Second concurrent comment.",
       "--label",
@@ -318,26 +332,28 @@ test("draft commands support every target kind and concurrent mutation", async (
   const concurrentBatch = repository.readJson(
     ".semantic-review-feedback/batches/review.json",
   );
-  assert.ok(concurrentBatch.items.includes("concurrent-one"));
-  assert.ok(concurrentBatch.items.includes("concurrent-two"));
+  assert.ok(concurrentBatch.threads.includes("concurrent-one"));
+  assert.ok(concurrentBatch.threads.includes("concurrent-two"));
 
   repository.feedback(
     "comment",
     "edit",
-    "--id",
+    "--thread",
     "requirement-target",
+    "--id",
+    "requirement-target-note",
     "--body",
     "Updated requirement feedback.",
   );
   repository.feedback(
-    "comment",
+    "thread",
     "assign",
     "--id",
     "requirement-target",
     "--stage",
     "follow-up",
   );
-  repository.feedback("comment", "delete", "--id", "concurrent-one");
+  repository.feedback("thread", "delete", "--id", "concurrent-one");
   repository.expectFeedbackFailure(
     "must be an empty draft",
     "batch",
@@ -351,8 +367,10 @@ test("draft commands support every target kind and concurrent mutation", async (
     "immutable after submission",
     "comment",
     "edit",
-    "--id",
+    "--thread",
     "requirement-target",
+    "--id",
+    "requirement-target-note",
     "--body",
     "Too late.",
   );
@@ -369,14 +387,16 @@ test("draft commands support every target kind and concurrent mutation", async (
     groups.map((group) => group.stageId),
     ["implementation", "follow-up"],
   );
+  assert.match(groups[0].threads[0].assignedStageHead, /^[0-9a-f]{40}$/);
+  assert.equal(groups[0].threads[0].comments[0].author, "user");
   assert.match(
     repository.feedback("next"),
     /implementation \(semantic-review\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/items/requirement-target.json",
-    ).body,
+      ".semantic-review-feedback/threads/requirement-target.json",
+    ).comments[0].body,
     "Updated requirement feedback.",
   );
   repository.feedback("validate");

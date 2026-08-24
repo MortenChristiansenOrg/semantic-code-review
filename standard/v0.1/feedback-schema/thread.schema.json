@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://semantic-code-review.dev/schemas/feedback/v0.1/item.schema.json",
-  "title": "Semantic review feedback item",
+  "$id": "https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json",
+  "title": "Semantic review feedback thread",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -9,13 +9,13 @@
     "id",
     "batchId",
     "status",
-    "body",
+    "comments",
     "target",
     "createdAt"
   ],
   "properties": {
     "$schema": {
-      "const": "https://semantic-code-review.dev/schemas/feedback/v0.1/item.schema.json"
+      "const": "https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json"
     },
     "id": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
@@ -27,12 +27,16 @@
       "enum": [
         "draft",
         "submitted",
-        "addressed",
+        "resolved",
         "approved"
       ]
     },
-    "body": {
-      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/nonEmptyString"
+    "comments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/comment"
+      }
     },
     "target": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/target"
@@ -57,7 +61,7 @@
         "properties": {
           "status": {
             "enum": [
-              "addressed",
+              "resolved",
               "approved"
             ]
           }
@@ -69,6 +73,42 @@
       "then": {
         "required": [
           "resolution"
+        ],
+        "properties": {
+          "comments": {
+            "type": "array",
+            "contains": {
+              "type": "object",
+              "properties": {
+                "author": {
+                  "const": "assistant"
+                }
+              },
+              "required": [
+                "author"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "not": {
+              "const": "draft"
+            }
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "assignedStageId",
+          "assignedStageHead"
         ]
       }
     },

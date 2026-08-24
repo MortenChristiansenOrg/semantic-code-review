@@ -24,7 +24,8 @@ revise the work, but does not approve it.
 - Capture rationale and uncertainty while the AI is doing the work.
 - Connect changes to requirements and acceptance criteria.
 - Make assumptions, alternatives, and failed attempts visible.
-- Let reviewers comment on one stage and request a targeted AI revision.
+- Let reviewers open a thread on one stage and receive an AI answer or targeted
+  revision.
 - Preserve a coherent result when an earlier stage changes and later work must
   be replayed.
 - Fit Azure DevOps workflows without requiring heavy client installation.
@@ -50,7 +51,7 @@ in a local Git repository:
 - An AI skill and scripts create and validate semantic-stage metadata.
 - Stages map to a linear chain of cumulative local branches.
 - A web UI displays stage narratives and diffs.
-- Review comments can be attached to a stage.
+- Review threads can be attached to semantic context or code evidence.
 - The coding agent can revise a stage and replay dependent stages.
 - The complete result can be prepared as one cumulative branch or as a branch
   stack for the team's existing hosting process.

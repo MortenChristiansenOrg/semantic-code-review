@@ -647,6 +647,60 @@ button { font-family: inherit; cursor: pointer; }
 }
 .thread-add:hover { border-color: var(--signal); color: var(--signal); }
 
+/* ---- exported feedback conversation threads (immutable) --------------- */
+.tthread {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--t-decision);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.tthread.status-resolved { border-left-color: var(--ok); }
+.tthread.status-approved { border-left-color: var(--ok); opacity: .92; }
+.tthread-h { display: flex; align-items: center; gap: 8px; }
+.tthread-kind {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .06em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.tthread-status {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.tthread-status.s-submitted { color: var(--t-assumption); border-color: var(--t-assumption); }
+.tthread-status.s-resolved { color: var(--t-decision); border-color: var(--t-decision); }
+.tthread-status.s-approved { color: var(--ok); border-color: var(--ok-soft); background: var(--ok-soft); }
+.tthread-label { display: block; color: var(--text); font-size: 12.5px; overflow-wrap: anywhere; }
+.tthread-msgs { display: grid; gap: 6px; }
+.tmsg {
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  background: var(--ink-2); border: 1px solid var(--line-soft);
+}
+.tmsg-agent { border-left: 2px solid var(--ok); }
+.tmsg-user { border-left: 2px solid var(--signal); }
+.tmsg-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.tmsg-who { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
+.tmsg-agent .tmsg-who { color: var(--ok); }
+.tmsg-user .tmsg-who { color: var(--signal); }
+.tmsg-h time { font-family: var(--mono); font-size: 9.5px; color: var(--faint); white-space: nowrap; }
+.tmsg p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.tthread-stale { font-family: var(--mono); font-size: 10.5px; color: var(--t-risk); margin: 0; }
+.tthread-rewrite { font-family: var(--mono); font-size: 10.5px; color: var(--t-decision); margin: 0; }
+.tthread-hint { font-size: 11px; color: var(--muted); margin: 0; }
+
+/* draft / sent state chips for browser-local notes */
+.tnote-state, .note-state {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--faint);
+}
+.tnote.is-sent, .note.is-sent { opacity: .7; }
+.note-convos { display: grid; gap: 8px; margin-bottom: 14px; }
+.note-convos .tthread { margin: 0; }
+.notes-empty.small { padding: 12px 0; text-align: left; }
+
 .mini-thread {
   display: inline-flex; align-items: center; gap: 4px;
   height: 26px; padding: 0 8px;

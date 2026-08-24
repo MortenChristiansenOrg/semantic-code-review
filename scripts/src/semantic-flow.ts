@@ -328,7 +328,7 @@ function status(options: Options): void {
   let feedback = {
     exists: false,
     batches: {},
-    items: {},
+    threads: {},
   };
   if (candidate.feedbackExists) {
     const feedbackManifest = readJson(
@@ -337,15 +337,15 @@ function status(options: Options): void {
     const batches = (feedbackManifest.batches ?? []).map((id) =>
       readJson(path.join(feedbackRoot, "batches", `${id}.json`)),
     );
-    const items = batches.flatMap((batch) =>
-      (batch.items ?? []).map((id) =>
-        readJson(path.join(feedbackRoot, "items", `${id}.json`)),
+    const threads = batches.flatMap((batch) =>
+      (batch.threads ?? []).map((id) =>
+        readJson(path.join(feedbackRoot, "threads", `${id}.json`)),
       ),
     );
     feedback = {
       exists: true,
       batches: countStatuses(batches),
-      items: countStatuses(items),
+      threads: countStatuses(threads),
     };
   }
 

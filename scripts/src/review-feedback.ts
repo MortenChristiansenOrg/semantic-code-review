@@ -26,8 +26,8 @@ const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
 const BATCH_SCHEMA =
   "https://semantic-code-review.dev/schemas/feedback/v0.1/batch.schema.json";
-const ITEM_SCHEMA =
-  "https://semantic-code-review.dev/schemas/feedback/v0.1/item.schema.json";
+const THREAD_SCHEMA =
+  "https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json";
 const SHA1_PATTERN = /^[0-9a-f]{40}$/;
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -59,7 +59,7 @@ function pathsFor(root) {
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
     batches: path.join(feedback, "batches"),
-    items: path.join(feedback, "items"),
+    threads: path.join(feedback, "threads"),
     lock: path.isAbsolute(gitLock) ? gitLock : path.resolve(root, gitLock),
   };
 }
@@ -159,7 +159,7 @@ function schemaValidator() {
     "common.schema.json",
     "manifest.schema.json",
     "batch.schema.json",
-    "item.schema.json",
+    "thread.schema.json",
   ]) {
     const fullPath = path.join(feedbackSchemaDirectory, file);
     if (!fs.existsSync(fullPath)) fail(`Missing feedback schema ${fullPath}.`);
@@ -190,16 +190,21 @@ function loadFeedback(paths, { required = true } = {}) {
   }
   const manifest = readJson(paths.feedbackManifest);
   const batches = new Map();
-  const items = new Map();
+  const threads = new Map();
   for (const id of manifest.batches ?? []) {
     const batch = readJson(path.join(paths.batches, `${id}.json`));
     batches.set(id, batch);
-    for (const itemId of batch.items ?? []) {
-      if (items.has(itemId)) fail(`Feedback item ${itemId} appears in multiple batches.`);
-      items.set(itemId, readJson(path.join(paths.items, `${itemId}.json`)));
+    for (const threadId of batch.threads ?? []) {
+      if (threads.has(threadId)) {
+        fail(`Feedback thread ${threadId} appears in multiple batches.`);
+      }
+      threads.set(
+        threadId,
+        readJson(path.join(paths.threads, `${threadId}.json`)),
+      );
     }
   }
-  return { manifest, batches, items };
+  return { manifest, batches, threads };
 }
 
 function collectionExists(stage, collection, itemId) {
@@ -311,14 +316,14 @@ function validateTarget(target, semantic, root) {
   }
 }
 
-function expectedBatchStatus(batch, items) {
-  if (items.length === 0) return "draft";
-  if (items.every((item) => item.status === "draft")) return "draft";
-  if (items.every((item) => item.status === "submitted")) return "submitted";
-  if (items.every((item) => item.status === "approved")) return "approved";
+function expectedBatchStatus(batch, threads) {
+  if (threads.length === 0) return "draft";
+  if (threads.every((thread) => thread.status === "draft")) return "draft";
+  if (threads.every((thread) => thread.status === "submitted")) return "submitted";
+  if (threads.every((thread) => thread.status === "approved")) return "approved";
   if (
-    items.every((item) =>
-      ["addressed", "approved"].includes(item.status),
+    threads.every((thread) =>
+      ["resolved", "approved"].includes(thread.status),
     )
   ) {
     return "resolved";
@@ -342,66 +347,80 @@ function validateFeedback(
   for (const id of listJsonIds(paths.batches)) {
     if (!listedBatches.has(id)) fail(`Unlisted feedback batch ${id}.`);
   }
-  const listedItems = new Set(feedback.items.keys());
-  for (const id of listJsonIds(paths.items)) {
-    if (!listedItems.has(id)) fail(`Unlisted feedback item ${id}.`);
+  const listedThreads = new Set(feedback.threads.keys());
+  for (const id of listJsonIds(paths.threads)) {
+    if (!listedThreads.has(id)) fail(`Unlisted feedback thread ${id}.`);
   }
 
   for (const [id, batch] of feedback.batches) {
     validateDocument(ajv, batch, path.join(paths.batches, `${id}.json`));
     if (batch.id !== id) fail(`Batch ${id} has internal ID ${batch.id}.`);
-    const batchItems = batch.items.map((itemId) => {
-      const item = feedback.items.get(itemId);
-      if (!item) fail(`Batch ${id} references missing item ${itemId}.`);
-      return item;
+    const batchThreads = batch.threads.map((threadId) => {
+      const thread = feedback.threads.get(threadId);
+      if (!thread) fail(`Batch ${id} references missing thread ${threadId}.`);
+      return thread;
     });
-    const expected = expectedBatchStatus(batch, batchItems);
+    const expected = expectedBatchStatus(batch, batchThreads);
     if (batch.status !== expected) {
       fail(`Batch ${id} status ${batch.status} should be ${expected}.`);
     }
   }
 
-  for (const [id, item] of feedback.items) {
-    validateDocument(ajv, item, path.join(paths.items, `${id}.json`));
-    if (item.id !== id) fail(`Feedback item ${id} has internal ID ${item.id}.`);
-    const batch = feedback.batches.get(item.batchId);
-    if (!batch?.items.includes(id)) {
-      fail(`Feedback item ${id} is not indexed by batch ${item.batchId}.`);
+  for (const [id, thread] of feedback.threads) {
+    validateDocument(ajv, thread, path.join(paths.threads, `${id}.json`));
+    if (thread.id !== id) {
+      fail(`Feedback thread ${id} has internal ID ${thread.id}.`);
     }
-    validateTarget(item.target, semantic, paths.root);
+    const batch = feedback.batches.get(thread.batchId);
+    if (!batch?.threads.includes(id)) {
+      fail(`Feedback thread ${id} is not indexed by batch ${thread.batchId}.`);
+    }
+    const commentIds = new Set();
+    if (thread.comments[0]?.author !== "user") {
+      fail(`Feedback thread ${id} must begin with a user comment.`);
+    }
+    for (const comment of thread.comments) {
+      if (commentIds.has(comment.id)) {
+        fail(`Feedback thread ${id} repeats comment ID ${comment.id}.`);
+      }
+      commentIds.add(comment.id);
+    }
+    validateTarget(thread.target, semantic, paths.root);
     if (
-      item.assignedStageId &&
-      !semantic.stages.has(item.assignedStageId)
+      thread.assignedStageId &&
+      !semantic.stages.has(thread.assignedStageId)
     ) {
       fail(
-        `Feedback item ${id} is assigned to missing stage ${item.assignedStageId}.`,
+        `Feedback thread ${id} is assigned to missing stage ${thread.assignedStageId}.`,
       );
     }
-    if (item.status !== "draft" && !item.assignedStageHead) {
-      fail(`Feedback item ${id} has no submission stage snapshot.`);
+    if (thread.status !== "draft" && !thread.assignedStageHead) {
+      fail(`Feedback thread ${id} has no submission stage snapshot.`);
     }
-    if (item.resolution) {
-      const stage = semantic.stages.get(item.resolution.stageId);
-      if (!stage) fail(`Resolution stage ${item.resolution.stageId} is missing.`);
-      if (item.resolution.stageId !== item.assignedStageId) {
+    if (thread.resolution?.stageId) {
+      const stage = semantic.stages.get(thread.resolution.stageId);
+      if (!stage) {
+        fail(`Resolution stage ${thread.resolution.stageId} is missing.`);
+      }
+      if (thread.resolution.stageId !== thread.assignedStageId) {
         fail(
-          `Resolution ${id} uses stage ${item.resolution.stageId}, not assigned stage ${item.assignedStageId}.`,
+          `Resolution ${id} uses stage ${thread.resolution.stageId}, not assigned stage ${thread.assignedStageId}.`,
         );
       }
-      if (item.resolution.previousHead !== item.assignedStageHead) {
+      if (thread.resolution.previousHead !== thread.assignedStageHead) {
         fail(
           `Resolution ${id} previous head does not match its submission snapshot.`,
         );
       }
       if (
         !allowStaleResolutions &&
-        stage.change.headRevision !== item.resolution.rewrittenHead
+        stage.change.headRevision !== thread.resolution.rewrittenHead
       ) {
         fail(
-          `Resolution ${id} points to stale rewritten head ${item.resolution.rewrittenHead}.`,
+          `Resolution ${id} points to stale rewritten head ${thread.resolution.rewrittenHead}.`,
         );
       }
-      if (!SHA1_PATTERN.test(item.resolution.previousHead)) {
+      if (!SHA1_PATTERN.test(thread.resolution.previousHead)) {
         fail(`Resolution ${id} has invalid previousHead.`);
       }
     }
@@ -409,7 +428,7 @@ function validateFeedback(
 
   if (!quiet) {
     console.log(
-      `Feedback validation passed: ${feedback.batches.size} batch(es), ${feedback.items.size} item(s).`,
+      `Feedback validation passed: ${feedback.batches.size} batch(es), ${feedback.threads.size} thread(s).`,
     );
   }
   return { semantic, feedback };
@@ -471,7 +490,7 @@ function createBatch(paths, options) {
     id,
     title: option(options, "title", { required: true }),
     status: "draft",
-    items: [],
+    threads: [],
     createdAt: now,
   };
   validateDocument(schemaValidator(), batch, "Feedback batch input");
@@ -526,10 +545,10 @@ function buildTarget(options, semantic, root) {
   return target;
 }
 
-function addComment(paths, options) {
+function addThread(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(reviewFeedbackApi, "comment add"),
+    commandOptionNames(reviewFeedbackApi, "thread add"),
   );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const batchId = option(options, "batch", { required: true });
@@ -537,30 +556,37 @@ function addComment(paths, options) {
   if (!batch) fail(`Batch ${batchId} does not exist.`);
   if (batch.status !== "draft") fail(`Batch ${batchId} is not editable.`);
   const id = option(options, "id", { required: true });
-  if (feedback.items.has(id)) fail(`Feedback item ${id} already exists.`);
-  const item: Record<string, any> = {
-    $schema: ITEM_SCHEMA,
+  if (feedback.threads.has(id)) fail(`Feedback thread ${id} already exists.`);
+  const thread: Record<string, any> = {
+    $schema: THREAD_SCHEMA,
     id,
     batchId,
     status: "draft",
-    body: option(options, "body", { required: true }),
+    comments: [
+      {
+        id: option(options, "comment-id", { required: true }),
+        author: "user",
+        body: option(options, "body", { required: true }),
+        createdAt: new Date().toISOString(),
+      },
+    ],
     target: buildTarget(options, semantic, paths.root),
     createdAt: new Date().toISOString(),
   };
   const assignedStageId =
-    option(options, "assigned-stage") ?? item.target.stageId;
+    option(options, "assigned-stage") ?? thread.target.stageId;
   if (assignedStageId) {
     if (!semantic.stages.has(assignedStageId)) {
       fail(`Assigned stage ${assignedStageId} does not exist.`);
     }
-    item.assignedStageId = assignedStageId;
+    thread.assignedStageId = assignedStageId;
   }
-  validateDocument(schemaValidator(), item, "Feedback item input");
-  const file = path.join(paths.items, `${id}.json`);
+  validateDocument(schemaValidator(), thread, "Feedback thread input");
+  const file = path.join(paths.threads, `${id}.json`);
   const oldBatch = structuredClone(batch);
-  batch.items.push(id);
+  batch.threads.push(id);
   try {
-    writeJson(file, item);
+    writeJson(file, thread);
     writeJson(path.join(paths.batches, `${batchId}.json`), batch);
     validateFeedback(paths, { quiet: true });
   } catch (error) {
@@ -568,7 +594,7 @@ function addComment(paths, options) {
     writeJson(path.join(paths.batches, `${batchId}.json`), oldBatch);
     throw error;
   }
-  console.log(`Added feedback item ${id} to ${batchId}.`);
+  console.log(`Added feedback thread ${id} to ${batchId}.`);
 }
 
 function editComment(paths, options) {
@@ -577,64 +603,76 @@ function editComment(paths, options) {
     commandOptionNames(reviewFeedbackApi, "comment edit"),
   );
   const { feedback } = validateFeedback(paths, { quiet: true });
+  const threadId = option(options, "thread", { required: true });
   const id = option(options, "id", { required: true });
-  const item = feedback.items.get(id);
-  if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (item.status !== "draft") fail(`Feedback item ${id} is immutable after submission.`);
-  item.body = option(options, "body", { required: true });
-  writeItem(paths, item);
+  const thread = feedback.threads.get(threadId);
+  if (!thread) fail(`Feedback thread ${threadId} does not exist.`);
+  if (thread.status !== "draft") {
+    fail(`Feedback thread ${threadId} is immutable after submission.`);
+  }
+  const comment = thread.comments.find((candidate) => candidate.id === id);
+  if (!comment) fail(`Comment ${id} does not exist in thread ${threadId}.`);
+  if (comment.author !== "user") {
+    fail(`Assistant comment ${id} cannot be edited by the user.`);
+  }
+  comment.body = option(options, "body", { required: true });
+  writeThread(paths, thread);
   validateFeedback(paths, { quiet: true });
-  console.log(`Edited draft feedback item ${id}.`);
+  console.log(`Edited draft comment ${id} in ${threadId}.`);
 }
 
-function deleteComment(paths, options) {
+function deleteThread(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(reviewFeedbackApi, "comment delete"),
+    commandOptionNames(reviewFeedbackApi, "thread delete"),
   );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
-  const item = feedback.items.get(id);
-  if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (item.status !== "draft") fail(`Feedback item ${id} is immutable after submission.`);
-  const batch = feedback.batches.get(item.batchId);
-  batch.items = batch.items.filter((itemId) => itemId !== id);
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (thread.status !== "draft") {
+    fail(`Feedback thread ${id} is immutable after submission.`);
+  }
+  const batch = feedback.batches.get(thread.batchId);
+  batch.threads = batch.threads.filter((threadId) => threadId !== id);
   writeBatch(paths, batch);
-  fs.rmSync(path.join(paths.items, `${id}.json`));
+  fs.rmSync(path.join(paths.threads, `${id}.json`));
   validateFeedback(paths, { quiet: true });
-  console.log(`Deleted draft feedback item ${id}.`);
+  console.log(`Deleted draft feedback thread ${id}.`);
 }
 
-function assignComment(paths, options) {
+function assignThread(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(reviewFeedbackApi, "comment assign"),
+    commandOptionNames(reviewFeedbackApi, "thread assign"),
   );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
   const stageId = option(options, "stage", { required: true });
-  const item = feedback.items.get(id);
-  if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (item.status !== "draft") fail(`Feedback item ${id} is immutable after submission.`);
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (thread.status !== "draft") {
+    fail(`Feedback thread ${id} is immutable after submission.`);
+  }
   if (!semantic.stages.has(stageId)) fail(`Stage ${stageId} does not exist.`);
-  item.assignedStageId = stageId;
-  writeItem(paths, item);
+  thread.assignedStageId = stageId;
+  writeThread(paths, thread);
   validateFeedback(paths, { quiet: true });
-  console.log(`Assigned feedback item ${id} to ${stageId}.`);
+  console.log(`Assigned feedback thread ${id} to ${stageId}.`);
 }
 
 function writeBatch(paths, batch) {
   writeJson(path.join(paths.batches, `${batch.id}.json`), batch);
 }
 
-function writeItem(paths, item) {
-  writeJson(path.join(paths.items, `${item.id}.json`), item);
+function writeThread(paths, thread) {
+  writeJson(path.join(paths.threads, `${thread.id}.json`), thread);
 }
 
 function updateBatchStatus(batch, feedback) {
   batch.status = expectedBatchStatus(
     batch,
-    batch.items.map((id) => feedback.items.get(id)),
+    batch.threads.map((id) => feedback.threads.get(id)),
   );
   if (batch.status === "approved" && !batch.approvedAt) {
     batch.approvedAt = new Date().toISOString();
@@ -650,21 +688,21 @@ function submitBatch(paths, options) {
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
   if (!batch) fail(`Batch ${id} does not exist.`);
-  if (batch.status !== "draft" || batch.items.length === 0) {
+  if (batch.status !== "draft" || batch.threads.length === 0) {
     fail(`Batch ${id} must be a non-empty draft.`);
   }
   const now = new Date().toISOString();
-  for (const itemId of batch.items) {
-    const item = feedback.items.get(itemId);
-    const stageId = item.assignedStageId ?? item.target.stageId;
+  for (const threadId of batch.threads) {
+    const thread = feedback.threads.get(threadId);
+    const stageId = thread.assignedStageId ?? thread.target.stageId;
     const stage = semantic.stages.get(stageId);
     if (!stage) {
-      fail(`Feedback item ${itemId} requires a valid stage assignment before submission.`);
+      fail(`Feedback thread ${threadId} requires a valid stage assignment before submission.`);
     }
-    item.assignedStageId = stageId;
-    item.assignedStageHead = stage.change.headRevision;
-    item.status = "submitted";
-    writeItem(paths, item);
+    thread.assignedStageId = stageId;
+    thread.assignedStageHead = stage.change.headRevision;
+    thread.status = "submitted";
+    writeThread(paths, thread);
   }
   batch.status = "submitted";
   batch.submittedAt = now;
@@ -682,7 +720,7 @@ function deleteBatch(paths, options) {
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
   if (!batch) fail(`Batch ${id} does not exist.`);
-  if (batch.status !== "draft" || batch.items.length !== 0) {
+  if (batch.status !== "draft" || batch.threads.length !== 0) {
     fail(`Batch ${id} must be an empty draft to delete.`);
   }
   feedback.manifest.batches = feedback.manifest.batches.filter(
@@ -704,33 +742,35 @@ function nextFeedback(paths, options) {
     fail("--json is a flag.");
   }
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
-  const submitted = [...feedback.items.values()].filter(
-    (item) => item.status === "submitted",
+  const submitted = [...feedback.threads.values()].filter(
+    (thread) => thread.status === "submitted",
   );
   const unassigned = submitted.filter(
-    (item) => !(item.assignedStageId ?? item.target.stageId),
+    (thread) => !(thread.assignedStageId ?? thread.target.stageId),
   );
   if (unassigned.length) {
     fail(
       `Submitted feedback requires stage assignment: ${unassigned
-        .map((item) => item.id)
+        .map((thread) => thread.id)
         .join(", ")}.`,
     );
   }
   const groups = [];
   for (const stageId of semantic.manifest.stages) {
-    const items = submitted.filter(
-      (item) => (item.assignedStageId ?? item.target.stageId) === stageId,
+    const threads = submitted.filter(
+      (thread) =>
+        (thread.assignedStageId ?? thread.target.stageId) === stageId,
     );
-    if (items.length) {
+    if (threads.length) {
       groups.push({
         stageId,
         stageBranch: semantic.stages.get(stageId).change.branch,
         stageHead: semantic.stages.get(stageId).change.headRevision,
-        items: items.map((item) => ({
-          id: item.id,
-          body: item.body,
-          target: item.target,
+        threads: threads.map((thread) => ({
+          id: thread.id,
+          assignedStageHead: thread.assignedStageHead,
+          comments: thread.comments,
+          target: thread.target,
         })),
       });
     }
@@ -745,78 +785,103 @@ function nextFeedback(paths, options) {
   }
   for (const group of groups) {
     console.log(`${group.stageId} (${group.stageBranch} @ ${group.stageHead}):`);
-    for (const item of group.items) {
-      console.log(`  ${item.id}: ${item.body}`);
+    for (const thread of group.threads) {
+      console.log(`  ${thread.id}:`);
+      for (const comment of thread.comments) {
+        console.log(`    ${comment.author}: ${comment.body}`);
+      }
     }
   }
 }
 
-function resolveComment(paths, options) {
+function resolveThread(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(reviewFeedbackApi, "comment resolve"),
+    commandOptionNames(reviewFeedbackApi, "thread resolve"),
   );
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
-  const item = feedback.items.get(id);
-  if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (item.status !== "submitted") fail(`Feedback item ${id} is not submitted.`);
-  const stageId = option(options, "stage", { required: true });
-  const expectedStageId = item.assignedStageId ?? item.target.stageId;
-  if (stageId !== expectedStageId) {
-    fail(
-      `Feedback item ${id} must be resolved in ${expectedStageId}, not ${stageId}.`,
-    );
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (thread.status !== "submitted") {
+    fail(`Feedback thread ${id} is not submitted.`);
   }
-  const stage = semantic.stages.get(stageId);
-  if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
-  const previous = option(options, "previous-head", { required: true });
-  const rewritten = option(options, "rewritten-head", { required: true });
-  if (!SHA1_PATTERN.test(previous) || !SHA1_PATTERN.test(rewritten)) {
-    fail("Resolution heads must be full lowercase SHA-1 IDs.");
+  const stageId = option(options, "stage");
+  const previous = option(options, "previous-head");
+  const rewritten = option(options, "rewritten-head");
+  const rewriteValues = [stageId, previous, rewritten];
+  if (rewriteValues.some(Boolean) && !rewriteValues.every(Boolean)) {
+    fail("--stage, --previous-head, and --rewritten-head must be provided together.");
   }
-  if (stage.change.headRevision !== rewritten) {
-    fail(`Stage ${stageId} currently points to ${stage.change.headRevision}, not ${rewritten}.`);
-  }
-  if (item.assignedStageHead !== previous) {
-    fail(
-      `Feedback item ${id} was submitted against ${item.assignedStageHead}, not ${previous}.`,
-    );
-  }
-  if (previous === rewritten) {
-    fail("Resolution heads must show an actual stage rewrite.");
-  }
-  git(["cat-file", "-e", `${previous}^{commit}`], { cwd: paths.root });
-  item.status = "addressed";
-  item.resolution = {
-    summary: option(options, "summary", { required: true }),
-    stageId,
-    previousHead: previous,
-    rewrittenHead: rewritten,
-    addressedAt: new Date().toISOString(),
+  const resolution: Record<string, any> = {
+    resolvedAt: new Date().toISOString(),
   };
-  writeItem(paths, item);
-  const batch = feedback.batches.get(item.batchId);
+  if (stageId) {
+    const expectedStageId = thread.assignedStageId ?? thread.target.stageId;
+    if (stageId !== expectedStageId) {
+      fail(
+        `Feedback thread ${id} must be resolved in ${expectedStageId}, not ${stageId}.`,
+      );
+    }
+    const stage = semantic.stages.get(stageId);
+    if (!stage) fail(`Resolution stage ${stageId} does not exist.`);
+    if (!SHA1_PATTERN.test(previous) || !SHA1_PATTERN.test(rewritten)) {
+      fail("Resolution heads must be full lowercase SHA-1 IDs.");
+    }
+    if (stage.change.headRevision !== rewritten) {
+      fail(`Stage ${stageId} currently points to ${stage.change.headRevision}, not ${rewritten}.`);
+    }
+    if (thread.assignedStageHead !== previous) {
+      fail(
+        `Feedback thread ${id} was submitted against ${thread.assignedStageHead}, not ${previous}.`,
+      );
+    }
+    if (previous === rewritten) {
+      fail("Resolution heads must show an actual stage rewrite.");
+    }
+    git(["cat-file", "-e", `${previous}^{commit}`], { cwd: paths.root });
+    Object.assign(resolution, {
+      stageId,
+      previousHead: previous,
+      rewrittenHead: rewritten,
+    });
+  }
+  const commentId = option(options, "comment-id", { required: true });
+  if (thread.comments.some((comment) => comment.id === commentId)) {
+    fail(`Comment ${commentId} already exists in thread ${id}.`);
+  }
+  thread.comments.push({
+    id: commentId,
+    author: "assistant",
+    body: option(options, "body", { required: true }),
+    createdAt: resolution.resolvedAt,
+  });
+  thread.status = "resolved";
+  thread.resolution = resolution;
+  writeThread(paths, thread);
+  const batch = feedback.batches.get(thread.batchId);
   updateBatchStatus(batch, feedback);
   writeBatch(paths, batch);
   validateFeedback(paths, { quiet: true });
-  console.log(`Recorded resolution for ${id}.`);
+  console.log(`Resolved feedback thread ${id}.`);
 }
 
-function approveComment(paths, options) {
+function approveThread(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(reviewFeedbackApi, "comment approve"),
+    commandOptionNames(reviewFeedbackApi, "thread approve"),
   );
   const { feedback } = validateFeedback(paths, { quiet: true });
   const id = option(options, "id", { required: true });
-  const item = feedback.items.get(id);
-  if (!item) fail(`Feedback item ${id} does not exist.`);
-  if (item.status !== "addressed") fail(`Feedback item ${id} is not awaiting approval.`);
-  item.status = "approved";
-  item.resolution.approvedAt = new Date().toISOString();
-  writeItem(paths, item);
-  const batch = feedback.batches.get(item.batchId);
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (thread.status !== "resolved") {
+    fail(`Feedback thread ${id} is not awaiting approval.`);
+  }
+  thread.status = "approved";
+  thread.resolution.approvedAt = new Date().toISOString();
+  writeThread(paths, thread);
+  const batch = feedback.batches.get(thread.batchId);
   updateBatchStatus(batch, feedback);
   writeBatch(paths, batch);
   validateFeedback(paths, { quiet: true });
@@ -843,17 +908,17 @@ function rebindResolutions(paths, options) {
   if (stage.change.headRevision !== rewritten) {
     fail(`Stage ${stageId} currently points to ${stage.change.headRevision}, not ${rewritten}.`);
   }
-  const matching = [...feedback.items.values()].filter(
-    (item) =>
-      item.resolution?.stageId === stageId &&
-      item.resolution.rewrittenHead === previous,
+  const matching = [...feedback.threads.values()].filter(
+    (thread) =>
+      thread.resolution?.stageId === stageId &&
+      thread.resolution.rewrittenHead === previous,
   );
   if (matching.length === 0) {
     fail(`No resolutions for ${stageId} point to ${previous}.`);
   }
-  for (const item of matching) {
-    item.resolution.rewrittenHead = rewritten;
-    writeItem(paths, item);
+  for (const thread of matching) {
+    thread.resolution.rewrittenHead = rewritten;
+    writeThread(paths, thread);
   }
   validateFeedback(paths, { quiet: true });
   console.log(`Rebound ${matching.length} resolution(s) for ${stageId}.`);
@@ -868,25 +933,31 @@ function approveAll(paths, options) {
   const id = option(options, "id", { required: true });
   const batch = feedback.batches.get(id);
   if (!batch) fail(`Batch ${id} does not exist.`);
-  const items = batch.items.map((itemId) => feedback.items.get(itemId));
-  if (!items.some((item) => item.status === "addressed")) {
-    fail(`Batch ${id} has no addressed resolutions to approve.`);
+  const threads = batch.threads.map((threadId) =>
+    feedback.threads.get(threadId),
+  );
+  if (!threads.some((thread) => thread.status === "resolved")) {
+    fail(`Batch ${id} has no resolved threads to approve.`);
   }
-  if (items.some((item) => !["addressed", "approved"].includes(item.status))) {
+  if (
+    threads.some(
+      (thread) => !["resolved", "approved"].includes(thread.status),
+    )
+  ) {
     fail(`Batch ${id} still contains unresolved feedback.`);
   }
   const now = new Date().toISOString();
-  for (const item of items) {
-    if (item.status === "addressed") {
-      item.status = "approved";
-      item.resolution.approvedAt = now;
-      writeItem(paths, item);
+  for (const thread of threads) {
+    if (thread.status === "resolved") {
+      thread.status = "approved";
+      thread.resolution.approvedAt = now;
+      writeThread(paths, thread);
     }
   }
   updateBatchStatus(batch, feedback);
   writeBatch(paths, batch);
   validateFeedback(paths, { quiet: true });
-  console.log(`Approved all resolutions in ${id}.`);
+  console.log(`Approved all threads in ${id}.`);
 }
 
 function approveStack(paths, options) {
@@ -932,15 +1003,15 @@ function dispatch(paths, positionals, options) {
   if (command === "init" && !subcommand) return initialize(paths, options);
   if (command === "batch" && subcommand === "create") return createBatch(paths, options);
   if (command === "batch" && subcommand === "delete") return deleteBatch(paths, options);
-  if (command === "comment" && subcommand === "add") return addComment(paths, options);
+  if (command === "thread" && subcommand === "add") return addThread(paths, options);
   if (command === "comment" && subcommand === "edit") return editComment(paths, options);
-  if (command === "comment" && subcommand === "delete") return deleteComment(paths, options);
-  if (command === "comment" && subcommand === "assign") return assignComment(paths, options);
+  if (command === "thread" && subcommand === "delete") return deleteThread(paths, options);
+  if (command === "thread" && subcommand === "assign") return assignThread(paths, options);
   if (command === "batch" && subcommand === "submit") return submitBatch(paths, options);
   if (command === "next" && !subcommand) return nextFeedback(paths, options);
-  if (command === "comment" && subcommand === "resolve") return resolveComment(paths, options);
+  if (command === "thread" && subcommand === "resolve") return resolveThread(paths, options);
   if (command === "resolution" && subcommand === "rebind") return rebindResolutions(paths, options);
-  if (command === "comment" && subcommand === "approve") return approveComment(paths, options);
+  if (command === "thread" && subcommand === "approve") return approveThread(paths, options);
   if (command === "batch" && subcommand === "approve-all") return approveAll(paths, options);
   if (command === "approve-stack" && !subcommand) return approveStack(paths, options);
   if (command === "validate" && !subcommand) {

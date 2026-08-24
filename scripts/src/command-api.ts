@@ -183,10 +183,11 @@ export const reviewFeedbackApi: CliSignature = {
       options: [option("id", "<batch-id>", { required: true })],
     },
     {
-      command: "comment add",
+      command: "thread add",
       options: [
         option("batch", "<batch-id>", { required: true }),
-        option("id", "<feedback-id>", { required: true }),
+        option("id", "<thread-id>", { required: true }),
+        option("comment-id", "<comment-id>", { required: true }),
         option("body", "<text>", { required: true }),
         option("label", "<text>", { required: true }),
         option(
@@ -208,18 +209,19 @@ export const reviewFeedbackApi: CliSignature = {
     {
       command: "comment edit",
       options: [
-        option("id", "<feedback-id>", { required: true }),
+        option("thread", "<thread-id>", { required: true }),
+        option("id", "<comment-id>", { required: true }),
         option("body", "<text>", { required: true }),
       ],
     },
     {
-      command: "comment delete",
-      options: [option("id", "<feedback-id>", { required: true })],
+      command: "thread delete",
+      options: [option("id", "<thread-id>", { required: true })],
     },
     {
-      command: "comment assign",
+      command: "thread assign",
       options: [
-        option("id", "<feedback-id>", { required: true }),
+        option("id", "<thread-id>", { required: true }),
         option("stage", "<stage-id>", { required: true }),
       ],
     },
@@ -229,13 +231,14 @@ export const reviewFeedbackApi: CliSignature = {
     },
     { command: "next", options: [option("json")] },
     {
-      command: "comment resolve",
+      command: "thread resolve",
       options: [
-        option("id", "<feedback-id>", { required: true }),
-        option("summary", "<text>", { required: true }),
-        option("stage", "<stage-id>", { required: true }),
-        option("previous-head", "<full-sha>", { required: true }),
-        option("rewritten-head", "<full-sha>", { required: true }),
+        option("id", "<thread-id>", { required: true }),
+        option("comment-id", "<comment-id>", { required: true }),
+        option("body", "<text>", { required: true }),
+        option("stage", "<stage-id>"),
+        option("previous-head", "<full-sha>"),
+        option("rewritten-head", "<full-sha>"),
       ],
     },
     {
@@ -247,8 +250,8 @@ export const reviewFeedbackApi: CliSignature = {
       ],
     },
     {
-      command: "comment approve",
-      options: [option("id", "<feedback-id>", { required: true })],
+      command: "thread approve",
+      options: [option("id", "<thread-id>", { required: true })],
     },
     {
       command: "batch approve-all",

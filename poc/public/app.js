@@ -18,7 +18,7 @@ let approvals;
 let selectedStageId;
 let selectedBatchId;
 let pendingCommentTarget;
-let editingFeedbackItem;
+let editingFeedbackThread;
 const fileDiffCache = new Map();
 const expandedStageFiles = new Map();
 const stageFileModes = new Map();
@@ -173,8 +173,36 @@ async function apiPost(url, body = {}) {
   return result;
 }
 
-function feedbackItems() {
-  return feedback?.batches.flatMap((batch) => batch.feedbackItems) ?? [];
+function feedbackThreads() {
+  return feedback?.batches.flatMap((batch) => batch.feedbackThreads) ?? [];
+}
+
+function unresolvedThreadCount() {
+  return feedbackThreads().filter((thread) => thread.status !== "approved")
+    .length;
+}
+
+function authorLabel(author) {
+  return author === "assistant" ? "Implementation agent" : "You";
+}
+
+function formatTimestamp(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function openingComment(thread) {
+  return (
+    thread.comments.find((comment) => comment.author === "user") ??
+    thread.comments[0]
+  );
 }
 
 function activeDraftBatch() {
@@ -183,7 +211,7 @@ function activeDraftBatch() {
   );
 }
 
-function commentAction(target, label = "Comment") {
+function commentAction(target, label = "Add note") {
   const button = element("button", "comment-action", label);
   button.type = "button";
   if (!activeDraftBatch()) {
@@ -201,7 +229,7 @@ function openComment(target) {
     return;
   }
   pendingCommentTarget = target;
-  editingFeedbackItem = undefined;
+  editingFeedbackThread = undefined;
   commentTarget.textContent = target.label;
   commentBody.value = "";
   commentError.textContent = "";
@@ -211,24 +239,25 @@ function openComment(target) {
 
 function closeComment() {
   pendingCommentTarget = undefined;
-  editingFeedbackItem = undefined;
+  editingFeedbackThread = undefined;
   commentDialog.close();
 }
 
 async function submitComment(event) {
   event.preventDefault();
   const batch = activeDraftBatch();
-  if (!batch || (!pendingCommentTarget && !editingFeedbackItem)) return;
+  if (!batch || (!pendingCommentTarget && !editingFeedbackThread)) return;
   commentError.textContent = "";
   try {
-    if (editingFeedbackItem) {
+    if (editingFeedbackThread) {
+      const comment = openingComment(editingFeedbackThread);
       feedback = await apiRequest(
-        `/api/feedback/items/${editingFeedbackItem.id}`,
+        `/api/feedback/threads/${editingFeedbackThread.id}/comments/${comment.id}`,
         "PATCH",
         { body: commentBody.value },
       );
     } else {
-      feedback = await apiPost("/api/feedback/comments", {
+      feedback = await apiPost("/api/feedback/threads", {
         batchId: batch.id,
         body: commentBody.value,
         target: pendingCommentTarget,
@@ -257,11 +286,11 @@ async function apiRequest(url, method, body) {
   return result;
 }
 
-function openCommentEdit(item) {
-  editingFeedbackItem = item;
+function openCommentEdit(thread) {
+  editingFeedbackThread = thread;
   pendingCommentTarget = undefined;
-  commentTarget.textContent = item.target.label;
-  commentBody.value = item.body;
+  commentTarget.textContent = thread.target.label;
+  commentBody.value = openingComment(thread)?.body ?? "";
   commentError.textContent = "";
   commentDialog.showModal();
   commentBody.focus();
@@ -1588,9 +1617,7 @@ function renderFeedbackPanel() {
   header.append(copy, close);
   feedbackPanel.append(header);
 
-  reviewCount.textContent = String(
-    feedbackItems().filter((item) => item.status !== "approved").length,
-  );
+  reviewCount.textContent = String(unresolvedThreadCount());
 
   if (!feedback.initialized) {
     appendText(
@@ -1617,7 +1644,7 @@ function renderFeedbackPanel() {
       feedbackPanel,
       "p",
       "feedback-help",
-      "Create or select a draft batch before adding comments.",
+      "Create or select a draft batch before adding notes.",
     );
   }
   const batchList = element("div", "feedback-batches");
@@ -1679,16 +1706,16 @@ function renderFeedbackBatch(batch) {
     article.append(heading);
 
     if (batch.id === selectedBatchId) {
-      const items = element("div", "feedback-items");
-      for (const item of batch.feedbackItems) {
-        items.append(renderFeedbackItem(item));
+      const threads = element("div", "feedback-threads");
+      for (const thread of batch.feedbackThreads) {
+        threads.append(renderFeedbackThread(thread));
       }
-      if (batch.feedbackItems.length === 0) {
+      if (batch.feedbackThreads.length === 0) {
         appendText(
-          items,
+          threads,
           "p",
           "empty-copy",
-          "Use Comment beside any review element to add it here.",
+          "Use Add note beside any review element to start a thread here.",
         );
         const remove = element("button", "secondary-button", "Delete empty batch");
         remove.type = "button";
@@ -1701,11 +1728,11 @@ function renderFeedbackBatch(batch) {
           renderFeedbackPanel();
           renderReview();
         });
-        items.append(remove);
+        threads.append(remove);
       }
-      article.append(items);
+      article.append(threads);
 
-      if (batch.status === "draft" && batch.feedbackItems.length > 0) {
+      if (batch.status === "draft" && batch.feedbackThreads.length > 0) {
         const submit = element("button", "primary-button", "Submit feedback");
         submit.type = "button";
         submit.addEventListener("click", async () => {
@@ -1721,7 +1748,7 @@ function renderFeedbackBatch(batch) {
         const approveAll = element(
           "button",
           "primary-button",
-          "Approve all resolutions",
+          "Approve all threads",
         );
         approveAll.type = "button";
         approveAll.addEventListener("click", async () => {
@@ -1736,55 +1763,93 @@ function renderFeedbackBatch(batch) {
     return article;
 }
 
-function renderFeedbackItem(item) {
-    const article = element("article", `feedback-item feedback-${item.status}`);
+function renderFeedbackThread(thread) {
+    const article = element(
+      "article",
+      `feedback-thread feedback-${thread.status}`,
+    );
     const heading = element("div", "feedback-item-heading");
-    appendText(heading, "span", "feedback-target-kind", item.target.kind);
-    appendText(heading, "span", "code-text", item.status);
+    appendText(heading, "span", "feedback-target-kind", thread.target.kind);
+    appendText(
+      heading,
+      "span",
+      `thread-status status-${thread.status}`,
+      thread.status,
+    );
     article.append(heading);
-    appendText(article, "p", "feedback-target-label", item.target.label);
-    appendText(article, "p", "feedback-body", item.body);
-    if (item.anchorStale) {
+    appendText(article, "p", "feedback-target-label", thread.target.label);
+
+    if (thread.anchorStale) {
       appendText(
         article,
         "p",
         "stale-anchor",
-        `Original anchor ${item.target.stageHead.slice(0, 9)} has been rewritten.`,
+        `Original anchor ${thread.target.stageHead.slice(0, 9)} has been rewritten.`,
       );
     }
-    if (item.resolution) {
-      const ticket = element("div", "resolution-ticket");
-      appendText(ticket, "p", "eyebrow", "Agent resolution");
-      appendText(ticket, "p", "", item.resolution.summary);
-      appendText(
-        ticket,
-        "p",
-        "code-text resolution-commits",
-        `${item.resolution.previousHead.slice(0, 9)} → ${item.resolution.rewrittenHead.slice(0, 9)}`,
+
+    const timeline = element("ol", "thread-timeline");
+    for (const comment of thread.comments) {
+      const entry = element(
+        "li",
+        `thread-comment thread-comment-${comment.author}`,
       );
+      const meta = element("div", "thread-comment-meta");
+      appendText(meta, "span", "thread-author", authorLabel(comment.author));
+      const stamp = formatTimestamp(comment.createdAt);
+      if (stamp) {
+        const time = appendText(meta, "time", "thread-time", stamp);
+        time.setAttribute("datetime", comment.createdAt);
+      }
+      entry.append(meta);
+      appendText(entry, "p", "thread-comment-body", comment.body);
+      timeline.append(entry);
+    }
+    article.append(timeline);
+
+    if (thread.resolution) {
+      const ticket = element("div", "resolution-ticket");
+      appendText(ticket, "p", "eyebrow", "Resolution");
+      if (
+        thread.resolution.previousHead &&
+        thread.resolution.rewrittenHead
+      ) {
+        appendText(
+          ticket,
+          "p",
+          "code-text resolution-commits",
+          `${thread.resolution.previousHead.slice(0, 9)} → ${thread.resolution.rewrittenHead.slice(0, 9)}`,
+        );
+      }
+      const resolvedAt = formatTimestamp(thread.resolution.resolvedAt);
+      if (resolvedAt) {
+        appendText(ticket, "p", "resolution-time", `Resolved ${resolvedAt}`);
+      }
       article.append(ticket);
     }
-    if (item.status === "addressed") {
-      const approve = element("button", "secondary-button", "Approve resolution");
+
+    if (thread.status === "resolved") {
+      const approve = element("button", "secondary-button", "Approve thread");
       approve.type = "button";
       approve.addEventListener("click", async () => {
         feedback = await apiPost(
-          `/api/feedback/items/${item.id}/approve`,
+          `/api/feedback/threads/${thread.id}/approve`,
         );
         renderFeedbackPanel();
       });
       article.append(approve);
     }
-    if (item.status === "draft") {
-      const actions = element("div", "draft-comment-actions");
-      const edit = element("button", "secondary-button", "Edit");
+
+    if (thread.status === "draft") {
+      const actions = element("div", "draft-thread-actions");
+      const edit = element("button", "secondary-button", "Edit note");
       edit.type = "button";
-      edit.addEventListener("click", () => openCommentEdit(item));
-      const remove = element("button", "secondary-button", "Delete");
+      edit.addEventListener("click", () => openCommentEdit(thread));
+      const remove = element("button", "secondary-button", "Delete thread");
       remove.type = "button";
       remove.addEventListener("click", async () => {
         feedback = await apiRequest(
-          `/api/feedback/items/${item.id}`,
+          `/api/feedback/threads/${thread.id}`,
           "DELETE",
         );
         renderFeedbackPanel();

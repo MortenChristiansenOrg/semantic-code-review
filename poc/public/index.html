@@ -53,7 +53,7 @@
         <div class="dialog-heading">
           <div>
             <p class="eyebrow">Add to review queue</p>
-            <h2>Comment on this evidence</h2>
+            <h2>Add a review note</h2>
           </div>
           <button
             class="icon-button"
@@ -65,20 +65,20 @@
           </button>
         </div>
         <p class="comment-target" id="comment-target"></p>
-        <label class="field-label" for="comment-body">Feedback</label>
+        <label class="field-label" for="comment-body">Note</label>
         <textarea
           id="comment-body"
           name="body"
           rows="5"
           required
-          placeholder="Describe what should change and why."
+          placeholder="Describe what should change and why. Starts a thread the implementation agent can reply to."
         ></textarea>
         <p class="form-error" id="comment-error" role="alert"></p>
         <div class="dialog-actions">
           <button class="secondary-button" type="button" id="comment-cancel">
             Cancel
           </button>
-          <button class="primary-button" type="submit">Add comment</button>
+          <button class="primary-button" type="submit">Save note</button>
         </div>
       </form>
     </dialog>

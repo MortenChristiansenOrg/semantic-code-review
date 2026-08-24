@@ -12,13 +12,13 @@ import {
   validateCurrentReview,
 } from "./review-service.mjs";
 import {
-  addFeedbackComment,
   approveAllFeedback,
-  approveFeedbackItem,
   approveFeedbackStack,
+  approveFeedbackThread,
   createFeedbackBatch,
+  createFeedbackThread,
   deleteFeedbackBatch,
-  deleteFeedbackComment,
+  deleteFeedbackThread,
   editFeedbackComment,
   initializeFeedback,
   readFeedback,
@@ -262,7 +262,7 @@ export function createReviewServer({ repositoryRoot }) {
       }
       if (
         request.method === "POST" &&
-        url.pathname === "/api/feedback/comments"
+        url.pathname === "/api/feedback/threads"
       ) {
         const body = await readRequestBody(request);
         if (!body.target || typeof body.target !== "object") {
@@ -275,7 +275,7 @@ export function createReviewServer({ repositoryRoot }) {
         sendJson(
           response,
           201,
-          await addFeedbackComment({
+          await createFeedbackThread({
             repositoryRoot: root,
             batchId: requireText(body.batchId, "batchId"),
             body: requireText(body.body, "body"),
@@ -326,43 +326,47 @@ export function createReviewServer({ repositoryRoot }) {
         );
         return;
       }
-      const approveItemMatch = url.pathname.match(
-        /^\/api\/feedback\/items\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/approve$/,
+      const approveThreadMatch = url.pathname.match(
+        /^\/api\/feedback\/threads\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/approve$/,
       );
-      if (request.method === "POST" && approveItemMatch) {
+      if (request.method === "POST" && approveThreadMatch) {
         sendJson(
           response,
           200,
-          await approveFeedbackItem({
+          await approveFeedbackThread({
             repositoryRoot: root,
-            itemId: approveItemMatch[1],
+            threadId: approveThreadMatch[1],
           }),
         );
         return;
       }
-      const editItemMatch = url.pathname.match(
-        /^\/api\/feedback\/items\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/,
+      const editCommentMatch = url.pathname.match(
+        /^\/api\/feedback\/threads\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\/comments\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/,
       );
-      if (request.method === "PATCH" && editItemMatch) {
+      if (request.method === "PATCH" && editCommentMatch) {
         const body = await readRequestBody(request);
         sendJson(
           response,
           200,
           await editFeedbackComment({
             repositoryRoot: root,
-            itemId: editItemMatch[1],
+            threadId: editCommentMatch[1],
+            commentId: editCommentMatch[2],
             body: requireText(body.body, "body"),
           }),
         );
         return;
       }
-      if (request.method === "DELETE" && editItemMatch) {
+      const threadMatch = url.pathname.match(
+        /^\/api\/feedback\/threads\/([a-z][a-z0-9]*(?:-[a-z0-9]+)*)$/,
+      );
+      if (request.method === "DELETE" && threadMatch) {
         sendJson(
           response,
           200,
-          await deleteFeedbackComment({
+          await deleteFeedbackThread({
             repositoryRoot: root,
-            itemId: editItemMatch[1],
+            threadId: threadMatch[1],
           }),
         );
         return;

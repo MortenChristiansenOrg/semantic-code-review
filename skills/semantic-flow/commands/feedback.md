@@ -18,7 +18,8 @@ Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
    ```
 
 4. If there is no submitted feedback, report that and stop.
-5. If feedback is unclear, contradictory, stale, or cannot be assigned to a
+5. Read every user comment in each submitted thread.
+6. If feedback is unclear, contradictory, stale, or cannot be assigned to a
    responsible stage, stop and ask the user. Do not guess at requested
    behavior.
 
@@ -27,31 +28,39 @@ Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
 Process the earliest affected stage first:
 
 1. Check out its recorded stage branch.
-2. Inspect the feedback target and the complete stage diff.
-3. Implement the correction directly on that stage branch.
-4. Run relevant tests and commit the correction.
-5. Update finalized context and validation evidence when the correction changes
+2. Inspect each thread, its target, and the complete stage diff.
+3. If a thread is a question that requires no code change, prepare a direct
+   answer and do not rewrite the stage.
+4. For a change instruction, implement the correction directly on that stage
+   branch.
+5. Run relevant tests and commit the correction.
+6. Update finalized context and validation evidence when the correction changes
    them.
-6. Rerun `stage organize --finalized` when causes, files, hunks, line ranges,
+7. Rerun `stage organize --finalized` when causes, files, hunks, line ranges,
    or item links changed.
-7. Restack every later branch:
+8. Restack every later branch:
 
    ```text
    <semantic-review> restack --from <stage-id>
    ```
 
-8. If rewritten later stages no longer match their organization, reorganize
+9. If rewritten later stages no longer match their organization, reorganize
    those stages before continuing.
-9. Record each resolution with the submitted `previous-head` and the current
-   assigned stage `rewritten-head`:
+10. Resolve each change-request thread by adding an assistant follow-up with the
+    submitted `previous-head` and current assigned-stage `rewritten-head`:
 
    ```text
-   <review-feedback> comment resolve --input -
+   <review-feedback> thread resolve --input -
    ```
 
-10. If a resolved stage changes again, use `resolution rebind`.
+11. Resolve answer-only threads with the same command, supplying the thread ID,
+    a new assistant comment ID, and the answer body, but no stage or head
+    options.
+12. If a resolved stage changes again, use `resolution rebind`.
 
-Repeat in stage order until all actionable submitted feedback is addressed.
+Every resolved thread must end with an assistant comment that answers the
+question or states what changed. Repeat in stage order until all submitted
+threads are resolved.
 Then run:
 
 ```text

@@ -364,7 +364,54 @@ function buildReviewData(repoRoot) {
       })),
     },
     stages,
+    feedback: buildFeedbackThreads(repoRoot, stages),
   };
+}
+
+// Load submitted/resolved/approved feedback threads from the local
+// `.semantic-review-feedback` store so the viewer can render the reviewer <->
+// implementation-agent conversation. Draft threads stay private to the POC
+// workspace; only threads that have been submitted are surfaced here. A thread
+// is flagged stale when the stage head it was anchored against has since been
+// rewritten.
+function buildFeedbackThreads(repoRoot, stages) {
+  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const manifestPath = path.join(feedbackRoot, "manifest.json");
+  if (!fs.existsSync(manifestPath)) return [];
+  const manifest = readJson(manifestPath);
+  const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
+  const threads: Array<Record<string, any>> = [];
+  for (const batchId of manifest.batches || []) {
+    const batch = readJson(
+      path.join(feedbackRoot, "batches", `${batchId}.json`),
+    );
+    for (const threadId of batch.threads || []) {
+      const thread = readJson(
+        path.join(feedbackRoot, "threads", `${threadId}.json`),
+      );
+      if (thread.status === "draft") continue;
+      threads.push({
+        id: thread.id,
+        batchId: thread.batchId,
+        batchTitle: batch.title,
+        status: thread.status,
+        target: thread.target,
+        comments: (thread.comments || []).map((c) => ({
+          id: c.id,
+          author: c.author,
+          body: c.body,
+          createdAt: c.createdAt,
+        })),
+        resolution: thread.resolution || null,
+        assignedStageId: thread.assignedStageId || null,
+        createdAt: thread.createdAt,
+        anchorStale:
+          Boolean(thread.target && thread.target.stageHead) &&
+          currentHeads.get(thread.target.stageId) !== thread.target.stageHead,
+      });
+    }
+  }
+  return threads;
 }
 
 const CONTENT_TYPES = {
@@ -410,7 +457,7 @@ function sendJson(response, status, payload) {
 // Map a browser-local note (kind: stage | node | file) onto review-feedback
 // target options. Nodes have no first-class feedback target, so they are
 // assigned to their owning stage with the node title carried in the label.
-function mapNoteTarget(note, review) {
+export function mapNoteTarget(note, review) {
   if (note.kind === "stage") {
     const stage = review.stages.find((s) => s.id === note.id);
     if (!stage) throw new Error(`unknown stage "${note.id}"`);
@@ -460,17 +507,16 @@ function cliErrorMessage(error) {
   return (line || "feedback command failed").replace(/^Error:\s*/, "");
 }
 
-function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
-  if (!feedbackCli) {
-    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
-  }
-  if (!Array.isArray(notes) || notes.length === 0) {
-    return { ok: false, error: "No feedback notes to export." };
-  }
-  // Validate every note and resolve its target BEFORE mutating any state, so a
-  // malformed payload can never leave a partial/orphaned draft batch behind.
+// Validate every note and resolve its target into review-feedback options.
+// Pure over (notes, review): produces the ordered list of threads to create
+// and the reasons any note was skipped, without mutating any state. Kept
+// separate from the CLI mutations so a malformed payload can never leave a
+// partial or orphaned draft batch behind.
+export function planFeedbackThreads(notes, review) {
   const skipped: Array<{ ref: number; reason: string }> = [];
-  const planned: Array<{ ref: number; body: string; target: Record<string, any> }> = [];
+  const planned: Array<{ ref: number; body: string; target: Record<string, any> }> =
+    [];
+  if (!Array.isArray(notes)) return { planned, skipped };
   notes.forEach((note, index) => {
     const ref = note && Number.isInteger(note.ref) ? note.ref : index;
     if (!note || typeof note !== "object") {
@@ -491,6 +537,17 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
     }
     planned.push({ ref, body, target });
   });
+  return { planned, skipped };
+}
+
+function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
+  if (!feedbackCli) {
+    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
+  }
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return { ok: false, error: "No feedback notes to export." };
+  }
+  const { planned, skipped } = planFeedbackThreads(notes, review);
   if (planned.length === 0) {
     return { ok: false, error: "No notes could be exported.", skipped };
   }
@@ -506,25 +563,32 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
     ["batch", "create", "--input", "-"],
     JSON.stringify({ id: batchId, title: `Reviewer feedback ${new Date().toISOString()}` }),
   );
-  const exported: number[] = [];
-  const addedItemIds: string[] = [];
-  planned.forEach((item, index) => {
-    const itemId = `${batchId}-${String(index).padStart(3, "0")}`;
+  const exported: Array<{ ref: number; threadId: string }> = [];
+  const addedThreadIds: string[] = [];
+  planned.forEach((thread, index) => {
+    const threadId = `${batchId}-t${String(index).padStart(3, "0")}`;
+    const commentId = `${threadId}-c000`;
     try {
       runFeedbackCli(
         feedbackCli,
         repoRoot,
-        ["comment", "add", "--input", "-"],
-        JSON.stringify({ batch: batchId, id: itemId, body: item.body, ...item.target }),
+        ["thread", "add", "--input", "-"],
+        JSON.stringify({
+          batch: batchId,
+          id: threadId,
+          "comment-id": commentId,
+          body: thread.body,
+          ...thread.target,
+        }),
       );
-      exported.push(item.ref);
-      addedItemIds.push(itemId);
+      exported.push({ ref: thread.ref, threadId });
+      addedThreadIds.push(threadId);
     } catch (error) {
-      skipped.push({ ref: item.ref, reason: cliErrorMessage(error) });
+      skipped.push({ ref: thread.ref, reason: cliErrorMessage(error) });
     }
   });
   if (exported.length === 0) {
-    discardBatch(feedbackCli, repoRoot, batchId, addedItemIds);
+    discardBatch(feedbackCli, repoRoot, batchId, addedThreadIds);
     return { ok: false, error: "No notes could be exported.", skipped };
   }
   try {
@@ -532,17 +596,17 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
   } catch (error) {
     // Roll the draft back so a failed submit cannot leave an invisible,
     // non-empty draft batch that blocks or confuses later exports.
-    discardBatch(feedbackCli, repoRoot, batchId, addedItemIds);
+    discardBatch(feedbackCli, repoRoot, batchId, addedThreadIds);
     return { ok: false, error: cliErrorMessage(error), skipped };
   }
   return { ok: true, batchId, exported, skipped };
 }
 
-// Best-effort removal of a draft batch and its draft items.
-function discardBatch(feedbackCli, repoRoot, batchId, itemIds) {
-  for (const itemId of itemIds) {
+// Best-effort removal of a draft batch and its draft threads.
+function discardBatch(feedbackCli, repoRoot, batchId, threadIds) {
+  for (const threadId of threadIds) {
     try {
-      runFeedbackCli(feedbackCli, repoRoot, ["comment", "delete", "--id", itemId]);
+      runFeedbackCli(feedbackCli, repoRoot, ["thread", "delete", "--id", threadId]);
     } catch {
       // Ignore; surfacing the original failure matters more than perfect cleanup.
     }
@@ -716,9 +780,14 @@ async function main() {
   openBrowser(url);
 }
 
-main().catch((error) => {
-  if (process.exitCode === undefined || process.exitCode === 0) {
-    console.error(`semantic-view: ${error.message}`);
-    process.exitCode = 1;
-  }
-});
+const isDirectRun =
+  path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+  main().catch((error) => {
+    if (process.exitCode === undefined || process.exitCode === 0) {
+      console.error(`semantic-view: ${error.message}`);
+      process.exitCode = 1;
+    }
+  });
+}

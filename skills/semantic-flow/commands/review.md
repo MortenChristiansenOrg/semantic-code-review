@@ -18,8 +18,10 @@ the invoking branch, then starts the bundled viewer. Keep it running and
 confirm it is responsive at the reported local URL.
 
 The viewer renders stages, change nodes, project-grouped files, linked context,
-and full-context diffs. It reads `.semantic-review` once at launch. Restart it
-to show later artifact changes.
+full-context diffs, and feedback threads. A user can add and edit draft notes
+before submission. Submitted threads are immutable; assistant follow-ups appear
+in the same thread after the feedback workflow runs. It reads
+`.semantic-review` once at launch. Restart it to show later artifact changes.
 
 Feedback and browser-local review state may be created through the viewer, but
 the launch command itself must not mutate the artifact, switch branches,

@@ -14,12 +14,14 @@ function createSubmittedBatch(repository, originalCommit) {
   );
   for (const id of ["first-comment", "second-comment"]) {
     repository.feedback(
-      "comment",
+      "thread",
       "add",
       "--batch",
       "review",
       "--id",
       id,
+      "--comment-id",
+      `${id}-note`,
       "--body",
       `Resolve ${id}.`,
       "--label",
@@ -37,11 +39,13 @@ function createSubmittedBatch(repository, originalCommit) {
   );
   repository.expectFeedbackFailure(
     "must show an actual stage rewrite",
-    "comment",
+    "thread",
     "resolve",
     "--id",
     "first-comment",
-    "--summary",
+    "--comment-id",
+    "first-response",
+    "--body",
     "No rewrite.",
     "--stage",
     "implementation",
@@ -68,11 +72,13 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   ).change.headRevision;
   for (const id of ["first-comment", "second-comment"]) {
     repository.feedback(
-      "comment",
+      "thread",
       "resolve",
       "--id",
       id,
-      "--summary",
+      "--comment-id",
+      `${id}-response`,
+      "--body",
       "Rewrote the implementation stage.",
       "--stage",
       "implementation",
@@ -103,11 +109,11 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
     finalCommit,
   );
 
-  repository.feedback("comment", "approve", "--id", "first-comment");
+  repository.feedback("thread", "approve", "--id", "first-comment");
   repository.feedback("batch", "approve-all", "--id", "review");
   repository.expectFeedbackFailure(
     "is not awaiting approval",
-    "comment",
+    "thread",
     "approve",
     "--id",
     "first-comment",
@@ -131,10 +137,79 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/items/second-comment.json",
+      ".semantic-review-feedback/threads/second-comment.json",
     ).resolution.rewrittenHead,
     finalCommit,
   );
+  assert.deepEqual(
+    repository
+      .readJson(".semantic-review-feedback/threads/second-comment.json")
+      .comments.map(({ author }) => author),
+    ["user", "assistant"],
+  );
+});
+
+test("answer-only threads resolve without rewriting a stage", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "batch",
+    "create",
+    "--id",
+    "questions",
+    "--title",
+    "Questions",
+  );
+  repository.feedback(
+    "thread",
+    "add",
+    "--batch",
+    "questions",
+    "--id",
+    "why-this-way",
+    "--comment-id",
+    "question",
+    "--body",
+    "Why is this implemented in the domain layer?",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  repository.feedback("batch", "submit", "--id", "questions");
+  repository.expectFeedbackFailure(
+    "must be provided together",
+    "thread",
+    "resolve",
+    "--id",
+    "why-this-way",
+    "--comment-id",
+    "partial-answer",
+    "--body",
+    "Incomplete resolution metadata.",
+    "--stage",
+    "implementation",
+  );
+  repository.feedback(
+    "thread",
+    "resolve",
+    "--id",
+    "why-this-way",
+    "--comment-id",
+    "answer",
+    "--body",
+    "The invariant must apply to every caller.",
+  );
+
+  const thread = repository.readJson(
+    ".semantic-review-feedback/threads/why-this-way.json",
+  );
+  assert.equal(thread.status, "resolved");
+  assert.equal(thread.resolution.stageId, undefined);
+  assert.equal(thread.comments[1].author, "assistant");
+  repository.feedback("validate");
 });
 
 test("approve-stack supports reviews with no feedback state", (t) => {

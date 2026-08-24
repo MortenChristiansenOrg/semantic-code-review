@@ -13,6 +13,34 @@
       "minLength": 1,
       "pattern": "\\S"
     },
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "author",
+        "body",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "author": {
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "body": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "sha1": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
@@ -216,16 +244,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "summary",
-        "stageId",
-        "previousHead",
-        "rewrittenHead",
-        "addressedAt"
+        "resolvedAt"
       ],
       "properties": {
-        "summary": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
         "stageId": {
           "$ref": "#/$defs/id"
         },
@@ -235,7 +256,7 @@
         "rewrittenHead": {
           "$ref": "#/$defs/sha1"
         },
-        "addressedAt": {
+        "resolvedAt": {
           "type": "string",
           "format": "date-time"
         },
@@ -243,6 +264,20 @@
           "type": "string",
           "format": "date-time"
         }
+      },
+      "dependentRequired": {
+        "stageId": [
+          "previousHead",
+          "rewrittenHead"
+        ],
+        "previousHead": [
+          "stageId",
+          "rewrittenHead"
+        ],
+        "rewrittenHead": [
+          "stageId",
+          "previousHead"
+        ]
       }
     }
   }

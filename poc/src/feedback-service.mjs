@@ -16,7 +16,7 @@ function feedbackPaths(repositoryRoot) {
     root,
     manifest: path.join(root, "manifest.json"),
     batches: path.join(root, "batches"),
-    items: path.join(root, "items"),
+    threads: path.join(root, "threads"),
   };
 }
 
@@ -77,17 +77,19 @@ export async function readFeedback({ repositoryRoot }) {
   const batches = [];
   for (const batchId of manifest.batches) {
     const batch = await readJson(path.join(paths.batches, `${batchId}.json`));
-    const items = [];
-    for (const itemId of batch.items) {
-      const item = await readJson(path.join(paths.items, `${itemId}.json`));
-      items.push({
-        ...item,
+    const threads = [];
+    for (const threadId of batch.threads) {
+      const thread = await readJson(
+        path.join(paths.threads, `${threadId}.json`),
+      );
+      threads.push({
+        ...thread,
         anchorStale:
-          Boolean(item.target.stageHead) &&
-          currentHeads.get(item.target.stageId) !== item.target.stageHead,
+          Boolean(thread.target.stageHead) &&
+          currentHeads.get(thread.target.stageId) !== thread.target.stageHead,
       });
     }
-    batches.push({ ...batch, feedbackItems: items });
+    batches.push({ ...batch, feedbackThreads: threads });
   }
   return {
     initialized: true,
@@ -123,20 +125,23 @@ export async function deleteFeedbackBatch({ repositoryRoot, batchId }) {
   return readFeedback({ repositoryRoot });
 }
 
-export async function addFeedbackComment({
+export async function createFeedbackThread({
   repositoryRoot,
   batchId,
   body,
   target,
 }) {
-  const id = generatedId("comment");
+  const id = generatedId("thread");
+  const commentId = generatedId("comment");
   const args = [
-    "comment",
+    "thread",
     "add",
     "--batch",
     batchId,
     "--id",
     id,
+    "--comment-id",
+    commentId,
     `--body=${body}`,
     "--target-kind",
     target.kind,
@@ -164,25 +169,28 @@ export async function addFeedbackComment({
 
 export async function editFeedbackComment({
   repositoryRoot,
-  itemId,
+  threadId,
+  commentId,
   body,
 }) {
   await runFeedbackCommand(repositoryRoot, [
     "comment",
     "edit",
+    "--thread",
+    threadId,
     "--id",
-    itemId,
+    commentId,
     `--body=${body}`,
   ]);
   return readFeedback({ repositoryRoot });
 }
 
-export async function deleteFeedbackComment({ repositoryRoot, itemId }) {
+export async function deleteFeedbackThread({ repositoryRoot, threadId }) {
   await runFeedbackCommand(repositoryRoot, [
-    "comment",
+    "thread",
     "delete",
     "--id",
-    itemId,
+    threadId,
   ]);
   return readFeedback({ repositoryRoot });
 }
@@ -197,12 +205,12 @@ export async function submitFeedbackBatch({ repositoryRoot, batchId }) {
   return readFeedback({ repositoryRoot });
 }
 
-export async function approveFeedbackItem({ repositoryRoot, itemId }) {
+export async function approveFeedbackThread({ repositoryRoot, threadId }) {
   await runFeedbackCommand(repositoryRoot, [
-    "comment",
+    "thread",
     "approve",
     "--id",
-    itemId,
+    threadId,
   ]);
   return readFeedback({ repositoryRoot });
 }
