@@ -73,23 +73,7 @@
       "then": {
         "required": [
           "resolution"
-        ],
-        "properties": {
-          "comments": {
-            "type": "array",
-            "contains": {
-              "type": "object",
-              "properties": {
-                "author": {
-                  "const": "assistant"
-                }
-              },
-              "required": [
-                "author"
-              ]
-            }
-          }
-        }
+        ]
       }
     },
     {

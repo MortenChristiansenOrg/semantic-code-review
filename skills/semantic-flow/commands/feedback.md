@@ -46,26 +46,24 @@ Process the earliest affected stage first:
 
 9. If rewritten later stages no longer match their organization, reorganize
    those stages before continuing.
-10. Resolve each change-request thread by adding an assistant follow-up with the
-    submitted `previous-head` and current assigned-stage `rewritten-head`:
+10. Reply to each thread with an assistant comment that answers the question or
+    states what changed. Never resolve a thread — closing a conversation is
+    always the reviewer's decision.
 
-   ```text
-   <review-feedback> thread resolve --input -
-   ```
+    ```text
+    <review-feedback> thread reply --id <thread-id> --comment-id <comment-id> \
+      --author assistant --body <answer-or-change-summary>
+    ```
 
-11. Resolve answer-only threads with the same command, supplying the thread ID,
-    a new assistant comment ID, and the answer body, but no stage or head
-    options.
-12. If a resolved stage changes again, use `resolution rebind`.
-
-Every resolved thread must end with an assistant comment that answers the
-question or states what changed. Repeat in stage order until all submitted
-threads are resolved.
+You cannot mark threads resolved. Reply to every submitted thread you address,
+then leave them open for the reviewer to resolve or continue. Repeat in stage
+order until every submitted thread has an assistant reply.
 Then run:
 
 ```text
 <semantic-flow> validate --publish --project <artifact-worktree-path>
 ```
 
-Stop with the revised stack ready for human review. Do not approve feedback,
-approve the stack, publish metadata, push rewritten branches, or merge.
+Stop with the revised stack ready for human review. Do not resolve threads,
+approve feedback, approve the stack, publish metadata, push rewritten branches,
+or merge.

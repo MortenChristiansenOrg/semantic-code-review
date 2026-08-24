@@ -70,16 +70,25 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   const rewrittenHead = repository.readJson(
     ".semantic-review/stages/implementation.json",
   ).change.headRevision;
+  // The agent answers by replying; the reviewer alone resolves the thread.
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "second-comment",
+    "--comment-id",
+    "second-comment-response",
+    "--body",
+    "Rewrote the implementation stage.",
+    "--author",
+    "assistant",
+  );
   for (const id of ["first-comment", "second-comment"]) {
     repository.feedback(
       "thread",
       "resolve",
       "--id",
       id,
-      "--comment-id",
-      `${id}-response`,
-      "--body",
-      "Rewrote the implementation stage.",
       "--stage",
       "implementation",
       "--previous-head",
@@ -192,16 +201,20 @@ test("answer-only threads resolve without rewriting a stage", (t) => {
     "--stage",
     "implementation",
   );
+  // The agent answers via a reply; the reviewer then resolves with no rewrite.
   repository.feedback(
     "thread",
-    "resolve",
+    "reply",
     "--id",
     "why-this-way",
     "--comment-id",
     "answer",
     "--body",
     "The invariant must apply to every caller.",
+    "--author",
+    "assistant",
   );
+  repository.feedback("thread", "resolve", "--id", "why-this-way");
 
   const thread = repository.readJson(
     ".semantic-review-feedback/threads/why-this-way.json",
@@ -209,6 +222,156 @@ test("answer-only threads resolve without rewriting a stage", (t) => {
   assert.equal(thread.status, "resolved");
   assert.equal(thread.resolution.stageId, undefined);
   assert.equal(thread.comments[1].author, "assistant");
+  repository.feedback("validate");
+});
+
+test("next lists only threads awaiting an agent reply", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.feedback("init");
+  repository.feedback("batch", "create", "--id", "q", "--title", "Queue");
+  for (const id of ["needs-reply", "already-answered"]) {
+    repository.feedback(
+      "thread",
+      "add",
+      "--batch",
+      "q",
+      "--id",
+      id,
+      "--comment-id",
+      `${id}-note`,
+      "--body",
+      `Look at ${id}.`,
+      "--label",
+      "Implementation",
+      "--target-kind",
+      "stage",
+      "--stage",
+      "implementation",
+    );
+  }
+  repository.feedback("batch", "submit", "--id", "q");
+
+  // Both freshly-submitted threads await a reply.
+  let groups = JSON.parse(repository.feedback("next", "--json"));
+  assert.deepEqual(
+    groups.flatMap((g) => g.threads.map((thread) => thread.id)).sort(),
+    ["already-answered", "needs-reply"],
+  );
+
+  // Once the agent replies, that thread leaves the queue but stays submitted.
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "already-answered",
+    "--comment-id",
+    "answer",
+    "--body",
+    "Done.",
+    "--author",
+    "assistant",
+  );
+  groups = JSON.parse(repository.feedback("next", "--json"));
+  assert.deepEqual(
+    groups.flatMap((g) => g.threads.map((thread) => thread.id)),
+    ["needs-reply"],
+  );
+  assert.equal(
+    repository.readJson(
+      ".semantic-review-feedback/threads/already-answered.json",
+    ).status,
+    "submitted",
+  );
+
+  // A reviewer follow-up puts the answered thread back in the queue.
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "already-answered",
+    "--comment-id",
+    "more",
+    "--body",
+    "One more thing.",
+  );
+  groups = JSON.parse(repository.feedback("next", "--json"));
+  assert.deepEqual(
+    groups.flatMap((g) => g.threads.map((thread) => thread.id)).sort(),
+    ["already-answered", "needs-reply"],
+  );
+  repository.feedback("validate");
+});
+
+test("reviewers reopen and continue resolved threads", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.feedback("init");
+  repository.feedback("batch", "create", "--id", "talk", "--title", "Talk");
+  repository.feedback(
+    "thread",
+    "add",
+    "--batch",
+    "talk",
+    "--id",
+    "chat",
+    "--comment-id",
+    "q",
+    "--body",
+    "Question?",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  repository.feedback("batch", "submit", "--id", "talk");
+  const threadPath = ".semantic-review-feedback/threads/chat.json";
+
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "chat",
+    "--comment-id",
+    "a",
+    "--body",
+    "Answer.",
+    "--author",
+    "assistant",
+  );
+  repository.feedback("thread", "resolve", "--id", "chat");
+  assert.equal(repository.readJson(threadPath).status, "resolved");
+
+  // Reviewers can undo a resolution.
+  repository.feedback("thread", "reopen", "--id", "chat");
+  let thread = repository.readJson(threadPath);
+  assert.equal(thread.status, "submitted");
+  assert.equal(thread.resolution, undefined);
+
+  // Replying to a resolved thread reopens it automatically.
+  repository.feedback("thread", "resolve", "--id", "chat");
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "chat",
+    "--comment-id",
+    "more",
+    "--body",
+    "Follow-up.",
+  );
+  thread = repository.readJson(threadPath);
+  assert.equal(thread.status, "submitted");
+  assert.equal(thread.resolution, undefined);
+  assert.equal(thread.comments.at(-1).author, "user");
+
+  repository.expectFeedbackFailure(
+    "is not resolved",
+    "thread",
+    "reopen",
+    "--id",
+    "chat",
+  );
   repository.feedback("validate");
 });
 

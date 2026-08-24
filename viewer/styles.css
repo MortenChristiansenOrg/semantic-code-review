@@ -767,7 +767,7 @@ button { font-family: inherit; cursor: pointer; }
 .node-caret .chev { transition: transform .28s var(--ease); }
 .node[open] .node-caret .chev { transform: rotate(180deg); }
 .node > summary:hover .node-caret { color: var(--muted); }
-.node-body { padding: 0 18px 18px 74px; }
+.node-body { padding: 0 18px 18px; }
 .node-foot { display: flex; gap: 9px; margin-top: 14px; }
 
 /* ---- payload (file disclosure) ---------------------------------------- */
@@ -816,7 +816,7 @@ button { font-family: inherit; cursor: pointer; }
 .payload.all-done > summary .pl-count { color: var(--ok); }
 
 /* ---- file groups (by .NET project) ------------------------------------ */
-.fgroups { border-top: 1px solid var(--line-soft); padding: 5px; display: grid; gap: 6px; }
+.fgroups { padding: 5px; display: grid; gap: 6px; }
 .fgroup { border-radius: var(--radius-sm); background: rgba(255, 255, 255, .012); }
 .fgroup-h {
   display: flex;
@@ -1218,50 +1218,89 @@ button { font-family: inherit; cursor: pointer; }
 }
 .scrim.is-on { opacity: 1; visibility: visible; }
 
-/* ---- note dialog ------------------------------------------------------ */
-.note-dialog {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: linear-gradient(180deg, var(--raise), var(--panel));
-  color: var(--text);
-  padding: 0;
-  width: min(460px, 92vw);
-  box-shadow: var(--shadow);
-}
-.note-dialog::backdrop { background: rgba(6, 9, 13, .6); backdrop-filter: blur(3px); }
-.note-dialog form { padding: 22px; }
-.nd-top { display: flex; justify-content: space-between; align-items: start; margin-bottom: 14px; }
-.nd-top h2 { font-size: 19px; margin-top: 4px; }
-.nd-top button { background: none; border: 0; color: var(--faint); font-size: 20px; }
-.nd-target { font-family: var(--mono); font-size: 12px; color: var(--muted); word-break: break-all; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--ink-2); margin: 0 0 14px; }
-.nd-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 0 14px; }
-.nd-opt { position: relative; cursor: pointer; }
-.nd-opt input { position: absolute; opacity: 0; pointer-events: none; }
-.nd-opt-face {
-  display: block; padding: 10px 12px; border-radius: 10px;
-  border: 1px solid var(--line); background: var(--ink-2);
-  transition: border-color .16s var(--ease), background .16s var(--ease);
-}
-.nd-opt-face b { display: block; font-size: 13px; }
-.nd-opt-face small { display: block; color: var(--faint); font-size: 11px; margin-top: 3px; line-height: 1.35; }
-.nd-opt:hover .nd-opt-face { border-color: var(--muted); }
-.nd-opt input:checked + .nd-opt-face { border-color: var(--signal); background: var(--signal-soft); }
-.nd-opt input:focus-visible + .nd-opt-face { outline: 2px solid var(--signal); outline-offset: 2px; }
-.note-dialog textarea {
-  width: 100%;
-  border: 1px solid var(--line);
+/* ---- inline note composer --------------------------------------------- */
+.note-compose {
+  border: 1px solid var(--signal-soft);
   border-radius: 10px;
   background: var(--ink-2);
+  padding: 10px;
+  display: grid;
+  gap: 9px;
+}
+.nc-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.nc-opt { position: relative; cursor: pointer; }
+.nc-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.nc-opt span {
+  display: block; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel);
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+.nc-opt span b { display: block; font-size: 12px; }
+.nc-opt span small { display: block; color: var(--faint); font-size: 10.5px; margin-top: 2px; line-height: 1.3; }
+.nc-opt:hover span { border-color: var(--muted); }
+.nc-opt input:checked + span { border-color: var(--signal); background: var(--signal-soft); }
+.nc-opt input:focus-visible + span { outline: 2px solid var(--signal); outline-offset: 2px; }
+.note-compose textarea, .tthread-reply textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
   color: var(--text);
   font-family: var(--sans);
-  font-size: 14px;
-  padding: 12px;
+  font-size: 13.5px;
+  padding: 10px;
   resize: vertical;
 }
-.note-dialog textarea:focus { outline: none; border-color: var(--signal); }
-.nd-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
-.nd-actions button { font-family: var(--mono); font-size: 12px; padding: 9px 16px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
-.nd-save { background: var(--signal-soft) !important; border-color: var(--signal) !important; color: var(--text) !important; }
+.note-compose textarea:focus, .tthread-reply textarea:focus { outline: none; border-color: var(--signal); }
+.nc-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.nc-actions button {
+  font-family: var(--mono); font-size: 11.5px; padding: 7px 14px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); cursor: pointer;
+}
+.nc-save { background: var(--signal-soft) !important; border-color: var(--signal) !important; color: var(--text) !important; }
+.note .note-compose { margin-top: 2px; }
+
+/* ---- artifact thread actions & inline reply --------------------------- */
+.tthread-act { display: flex; gap: 8px; flex-wrap: wrap; }
+.tthread-act button {
+  font-family: var(--mono); font-size: 11px; padding: 6px 12px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  transition: all .16s var(--ease);
+}
+.tthread-act button:hover:not(:disabled) { border-color: var(--signal); color: var(--signal); }
+.tthread-act button:disabled { opacity: .5; cursor: default; }
+.tthread-resolve:hover:not(:disabled) { border-color: var(--ok) !important; color: var(--ok) !important; }
+.tthread-reply { display: grid; gap: 8px; margin-top: 2px; }
+.tthread-err { font-size: 11px; color: var(--t-risk); margin: 0; }
+.tthread-jump {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 10.5px; padding: 3px 9px;
+  border-radius: 999px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  transition: all .16s var(--ease);
+}
+.tthread-jump:hover { border-color: var(--signal); color: var(--signal); }
+.tthread-jump .bub { width: 12px; height: 12px; }
+
+/* ---- diff selection match highlight ----------------------------------- */
+.diff-grid mark.sel-hit {
+  background: var(--signal-soft);
+  color: inherit;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(255, 106, 69, .45);
+}
+
+/* ---- stage acceptance chip status ------------------------------------- */
+.ac-chip-stat {
+  margin-left: 5px;
+  font-size: 11px;
+  line-height: 1;
+}
+.ac-chip-stat.vstat-passed { color: var(--ok); }
+.ac-chip-stat.vstat-notrun { color: var(--t-assumption); }
+.ac-chip-stat:not(.vstat-passed):not(.vstat-notrun) { color: var(--faint); }
 
 /* ---- focus states ----------------------------------------------------- */
 :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }

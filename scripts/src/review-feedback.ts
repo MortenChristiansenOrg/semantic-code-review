@@ -755,9 +755,16 @@ function nextFeedback(paths, options) {
         .join(", ")}.`,
     );
   }
+  // Only surface threads awaiting an agent response. Once the agent has replied
+  // (last comment authored by `assistant`) the thread is the reviewer's to
+  // resolve or continue, so it drops out of the agent work queue.
+  const awaiting = submitted.filter(
+    (thread) =>
+      thread.comments[thread.comments.length - 1]?.author !== "assistant",
+  );
   const groups = [];
   for (const stageId of semantic.manifest.stages) {
-    const threads = submitted.filter(
+    const threads = awaiting.filter(
       (thread) =>
         (thread.assignedStageId ?? thread.target.stageId) === stageId,
     );
@@ -794,6 +801,49 @@ function nextFeedback(paths, options) {
   }
 }
 
+// Continue an open thread with a new comment. Replying to a resolved thread
+// reopens it — closing a conversation is always the reviewer's decision.
+function replyThread(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread reply"),
+  );
+  const { feedback } = validateFeedback(paths, { quiet: true });
+  const id = option(options, "id", { required: true });
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (!["submitted", "resolved"].includes(thread.status)) {
+    fail(`Feedback thread ${id} is not open for replies.`);
+  }
+  const commentId = option(options, "comment-id", { required: true });
+  if (thread.comments.some((comment) => comment.id === commentId)) {
+    fail(`Comment ${commentId} already exists in thread ${id}.`);
+  }
+  const author = option(options, "author") || "user";
+  if (!["user", "assistant"].includes(author)) {
+    fail("--author must be user or assistant.");
+  }
+  thread.comments.push({
+    id: commentId,
+    author,
+    body: option(options, "body", { required: true }),
+    createdAt: new Date().toISOString(),
+  });
+  if (thread.status === "resolved") {
+    thread.status = "submitted";
+    delete thread.resolution;
+  }
+  writeThread(paths, thread);
+  const batch = feedback.batches.get(thread.batchId);
+  updateBatchStatus(batch, feedback);
+  writeBatch(paths, batch);
+  validateFeedback(paths, { quiet: true });
+  console.log(`Added reply ${commentId} to feedback thread ${id}.`);
+}
+
+// Mark a thread resolved. Resolution is a reviewer decision: the agent never
+// closes a thread, it only replies. An optional closing note and an optional
+// stage-rewrite record may accompany the closure.
 function resolveThread(paths, options) {
   assertKnownOptions(
     options,
@@ -804,7 +854,7 @@ function resolveThread(paths, options) {
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
   if (thread.status !== "submitted") {
-    fail(`Feedback thread ${id} is not submitted.`);
+    fail(`Feedback thread ${id} is not open for resolution.`);
   }
   const stageId = option(options, "stage");
   const previous = option(options, "previous-head");
@@ -846,16 +896,22 @@ function resolveThread(paths, options) {
       rewrittenHead: rewritten,
     });
   }
-  const commentId = option(options, "comment-id", { required: true });
-  if (thread.comments.some((comment) => comment.id === commentId)) {
-    fail(`Comment ${commentId} already exists in thread ${id}.`);
+  const commentId = option(options, "comment-id");
+  const body = option(options, "body");
+  if (Boolean(commentId) !== Boolean(body)) {
+    fail("--comment-id and --body must be provided together.");
   }
-  thread.comments.push({
-    id: commentId,
-    author: "assistant",
-    body: option(options, "body", { required: true }),
-    createdAt: resolution.resolvedAt,
-  });
+  if (commentId) {
+    if (thread.comments.some((comment) => comment.id === commentId)) {
+      fail(`Comment ${commentId} already exists in thread ${id}.`);
+    }
+    thread.comments.push({
+      id: commentId,
+      author: "user",
+      body,
+      createdAt: resolution.resolvedAt,
+    });
+  }
   thread.status = "resolved";
   thread.resolution = resolution;
   writeThread(paths, thread);
@@ -864,6 +920,29 @@ function resolveThread(paths, options) {
   writeBatch(paths, batch);
   validateFeedback(paths, { quiet: true });
   console.log(`Resolved feedback thread ${id}.`);
+}
+
+// Reopen a resolved thread so the conversation can continue.
+function reopenThread(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread reopen"),
+  );
+  const { feedback } = validateFeedback(paths, { quiet: true });
+  const id = option(options, "id", { required: true });
+  const thread = feedback.threads.get(id);
+  if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  if (thread.status !== "resolved") {
+    fail(`Feedback thread ${id} is not resolved.`);
+  }
+  thread.status = "submitted";
+  delete thread.resolution;
+  writeThread(paths, thread);
+  const batch = feedback.batches.get(thread.batchId);
+  updateBatchStatus(batch, feedback);
+  writeBatch(paths, batch);
+  validateFeedback(paths, { quiet: true });
+  console.log(`Reopened feedback thread ${id}.`);
 }
 
 function approveThread(paths, options) {
@@ -1009,7 +1088,9 @@ function dispatch(paths, positionals, options) {
   if (command === "thread" && subcommand === "assign") return assignThread(paths, options);
   if (command === "batch" && subcommand === "submit") return submitBatch(paths, options);
   if (command === "next" && !subcommand) return nextFeedback(paths, options);
+  if (command === "thread" && subcommand === "reply") return replyThread(paths, options);
   if (command === "thread" && subcommand === "resolve") return resolveThread(paths, options);
+  if (command === "thread" && subcommand === "reopen") return reopenThread(paths, options);
   if (command === "resolution" && subcommand === "rebind") return rebindResolutions(paths, options);
   if (command === "thread" && subcommand === "approve") return approveThread(paths, options);
   if (command === "batch" && subcommand === "approve-all") return approveAll(paths, options);

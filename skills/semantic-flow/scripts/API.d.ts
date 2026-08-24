@@ -412,13 +412,30 @@ export interface NextFeedbackOptions {
  * @command next
  */
 export declare function nextFeedback(options?: NextFeedbackOptions): void;
+export interface ReplyFeedbackThreadOptions {
+    /** Open feedback thread being continued. */
+    id: string;
+    /** Stable identifier for the new comment. */
+    "comment-id": string;
+    /** Comment text. */
+    body: string;
+    /** Comment author; defaults to `user`. Agents reply with `assistant`. */
+    author?: "user" | "assistant";
+}
+/**
+ * Appends a comment to an open thread. Replying to a resolved thread reopens
+ * it — closing a conversation is always the reviewer's decision.
+ * @cli review-feedback.mjs
+ * @command thread reply
+ */
+export declare function replyFeedbackThread(options: ReplyFeedbackThreadOptions): void;
 export interface ResolveFeedbackThreadOptions {
     /** Submitted feedback thread being resolved. */
     id: string;
-    /** Stable identifier for the assistant follow-up comment. */
-    "comment-id": string;
-    /** Answer or explanation of how the request was handled. */
-    body: string;
+    /** Stable identifier for an optional reviewer closing comment. */
+    "comment-id"?: string;
+    /** Optional reviewer closing note; required with `comment-id`. */
+    body?: string;
     /** Stage rewritten to resolve a change request. */
     stage?: string;
     /** Full stage head captured when the thread was submitted. */
@@ -427,12 +444,23 @@ export interface ResolveFeedbackThreadOptions {
     "rewritten-head"?: string;
 }
 /**
- * Adds an assistant follow-up and resolves a submitted thread.
- * Omit all rewrite options when the follow-up only answers a question.
+ * Marks a submitted thread resolved. Resolution is a reviewer decision; the
+ * agent never closes a thread. A closing note and stage-rewrite record are
+ * optional.
  * @cli review-feedback.mjs
  * @command thread resolve
  */
 export declare function resolveFeedbackThread(options: ResolveFeedbackThreadOptions): void;
+export interface ReopenFeedbackThreadOptions {
+    /** Resolved feedback thread to reopen. */
+    id: string;
+}
+/**
+ * Reopens a resolved thread so the conversation can continue.
+ * @cli review-feedback.mjs
+ * @command thread reopen
+ */
+export declare function reopenFeedbackThread(options: ReopenFeedbackThreadOptions): void;
 export interface RebindResolutionsOptions {
     /** Stage that was rewritten again. */
     stage: string;

@@ -17,8 +17,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const MAX_ROWS = 900; // per-file diff row cap to keep the payload sane
-const DEFAULT_PORT = 4180;
+// Uncommon fixed port so the viewer origin (and thus its localStorage) stays
+// stable across runs. Kept below the ephemeral range and clear of the ports
+// popular web dev servers grab (3000/4200/5173/8080/…).
+const DEFAULT_PORT = 29180;
 const HOST = "127.0.0.1";
+// Identity returned by GET /api/whoami so a new launch can recognise (and stop)
+// a previous review viewer that is still holding the port.
+const VIEWER_APP_ID = "semantic-flow-review-viewer";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -285,8 +291,8 @@ function buildInsights(stage) {
 function buildReviewData(repoRoot) {
   const reviewRoot = path.join(repoRoot, ".semantic-review");
   const manifest = readJson(path.join(reviewRoot, "manifest.json"));
-  const requirement = readJson(
-    path.join(reviewRoot, "requirements", `${manifest.requirements[0]}.json`),
+  const requirementDocs = (manifest.requirements || []).map((requirementId) =>
+    readJson(path.join(reviewRoot, "requirements", `${requirementId}.json`)),
   );
   const projects = buildProjectIndex(repoRoot);
 
@@ -347,22 +353,25 @@ function buildReviewData(repoRoot) {
     };
   });
 
+  const requirements = requirementDocs.map((requirement) => ({
+    id: requirement.id,
+    title: requirement.title,
+    summary: requirement.summary,
+    source: requirement.source,
+    acceptance: (requirement.acceptanceCriteria || []).map((c) => ({
+      id: c.id,
+      text: c.text,
+    })),
+  }));
+
   return {
     reviewId: manifest.reviewId,
     title: manifest.title,
     summary: manifest.summary,
     targetBranch: manifest.targetBranch,
     baseRevision: manifest.baseRevision,
-    requirement: {
-      id: requirement.id,
-      title: requirement.title,
-      summary: requirement.summary,
-      source: requirement.source,
-      acceptance: (requirement.acceptanceCriteria || []).map((c) => ({
-        id: c.id,
-        text: c.text,
-      })),
-    },
+    requirement: requirements[0],
+    requirements,
     stages,
     feedback: buildFeedbackThreads(repoRoot, stages),
   };
@@ -675,10 +684,122 @@ async function handleFeedbackExport(request, response, context) {
   }
 }
 
-function serveViewer({ viewerDir, port, repoRoot, feedbackCli }) {
-  const server = http.createServer((request, response) => {
+function findArtifactThread(repoRoot, threadId) {
+  const review = buildReviewData(repoRoot);
+  const thread = (review.feedback || []).find((t) => t.id === threadId);
+  return { review, thread };
+}
+
+// Reviewer-driven thread actions: continue (reply), close (resolve), or reopen.
+// Closure is always the reviewer's decision — the agent only ever replies.
+async function handleThreadAction(request, response, context, action) {
+  try {
+    if (!isTrustedRequest(request, context.port)) {
+      sendJson(response, 403, {
+        ok: false,
+        error: "Thread actions require a same-origin application/json request.",
+      });
+      return;
+    }
+    if (!context.feedbackCli) {
+      sendJson(response, 422, {
+        ok: false,
+        error: "The review-feedback CLI was not found next to the viewer.",
+      });
+      return;
+    }
+    const raw = await readRequestBody(request);
+    let payload;
+    try {
+      payload = JSON.parse(raw || "{}");
+    } catch {
+      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
+      return;
+    }
+    const review = buildReviewData(context.repoRoot);
+    if (!payload || payload.reviewId !== review.reviewId) {
+      sendJson(response, 409, {
+        ok: false,
+        error: "This viewer is showing a different review than the one being edited.",
+      });
+      return;
+    }
+    const threadId = payload.threadId;
+    if (typeof threadId !== "string" || !threadId) {
+      sendJson(response, 400, { ok: false, error: "A threadId is required." });
+      return;
+    }
+    try {
+      if (action === "reply") {
+        const body = typeof payload.body === "string" ? payload.body.trim() : "";
+        if (!body) {
+          sendJson(response, 400, { ok: false, error: "A reply body is required." });
+          return;
+        }
+        const commentId = `reply-${Date.now().toString(36)}`;
+        runFeedbackCli(context.feedbackCli, context.repoRoot, [
+          "thread", "reply",
+          "--id", threadId,
+          "--comment-id", commentId,
+          "--author", "user",
+          "--body", body,
+        ]);
+      } else if (action === "resolve") {
+        runFeedbackCli(context.feedbackCli, context.repoRoot, ["thread", "resolve", "--id", threadId]);
+      } else if (action === "reopen") {
+        runFeedbackCli(context.feedbackCli, context.repoRoot, ["thread", "reopen", "--id", threadId]);
+      }
+    } catch (error) {
+      sendJson(response, 422, { ok: false, error: cliErrorMessage(error) });
+      return;
+    }
+    const { thread } = findArtifactThread(context.repoRoot, threadId);
+    if (!thread) {
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+    const last = thread.comments[thread.comments.length - 1];
+    sendJson(response, 200, {
+      ok: true,
+      status: thread.status,
+      resolution: thread.resolution || null,
+      comment: action === "reply" ? last : undefined,
+    });
+  } catch (error) {
+    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
+  }
+}
+
+function serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId }) {
+  let server = null;
+  const requestHandler = (request, response) => {
     const url = new URL(request.url, `http://${HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+
+    if (request.method === "GET" && pathname === "/api/whoami") {
+      sendJson(response, 200, { ok: true, app: VIEWER_APP_ID, reviewId });
+      return;
+    }
+
+    // Lets a fresh launch reclaim the fixed port by asking the previous viewer
+    // to exit, instead of drifting to a new port (which strands localStorage).
+    if (request.method === "POST" && pathname === "/api/shutdown") {
+      if (!isTrustedRequest(request, port)) {
+        sendJson(response, 403, {
+          ok: false,
+          error: "Shutdown requires a same-origin application/json request.",
+        });
+        return;
+      }
+      sendJson(response, 200, { ok: true });
+      setTimeout(() => {
+        const done = () => process.exit(0);
+        if (server) server.close(done);
+        else done();
+        setTimeout(done, 500).unref();
+      }, 50);
+      return;
+    }
 
     if (request.method === "POST" && pathname === "/api/feedback/export") {
       handleFeedbackExport(request, response, {
@@ -686,6 +807,15 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli }) {
         feedbackCli,
         port,
       });
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      ["/api/feedback/reply", "/api/feedback/resolve", "/api/feedback/reopen"].includes(pathname)
+    ) {
+      const action = pathname.split("/").pop();
+      handleThreadAction(request, response, { repoRoot, feedbackCli, port }, action);
       return;
     }
 
@@ -731,15 +861,71 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli }) {
       });
       response.end(content);
     });
-  });
+  };
 
+  server = http.createServer(requestHandler);
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, HOST, () => resolve(server));
   });
 }
 
+// Probe an occupied port to see whether our own review viewer is holding it.
+function probeViewer(port) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: HOST, port, path: "/api/whoami", timeout: 1500 },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            const parsed = JSON.parse(data);
+            resolve(parsed && parsed.app === VIEWER_APP_ID ? parsed : null);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+// Ask a previous viewer instance to shut down so we can reclaim the port.
+function requestShutdown(port) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      {
+        host: HOST,
+        port,
+        path: "/api/shutdown",
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        timeout: 1500,
+      },
+      (res) => {
+        res.on("data", () => {});
+        res.on("end", () => resolve(res.statusCode === 200));
+      },
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.end("{}");
+  });
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function openBrowser(url) {
+  if (process.env.SEMANTIC_VIEW_NO_OPEN) return;
   try {
     if (process.platform === "win32") {
       execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
@@ -759,20 +945,34 @@ async function main() {
   const review = buildReviewData(repoRoot);
   const feedbackCli = locateFeedbackCli();
 
-  let port = DEFAULT_PORT;
+  const port = DEFAULT_PORT;
   let server = null;
-  for (let attempt = 0; attempt < 20 && !server; attempt += 1) {
-    try {
-      server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli });
-    } catch (error) {
-      if (error && error.code === "EADDRINUSE") {
-        port += 1;
-        continue;
+  try {
+    server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId: review.reviewId });
+  } catch (error) {
+    if (!error || error.code !== "EADDRINUSE") throw error;
+    // The port is taken. Reclaim it only if our own viewer is holding it;
+    // never kill an unrelated app that happens to use this port.
+    const occupant = await probeViewer(port);
+    if (!occupant) {
+      fail(
+        `Port ${port} is in use by another application. Stop it (or free the port) and try again.`,
+      );
+    }
+    console.log(`A semantic review viewer is already running on port ${port}; restarting it…`);
+    await requestShutdown(port);
+    for (let attempt = 0; attempt < 40 && !server; attempt += 1) {
+      await delay(100);
+      try {
+        server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId: review.reviewId });
+      } catch (retryError) {
+        if (!retryError || retryError.code !== "EADDRINUSE") throw retryError;
       }
-      throw error;
+    }
+    if (!server) {
+      fail(`Port ${port} is still busy after asking the existing viewer to stop.`);
     }
   }
-  if (!server) fail("could not bind a local port for the viewer.");
 
   const url = `http://${HOST}:${port}/`;
   const fileCount = review.stages.reduce((a, s) => a + s.files.length, 0);

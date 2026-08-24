@@ -231,15 +231,28 @@ export const reviewFeedbackApi: CliSignature = {
     },
     { command: "next", options: [option("json")] },
     {
-      command: "thread resolve",
+      command: "thread reply",
       options: [
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>", { required: true }),
         option("body", "<text>", { required: true }),
+        option("author", "<user|assistant>"),
+      ],
+    },
+    {
+      command: "thread resolve",
+      options: [
+        option("id", "<thread-id>", { required: true }),
+        option("comment-id", "<comment-id>"),
+        option("body", "<text>"),
         option("stage", "<stage-id>"),
         option("previous-head", "<full-sha>"),
         option("rewritten-head", "<full-sha>"),
       ],
+    },
+    {
+      command: "thread reopen",
+      options: [option("id", "<thread-id>", { required: true })],
     },
     {
       command: "resolution rebind",
