@@ -15,6 +15,16 @@ not a story reconstructed afterward.
 - Keep each stage to one coherent behavior, with its tests and directly related
   documentation.
 - Let `stage begin` create and check out the deterministic stage branch.
+- Treat the numeric branch prefix as the finalized manifest position, not a
+  planned position. There must be exactly one implementation branch for each
+  ordinal.
+- Keep all work that belongs to the active stage on its existing branch. If
+  its scope changes, update its mutable metadata with `stage set`; do not
+  create another numbered branch for the same stage position.
+- Do not use `stage discard` to rename or reorder a stage. It removes working
+  metadata but leaves the branch ref, so beginning a replacement can create
+  two branches claiming the same ordinal. Stop and ask the user if the
+  immutable stage ID or stage order must change.
 - Commit only implementation content, then organize and finalize that branch
   head.
 - Prefer vertical behavior-oriented stages over file, directory, layer, or
@@ -23,7 +33,8 @@ not a story reconstructed afterward.
   artificial stages or a catch-all cleanup stage.
 - Correct an omission in the earliest responsible stage and restack later
   branches. Do not append stabilization or acceptance-gap stages for work that
-  belongs in an existing boundary.
+  belongs in an existing boundary, and do not create a new numbered branch for
+  it.
 
 ## Context and change organization
 

@@ -1158,7 +1158,10 @@ function updateStageContext(paths, id, finalized, update) {
     return;
   }
 
-  const artifact = validateArtifact(paths, { quiet: true });
+  const artifact = validateArtifact(paths, {
+    quiet: true,
+    validateGit: false,
+  });
   const stage = artifact.stages.get(id);
   if (!stage) {
     fail(`Finalized stage ${id} does not exist.`);
@@ -1168,7 +1171,7 @@ function updateStageContext(paths, id, finalized, update) {
   update(stage);
   try {
     writeJson(file, stage);
-    validateArtifact(paths, { quiet: true });
+    validateArtifact(paths, { quiet: true, validateGit: false });
   } catch (error) {
     writeJson(file, oldStage);
     throw error;
@@ -1493,10 +1496,19 @@ function organizeStage(paths, options) {
   let baseRevision;
   let headRevision;
   let files;
+  let finalizedStageMoved = false;
   if (finalized) {
     baseRevision = stage.change.baseRevision;
-    headRevision = stage.change.headRevision;
-    files = stage.change.files;
+    headRevision = branchCommit(paths.root, stage.change.branch);
+    if (
+      currentBranch(paths.root) !== stage.change.branch ||
+      commitObject(paths.root, "HEAD") !== headRevision
+    ) {
+      fail(`Organizing ${stageId} requires checked-out stage branch ${stage.change.branch}.`);
+    }
+    assertLinearRange(paths.root, baseRevision, headRevision, `Stage ${stageId}`);
+    files = changedFiles(paths.root, baseRevision, headRevision);
+    finalizedStageMoved = headRevision !== stage.change.headRevision;
   } else {
     const previousId = artifact.manifest.stages.at(-1);
     baseRevision = previousId
@@ -1511,6 +1523,10 @@ function organizeStage(paths, options) {
   }
 
   const updated = structuredClone(stage);
+  if (finalizedStageMoved) {
+    updated.change.headRevision = headRevision;
+    updated.change.files = files;
+  }
   applyOrganization(updated, organization);
   const errors = stageNodeErrors(updated, files, {
     root: paths.root,
@@ -1529,7 +1545,7 @@ function organizeStage(paths, options) {
     writeJson(file, updated);
     validateArtifact(paths, {
       quiet: true,
-      validateGit: finalized,
+      validateGit: finalized && !finalizedStageMoved,
     });
   } catch (error) {
     writeJson(file, oldStage);

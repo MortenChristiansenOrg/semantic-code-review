@@ -39,6 +39,9 @@ with `requirement add` before a stage references them.
 
 ### Begin
 
+Run `stage begin` before creating any implementation commit. Do not create a
+preparatory branch or a future stage branch with Git.
+
 From the current stack tip:
 
 ```text
@@ -47,11 +50,25 @@ From the current stack tip:
 
 The command creates and checks out the deterministic stage branch. The first
 stage starts at the target branch; each later stage starts at the previous
-stage head. `depends-on` records direct semantic prerequisites.
+stage head. Its numeric prefix is the next finalized manifest position, not
+the stage's planned position. Treat the branch reported by the command as the
+only branch for that ordinal. `depends-on` records direct semantic
+prerequisites.
 
-Use `stage set` when discovery changes active metadata. Use `stage discard`
-only after deciding what happens to any implementation changes on the
-abandoned branch.
+Before running the command, list local refs below the manifest's
+`branchPrefix`. Compute the next ordinal as the finalized stage count plus one,
+padded to at least two digits. If any existing branch already starts with that
+ordinal, stop instead of creating a second branch for it.
+
+Before editing or committing, verify that the reported branch remains checked
+out. Keep every commit for the active stage on that branch until `stage
+finish`.
+
+Use `stage set` when discovery changes active metadata or scope. Do not discard
+and begin a replacement merely to rename or reorder the stage. `stage discard`
+leaves its branch ref behind, so this can produce duplicate ordinal prefixes.
+If the immutable stage ID or order is wrong, stop and ask the user rather than
+creating another numbered branch.
 
 ### Implement and capture context
 
@@ -101,7 +118,8 @@ Finalize:
 <semantic-review> stage finish
 ```
 
-Repeat for each planned stage.
+Run `<semantic-flow> validate --project <artifact-worktree-path>` before
+beginning the next stage. Repeat for each planned stage.
 
 ## Complete implementation
 

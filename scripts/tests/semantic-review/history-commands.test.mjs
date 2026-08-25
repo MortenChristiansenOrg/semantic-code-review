@@ -71,6 +71,134 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
   repository.semantic("validate", "--publish");
 });
 
+test("feedback can remove a finalized stage file before restacking", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository);
+  beginStage(repository, { id: "policy" });
+  repository.write("keep.txt", "keep v1\n");
+  repository.write("obsolete.txt", "obsolete\n");
+  repository.git("add", "keep.txt", "obsolete.txt");
+  repository.git("commit", "-m", "Implement policy");
+  const organization = {
+    $schema:
+      "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+    nodes: [
+      {
+        id: "policy-change",
+        description: "Implement the policy.",
+        changes: ["keep.txt", "obsolete.txt"].map((path) => ({
+          path,
+          classification: "behavior",
+        })),
+      },
+    ],
+    itemLinks: [],
+  };
+  repository.write("organization.json", `${JSON.stringify(organization, null, 2)}\n`);
+  repository.semantic(
+    "stage",
+    "organize",
+    "--stage",
+    "policy",
+    "--file",
+    "organization.json",
+  );
+  repository.remove("organization.json");
+  repository.semantic("stage", "finish", "--id", "policy");
+
+  beginStage(repository, {
+    id: "persistence",
+    dependencies: ["policy"],
+  });
+  finalizeStage(repository, {
+    id: "persistence",
+    file: "persistence.txt",
+    contents: "persistence v1\n",
+  });
+
+  repository.git("switch", "semantic-review/test-review/01-policy");
+  repository.write("keep.txt", "keep v2\n");
+  repository.remove("obsolete.txt");
+  repository.git("add", "-A");
+  const correctedPolicy = repository.git(
+    "commit",
+    "-m",
+    "Address policy feedback",
+  );
+  assert.match(correctedPolicy, /Address policy feedback/);
+
+  repository.semantic(
+    "stage",
+    "record",
+    "--stage",
+    "policy",
+    "--finalized",
+    "--kind",
+    "decision",
+    "--item-id",
+    "remove-obsolete-file",
+    "--category",
+    "engineering",
+    "--summary",
+    "Remove the obsolete file.",
+    "--rationale",
+    "The feedback showed that the file is unnecessary.",
+    "--node-ref",
+    "policy-change",
+  );
+
+  const revisedOrganization = {
+    ...organization,
+    nodes: [
+      {
+        ...organization.nodes[0],
+        changes: [
+          {
+            path: "keep.txt",
+            classification: "behavior",
+          },
+        ],
+      },
+    ],
+    itemLinks: [
+      {
+        collection: "decisions",
+        itemId: "remove-obsolete-file",
+        nodeRefs: ["policy-change"],
+      },
+    ],
+  };
+  repository.write(
+    "organization.json",
+    `${JSON.stringify(revisedOrganization, null, 2)}\n`,
+  );
+  repository.semantic(
+    "stage",
+    "organize",
+    "--stage",
+    "policy",
+    "--file",
+    "organization.json",
+    "--finalized",
+  );
+  repository.remove("organization.json");
+
+  const policy = repository.readJson(".semantic-review/stages/policy.json");
+  assert.equal(
+    policy.change.headRevision,
+    repository.git("rev-parse", "HEAD"),
+  );
+  assert.deepEqual(policy.change.files, [
+    {
+      path: "keep.txt",
+      kind: "added",
+    },
+  ]);
+
+  repository.semantic("restack", "--from", "policy");
+  repository.semantic("validate", "--publish");
+});
+
 test("restack rebases every stage branch onto an advanced target", (t) => {
   const repository = createRepository(t);
   initializeReview(repository);
