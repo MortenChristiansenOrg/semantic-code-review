@@ -8,6 +8,19 @@ npm ci --prefix ./scripts
 npm test --prefix ./scripts
 ```
 
+The full suite runs test files in parallel. During focused work, use the
+smallest matching suite:
+
+```text
+npm run test:flow --prefix ./scripts
+npm run test:review --prefix ./scripts
+npm run test:feedback --prefix ./scripts
+npm run test:view --prefix ./scripts
+```
+
+Each focused suite still type-checks and rebuilds the bundled skill before
+running its tests.
+
 `npm run build --prefix ./scripts` compiles self-contained Node.js bundles into
 `skills/semantic-flow/scripts`, compiler-emits `API.d.ts` from the documented
 TypeScript API source, and copies the versioned schemas required at runtime.
