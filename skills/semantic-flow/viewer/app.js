@@ -64,6 +64,12 @@
   let exportState = { phase: "idle", message: "" };
   function threadBusy(id) { return Boolean(threadOps[id] && threadOps[id].busy); }
   function threadError(id) { return threadOps[id] ? threadOps[id].error : ""; }
+  // A thread is collapsed when the reviewer collapsed it, or — absent an
+  // explicit choice — automatically once it has been resolved.
+  function threadCollapsed(t) {
+    if (state.threadCollapsed && t.id in state.threadCollapsed) return Boolean(state.threadCollapsed[t.id]);
+    return t.status === "resolved";
+  }
 
   function defaults() {
     return {
@@ -78,6 +84,8 @@
       pinnedInsight: null,
       hideApproved: false,
       fileView: {},
+      hideDeleted: {},
+      threadCollapsed: {},
       active: null
     };
   }
@@ -159,7 +167,7 @@
   }
   function visibleThreadCount(kind, id) {
     return (
-      artifactThreadsForElement(kind, id).length +
+      artifactThreadsForElement(kind, id).filter((t) => t.status !== "resolved").length +
       localVisibleForElement(id).length
     );
   }
@@ -344,7 +352,8 @@
   }
   // An exported feedback thread: a reviewer <-> agent conversation the reviewer
   // can continue, mark resolved, or reopen. Only the reviewer controls closure.
-  function renderArtifactThread(t, withLabel) {
+  function renderArtifactThread(t, withLabel, collapsedOverride) {
+    const collapsed = collapsedOverride !== undefined ? collapsedOverride : threadCollapsed(t);
     const msgs = (t.comments || [])
       .map((cm) => {
         const agent = cm.author === "assistant";
@@ -387,18 +396,23 @@
           <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${busy ? "disabled" : ""}>${busy ? "Sending…" : "Send reply"}</button></div>
         </form>`
       : "";
-    return `<article class="tthread status-${t.status}">
-      <div class="tthread-h">
+    return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
+      <div class="tthread-h" data-action="toggle-thread-collapse" data-id="${esc(t.id)}" role="button" tabindex="0" aria-expanded="${String(!collapsed)}" title="${collapsed ? "Expand thread" : "Collapse thread"}">
+        <span class="tthread-caret">${caret()}</span>
         <span class="tthread-kind">${esc((t.target && t.target.kind) || "thread")}</span>
         <span class="tthread-status s-${t.status}">${esc(t.status)}</span>
         ${jump}
       </div>
       ${label}
-      <div class="tthread-msgs">${msgs}</div>
-      ${res}
-      ${err}
-      ${actions}
-      ${replyForm}
+      <div class="tthread-body">
+        <div class="tthread-body-inner">
+          <div class="tthread-msgs">${msgs}</div>
+          ${res}
+          ${err}
+          ${actions}
+          ${replyForm}
+        </div>
+      </div>
     </article>`;
   }
   // A browser-local note. Drafts can be edited/deleted; a sent note awaiting its
@@ -471,8 +485,9 @@
     const isStale = st === "stale";
     const isActive = state.active === id;
     const threadCount = visibleThreadCount("file", id);
-    const threadOpen = Boolean(state.openThreads[id]);
-    return `<div class="frow-wrap ${threadOpen ? "thread-open" : ""}">
+    // A file's diff and its notes open and close together as one unit, so the
+    // thread badge opens the file just like the filename does.
+    return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="Inspect diff (click filename to select it)">
           <span class="kind k-${file.kind}">${kindGlyph(file.kind)}</span>
@@ -481,13 +496,26 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${threadCount ? `<button class="mini-thread ${threadOpen ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${threadOpen}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
+          ${threadCount ? `<button class="mini-thread ${isActive ? "is-open" : ""}" data-action="open-file" data-id="${id}" type="button" aria-expanded="${isActive}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
           <button class="mini-note" data-action="comment" data-kind="file" data-id="${id}" type="button" title="Add note" aria-label="Add note">${bubblePlus()}</button>
         </div>
       </div>
-      ${threadInline(id, "file")}
     </div>`;
+  }
+  // The notes block shown inside an open file's diff unit — always present while
+  // the file is open so content and notes collapse/expand together.
+  function fileNotesBlock(id) {
+    const composingNew = compose && compose.id === id && compose.editIndex == null;
+    const arts = artifactThreadsForElement("file", id);
+    const locals = localVisibleForElement(id);
+    const rows =
+      arts.map((t) => renderArtifactThread(t, false)).join("") +
+      locals.map((ln) => renderLocalNote(ln)).join("");
+    const footer = composingNew
+      ? renderComposer(compose)
+      : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${id}" type="button">＋ Add note</button>`;
+    return `<div class="thread file-notes" data-thread="${id}">${rows}${footer}</div>`;
   }
   function nodeFilesPanel(stage, node) {
     const files = nodeFileList(stage, node);
@@ -592,7 +620,7 @@
   function gapHtml(count) {
     return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} ⋯</code></div>`;
   }
-  function diffBody(file, mode) {
+  function diffBody(file, mode, hideDel) {
     if (file.binary) return `<div class="diff-empty">Binary file — not shown.</div>`;
     const lines = file.lines || [];
     if (!lines.length) return `<div class="diff-empty">No line changes recorded for this file.</div>`;
@@ -603,8 +631,13 @@
       // once as neutral lines (not an all-green wall) with a clear "new file" banner.
       out.push(`<div class="drow d-newfile"><span class="ln"></span><span class="ln"></span><i>＋</i><code>New file — full contents</code></div>`);
       lines.forEach((r) => out.push(newFileRowHtml(r, lang)));
+    } else if (file.kind === "deleted") {
+      // Deleted file: mirror the added-file presentation — the full previous
+      // contents once as neutral lines with a clear "deleted file" banner.
+      out.push(`<div class="drow d-oldfile"><span class="ln"></span><span class="ln"></span><i>－</i><code>Deleted file — previous contents</code></div>`);
+      lines.forEach((r) => out.push(newFileRowHtml(r, lang)));
     } else if (mode === "full") {
-      lines.forEach((r) => out.push(drowHtml(r, lang)));
+      lines.forEach((r) => { if (!(hideDel && r.t === "del")) out.push(drowHtml(r, lang)); });
     } else {
       const CTX = 3;
       const n = lines.length;
@@ -616,7 +649,7 @@
       }
       let i = 0;
       while (i < n) {
-        if (keep[i]) { out.push(drowHtml(lines[i], lang)); i++; }
+        if (keep[i]) { if (!(hideDel && lines[i].t === "del")) out.push(drowHtml(lines[i], lang)); i++; }
         else { let j = i; while (j < n && !keep[j]) j++; out.push(gapHtml(j - i)); i = j; }
       }
     }
@@ -629,6 +662,19 @@
       <button class="vt ${mode === "hunk" ? "is-on" : ""}" data-action="set-view" data-id="${id}" data-mode="hunk" type="button" aria-pressed="${mode === "hunk"}">Changes</button>
       <button class="vt ${mode === "full" ? "is-on" : ""}" data-action="set-view" data-id="${id}" data-mode="full" type="button" aria-pressed="${mode === "full"}">Full file</button>
     </div>`;
+  }
+  function hideRemovedToggle(id) {
+    const on = Boolean(state.hideDeleted[id]);
+    return `<div class="view-toggle" role="group" aria-label="Removed lines">
+      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${id}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
+    </div>`;
+  }
+  // Diff view controls: mode toggle + hide-removed. Added/deleted files render
+  // their full contents once, so neither control applies to them.
+  function diffControls(entry) {
+    const k = entry.file.kind;
+    if (k === "added" || k === "deleted") return "";
+    return `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
@@ -644,7 +690,7 @@
         <span class="diff-stage">${esc(stage.title)}</span>
       </div>
       <div class="diff-actions">
-        ${file.kind === "added" ? "" : viewToggle(id)}
+        ${diffControls(entry)}
         ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
         ${approveBtn("file", id, "sm")}
         ${commentBtn("file", id)}
@@ -656,14 +702,15 @@
     if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
     return `<section class="diff-panel ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${diffBody(entry.file, fileViewMode(entry.id))}
+      ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]))}
     </section>`;
   }
   function diffToolbar(entry) {
-    const added = entry.file.kind === "added";
+    const k = entry.file.kind;
+    const hint = k === "added" ? "New file" : k === "deleted" ? "Deleted file" : "Inline diff";
     return `<header class="diff-bar">
-      <span class="diff-bar-hint">${added ? "New file" : "Inline diff"}</span>
-      ${added ? "" : viewToggle(entry.id)}
+      <span class="diff-bar-hint">${hint}</span>
+      ${diffControls(entry)}
     </header>`;
   }
 
@@ -1126,6 +1173,10 @@
     } else if (a === "set-view") {
       state.fileView[btn.dataset.id] = btn.dataset.mode;
       persist(); render();
+    } else if (a === "toggle-hide-removed") {
+      const id = btn.dataset.id;
+      state.hideDeleted[id] = !state.hideDeleted[id];
+      persist(); render();
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
@@ -1150,6 +1201,8 @@
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
       threadAction(btn.dataset.id, "reopen");
+    } else if (a === "toggle-thread-collapse") {
+      toggleThreadCollapse(btn.dataset.id);
     }
   });
 
@@ -1217,11 +1270,15 @@
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
+  // Updates happen in place — never a full re-render — so the reviewer's scroll
+  // position is untouched; the thread's own UI is the only thing that moves,
+  // animating collapsed on resolve (or open again on reopen).
   async function threadAction(threadId, kind) {
     const thread = artifactThreadById(threadId);
     if (!thread) return;
+    const wasCollapsed = threadCollapsed(thread);
     threadOps[threadId] = { busy: true, error: "" };
-    render();
+    updateThreadEls(thread, wasCollapsed);
     try {
       const res = await fetch(`/api/feedback/${kind}`, {
         method: "POST",
@@ -1234,10 +1291,61 @@
       if (out.status) thread.status = out.status;
       if ("resolution" in out) thread.resolution = out.resolution;
       threadOps[threadId] = { busy: false, error: "" };
+      if (!state.threadCollapsed) state.threadCollapsed = {};
+      if (kind === "resolve") state.threadCollapsed[threadId] = true;
+      else if (kind === "reopen") state.threadCollapsed[threadId] = false;
+      persist();
+      const target = threadCollapsed(thread);
+      // Re-render the thread at its previous collapse state, then flip to the
+      // target on the next frame so the change animates in place.
+      updateThreadEls(thread, wasCollapsed);
+      if (target !== wasCollapsed) requestAnimationFrame(() => setThreadCollapsed(threadId, target));
+      refreshThreadCounts();
     } catch (err) {
       threadOps[threadId] = { busy: false, error: err.message || "Action failed." };
+      updateThreadEls(thread, threadCollapsed(thread));
     }
-    render();
+  }
+
+  // Replace every rendered instance of a thread in place (notes panel + any
+  // inline copy) without touching the rest of the DOM.
+  function updateThreadEls(t, collapsed) {
+    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(t.id)}"]`).forEach((el) => {
+      const withLabel = Boolean(el.closest(".note-convos"));
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderArtifactThread(t, withLabel, collapsed);
+      const fresh = tmp.firstElementChild;
+      if (fresh) el.replaceWith(fresh);
+    });
+  }
+  function setThreadCollapsed(id, collapsed) {
+    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(id)}"]`).forEach((el) => {
+      el.classList.toggle("is-collapsed", collapsed);
+      const h = el.querySelector(".tthread-h");
+      if (h) h.setAttribute("aria-expanded", String(!collapsed));
+    });
+  }
+  function toggleThreadCollapse(id) {
+    const t = artifactThreadById(id);
+    if (!t) return;
+    if (!state.threadCollapsed) state.threadCollapsed = {};
+    const collapsed = !threadCollapsed(t);
+    state.threadCollapsed[id] = collapsed;
+    persist();
+    setThreadCollapsed(id, collapsed);
+  }
+  // Keep the file/stage thread-count badges in sync after an in-place resolve
+  // (resolved threads no longer count) without disturbing scroll position.
+  function refreshThreadCounts() {
+    app.querySelectorAll(".mini-thread[data-id], .notes-toggle[data-id]").forEach((btn) => {
+      const id = btn.dataset.id;
+      const kind = id.startsWith("f:") ? "file" : "stage";
+      const count = visibleThreadCount(kind, id);
+      if (!count) { btn.remove(); return; }
+      const b = btn.querySelector("b");
+      if (b) b.textContent = String(count);
+      btn.setAttribute("title", `${count} thread${count === 1 ? "" : "s"}`);
+    });
   }
 
   async function exportFeedback() {
@@ -1381,6 +1489,8 @@
       body: "",
     };
     state.openThreads[id] = true;
+    // File notes live inside the file's open diff unit, so adding one opens it.
+    if (kind === "file") state.active = id;
     persist();
     render();
     focusComposer();
@@ -1400,6 +1510,7 @@
       body: c.body,
     };
     state.openThreads[c.id] = true;
+    if (c.kind === "file") state.active = c.id;
     persist();
     render();
     focusComposer();
@@ -1444,6 +1555,10 @@
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
       e.preventDefault(); toggleCinema(e.target.dataset.id); return;
     }
+    if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element) {
+      const h = e.target.closest('[data-action="toggle-thread-collapse"]');
+      if (h && !e.target.closest("button, a")) { e.preventDefault(); toggleThreadCollapse(h.dataset.id); return; }
+    }
     if (e.key === "Escape") {
       if (compose) { compose = null; render(); return; }
       if (replyTo) { replyTo = null; render(); return; }
@@ -1461,13 +1576,16 @@
     hits.forEach((m) => m.replaceWith(document.createTextNode(m.textContent)));
     root.normalize();
   }
-  function applySelHits(root, term) {
+  function applySelHits(root, term, skipRange) {
     clearSelHits(root);
     const needle = term.toLowerCase();
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
     const targets = [];
     let node;
     while ((node = walker.nextNode())) {
+      // Never mutate the nodes the reviewer is actively selecting — replacing
+      // them would collapse the selection and make the text impossible to copy.
+      if (skipRange && skipRange.intersectsNode(node)) continue;
       if (node.nodeValue.toLowerCase().includes(needle)) targets.push(node);
     }
     targets.forEach((textNode) => {
@@ -1493,13 +1611,17 @@
     const sel = document.getSelection();
     let grid = null;
     let term = "";
+    let range = null;
     if (sel && !sel.isCollapsed && sel.anchorNode) {
       const host = sel.anchorNode.parentElement && sel.anchorNode.parentElement.closest(".diff-grid");
       const t = String(sel).trim();
-      if (host && t && t.length >= 2 && !/\n/.test(t)) { grid = host; term = t; }
+      if (host && t && t.length >= 2 && !/\n/.test(t)) {
+        grid = host; term = t;
+        range = sel.rangeCount ? sel.getRangeAt(0) : null;
+      }
     }
     app.querySelectorAll(".diff-grid").forEach(clearSelHits);
-    if (grid) applySelHits(grid, term);
+    if (grid) applySelHits(grid, term, range);
   }
   // Run after the browser finishes the selection so we never mutate mid-drag.
   document.addEventListener("mouseup", (e) => {
@@ -1529,6 +1651,10 @@
   render = function () {
     forceHidePop();
     const open = captureOpen();
+    // Preserve scroll so a re-render never yanks the reviewer's position.
+    const notesEl = app.querySelector(".notes-list");
+    const notesScroll = notesEl ? notesEl.scrollTop : 0;
+    const winScroll = window.scrollY;
     _render();
     restoreOpen(open);
     if (state.active) {
@@ -1538,10 +1664,13 @@
         row.classList.add("is-open");
         const holder = document.createElement("div");
         holder.className = "cinema-diff";
-        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" });
+        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" }) + fileNotesBlock(state.active);
         row.after(holder);
       }
     }
+    const newNotes = app.querySelector(".notes-list");
+    if (newNotes) newNotes.scrollTop = notesScroll;
+    if (window.scrollY !== winScroll) window.scrollTo(0, winScroll);
   };
 
   render();

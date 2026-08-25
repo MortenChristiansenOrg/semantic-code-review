@@ -661,7 +661,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 .tthread.status-resolved { border-left-color: var(--ok); }
 .tthread.status-approved { border-left-color: var(--ok); opacity: .92; }
-.tthread-h { display: flex; align-items: center; gap: 8px; }
+.tthread-h { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.tthread-caret { display: inline-flex; color: var(--faint); flex: none; transition: transform .25s var(--ease); }
+.tthread.is-collapsed .tthread-caret { transform: rotate(-90deg); }
+.tthread-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .28s var(--ease); }
+.tthread.is-collapsed .tthread-body { grid-template-rows: 0fr; }
+.tthread-body-inner { overflow: hidden; min-height: 0; display: grid; gap: 8px; }
 .tthread-kind {
   font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .06em;
   text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
@@ -857,7 +862,7 @@ button { font-family: inherit; cursor: pointer; }
 .frow.is-active { background: var(--signal-soft); box-shadow: inset 0 0 0 1px rgba(255, 106, 69, .35); }
 .frow.is-approved { opacity: .48; }
 .frow.is-approved:hover { opacity: 1; }
-.frow.is-stale { box-shadow: inset 2px 0 0 var(--warn); }
+.frow.is-stale { box-shadow: none; }
 .frow-open {
   flex: 1;
   min-width: 0;
@@ -1037,7 +1042,6 @@ button { font-family: inherit; cursor: pointer; }
 
 .diff-scroll {
   overflow: auto;
-  min-height: 32rem;              /* ≥ ~30 rows */
   max-height: min(74vh, 720px);
   scrollbar-color: var(--line) transparent;
 }
@@ -1075,6 +1079,10 @@ button { font-family: inherit; cursor: pointer; }
 .d-newfile { background: var(--add-bg); }
 .d-newfile i { color: var(--add); }
 .d-newfile code { color: var(--add); font-style: italic; }
+/* deleted file: previous contents shown once, neutral rows + a clear banner */
+.d-oldfile { background: var(--del-bg); }
+.d-oldfile i { color: var(--del); }
+.d-oldfile code { color: var(--del); font-style: italic; }
 /* per-line syntax highlighting tokens */
 .drow code .tok-key { color: #7aa2f7; }
 .drow code .tok-str { color: #9ece6a; }

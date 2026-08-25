@@ -101,7 +101,7 @@ fs.copyFileSync(
 
 fs.rmSync(viewerDestination, { recursive: true, force: true });
 fs.mkdirSync(viewerDestination, { recursive: true });
-for (const file of ["index.html", "app.js", "styles.css"]) {
+for (const file of ["index.html", "app.js", "styles.css", "favicon.svg"]) {
   fs.copyFileSync(
     path.join(viewerSource, file),
     path.join(viewerDestination, file),
