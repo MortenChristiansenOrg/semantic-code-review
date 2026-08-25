@@ -86,7 +86,8 @@
       fileView: {},
       hideDeleted: {},
       threadCollapsed: {},
-      activeFiles: {}
+      activeFiles: {},
+      notesFilter: "active"
     };
   }
   function load() {
@@ -424,8 +425,8 @@
     const actions = actionable
       ? `<div class="tthread-act">
           ${t.status === "resolved"
-            ? `<button data-action="thread-reopen" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>Unresolve</button>`
-            : `<button class="tthread-resolve" data-action="thread-resolve" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>Mark resolved</button>`}
+            ? `<button data-action="thread-reopen" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>${busy ? `<span class="tspin" aria-hidden="true"></span>Reopening…` : "Unresolve"}</button>`
+            : `<button class="tthread-resolve" data-action="thread-resolve" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>${busy ? `<span class="tspin" aria-hidden="true"></span>Resolving…` : "Mark resolved"}</button>`}
           ${replyTo === t.id ? "" : `<button data-action="thread-reply" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>Reply</button>`}
         </div>`
       : "";
@@ -986,12 +987,10 @@
       </article>`;
     };
     const localEntries = visibleLocalNotes();
-    const convos = artifactThreads.length
-      ? `<section class="note-convos">
-          <h3 class="note-stage-h">Feedback conversations</h3>
-          ${artifactThreads.map((t) => renderArtifactThread(t, true)).join("")}
-        </section>`
-      : "";
+    const activeThreads = artifactThreads.filter((t) => t.status !== "resolved");
+    const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
+    const activeConvos = `<section class="note-convos">${activeThreads.map((t) => renderArtifactThread(t, true)).join("")}</section>`;
+    const resolvedConvos = `<section class="note-convos">${resolvedThreads.map((t) => renderArtifactThread(t, true)).join("")}</section>`;
     const localBody = localEntries.length
       ? groupedNotes(localEntries).map((st) => `<section class="note-stage">
           <h3 class="note-stage-h">${esc(st.title)}</h3>
@@ -1000,10 +999,22 @@
             ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div>${day.items.map(noteCard).join("")}`).join("")}
           </div>`).join("")}
         </section>`).join("")
-      : (artifactThreads.length
+      : (activeThreads.length
           ? `<div class="notes-empty small"><small>No local drafts. Leave a note on any stage, step, or file.</small></div>`
           : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
-    const body = `${convos}${localBody}`;
+    const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
+    const filter = state.notesFilter === "resolved" ? "resolved" : "active";
+    const activeCount = activeThreads.length + localEntries.length;
+    const resolvedCount = resolvedThreads.length;
+    const toggle = `<div class="notes-switch" role="tablist">
+      <button class="notes-switch-btn ${filter === "active" ? "is-on" : ""}" data-action="notes-filter" data-filter="active" type="button" role="tab" aria-selected="${filter === "active"}">Active${activeCount ? `<b>${activeCount}</b>` : ""}</button>
+      <button class="notes-switch-btn ${filter === "resolved" ? "is-on" : ""}" data-action="notes-filter" data-filter="resolved" type="button" role="tab" aria-selected="${filter === "resolved"}">Resolved${resolvedCount ? `<b>${resolvedCount}</b>` : ""}</button>
+    </div>`;
+    const track = `<div class="notes-track is-${filter}">
+      <div class="notes-col notes-col-active">${activeConvos}${localBody}</div>
+      <div class="notes-col notes-col-resolved">${resolvedConvos}${resolvedThreads.length ? "" : resolvedEmpty}</div>
+    </div>`;
+    const body = `${toggle}${track}`;
     const pending = pendingFeedback().length;
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
@@ -1254,6 +1265,9 @@
       threadAction(btn.dataset.id, "reopen");
     } else if (a === "toggle-thread-collapse") {
       toggleThreadCollapse(btn.dataset.id);
+    } else if (a === "notes-filter") {
+      const f = btn.dataset.filter === "resolved" ? "resolved" : "active";
+      if (state.notesFilter !== f) { state.notesFilter = f; persist(); applyNotesFilter(); }
     }
   });
 
@@ -1346,16 +1360,61 @@
       if (kind === "resolve") state.threadCollapsed[threadId] = true;
       else if (kind === "reopen") state.threadCollapsed[threadId] = false;
       persist();
-      const target = threadCollapsed(thread);
-      // Re-render the thread at its previous collapse state, then flip to the
-      // target on the next frame so the change animates in place.
-      updateThreadEls(thread, wasCollapsed);
-      if (target !== wasCollapsed) requestAnimationFrame(() => setThreadCollapsed(threadId, target));
+      // Move the thread between the notes-list Active/Resolved columns: fade the
+      // old copy out, drop a fresh copy into the destination column. Inline file
+      // copies are updated in place (they always show, resolved or not).
+      relocateThreadInNotes(thread, kind);
       refreshThreadCounts();
+      refreshNotesFilterCounts();
     } catch (err) {
       threadOps[threadId] = { busy: false, error: err.message || "Action failed." };
       updateThreadEls(thread, threadCollapsed(thread));
     }
+  }
+
+  // Animate a thread between the Active/Resolved columns of the notes list.
+  function relocateThreadInNotes(thread, kind) {
+    const collapsed = threadCollapsed(thread);
+    const freshFor = (withLabel) => {
+      const tmp = document.createElement("div");
+      tmp.innerHTML = renderArtifactThread(thread, withLabel, collapsed);
+      return tmp.firstElementChild;
+    };
+    const destSel = kind === "resolve" ? ".notes-col-resolved" : ".notes-col-active";
+    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(thread.id)}"]`).forEach((el) => {
+      if (!el.closest(".notes-col")) { el.replaceWith(freshFor(false)); return; }
+      const dest = app.querySelector(`${destSel} .note-convos`);
+      el.classList.add("is-leaving");
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        if (dest) {
+          const destCol = dest.closest(".notes-col");
+          const empty = destCol && destCol.querySelector(".notes-empty");
+          if (empty) empty.remove();
+          dest.appendChild(freshFor(true));
+        }
+        el.remove();
+      };
+      el.addEventListener("transitionend", (e) => { if (e.target === el) finish(); });
+      setTimeout(finish, 380);
+    });
+  }
+
+  // Keep the Active/Resolved toggle counts in sync after an in-place move.
+  function refreshNotesFilterCounts() {
+    const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
+    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
+    const set = (filter, n) => {
+      const btn = app.querySelector(`.notes-switch-btn[data-filter="${filter}"]`);
+      if (!btn) return;
+      let b = btn.querySelector("b");
+      if (n) { if (!b) { b = document.createElement("b"); btn.appendChild(b); } b.textContent = String(n); }
+      else if (b) b.remove();
+    };
+    set("active", activeCount);
+    set("resolved", resolvedThreads.length);
   }
 
   // Replace every rendered instance of a thread in place (notes panel + any
@@ -1500,6 +1559,22 @@
     if (scrim) scrim.classList.toggle("is-on", state.coverageOpen || state.notesOpen);
     if (covBtn) { covBtn.classList.toggle("is-on", state.coverageOpen); covBtn.setAttribute("aria-expanded", String(state.coverageOpen)); }
     if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
+  }
+
+  // Slide the notes list between its Active and Resolved columns without a full
+  // re-render, so the persistent track transitions instead of snapping.
+  function applyNotesFilter() {
+    const filter = state.notesFilter === "resolved" ? "resolved" : "active";
+    const track = app.querySelector(".notes-track");
+    if (track) {
+      track.classList.toggle("is-resolved", filter === "resolved");
+      track.classList.toggle("is-active", filter === "active");
+    }
+    app.querySelectorAll(".notes-switch-btn").forEach((b) => {
+      const on = b.dataset.filter === filter;
+      b.classList.toggle("is-on", on);
+      b.setAttribute("aria-selected", String(on));
+    });
   }
 
   // Animate a stage body open/closed in place so both directions transition.
