@@ -171,6 +171,17 @@
       localVisibleForElement(id).length
     );
   }
+  // Files list splits its badge into two: unresolved feedback conversations
+  // (exported threads + local feedback drafts) and browser-local personal notes.
+  function unresolvedThreadCount(kind, id) {
+    return (
+      artifactThreadsForElement(kind, id).filter((t) => t.status !== "resolved").length +
+      localVisibleForElement(id).filter(({ c }) => (c.mode || "personal") === "feedback").length
+    );
+  }
+  function personalNoteCount(id) {
+    return localVisibleForElement(id).filter(({ c }) => (c.mode || "personal") !== "feedback").length;
+  }
   function visibleLocalNotes() {
     return state.comments
       .map((c, i) => ({ c, i }))
@@ -219,6 +230,29 @@
   }
   function bubblePlus() {
     return `<svg class="bub" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 8v5M9.5 10.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+  }
+  // A personal (browser-local) note — distinct from a feedback conversation.
+  function noteGlyph() {
+    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5M9.5 12.5h6M9.5 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  function arrowRight() {
+    return `<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  // Icon + tooltip text for the kind of element a feedback thread targets.
+  function threadTypeLabel(kind) {
+    return kind === "file" ? "File" : kind === "line" ? "Line" : kind === "stage" ? "Stage" : kind === "node" ? "Step" : "Thread";
+  }
+  function threadTypeIcon(kind) {
+    if (kind === "stage")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M12 3.5l8 4-8 4-8-4 8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
+    if (kind === "node")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="3" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.8" fill="currentColor"/></svg>`;
+    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+  }
+  function threadStatusIcon(status) {
+    if (status === "resolved" || status === "approved")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg>`;
   }
 
   function reviewable() {
@@ -370,13 +404,14 @@
         : "";
     const disp = threadTargetDisplay(t);
     const ref = threadElementRef(t);
+    const kind = (t.target && t.target.kind) || "thread";
     const jump = withLabel && ref
-      ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" type="button" title="Show what this thread is about">${bubble()}<span>Show</span></button>`
+      ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
       : "";
-    const label =
+    const title =
       withLabel && t.target && t.target.label
-        ? `<strong class="tthread-label" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
-        : "";
+        ? `<strong class="tthread-title" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
+        : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
     const busy = threadBusy(t.id);
     const err = threadError(t.id)
       ? `<p class="tthread-err">${esc(threadError(t.id))}</p>`
@@ -399,11 +434,11 @@
     return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
       <div class="tthread-h" data-action="toggle-thread-collapse" data-id="${esc(t.id)}" role="button" tabindex="0" aria-expanded="${String(!collapsed)}" title="${collapsed ? "Expand thread" : "Collapse thread"}">
         <span class="tthread-caret">${caret()}</span>
-        <span class="tthread-kind">${esc((t.target && t.target.kind) || "thread")}</span>
-        <span class="tthread-status s-${t.status}">${esc(t.status)}</span>
+        <span class="tthread-type" title="${esc(threadTypeLabel(kind))}" aria-label="${esc(threadTypeLabel(kind))}">${threadTypeIcon(kind)}</span>
+        ${title}
+        <span class="tthread-status-ic s-${t.status}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
         ${jump}
       </div>
-      ${label}
       <div class="tthread-body">
         <div class="tthread-body-inner">
           <div class="tthread-msgs">${msgs}</div>
@@ -484,7 +519,15 @@
     const isOn = st === "approved";
     const isStale = st === "stale";
     const isActive = state.active === id;
-    const threadCount = visibleThreadCount("file", id);
+    const threadN = unresolvedThreadCount("file", id);
+    const noteN = personalNoteCount(id);
+    const openAttrs = `data-action="open-file" data-id="${id}" type="button" aria-expanded="${isActive}"`;
+    const threadBadge = threadN
+      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} unresolved thread${threadN === 1 ? "" : "s"}" aria-label="${threadN} unresolved thread${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
+      : "";
+    const noteBadge = noteN
+      ? `<button class="mini-count mini-notes ${isActive ? "is-open" : ""}" ${openAttrs} title="${noteN} personal note${noteN === 1 ? "" : "s"}" aria-label="${noteN} personal note${noteN === 1 ? "" : "s"}">${noteGlyph()}<b>${noteN}</b></button>`
+      : "";
     // A file's diff and its notes open and close together as one unit, so the
     // thread badge opens the file just like the filename does.
     return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
@@ -496,9 +539,8 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${threadCount ? `<button class="mini-thread ${isActive ? "is-open" : ""}" data-action="open-file" data-id="${id}" type="button" aria-expanded="${isActive}" title="${threadCount} thread${threadCount === 1 ? "" : "s"}">${bubble()}<b>${threadCount}</b></button>` : ""}
+          ${threadBadge}${noteBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
-          <button class="mini-note" data-action="comment" data-kind="file" data-id="${id}" type="button" title="Add note" aria-label="Add note">${bubblePlus()}</button>
         </div>
       </div>
     </div>`;
@@ -1337,7 +1379,7 @@
   // Keep the file/stage thread-count badges in sync after an in-place resolve
   // (resolved threads no longer count) without disturbing scroll position.
   function refreshThreadCounts() {
-    app.querySelectorAll(".mini-thread[data-id], .notes-toggle[data-id]").forEach((btn) => {
+    app.querySelectorAll(".notes-toggle[data-id]").forEach((btn) => {
       const id = btn.dataset.id;
       const kind = id.startsWith("f:") ? "file" : "stage";
       const count = visibleThreadCount(kind, id);
@@ -1345,6 +1387,27 @@
       const b = btn.querySelector("b");
       if (b) b.textContent = String(count);
       btn.setAttribute("title", `${count} thread${count === 1 ? "" : "s"}`);
+    });
+    app.querySelectorAll(".mini-threads[data-id]").forEach((btn) => {
+      const id = btn.dataset.id;
+      const kind = id.startsWith("f:") ? "file" : "stage";
+      const count = unresolvedThreadCount(kind, id);
+      if (!count) { btn.remove(); return; }
+      const b = btn.querySelector("b");
+      if (b) b.textContent = String(count);
+      const lbl = `${count} unresolved thread${count === 1 ? "" : "s"}`;
+      btn.setAttribute("title", lbl);
+      btn.setAttribute("aria-label", lbl);
+    });
+    app.querySelectorAll(".mini-notes[data-id]").forEach((btn) => {
+      const id = btn.dataset.id;
+      const count = personalNoteCount(id);
+      if (!count) { btn.remove(); return; }
+      const b = btn.querySelector("b");
+      if (b) b.textContent = String(count);
+      const lbl = `${count} personal note${count === 1 ? "" : "s"}`;
+      btn.setAttribute("title", lbl);
+      btn.setAttribute("aria-label", lbl);
     });
   }
 

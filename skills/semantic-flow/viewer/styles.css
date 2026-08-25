@@ -600,7 +600,6 @@ button { font-family: inherit; cursor: pointer; }
   margin: 10px 0 2px;
   padding: 12px 14px;
   border: 1px solid var(--line-soft);
-  border-left: 2px solid var(--signal);
   border-radius: var(--radius-sm);
   background: var(--ink-2);
   animation: thread-in .22s var(--ease);
@@ -655,39 +654,28 @@ button { font-family: inherit; cursor: pointer; }
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line-soft);
-  border-left: 2px solid var(--t-decision);
   border-radius: var(--radius-sm);
   background: var(--panel);
 }
-.tthread.status-resolved { border-left-color: var(--ok); }
-.tthread.status-approved { border-left-color: var(--ok); opacity: .92; }
+.tthread.status-approved { opacity: .92; }
 .tthread-h { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
 .tthread-caret { display: inline-flex; color: var(--faint); flex: none; transition: transform .25s var(--ease); }
 .tthread.is-collapsed .tthread-caret { transform: rotate(-90deg); }
 .tthread-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .28s var(--ease); }
 .tthread.is-collapsed .tthread-body { grid-template-rows: 0fr; }
 .tthread-body-inner { overflow: hidden; min-height: 0; display: grid; gap: 8px; }
-.tthread-kind {
-  font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .06em;
-  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--line); color: var(--muted);
-}
-.tthread-status {
-  margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
-  text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--line); color: var(--muted);
-}
-.tthread-status.s-submitted { color: var(--t-assumption); border-color: var(--t-assumption); }
-.tthread-status.s-resolved { color: var(--t-decision); border-color: var(--t-decision); }
-.tthread-status.s-approved { color: var(--ok); border-color: var(--ok-soft); background: var(--ok-soft); }
-.tthread-label { display: block; color: var(--text); font-size: 12.5px; overflow-wrap: anywhere; }
+.tico { display: block; }
+.tthread-type { display: inline-flex; flex: none; color: var(--muted); }
+.tthread-title { flex: 1 1 auto; min-width: 0; color: var(--text); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tthread-status-ic { display: inline-flex; flex: none; color: var(--muted); }
+.tthread-status-ic.s-submitted { color: var(--t-assumption); }
+.tthread-status-ic.s-resolved { color: var(--t-decision); }
+.tthread-status-ic.s-approved { color: var(--ok); }
 .tthread-msgs { display: grid; gap: 6px; }
 .tmsg {
   border-radius: var(--radius-sm); padding: 8px 10px;
   background: var(--ink-2); border: 1px solid var(--line-soft);
 }
-.tmsg-agent { border-left: 2px solid var(--ok); }
-.tmsg-user { border-left: 2px solid var(--signal); }
 .tmsg-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
 .tmsg-who { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: .04em; color: var(--muted); }
 .tmsg-agent .tmsg-who { color: var(--ok); }
@@ -708,7 +696,7 @@ button { font-family: inherit; cursor: pointer; }
 .note-convos .tthread { margin: 0; }
 .notes-empty.small { padding: 12px 0; text-align: left; }
 
-.mini-thread {
+.mini-count {
   display: inline-flex; align-items: center; gap: 4px;
   height: 26px; padding: 0 8px;
   border-radius: 7px; border: 1px solid var(--line);
@@ -716,8 +704,10 @@ button { font-family: inherit; cursor: pointer; }
   font-family: var(--mono); font-size: 10px; cursor: pointer;
   transition: border-color .16s var(--ease), color .16s var(--ease), background .16s var(--ease);
 }
-.mini-thread:hover { border-color: var(--signal); color: var(--signal); }
-.mini-thread.is-open { border-color: var(--signal); color: var(--signal); background: var(--signal-soft); }
+.mini-count:hover { border-color: var(--signal); color: var(--signal); }
+.mini-count.is-open { border-color: var(--signal); color: var(--signal); background: var(--signal-soft); }
+.mini-notes { color: var(--muted); }
+.mini-notes:hover { border-color: var(--t-decision); color: var(--t-decision); }
 .frow-wrap .thread { margin: 0 0 6px; }
 
 /* ---- nodes ------------------------------------------------------------ */
@@ -918,7 +908,7 @@ button { font-family: inherit; cursor: pointer; }
 .metrics .add { color: var(--add); }
 .metrics .del { color: var(--del); }
 .frow-act { display: flex; gap: 4px; flex: none; }
-.mini-approve, .mini-note {
+.mini-approve {
   width: 26px;
   height: 26px;
   border-radius: 7px;
@@ -936,8 +926,6 @@ button { font-family: inherit; cursor: pointer; }
 .mini-approve.is-stale { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }
 .mini-approve.is-stale span { color: var(--warn); font-weight: 700; }
 .mini-approve.is-stale:hover { border-color: var(--warn); color: var(--warn); }
-.mini-note:hover { border-color: var(--signal); color: var(--signal); }
-.mini-note b { font-family: var(--mono); font-size: 10px; color: var(--signal); }
 
 /* ---- approve / comment buttons ---------------------------------------- */
 .approve {
@@ -1283,14 +1271,13 @@ button { font-family: inherit; cursor: pointer; }
 .tthread-reply { display: grid; gap: 8px; margin-top: 2px; }
 .tthread-err { font-size: 11px; color: var(--t-risk); margin: 0; }
 .tthread-jump {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
-  font-family: var(--mono); font-size: 10.5px; padding: 3px 9px;
-  border-radius: 999px; border: 1px solid var(--line);
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0;
+  border-radius: 7px; border: 1px solid var(--line);
   background: var(--panel); color: var(--muted); cursor: pointer;
   transition: all .16s var(--ease);
 }
 .tthread-jump:hover { border-color: var(--signal); color: var(--signal); }
-.tthread-jump .bub { width: 12px; height: 12px; }
 
 /* ---- diff selection match highlight ----------------------------------- */
 .diff-grid mark.sel-hit {
@@ -1372,6 +1359,9 @@ button { font-family: inherit; cursor: pointer; }
   margin: 0 0 16px;
   min-width: 0;
   max-width: 100%;
+  border-radius: 0 0 var(--radius) var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
   animation: cinema-in .32s var(--ease);
 }
 /* Keep the inline diff from stretching its grid/flex ancestors: without an
@@ -1381,7 +1371,12 @@ button { font-family: inherit; cursor: pointer; }
 .stage-body, .nodes, .node, .node-body, .payload, .fgroups, .fgroup, .flist,
 .frow-wrap, .cinema-diff .diff-panel { min-width: 0; max-width: 100%; }
 @keyframes cinema-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
-.cinema-diff .diff-panel { box-shadow: var(--shadow); border-radius: 0 0 var(--radius) var(--radius); }
+.cinema-diff .diff-panel { border-radius: 0; border-bottom: 0; }
+.cinema-diff .file-notes {
+  margin: 0;
+  border-radius: 0;
+  border-top: 1px solid var(--line);
+}
 .cinema-diff .diff-scroll { max-height: min(70vh, 680px); }
 .diff-bar {
   display: flex;
