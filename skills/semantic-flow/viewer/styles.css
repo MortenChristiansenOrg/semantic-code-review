@@ -77,6 +77,8 @@ body {
 
 #app { min-height: 100vh; }
 
+body.no-scroll { overflow: hidden; }
+
 .eyebrow {
   font-family: var(--mono);
   font-size: 10.5px;
