@@ -86,7 +86,7 @@
       fileView: {},
       hideDeleted: {},
       threadCollapsed: {},
-      active: null
+      activeFiles: {}
     };
   }
   function load() {
@@ -98,6 +98,10 @@
           ? { [requirements[0].id]: true }
           : {};
       }
+      // Legacy state stored a single open file in `active`; migrate to the map.
+      if (typeof merged.activeFiles !== "object" || merged.activeFiles === null) merged.activeFiles = {};
+      if (merged.active) { merged.activeFiles[merged.active] = true; }
+      delete merged.active;
       return merged;
     }
     catch { return defaults(); }
@@ -518,7 +522,7 @@
     const st = approvalState(id);
     const isOn = st === "approved";
     const isStale = st === "stale";
-    const isActive = state.active === id;
+    const isActive = Boolean(state.activeFiles[id]);
     const threadN = unresolvedThreadCount("file", id);
     const noteN = personalNoteCount(id);
     const openAttrs = `data-action="open-file" data-id="${id}" type="button" aria-expanded="${isActive}"`;
@@ -1190,7 +1194,7 @@
       else {
         state.approvals[id] = { fp: fingerprintFor(id), at: Date.now() };
         // Approving a file means you're done with it — close its open diff.
-        if (state.active === id) state.active = null;
+        if (state.activeFiles[id]) delete state.activeFiles[id];
       }
       persist(); render();
     } else if (a === "toggle-stage") {
@@ -1225,7 +1229,12 @@
       if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
     } else if (a === "open-file") {
       toggleCinema(btn.dataset.id);
-    } else if (a === "cinema-close") { closeCinema(); }
+    } else if (a === "cinema-close") {
+      const holder = btn.closest(".cinema-diff");
+      const row = holder && holder.previousElementSibling;
+      const fid = row && row.dataset ? row.dataset.file : null;
+      closeCinema(fid);
+    }
     else if (a === "export-feedback") {
       exportFeedback();
     } else if (a === "compose-cancel") {
@@ -1259,7 +1268,7 @@
       const entry = fileById.get(id);
       if (entry) {
         state.openStages[entry.stage.id] = true;
-        state.active = id;
+        state.activeFiles[id] = true;
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
@@ -1486,6 +1495,8 @@
     };
     setSide(cov, state.coverageOpen);
     setSide(notes, state.notesOpen);
+    // Lock page scroll behind the notes panel so only its list scrolls.
+    document.body.classList.toggle("no-scroll", state.notesOpen);
     if (scrim) scrim.classList.toggle("is-on", state.coverageOpen || state.notesOpen);
     if (covBtn) { covBtn.classList.toggle("is-on", state.coverageOpen); covBtn.setAttribute("aria-expanded", String(state.coverageOpen)); }
     if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
@@ -1524,15 +1535,21 @@
   function toggleCinema(id) {
     // Let the user select the filename text without toggling the diff.
     if (window.getSelection && String(window.getSelection()).trim().length) return;
-    if (state.active === id) { closeCinema(); return; }
-    state.active = id; persist(); render();
-    requestAnimationFrame(() => {
-      document.querySelector(`.frow[data-file="${cssEsc(id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
+    if (state.activeFiles[id]) { closeCinema(id); return; }
+    // Open in place — never auto-scroll, so the file stays where the reviewer
+    // clicked it (jumping from the notes list handles its own scrolling).
+    state.activeFiles[id] = true; persist(); render();
   }
-  function closeCinema() {
-    const holder = app.querySelector(".cinema-diff");
-    state.active = null; persist();
+  function cinemaHolder(id) {
+    const row = app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+    const next = row && row.nextElementSibling;
+    return next && next.classList.contains("cinema-diff") ? next : null;
+  }
+  function closeCinema(id) {
+    // No id → close every open file (used by the Escape shortcut).
+    if (id == null) { state.activeFiles = {}; persist(); render(); return; }
+    const holder = cinemaHolder(id);
+    delete state.activeFiles[id]; persist();
     if (!holder || motionReduced()) { render(); return; }
     const start = holder.getBoundingClientRect().height;
     holder.style.overflow = "hidden";
@@ -1553,7 +1570,7 @@
     };
     state.openThreads[id] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
-    if (kind === "file") state.active = id;
+    if (kind === "file") state.activeFiles[id] = true;
     persist();
     render();
     focusComposer();
@@ -1573,7 +1590,7 @@
       body: c.body,
     };
     state.openThreads[c.id] = true;
-    if (c.kind === "file") state.active = c.id;
+    if (c.kind === "file") state.activeFiles[c.id] = true;
     persist();
     render();
     focusComposer();
@@ -1626,7 +1643,7 @@
       if (compose) { compose = null; render(); return; }
       if (replyTo) { replyTo = null; render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
-      if (state.active) { closeCinema(); return; }
+      if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
   });
 
@@ -1720,19 +1737,21 @@
     const winScroll = window.scrollY;
     _render();
     restoreOpen(open);
-    if (state.active) {
-      const row = app.querySelector(`.frow[data-file="${cssEsc(state.active)}"]`);
-      const entry = fileById.get(state.active);
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!state.activeFiles[fid]) return;
+      const row = app.querySelector(`.frow[data-file="${cssEsc(fid)}"]`);
+      const entry = fileById.get(fid);
       if (row && entry) {
         row.classList.add("is-open");
         const holder = document.createElement("div");
         holder.className = "cinema-diff";
-        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" }) + fileNotesBlock(state.active);
+        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" }) + fileNotesBlock(fid);
         row.after(holder);
       }
-    }
+    });
     const newNotes = app.querySelector(".notes-list");
     if (newNotes) newNotes.scrollTop = notesScroll;
+    document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollY !== winScroll) window.scrollTo(0, winScroll);
   };
 
