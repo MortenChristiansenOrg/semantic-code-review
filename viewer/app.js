@@ -1063,6 +1063,11 @@
 
   function enhance() {
     animateDetails();
+    if (pendingHighlight) {
+      const id = pendingHighlight;
+      pendingHighlight = null;
+      requestAnimationFrame(() => fadeFileHighlight(id, "in"));
+    }
   }
 
   /* ---- animated <details> ---------------------------------------------- */
@@ -1304,6 +1309,7 @@
           || app.querySelector(`.frow[data-file="${cssEsc(id)}"]`)
           || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`);
         if (thread) thread.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (kind === "file") fadeFileHighlight(id, "in");
       });
     });
   }
@@ -1528,6 +1534,28 @@
 
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
   const motionReduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // A file id whose row should fade its orange highlight in on the next render.
+  // Set when a file is opened/jumped to; consumed once in enhance().
+  let pendingHighlight = null;
+
+  // Fade the file-row highlight (orange background + inset border) in or out.
+  // The app re-renders wholesale, so a freshly rendered .is-active row starts
+  // already-orange and a CSS transition never fires — animate it explicitly.
+  function fadeFileHighlight(id, dir) {
+    if (id == null || motionReduced()) return;
+    const row = app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+    if (!row) return;
+    const on = { background: "rgba(255, 106, 69, .13)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, .35)" };
+    const off = { background: "rgba(255, 106, 69, 0)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, 0)" };
+    const frames = dir === "in" ? [off, on] : [on, off];
+    row.animate(frames, {
+      duration: dir === "in" ? 260 : 200,
+      easing: ANIM_EASE,
+      fill: dir === "in" ? "none" : "forwards",
+    });
+  }
+
   // Run `cb` once when the animation ends, with a safety timeout so a stuck or
   // non-resolving `finished` promise can never leave the UI mid-animation.
   function afterAnim(anim, ms, cb) {
@@ -1613,7 +1641,7 @@
     if (state.activeFiles[id]) { closeCinema(id); return; }
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
-    state.activeFiles[id] = true; persist(); render();
+    state.activeFiles[id] = true; persist(); pendingHighlight = id; render();
   }
   function cinemaHolder(id) {
     const row = app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
@@ -1626,6 +1654,7 @@
     const holder = cinemaHolder(id);
     delete state.activeFiles[id]; persist();
     if (!holder || motionReduced()) { render(); return; }
+    fadeFileHighlight(id, "out");
     const start = holder.getBoundingClientRect().height;
     holder.style.overflow = "hidden";
     const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
@@ -1645,7 +1674,7 @@
     };
     state.openThreads[id] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
-    if (kind === "file") state.activeFiles[id] = true;
+    if (kind === "file") { state.activeFiles[id] = true; pendingHighlight = id; }
     persist();
     render();
     focusComposer();
@@ -1665,7 +1694,7 @@
       body: c.body,
     };
     state.openThreads[c.id] = true;
-    if (c.kind === "file") state.activeFiles[c.id] = true;
+    if (c.kind === "file") { state.activeFiles[c.id] = true; pendingHighlight = c.id; }
     persist();
     render();
     focusComposer();

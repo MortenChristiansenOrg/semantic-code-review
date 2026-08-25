@@ -158,6 +158,53 @@ test("resolution commands track rewrites, rebinds, and approvals", (t) => {
   );
 });
 
+test("stale resolutions report the exact rebind command", (t) => {
+  const { repository, commits } = createReviewWithStages(t);
+  const originalCommit = commits.get("implementation");
+  createSubmittedBatch(repository, originalCommit);
+
+  repository.commitFile(
+    "implementation.txt",
+    "implementation v2\n",
+    "Address feedback",
+  );
+  repository.semantic("restack", "--from", "implementation");
+  const rewrittenHead = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  ).change.headRevision;
+  repository.feedback(
+    "thread",
+    "resolve",
+    "--id",
+    "first-comment",
+    "--stage",
+    "implementation",
+    "--previous-head",
+    originalCommit,
+    "--rewritten-head",
+    rewrittenHead,
+  );
+
+  repository.commitFile(
+    "implementation.txt",
+    "implementation v3\n",
+    "Harden feedback fix",
+  );
+  repository.semantic("restack", "--from", "implementation");
+  const finalCommit = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  ).change.headRevision;
+
+  const rebindCommand = `resolution rebind --stage implementation --previous-head ${rewrittenHead} --rewritten-head ${finalCommit}`;
+  const failure = repository.expectFeedbackFailure(rebindCommand, "validate");
+  const combined = failure.stderr + failure.stdout;
+  assert.match(combined, /points to stale rewritten head/);
+  assert.ok(
+    !combined.includes(`${rebindCommand}.`),
+    "emitted rebind command must not end with a period",
+  );
+});
+
 test("answer-only threads resolve without rewriting a stage", (t) => {
   const { repository } = createReviewWithStages(t);
   repository.feedback("init");

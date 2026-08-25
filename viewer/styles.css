@@ -653,6 +653,7 @@ button { font-family: inherit; cursor: pointer; }
 /* ---- exported feedback conversation threads (immutable) --------------- */
 .tthread {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line-soft);
@@ -662,7 +663,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .tthread.is-collapsed { gap: 0; }
 .tthread.status-approved { opacity: .92; }
-.tthread-h { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.tthread-h { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; user-select: none; }
 .tthread-caret { display: inline-flex; color: var(--faint); flex: none; transition: transform .25s var(--ease); }
 .tthread.is-collapsed .tthread-caret { transform: rotate(-90deg); }
 .tthread-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .28s var(--ease); }
@@ -1133,7 +1134,7 @@ button { font-family: inherit; cursor: pointer; }
 .cov-key i { display: inline-block; width: 18px; height: 5px; border-radius: 999px; background: linear-gradient(90deg, var(--signal), var(--signal-2)); margin-right: 6px; vertical-align: middle; }
 .cov-key i.files { background: var(--ok); }
 
-.notes-list { padding: 0 22px 22px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; overflow-x: hidden; }
+.notes-list { padding: 0 0 22px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; overflow-x: hidden; }
 .note-stage { display: grid; gap: 12px; }
 .note-stage-h {
   font-family: var(--display); font-size: 14px; font-weight: 600; color: var(--text);
@@ -1189,7 +1190,7 @@ button { font-family: inherit; cursor: pointer; }
 .notes-switch {
   position: sticky; top: 0; z-index: 3;
   display: flex; gap: 6px;
-  margin: 0 -22px 4px; padding: 12px 22px;
+  margin: 0 0 4px; padding: 12px 22px;
   background: var(--panel); border-bottom: 1px solid var(--line-soft);
 }
 .notes-switch-btn {
@@ -1206,7 +1207,7 @@ button { font-family: inherit; cursor: pointer; }
 .notes-track.is-active { transform: translateX(0); }
 .notes-track.is-resolved { transform: translateX(-50%); }
 .notes-col {
-  flex: 0 0 50%; width: 50%; min-width: 0;
+  flex: 0 0 50%; width: 50%; min-width: 0; padding: 0 22px;
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-content: start;
 }
 .notes-col .note-convos,

@@ -417,7 +417,10 @@ function validateFeedback(
         stage.change.headRevision !== thread.resolution.rewrittenHead
       ) {
         fail(
-          `Resolution ${id} points to stale rewritten head ${thread.resolution.rewrittenHead}.`,
+          `Resolution ${id} points to stale rewritten head ${thread.resolution.rewrittenHead}. ` +
+            `Stage ${thread.resolution.stageId} now points to ${stage.change.headRevision}, likely after a restack. ` +
+            `Rebind with:\nresolution rebind --stage ${thread.resolution.stageId} ` +
+            `--previous-head ${thread.resolution.rewrittenHead} --rewritten-head ${stage.change.headRevision}`,
         );
       }
       if (!SHA1_PATTERN.test(thread.resolution.previousHead)) {

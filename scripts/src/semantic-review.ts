@@ -596,6 +596,18 @@ function sameChanges(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function unresolvedRefHint(criterionIds, requirementId) {
+  const known = criterionIds.get(requirementId);
+  if (!known) {
+    return ` Requirement ${requirementId} does not exist.`;
+  }
+  if (known.size === 0) {
+    return ` Requirement ${requirementId} has no acceptance criteria.`;
+  }
+  const valid = [...known].map((id) => `${requirementId}#${id}`).join(", ");
+  return ` Valid criteria: ${valid}.`;
+}
+
 function validateSemantic(
   paths,
   artifact,
@@ -653,7 +665,9 @@ function validateSemantic(
     for (const reference of stage.requirementRefs) {
       const [requirementId, criterionId] = reference.split("#", 2);
       if (!criterionIds.get(requirementId)?.has(criterionId)) {
-        errors.push(`Stage ${id} has unresolved requirement ref ${reference}.`);
+        errors.push(
+          `Stage ${id} has unresolved requirement ref ${reference}.${unresolvedRefHint(criterionIds, requirementId)}`,
+        );
       }
     }
     for (const collection of CONTEXT_COLLECTIONS) {
@@ -730,7 +744,7 @@ function validateSemantic(
       const [requirementId, criterionId] = reference.split("#", 2);
       if (!criterionIds.get(requirementId)?.has(criterionId)) {
         errors.push(
-          `Working stage ${id} has unresolved requirement ref ${reference}.`,
+          `Working stage ${id} has unresolved requirement ref ${reference}.${unresolvedRefHint(criterionIds, requirementId)}`,
         );
       }
     }
@@ -1657,9 +1671,48 @@ function discardStage(paths, options) {
   });
   const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
   const { file } = workingStage(paths, id);
+  const stage = artifact.workStages.get(id);
+  const branch = stage.branch;
+  const previousId = artifact.manifest.stages.at(-1);
+  const creationParent = previousId
+    ? artifact.stages.get(previousId).change.headRevision
+    : artifact.manifest.baseRevision;
+
+  const branchHead = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
+    cwd: paths.root,
+    allowFailure: true,
+  });
+  let branchNote = "";
+  let removeBranch = false;
+  if (branchHead) {
+    if (branchHead !== creationParent) {
+      branchNote = ` Branch ${branch} has local commits and was kept; delete it manually before reusing the ordinal.`;
+    } else if (
+      checkedOutBranches(paths.root).has(branch) &&
+      currentBranch(paths.root) !== branch
+    ) {
+      branchNote = ` Branch ${branch} is checked out in another worktree and was kept; remove that worktree or delete the branch manually before reusing the ordinal.`;
+    } else {
+      removeBranch = true;
+    }
+  }
+
+  if (removeBranch && currentBranch(paths.root) === branch) {
+    git(["switch", "--detach", creationParent], { cwd: paths.root });
+  }
+  const original = fs.readFileSync(file);
   fs.rmSync(file);
-  validateArtifact(paths, { quiet: true, validateGit: false });
-  console.log(`Discarded working stage ${id}.`);
+  try {
+    if (removeBranch) {
+      git(["branch", "-D", branch], { cwd: paths.root });
+      branchNote = ` Removed unchanged branch ${branch}.`;
+    }
+    validateArtifact(paths, { quiet: true, validateGit: false });
+  } catch (error) {
+    fs.writeFileSync(file, original);
+    throw error;
+  }
+  console.log(`Discarded working stage ${id}.${branchNote}`);
 }
 
 function commitMetadata(root, commit) {

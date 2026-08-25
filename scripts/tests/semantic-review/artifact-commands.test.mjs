@@ -728,3 +728,70 @@ test("stage organization partitions multi-cause files by diff hunk", (t) => {
   ]);
   assert.deepEqual(stage.nodes[0].changes[0].hunks, [1]);
 });
+
+function branchExists(repository, name) {
+  return (
+    repository.result("git", ["rev-parse", "--verify", `refs/heads/${name}`])
+      .status === 0
+  );
+}
+
+test("stage discard removes an unchanged generated branch and frees the ordinal", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+
+  const branch = "semantic-review/test-review/02-extra";
+  beginStage(repository, { id: "extra", dependencies: ["implementation"] });
+  assert.equal(branchExists(repository, branch), true);
+
+  const output = repository.semantic("stage", "discard", "--id", "extra");
+  assert.match(output, /Removed unchanged branch/);
+  assert.equal(branchExists(repository, branch), false);
+
+  beginStage(repository, { id: "extra", dependencies: ["implementation"] });
+  assert.equal(branchExists(repository, branch), true);
+  repository.semantic("validate");
+});
+
+test("stage discard keeps a branch that carries local commits", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+
+  const branch = "semantic-review/test-review/02-extra";
+  beginStage(repository, { id: "extra", dependencies: ["implementation"] });
+  repository.commitFile("extra.txt", "extra\n", "Work in progress");
+
+  const output = repository.semantic("stage", "discard", "--id", "extra");
+  assert.match(output, /has local commits and was kept/);
+  assert.equal(branchExists(repository, branch), true);
+});
+
+test("unresolved requirement ref reports valid normalized criteria", (t) => {
+  const repository = createRepository(t);
+  initializeReview(repository, {
+    criteria: [
+      ["works", "The implementation works."],
+      ["persists", "The result persists."],
+    ],
+  });
+  const failure = repository.expectSemanticFailure(
+    /Valid criteria: story#works, story#persists\./,
+    "stage",
+    "begin",
+    "--id",
+    "implementation",
+    "--title",
+    "Implement behavior",
+    "--summary",
+    "Add the implementation.",
+    "--rationale",
+    "Keep the change independently reviewable.",
+    "--requirement-ref",
+    "story#missing",
+  );
+  assert.match(failure.stderr + failure.stdout, /unresolved requirement ref/);
+});

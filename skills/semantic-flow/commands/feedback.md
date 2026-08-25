@@ -44,6 +44,12 @@ Process the earliest affected stage first:
    <semantic-review> restack --from <stage-id>
    ```
 
+   Restacking rewrites later stage heads. If any rewritten stage has recorded
+   feedback resolutions, they become stale. Validation prints the exact
+   `resolution rebind --stage <stage-id> --previous-head <old> --rewritten-head
+   <new>` command; run it for each affected stage so resolutions track the
+   rewritten head.
+
 9. If rewritten later stages no longer match their organization, reorganize
    those stages before continuing.
 10. Reply to each thread with an assistant comment that answers the question or

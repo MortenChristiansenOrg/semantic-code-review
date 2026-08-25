@@ -66,9 +66,11 @@ finish`.
 
 Use `stage set` when discovery changes active metadata or scope. Do not discard
 and begin a replacement merely to rename or reorder the stage. `stage discard`
-leaves its branch ref behind, so this can produce duplicate ordinal prefixes.
-If the immutable stage ID or order is wrong, stop and ask the user rather than
-creating another numbered branch.
+removes the generated stage branch when it still points at its creation head, so
+a clean discard frees the ordinal for reuse. If the branch already carries local
+commits, discard keeps it and reports that you must delete it manually before
+reusing the ordinal. If the immutable stage ID or order is wrong, stop and ask
+the user rather than creating another numbered branch.
 
 ### Implement and capture context
 
@@ -101,8 +103,10 @@ context and validation item.
 
 ### Validate and finish
 
-Run the smallest existing checks that cover the organized stage. Record each
-observed result:
+Run the smallest existing checks that cover the organized stage. Run them from
+the artifact/implementation worktree, and confirm the working directory and
+repository root are that worktree before running so checks never execute against
+the source checkout. Record each observed result:
 
 ```text
 <semantic-review> stage validation --input -
@@ -129,8 +133,8 @@ After all stages:
 2. Exercise the complete acceptance path.
 3. Put any discovered omission into the earliest responsible stage, then
    restack later stages.
-4. Run whole-stack checks and attach final evidence to relevant finalized
-   stages.
+4. Run whole-stack checks from the artifact worktree and attach final evidence
+   to relevant finalized stages.
 5. Run:
 
    ```text
