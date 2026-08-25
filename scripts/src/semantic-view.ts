@@ -79,6 +79,12 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function activeReviewId(repoRoot) {
+  return readJson(
+    path.join(repoRoot, ".semantic-review", "manifest.json"),
+  ).reviewId;
+}
+
 function humanizeId(id) {
   return id
     .split("-")
@@ -685,10 +691,24 @@ async function handleFeedbackExport(request, response, context) {
   }
 }
 
-function findArtifactThread(repoRoot, threadId) {
-  const review = buildReviewData(repoRoot);
-  const thread = (review.feedback || []).find((t) => t.id === threadId);
-  return { review, thread };
+export function readFeedbackThread(repoRoot, threadId) {
+  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const manifestPath = path.join(feedbackRoot, "manifest.json");
+  if (!fs.existsSync(manifestPath)) return null;
+
+  const manifest = readJson(manifestPath);
+  for (const batchId of manifest.batches || []) {
+    const batch = readJson(
+      path.join(feedbackRoot, "batches", `${batchId}.json`),
+    );
+    const storedThreadId = (batch.threads || []).find((id) => id === threadId);
+    if (storedThreadId) {
+      return readJson(
+        path.join(feedbackRoot, "threads", `${storedThreadId}.json`),
+      );
+    }
+  }
+  return null;
 }
 
 // Reviewer-driven thread actions: continue (reply), close (resolve), or reopen.
@@ -717,8 +737,12 @@ async function handleThreadAction(request, response, context, action) {
       sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
-    const review = buildReviewData(context.repoRoot);
-    if (!payload || payload.reviewId !== review.reviewId) {
+    const currentReviewId = activeReviewId(context.repoRoot);
+    if (
+      !payload ||
+      payload.reviewId !== context.reviewId ||
+      payload.reviewId !== currentReviewId
+    ) {
       sendJson(response, 409, {
         ok: false,
         error: "This viewer is showing a different review than the one being edited.",
@@ -754,7 +778,7 @@ async function handleThreadAction(request, response, context, action) {
       sendJson(response, 422, { ok: false, error: cliErrorMessage(error) });
       return;
     }
-    const { thread } = findArtifactThread(context.repoRoot, threadId);
+    const thread = readFeedbackThread(context.repoRoot, threadId);
     if (!thread) {
       sendJson(response, 200, { ok: true });
       return;
@@ -816,7 +840,12 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId }) {
       ["/api/feedback/reply", "/api/feedback/resolve", "/api/feedback/reopen"].includes(pathname)
     ) {
       const action = pathname.split("/").pop();
-      handleThreadAction(request, response, { repoRoot, feedbackCli, port }, action);
+      handleThreadAction(
+        request,
+        response,
+        { repoRoot, feedbackCli, port, reviewId },
+        action,
+      );
       return;
     }
 

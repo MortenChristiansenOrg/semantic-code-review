@@ -10,7 +10,12 @@ import {
 const moduleUrl = pathToFileURL(
   path.join(scriptsDirectory, "semantic-view.mjs"),
 ).href;
-const { createReviewDataScript, planFeedbackThreads, mapNoteTarget } = await import(moduleUrl);
+const {
+  createReviewDataScript,
+  planFeedbackThreads,
+  mapNoteTarget,
+  readFeedbackThread,
+} = await import(moduleUrl);
 
 const review = {
   stages: [
@@ -160,4 +165,40 @@ test("createReviewDataScript reloads feedback from disk", (t) => {
     refreshed.feedback[0].comments[1].body,
     "This reply should appear after refresh.",
   );
+});
+
+test("readFeedbackThread reloads one thread without rebuilding review data", (t) => {
+  const { repository } = createReviewWithStages(t);
+  repository.feedback("init");
+  repository.feedback("batch", "create", "--id", "review", "--title", "Review");
+  repository.feedback(
+    "thread",
+    "add",
+    "--batch",
+    "review",
+    "--id",
+    "fast-status",
+    "--comment-id",
+    "fast-status-comment",
+    "--body",
+    "Resolve this quickly.",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  repository.feedback("batch", "submit", "--id", "review");
+
+  assert.equal(
+    readFeedbackThread(repository.root, "fast-status").status,
+    "submitted",
+  );
+  repository.feedback("thread", "resolve", "--id", "fast-status");
+  assert.equal(
+    readFeedbackThread(repository.root, "fast-status").status,
+    "resolved",
+  );
+  assert.equal(readFeedbackThread(repository.root, "missing"), null);
 });
