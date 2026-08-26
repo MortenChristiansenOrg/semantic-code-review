@@ -22,7 +22,10 @@ For new work:
 
 1. Require a clean source worktree at the intended target branch head.
 2. Create or use a clean isolated implementation worktree.
-3. Gather the requirement source, title, summary, and acceptance criteria.
+3. Gather the source work items and apply the requirement boundaries in
+   `../docs/artifact-quality.md`. Default each requested user story or source
+   work item to one requirement with all of its acceptance criteria. Create
+   multiple requirements only for independently trackable source obligations.
 4. Plan coherent ordered stages. Keep future stages in the agent's task plan
    and register only the next stage.
 5. Initialize from the isolated worktree:
@@ -32,8 +35,10 @@ For new work:
    ```
 
 Initialization records the target branch head as `baseRevision`. The default
-branch prefix is `semantic-review/<review-id>`. Add independent requirements
-with `requirement add` before a stage references them.
+branch prefix is `semantic-review/<review-id>`. Initialization creates the
+first requirement. When the boundary rules identify additional requirements,
+add each with `requirement add` before a stage references it. Do not turn
+acceptance criteria or implementation stages into requirements.
 
 ## Implement each stage
 

@@ -56,6 +56,27 @@ not a story reconstructed afterward.
 
 ## Requirements and evidence
 
+A requirement represents one independently trackable product or business
+obligation. Its acceptance criteria are the testable outcomes that jointly
+define when that obligation is satisfied.
+
+- Default to one requirement for one requested user story, issue, or other
+  source work item, even when it has several acceptance criteria.
+- Preserve distinct source obligations as distinct requirements. Use more than
+  one requirement only when the request combines obligations that can be
+  understood and tracked independently, or explicitly combines several source
+  work items.
+- A requirement must remain meaningful if the other requirements are removed
+  from the review. If it would not, it is probably an acceptance criterion,
+  stage, or implementation detail instead.
+- Do not create separate requirements for acceptance criteria, edge cases,
+  implementation stages, technical layers, components, test categories, or
+  dependencies.
+- Do not merge unrelated source obligations into one requirement merely
+  because they are implemented in the same review.
+- When a source boundary is materially ambiguous, ask the user instead of
+  inventing or merging requirements.
+
 A stage should let a reviewer answer:
 
 1. Which requirement or acceptance criterion does this satisfy?
