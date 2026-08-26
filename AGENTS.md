@@ -35,35 +35,40 @@ version solely to preserve v0.1 behavior until versioning is declared active.
 ### Implementation model
 
 - **Implementation**: The complete set of file changes made by the LLM using Semantic
-  Flow to implement the requested work. This encompasses updates as response to
-  review feedback. [Previously "review"]
+  Flow to implement the requested work as well as any manual changes made. This
+  encompasses updates as response to review feedback. [Previously "review"]
 - **Review**: The process of a human reviewing the current implementation, providing
   feedback, and the LLM responding and making corrections.
-- **Stage**: A semantically independent part of the implementation that can be
-  understood and validated in isolation. Each stage builds on the previous stage.
-- **Node**: A coherent set of file changes within a stage representing a single
-  logical change.
+- **Stage**: A logically distinct and independently reviewable part of the
+  implementation that can be understood and validated in isolation. Each stage
+  branch builds on the previous stage branch.
+- **Change node**: A coherent subset of a stage's diff representing a single
+  logical change. It may own complete changed files or selected hunks or line
+  ranges when several nodes share a file. Mostly used just as "node" when not
+  ambiguous with Node.js.
 - **Classification**: The predefined category attached to each file-to-node
   membership (such as behavior, refactor and test).
-- **Insight**: A recorded piece of reasoning attached to a stage and
-  linked to the nodes it explains. Its kinds are decision, assumption,
-  alternative, failed attempt, risk, and question. [Previously "context item"]
-- **Validation evidence**: A recorded observation that a check was run for a
-  stage (automated, manual, or analysis), with its status and link to nodes.
-  Preferred over: validation item.
-- **Requirements**: The full set of specifications - i.e. the work to be done.
+- **Insight**: A recorded piece of reasoning or other observation attached to a
+  stage and linked to the nodes it explains. Its kinds are decision, assumption,
+  alternative, failed attempt, risk, and open question. [Previously "context item"]
+- **Validation evidence**: A recorded observation that a check was run or considered
+  for a stage (automated, manual, or analysis), with its status and link to nodes.
+- **Requirements**: The full set of specifications. When there is one specification,
+  the requirements and the specification are one and the same.
 - **Specification**: The identification, description and scope for the
   work including one or more acceptance criteria. [Previously "requirement"]
 - **Acceptance criterion**: A single testable condition of a specification.
 
 ### Artifacts and storage
 
-- **Implementation artifact**: The `.semantic-review/` JSON data describing an implementation: its
-  manifest, requirements, and stages.
+- **Implementation artifact**: The `.semantic-review/` JSON data describing an
+  implementation: its manifest, requirements, and stages.
 - **Manifest**: The single entry-point document (`manifest.json`) that indexes
   the requirements and stages and records review-level fields.
-- **Stage branch**: The persistent cumulative branch that holds one stage's
-  implementation, based on the branch immediately below it.
+- **Stage branch**: The persistent branch whose head represents the cumulative
+  implementation through one stage, based on the branch immediately below it.
+  The stage's own changes are the diff between its recorded base and head
+  revisions.
 - **Stage stack**: The linear chain of stage branches from the target branch
   upward.
 - **Target branch**: The repository branch the review is built on top of and
@@ -71,29 +76,35 @@ version solely to preserve v0.1 behavior until versioning is declared active.
 - **Base revision / head revision**: Immutable commit snapshots recorded for a
   stage's diff range; they make mutable branches and feedback anchors
   verifiable.
-- **Restacking**: Replaying every branch above a changed stage onto the newly
-  computed lower head, as one transaction, and refreshing the recorded
-  snapshots.
+- **Restacking**: Recomputing affected stage branches after the target branch
+  or a lower stage changes by replaying commits bottom-up onto the new lower
+  heads, then moving the affected refs as one transaction and refreshing the
+  recorded snapshots.
 - **Metadata branch**: The sibling branch (`<branch-prefix>/metadata`) that
   carries published review metadata, kept out of implementation diffs.
-- **Publication**: Publishing the artifact to the metadata branch after
-  approval.
-- **Preparation**: Producing hosting-neutral local outputs after review: the
-  stage stack (`prepare-stack`) or a single cumulative branch
-  (`prepare-branch`).
-- **Cumulative branch*: A single named branch at the final stage head,
+- **Publication**: Publishing the artifact to the metadata branch.
+- **Preparation**: The workflow represented by `/semantic-flow prepare`, which
+  prepares hosting-neutral local outputs after review by validating and
+  reporting the existing stage stack (`validate-stack`) or creating a single
+  cumulative branch (`prepare-branch`).
+- **Cumulative branch**: A single named branch at the final stage head,
   representing the whole reviewed change for a conventional remote review.
 - **Archive**: Storing a landed implementation's artifact under
-  `.semantic-review-history/<implementation-id>/` for provenance after stage branches
-  may be deleted.
-- **Artifact worktree**: The linked worktree that contains the active
-  artifact.
-- **Anchor**: An immutable stage head snapshot a feedback item is attached to;
+  `.semantic-review-history/<implementation-id>/` so its provenance remains
+  available if stage branches are later deleted. Archiving does not delete
+  branches.
+- **Artifact worktree**: The repository worktree that contains the active
+  artifact and from which artifact and feedback commands operate.
+- **Anchor**: An immutable stage head snapshot a feedback thread is attached to;
   it is **stale** when the stage's current head has since changed.
-- **Working branch**: The currently checked out stage branch.
-- **Operational branch**: The branch from which the LLM operates. Unless changed
-  after starting the work, this will be a different branch than the working branch.
-  The skill resolves the working branch as needed when issuing workflow commands.
+- **Working branch**: The branch checked out in the repository checkout or
+  linked worktree where the LLM is currently making implementation changes.
+  When no changes are in progress, it is the branch currently checked out
+  there.
+- **Operational branch**: The branch checked out in the original repository
+  checkout where the LLM session started. It remains the session's operational
+  context while the LLM runs commands or edits files in another worktree. It
+  may be the same as the working branch.
 
 ### Feedback
 
@@ -101,9 +112,9 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   `.semantic-review-feedback/`, independent from the artifact and never
   committed on stage branches.
 - **Thread**: A single review conversation opened by the user and continued by
-  the assistant, anchored to a target and stage head.
+  the agent or user, anchored to a target and stage head.
 - **Comment**: One entry in a thread's ordered timeline, authored by the user
-  or the assistant.
+  or the agent.
 - **Approval**: A recorded human sign-off on the whole change, a stage, a
   change node, or a file. This is for personal reference by the reviewer
-  and holds no technical significance. Also seen as: review-progress approval.
+  and holds no technical significance.
