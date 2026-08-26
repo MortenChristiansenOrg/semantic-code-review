@@ -240,7 +240,7 @@ Repeat begin, implement, commit, and finish for each stage.
 ```text
 <semantic-review> validate
 <semantic-review> validate --publish
-<semantic-review> prepare-stack
+<semantic-review> validate-stack
 ```
 
 ```text
@@ -251,7 +251,7 @@ The UI leads with each stage's node descriptions, then shows their classified
 file or hunk membership, linked semantic context, branch snapshots, and
 Git-backed diffs.
 
-`prepare-stack --json` emits machine-readable branch, base, and head entries.
+`validate-stack --json` emits machine-readable branch, base, and head entries.
 It neither contacts a remote nor creates hosted reviews.
 
 ## 7. Send feedback
@@ -320,15 +320,21 @@ reviewer then resolves the thread in the viewer or with:
 Reopening or replying to a resolved thread makes it open again. Later stage
 rewrites require no feedback metadata updates.
 
-## 10. Approve and prepare local outputs
+## 10. Publish and prepare local outputs
 
-After explicit approval:
+Once human review is complete, validate publication readiness:
 
 ```text
-<review-feedback> approve-stack
+<semantic-flow> validate --publish
 ```
 
-This publishes `.semantic-review/` to:
+Then publish `.semantic-review/` to the metadata branch:
+
+```text
+<semantic-review> publish
+```
+
+The default metadata branch is:
 
 ```text
 semantic-review/customer-order-cancellation/metadata
@@ -340,7 +346,7 @@ from implementation branches.
 The reviewed stack is now ready locally:
 
 ```text
-<semantic-review> prepare-stack
+<semantic-review> validate-stack
 ```
 
 To create a single cumulative branch for a conventional remote review:

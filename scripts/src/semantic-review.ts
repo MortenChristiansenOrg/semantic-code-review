@@ -2163,10 +2163,10 @@ function publishArtifact(paths, options) {
   );
 }
 
-function prepareStack(paths, options) {
+function validateStack(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "prepare-stack"),
+    commandOptionNames(semanticReviewApi, "validate-stack"),
   );
   const json = flag(options, "json");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
@@ -2191,7 +2191,7 @@ function prepareStack(paths, options) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  console.log(`Local stage stack ready (${entries.length} stage(s)):`);
+  console.log(`Local stage stack valid (${entries.length} stage(s)):`);
   for (const entry of entries) {
     console.log(
       `  ${entry.position}. ${entry.branch} -> ${entry.baseBranch} (${entry.headRevision})`,
@@ -2394,8 +2394,8 @@ function dispatch(paths, positionals, options) {
     publishArtifact(paths, options);
     return;
   }
-  if (command === "prepare-stack" && subcommand === undefined) {
-    prepareStack(paths, options);
+  if (command === "validate-stack" && subcommand === undefined) {
+    validateStack(paths, options);
     return;
   }
   if (command === "prepare-branch" && subcommand === undefined) {

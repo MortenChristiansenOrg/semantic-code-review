@@ -144,7 +144,7 @@ After all stages:
 
    ```text
    <semantic-flow> validate --publish --project <artifact-worktree-path>
-   <semantic-review> prepare-stack
+   <semantic-review> validate-stack
    ```
 
 Stop with the local stack ready for human review. Do not approve, publish

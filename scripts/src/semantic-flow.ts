@@ -272,7 +272,11 @@ function validate(options: Options): void {
     failed =
       execute(
         process.execPath,
-        [reviewFeedbackScript, "validate"],
+        [
+          reviewFeedbackScript,
+          "validate",
+          ...(publish ? ["--require-resolved"] : []),
+        ],
         candidate.worktree,
       ) !== 0 || failed;
   }

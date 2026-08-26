@@ -293,7 +293,7 @@ export interface PublishArtifactOptions {
 }
 
 /**
- * Commits validated semantic metadata after approval.
+ * Commits validated semantic metadata to the metadata branch.
  * @cli semantic-review.mjs
  * @command publish
  */
@@ -301,7 +301,7 @@ export declare function publishArtifact(
   options?: PublishArtifactOptions,
 ): void;
 
-export interface PrepareStackOptions {
+export interface ValidateStackOptions {
   /** Emits machine-readable local stack information. */
   json?: true;
 }
@@ -309,9 +309,9 @@ export interface PrepareStackOptions {
 /**
  * Verifies stage branches and prints their local base chain.
  * @cli semantic-review.mjs
- * @command prepare-stack
+ * @command validate-stack
  */
-export declare function prepareStack(options?: PrepareStackOptions): void;
+export declare function validateStack(options?: ValidateStackOptions): void;
 
 export interface PrepareBranchOptions {
   /** Local cumulative branch to create at the final reviewed stage head. */
@@ -472,19 +472,19 @@ export declare function reopenFeedbackThread(
   options: ReopenFeedbackThreadOptions,
 ): void;
 
-/**
- * Requires all feedback resolved, publishes metadata, and reports the stack.
- * @cli review-feedback.mjs
- * @command approve-stack
- */
-export declare function approveStack(): void;
+export interface ValidateFeedbackOptions {
+  /** Requires every feedback thread to be resolved. */
+  "require-resolved"?: true;
+}
 
 /**
  * Validates feedback schemas, targets, stage snapshots, and thread states.
  * @cli review-feedback.mjs
  * @command validate
  */
-export declare function validateFeedback(): void;
+export declare function validateFeedback(
+  options?: ValidateFeedbackOptions,
+): void;
 
 export interface SelectSemanticFlowReviewOptions {
   /** Repository or worktree used to discover linked semantic review artifacts. */

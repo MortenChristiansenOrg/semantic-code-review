@@ -22,7 +22,7 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   repository.semantic("validate");
   repository.semantic("validate", "--publish");
 
-  const prepared = JSON.parse(repository.semantic("prepare-stack", "--json"));
+  const prepared = JSON.parse(repository.semantic("validate-stack", "--json"));
   assert.equal(prepared.stages[0].baseBranch, "main");
   assert.equal(prepared.finalHeadRevision, stageTip);
   assert.equal("github" in prepared, false);
@@ -147,7 +147,7 @@ test("publication rejects target drift until the stack is restacked", (t) => {
   );
   repository.expectSemanticFailure(
     "Target branch main moved",
-    "prepare-stack",
+    "validate-stack",
   );
 
   repository.semantic("restack", "--base", "main");

@@ -82,7 +82,7 @@ story using semantic flow") or with explicit commands:
 | `feedback` | Have the agent address the feedback you submitted in the viewer. |
 | `status` | Show a read-only summary of where the work stands. |
 | `validate` | Check the work for consistency and flag anything that needs attention. |
-| `prepare` | After approval, produce the local branches ready for your Git workflow. |
+| `prepare` | After review, prepare a validated branch stack or cumulative branch for handoff. |
 | `archive` | Store the captured reasoning once the change has landed. |
 | `version` | Report the installed skill version. |
 | `update` | Update the installed skill from its source. |

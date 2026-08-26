@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createReviewWithStages } from "../helpers/repository.mjs";
+import {
+  createReviewWithStages,
+  flowCli,
+} from "../helpers/repository.mjs";
 
 function addThread(repository, id, body = `Resolve ${id}.`) {
   repository.feedback(
@@ -28,8 +31,19 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
   addThread(repository, "second-comment");
 
   repository.expectFeedbackFailure(
-    "Cannot approve stack; unresolved threads",
-    "approve-stack",
+    "Unresolved feedback threads",
+    "validate",
+    "--require-resolved",
+  );
+  const blockedPublication = repository.result(process.execPath, [
+    flowCli,
+    "validate",
+    "--publish",
+  ]);
+  assert.notEqual(blockedPublication.status, 0);
+  assert.match(
+    `${blockedPublication.stdout}\n${blockedPublication.stderr}`,
+    /Unresolved feedback threads/,
   );
 
   repository.commitFile(
@@ -63,18 +77,9 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
   repository.semantic("restack", "--from", "implementation");
 
   repository.feedback("validate");
+  repository.feedback("validate", "--require-resolved");
+  repository.flow("validate", "--publish");
   assert.equal(repository.feedback("next"), "No open feedback remains.");
-
-  repository.feedback("approve-stack");
-  const published = repository.git(
-    "rev-parse",
-    "semantic-review/test-review/metadata",
-  );
-  repository.feedback("approve-stack");
-  assert.equal(
-    repository.git("rev-parse", "semantic-review/test-review/metadata"),
-    published,
-  );
   const thread = repository.readJson(
     ".semantic-review-feedback/threads/second-comment.json",
   );
@@ -227,15 +232,5 @@ test("reviewers reopen and continue resolved threads", (t) => {
     "reopen",
     "--id",
     "chat",
-  );
-});
-
-test("approve-stack supports reviews with no feedback state", (t) => {
-  const { repository } = createReviewWithStages(t);
-  repository.feedback("approve-stack");
-  assert.equal(
-    repository.git("rev-parse", "semantic-review/test-review/metadata^"),
-    repository.readJson(".semantic-review/stages/implementation.json").change
-      .headRevision,
   );
 });

@@ -1,6 +1,6 @@
 # Prepare command
 
-Use after human review to create hosting-neutral local outputs.
+Use after human review to prepare hosting-neutral local outputs.
 
 Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
 operating-system guide before mutation. Resolve the active artifact worktree
@@ -14,7 +14,6 @@ Require:
 - Complete criterion coverage.
 - Publication validation passing.
 - All feedback threads resolved.
-- Explicit human whole-stack approval.
 
 Run:
 
@@ -22,24 +21,21 @@ Run:
 <semantic-flow> validate --publish --project <artifact-worktree-path>
 ```
 
-If whole-stack approval has not been recorded, do not infer it from the
-`prepare` invocation. Ask the user for explicit approval. After approval,
-publish metadata:
+Publish metadata:
 
 ```text
-<review-feedback> approve-stack
+<semantic-review> publish
 ```
 
-This validates feedback and creates or updates the sibling metadata branch so
-its heads match the reviewed stage heads. Re-running `prepare` after later
-changes republishes it.
+This creates or updates the sibling metadata branch so its heads match the
+reviewed stage heads. Re-running `prepare` after later changes republishes it.
 
 ## Outputs
 
 For the stage stack, run:
 
 ```text
-<semantic-review> prepare-stack
+<semantic-review> validate-stack
 ```
 
 For one cumulative branch, obtain the desired branch name and run:

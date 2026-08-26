@@ -144,7 +144,7 @@ export const semanticReviewApi: CliSignature = {
     { command: "repair" },
     { command: "publish", options: [option("message", "<commit-message>")] },
     {
-      command: "prepare-stack",
+      command: "validate-stack",
       options: [option("json")],
     },
     {
@@ -216,8 +216,10 @@ export const reviewFeedbackApi: CliSignature = {
       command: "thread reopen",
       options: [option("id", "<thread-id>", { required: true })],
     },
-    { command: "approve-stack" },
-    { command: "validate" },
+    {
+      command: "validate",
+      options: [option("require-resolved")],
+    },
   ],
 };
 

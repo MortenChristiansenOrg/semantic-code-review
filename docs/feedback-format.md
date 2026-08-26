@@ -51,9 +51,9 @@ feedback. The viewer marks the thread stale when the current stage head differs.
 The agent does not resolve threads. Later restacks do not require feedback
 metadata updates because the original review snapshot remains historical.
 
-Every feedback mutation and stack approval holds a repository-scoped lock.
-Stack approval requires every thread to be resolved, publishes semantic
-metadata on the sibling metadata branch, and reports the local branch chain.
+Every feedback mutation holds a repository-scoped lock. Publication-readiness
+validation requires every thread to be resolved. Metadata publication and
+local branch preparation are separate implementation-artifact operations.
 
 Feedback remains independent from the implementation artifact and is not
 committed on stage branches.

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -15,6 +14,7 @@ import {
 import {
   assertKnownOptions,
   expandInputOptions,
+  flag,
   option,
   parseArguments,
 } from "./shared/arguments.js";
@@ -32,7 +32,6 @@ const skillDirectory = path.resolve(scriptDirectory, "..");
 const feedbackSchemaDirectory =
   process.env.SEMANTIC_REVIEW_FEEDBACK_SCHEMA_DIR ??
   path.resolve(skillDirectory, "references", "feedback-schema");
-const semanticCli = path.join(scriptDirectory, "semantic-review.mjs");
 const HELP = renderCliHelp(reviewFeedbackApi);
 
 function repositoryRoot() {
@@ -296,7 +295,10 @@ function validateTarget(target, semantic, root) {
   }
 }
 
-function validateFeedback(paths, { quiet = false } = {}) {
+function validateFeedback(
+  paths,
+  { quiet = false, requireResolved = false } = {},
+) {
   const semantic = semanticArtifact(paths);
   const feedback = loadFeedback(paths);
   const ajv = schemaValidator();
@@ -330,6 +332,15 @@ function validateFeedback(paths, { quiet = false } = {}) {
       fail(
         `Feedback thread ${id} is assigned to missing stage ${thread.assignedStageId}.`,
       );
+    }
+  }
+
+  if (requireResolved) {
+    const open = [...feedback.threads.values()]
+      .filter((thread) => thread.status === "open")
+      .map((thread) => thread.id);
+    if (open.length) {
+      fail(`Unresolved feedback threads: ${open.join(", ")}.`);
     }
   }
 
@@ -611,35 +622,6 @@ function reopenThread(paths, options) {
   console.log(`Reopened feedback thread ${id}.`);
 }
 
-function approveStack(paths, options) {
-  assertKnownOptions(
-    options,
-    commandOptionNames(reviewFeedbackApi, "approve-stack"),
-  );
-  if (loadFeedback(paths, { required: false })) {
-    const { feedback } = validateFeedback(paths, { quiet: true });
-    const open = [...feedback.threads.values()].filter(
-      (thread) => thread.status === "open",
-    );
-    if (open.length) {
-      fail(
-        `Cannot approve stack; unresolved threads: ${open
-          .map((thread) => thread.id)
-          .join(", ")}.`,
-      );
-    }
-  }
-  execFileSync(process.execPath, [semanticCli, "publish"], {
-    cwd: paths.root,
-    stdio: "inherit",
-  });
-  execFileSync(process.execPath, [semanticCli, "prepare-stack"], {
-    cwd: paths.root,
-    stdio: "inherit",
-  });
-  console.log("Approved semantic stack.");
-}
-
 function dispatch(paths, positionals, options) {
   const [command, subcommand, ...extra] = positionals;
   if (extra.length) fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
@@ -665,15 +647,14 @@ function dispatch(paths, positionals, options) {
   if (command === "thread" && subcommand === "reopen") {
     return reopenThread(paths, options);
   }
-  if (command === "approve-stack" && !subcommand) {
-    return approveStack(paths, options);
-  }
   if (command === "validate" && !subcommand) {
     assertKnownOptions(
       options,
       commandOptionNames(reviewFeedbackApi, "validate"),
     );
-    validateFeedback(paths);
+    validateFeedback(paths, {
+      requireResolved: flag(options, "require-resolved"),
+    });
     return;
   }
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
