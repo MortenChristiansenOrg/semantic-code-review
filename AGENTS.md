@@ -10,3 +10,9 @@ specific platforms, harnesses, etc.
 ## Workflow
 
 Do not use the semantic-flow skill on this repo, it is a skill that other projects will install and use.
+
+## Schema stability
+
+Version 0.1 is experimental. Breaking schema and CLI changes may be made in
+place without migration or backward compatibility. Do not create a new schema
+version solely to preserve v0.1 behavior until versioning is declared active.

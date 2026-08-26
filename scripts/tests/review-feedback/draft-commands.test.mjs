@@ -23,18 +23,8 @@ test("feedback IDs may start with digits", (t) => {
 
   repository.feedback("init");
   repository.feedback(
-    "batch",
-    "create",
-    "--id",
-    "5-batch",
-    "--title",
-    "Numeric IDs",
-  );
-  repository.feedback(
     "thread",
     "add",
-    "--batch",
-    "5-batch",
     "--id",
     "6-thread",
     "--comment-id",
@@ -60,32 +50,8 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
 
   repository.expectFeedbackFailure(
     "must match pattern",
-    "batch",
-    "create",
-    "--id",
-    "con",
-    "--title",
-    "Invalid",
-  );
-  assert.equal(
-    repository.exists(".semantic-review-feedback/batches/con.json"),
-    false,
-  );
-
-  repository.feedback(
-    "batch",
-    "create",
-    "--id",
-    "portable",
-    "--title",
-    "Portable IDs",
-  );
-  repository.expectFeedbackFailure(
-    "must match pattern",
     "thread",
     "add",
-    "--batch",
-    "portable",
     "--id",
     "lpt1",
     "--comment-id",
@@ -108,7 +74,7 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
 test("feedback init does not strand a manifest among pre-existing files", (t) => {
   const { repository } = createReviewWithStages(t);
   repository.write(
-    ".semantic-review-feedback/batches/orphan.json",
+    ".semantic-review-feedback/threads/orphan.json",
     "{}\n",
   );
 
@@ -126,7 +92,7 @@ test("feedback init does not strand a manifest among pre-existing files", (t) =>
   repository.feedback("validate");
 });
 
-test("draft commands support every target kind and concurrent mutation", async (t) => {
+test("thread add supports every target kind and concurrent mutation", async (t) => {
   const { repository } = createReviewWithStages(t, [
     "implementation",
     "follow-up",
@@ -155,21 +121,7 @@ test("draft commands support every target kind and concurrent mutation", async (
 
   repository.feedback("init");
   repository.expectFeedbackFailure("Feedback state already exists.", "init");
-  repository.feedback("batch", "create", "--id", "empty", "--title", "Empty");
-  repository.feedback("batch", "delete", "--id", "empty");
-  assert.equal(
-    repository.exists(".semantic-review-feedback/batches/empty.json"),
-    false,
-  );
 
-  repository.feedback(
-    "batch",
-    "create",
-    "--id",
-    "review",
-    "--title",
-    "Command coverage",
-  );
   const targets = [
     [
       "requirement-target",
@@ -177,7 +129,7 @@ test("draft commands support every target kind and concurrent mutation", async (
       "--requirement",
       "story",
       "--assigned-stage",
-      "implementation",
+      "follow-up",
     ],
     [
       "criterion-target",
@@ -225,8 +177,6 @@ test("draft commands support every target kind and concurrent mutation", async (
     repository.feedback(
       "thread",
       "add",
-      "--batch",
-      "review",
       "--id",
       id,
       "--comment-id",
@@ -245,8 +195,6 @@ test("draft commands support every target kind and concurrent mutation", async (
     "--line must be a positive integer",
     "thread",
     "add",
-    "--batch",
-    "review",
     "--id",
     "invalid-line",
     "--comment-id",
@@ -270,8 +218,6 @@ test("draft commands support every target kind and concurrent mutation", async (
     "exceeds implementation.txt's 1 line(s)",
     "thread",
     "add",
-    "--batch",
-    "review",
     "--id",
     "missing-line",
     "--comment-id",
@@ -295,8 +241,6 @@ test("draft commands support every target kind and concurrent mutation", async (
     repository.feedbackAsync(
       "thread",
       "add",
-      "--batch",
-      "review",
       "--id",
       "concurrent-one",
       "--comment-id",
@@ -313,8 +257,6 @@ test("draft commands support every target kind and concurrent mutation", async (
     repository.feedbackAsync(
       "thread",
       "add",
-      "--batch",
-      "review",
       "--id",
       "concurrent-two",
       "--comment-id",
@@ -329,75 +271,23 @@ test("draft commands support every target kind and concurrent mutation", async (
       "implementation",
     ),
   ]);
-  const concurrentBatch = repository.readJson(
-    ".semantic-review-feedback/batches/review.json",
-  );
-  assert.ok(concurrentBatch.threads.includes("concurrent-one"));
-  assert.ok(concurrentBatch.threads.includes("concurrent-two"));
 
-  repository.feedback(
-    "comment",
-    "edit",
-    "--thread",
-    "requirement-target",
-    "--id",
-    "requirement-target-note",
-    "--body",
-    "Updated requirement feedback.",
+  const manifest = repository.readJson(
+    ".semantic-review-feedback/manifest.json",
   );
-  repository.feedback(
-    "thread",
-    "assign",
-    "--id",
-    "requirement-target",
-    "--stage",
-    "follow-up",
-  );
-  repository.feedback("thread", "delete", "--id", "concurrent-one");
-  repository.expectFeedbackFailure(
-    "must be an empty draft",
-    "batch",
-    "delete",
-    "--id",
-    "review",
-  );
-
-  repository.feedback("batch", "submit", "--id", "review");
-  repository.expectFeedbackFailure(
-    "immutable after submission",
-    "comment",
-    "edit",
-    "--thread",
-    "requirement-target",
-    "--id",
-    "requirement-target-note",
-    "--body",
-    "Too late.",
-  );
-  repository.expectFeedbackFailure(
-    "must be a non-empty draft",
-    "batch",
-    "submit",
-    "--id",
-    "review",
-  );
+  assert.ok(manifest.threads.includes("concurrent-one"));
+  assert.ok(manifest.threads.includes("concurrent-two"));
 
   const groups = JSON.parse(repository.feedback("next", "--json"));
   assert.deepEqual(
     groups.map((group) => group.stageId),
     ["implementation", "follow-up"],
   );
-  assert.match(groups[0].threads[0].assignedStageHead, /^[0-9a-f]{40}$/);
+  assert.match(groups[0].threads[0].stageHead, /^[0-9a-f]{40}$/);
   assert.equal(groups[0].threads[0].comments[0].author, "user");
   assert.match(
     repository.feedback("next"),
     /implementation \(semantic-review\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
-  );
-  assert.equal(
-    repository.readJson(
-      ".semantic-review-feedback/threads/requirement-target.json",
-    ).comments[0].body,
-    "Updated requirement feedback.",
   );
   repository.feedback("validate");
 });

@@ -8,7 +8,7 @@
     "$schema",
     "formatVersion",
     "reviewId",
-    "batches"
+    "threads"
   ],
   "properties": {
     "$schema": {
@@ -20,7 +20,7 @@
     "reviewId": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
     },
-    "batches": {
+    "threads": {
       "type": "array",
       "uniqueItems": true,
       "items": {

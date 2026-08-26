@@ -11,15 +11,14 @@ branch immediately below it.
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
 | `semantic-review/<review-id>/<NN>-<stage-id>` | Cumulative stage branch |
-| `.semantic-review-feedback/` | Local mutable feedback and approvals |
+| `.semantic-review-feedback/` | Local open and resolved feedback threads |
 | `semantic-review/<review-id>/metadata` | Published metadata outside implementation branches |
 | `.semantic-review-history/<review-id>/` | Archived artifact after landing |
 
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
 
-The review workspace stores review-progress approvals in
-`.semantic-review-feedback/approvals.json`. Approvals can be recorded for the
+The viewer stores review-progress approvals in browser-local state. Approvals can be recorded for the
 complete change set, a stage, a change node, or a file within one stage.
 Approving a parent visually approves its descendants and makes their controls
 read-only; removing that parent approval restores each descendant's explicit
@@ -255,12 +254,12 @@ Git-backed diffs.
 `prepare-stack --json` emits machine-readable branch, base, and head entries.
 It neither contacts a remote nor creates hosted reviews.
 
-## 7. Submit feedback
+## 7. Send feedback
 
-In **Review queue**, create a batch and add notes containing change
-instructions or questions. Each note opens a draft thread and can be edited or
-deleted. Submission freezes its user comments and assigned stage head, which
-lets the UI detect a stale anchor after restacking.
+In **Review queue**, add notes containing change instructions or questions.
+Notes remain editable browser-local drafts until sent. Sending creates open
+threads and records the responsible stage head, which lets the UI detect a
+stale anchor after restacking.
 
 ## 8. Edit a lower stage and restack
 
@@ -295,7 +294,7 @@ Do not run a restack while an upper branch that must move is checked out.
 If branches were already pushed, updating rewritten remote refs is a separate
 hosting operation and should use lease-protected force pushes where available.
 
-## 9. Resolve and approve feedback
+## 9. Reply to and resolve feedback
 
 Get work grouped by stage:
 
@@ -303,30 +302,23 @@ Get work grouped by stage:
 <review-feedback> next --json
 ```
 
-After restacking, resolve each change-request thread with an assistant
-follow-up, the submission snapshot, and the current head:
-
-```json
-{
-  "id": "<thread-id>",
-  "commentId": "<assistant-comment-id>",
-  "body": "Updated the cancellation rule.",
-  "stage": "add-cancellation-policy",
-  "previousHead": "<submitted-head>",
-  "rewrittenHead": "<current-head>"
-}
-```
+After answering or restacking, the implementation agent replies:
 
 ```text
-<review-feedback> thread resolve --input <resolution.json>
+<review-feedback> thread reply --id <thread-id> \
+  --comment-id <assistant-comment-id> --author assistant \
+  --body "Updated the cancellation rule."
 ```
 
-For a question that requires no code change, provide only `id`, `commentId`,
-and the answer in `body`. The assistant comment becomes the visible follow-up
-in the same thread.
+The same reply flow handles questions that require no code change. The
+reviewer then resolves the thread in the viewer or with:
 
-If the stage changes again, use `resolution rebind` with
-`--previous-head` and `--rewritten-head`.
+```text
+<review-feedback> thread resolve --id <thread-id>
+```
+
+Reopening or replying to a resolved thread makes it open again. Later stage
+rewrites require no feedback metadata updates.
 
 ## 10. Approve and prepare local outputs
 

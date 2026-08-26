@@ -125,12 +125,9 @@ test("createReviewDataScript reloads feedback from disk", (t) => {
   assert.deepEqual(readData().feedback, []);
 
   repository.feedback("init");
-  repository.feedback("batch", "create", "--id", "review", "--title", "Review");
   repository.feedback(
     "thread",
     "add",
-    "--batch",
-    "review",
     "--id",
     "reload-feedback",
     "--comment-id",
@@ -144,7 +141,6 @@ test("createReviewDataScript reloads feedback from disk", (t) => {
     "--stage",
     "implementation",
   );
-  repository.feedback("batch", "submit", "--id", "review");
 
   assert.equal(readData().feedback[0].comments.length, 1);
 
@@ -170,12 +166,9 @@ test("createReviewDataScript reloads feedback from disk", (t) => {
 test("readFeedbackThread reloads one thread without rebuilding review data", (t) => {
   const { repository } = createReviewWithStages(t);
   repository.feedback("init");
-  repository.feedback("batch", "create", "--id", "review", "--title", "Review");
   repository.feedback(
     "thread",
     "add",
-    "--batch",
-    "review",
     "--id",
     "fast-status",
     "--comment-id",
@@ -189,11 +182,10 @@ test("readFeedbackThread reloads one thread without rebuilding review data", (t)
     "--stage",
     "implementation",
   );
-  repository.feedback("batch", "submit", "--id", "review");
 
   assert.equal(
     readFeedbackThread(repository.root, "fast-status").status,
-    "submitted",
+    "open",
   );
   repository.feedback("thread", "resolve", "--id", "fast-status");
   assert.equal(

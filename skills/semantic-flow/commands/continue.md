@@ -16,8 +16,8 @@ Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
    <semantic-flow> validate --project <artifact-worktree-path>
    ```
 
-4. Inspect feedback state when `.semantic-review-feedback/` exists. If
-   submitted feedback is the work awaiting action, explain that and follow
+4. Inspect feedback state when `.semantic-review-feedback/` exists. If open
+   feedback is the work awaiting action, explain that and follow
    `feedback.md` rather than treating it as ordinary implementation.
 
 Do not discard or overwrite partial application changes. If unrelated changes

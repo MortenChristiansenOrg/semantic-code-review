@@ -37,18 +37,11 @@ const commands = new Map([
     feedbackCli,
     [
       "init",
-      "batch create",
-      "batch delete",
       "thread add",
-      "comment edit",
-      "thread delete",
-      "thread assign",
-      "batch submit",
       "next",
+      "thread reply",
       "thread resolve",
-      "resolution rebind",
-      "thread approve",
-      "batch approve-all",
+      "thread reopen",
       "approve-stack",
       "validate",
     ],
@@ -254,10 +247,15 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     path.join(repositoryRoot, "docs", "user-manual.md"),
     "utf8",
   );
+  const viewerApp = fs.readFileSync(
+    path.join(repositoryRoot, "viewer", "app.js"),
+    "utf8",
+  );
 
   assert.match(attributes, /^\* text=auto eol=lf$/m);
   assert.match(editorConfig, /^end_of_line = lf$/m);
   assert.match(editorConfig, /^charset = utf-8$/m);
+  assert.match(viewerApp, /t\.anchorStale/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);

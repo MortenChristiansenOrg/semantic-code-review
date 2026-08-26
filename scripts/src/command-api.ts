@@ -172,20 +172,8 @@ export const reviewFeedbackApi: CliSignature = {
   commands: [
     { command: "init" },
     {
-      command: "batch create",
-      options: [
-        option("id", "<batch-id>", { required: true }),
-        option("title", "<title>", { required: true }),
-      ],
-    },
-    {
-      command: "batch delete",
-      options: [option("id", "<batch-id>", { required: true })],
-    },
-    {
       command: "thread add",
       options: [
-        option("batch", "<batch-id>", { required: true }),
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>", { required: true }),
         option("body", "<text>", { required: true }),
@@ -206,29 +194,6 @@ export const reviewFeedbackApi: CliSignature = {
         option("assigned-stage", "<stage-id>"),
       ],
     },
-    {
-      command: "comment edit",
-      options: [
-        option("thread", "<thread-id>", { required: true }),
-        option("id", "<comment-id>", { required: true }),
-        option("body", "<text>", { required: true }),
-      ],
-    },
-    {
-      command: "thread delete",
-      options: [option("id", "<thread-id>", { required: true })],
-    },
-    {
-      command: "thread assign",
-      options: [
-        option("id", "<thread-id>", { required: true }),
-        option("stage", "<stage-id>", { required: true }),
-      ],
-    },
-    {
-      command: "batch submit",
-      options: [option("id", "<batch-id>", { required: true })],
-    },
     { command: "next", options: [option("json")] },
     {
       command: "thread reply",
@@ -245,30 +210,11 @@ export const reviewFeedbackApi: CliSignature = {
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>"),
         option("body", "<text>"),
-        option("stage", "<stage-id>"),
-        option("previous-head", "<full-sha>"),
-        option("rewritten-head", "<full-sha>"),
       ],
     },
     {
       command: "thread reopen",
       options: [option("id", "<thread-id>", { required: true })],
-    },
-    {
-      command: "resolution rebind",
-      options: [
-        option("stage", "<stage-id>", { required: true }),
-        option("previous-head", "<full-sha>", { required: true }),
-        option("rewritten-head", "<full-sha>", { required: true }),
-      ],
-    },
-    {
-      command: "thread approve",
-      options: [option("id", "<thread-id>", { required: true })],
-    },
-    {
-      command: "batch approve-all",
-      options: [option("id", "<batch-id>", { required: true })],
     },
     { command: "approve-stack" },
     { command: "validate" },

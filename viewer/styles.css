@@ -662,7 +662,6 @@ button { font-family: inherit; cursor: pointer; }
   transition: gap .28s var(--ease);
 }
 .tthread.is-collapsed { gap: 0; }
-.tthread.status-approved { opacity: .92; }
 .tthread-h { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; user-select: none; }
 .tthread-caret { display: inline-flex; color: var(--faint); flex: none; transition: transform .25s var(--ease); }
 .tthread.is-collapsed .tthread-caret { transform: rotate(-90deg); }
@@ -673,9 +672,8 @@ button { font-family: inherit; cursor: pointer; }
 .tthread-type { display: inline-flex; flex: none; color: var(--muted); }
 .tthread-title { flex: 1 1 auto; min-width: 0; color: var(--text); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tthread-status-ic { display: inline-flex; flex: none; color: var(--muted); }
-.tthread-status-ic.s-submitted { color: var(--t-assumption); }
+.tthread-status-ic.s-open { color: var(--t-assumption); }
 .tthread-status-ic.s-resolved { color: var(--t-decision); }
-.tthread-status-ic.s-approved { color: var(--ok); }
 .tthread-msgs { display: grid; gap: 6px; }
 .tmsg {
   border-radius: var(--radius-sm); padding: 8px 10px;
@@ -688,7 +686,6 @@ button { font-family: inherit; cursor: pointer; }
 .tmsg-h time { font-family: var(--mono); font-size: 9.5px; color: var(--faint); white-space: nowrap; }
 .tmsg p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
 .tthread-stale { font-family: var(--mono); font-size: 10.5px; color: var(--t-risk); margin: 0; }
-.tthread-rewrite { font-family: var(--mono); font-size: 10.5px; color: var(--t-decision); margin: 0; }
 .tthread-hint { font-size: 11px; color: var(--muted); margin: 0; }
 
 /* draft / sent state chips for browser-local notes */

@@ -10,7 +10,7 @@ operating-system guide before mutation. Resolve the active artifact worktree.
 Require:
 
 - No working stage.
-- Feedback valid with no unresolved submitted items.
+- Feedback valid with no open threads.
 - Published metadata matching the artifact.
 - The target branch containing the final reviewed stage head.
 - The artifact worktree clean.

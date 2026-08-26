@@ -239,46 +239,6 @@
           }
         }
       ]
-    },
-    "resolution": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "resolvedAt"
-      ],
-      "properties": {
-        "stageId": {
-          "$ref": "#/$defs/id"
-        },
-        "previousHead": {
-          "$ref": "#/$defs/sha1"
-        },
-        "rewrittenHead": {
-          "$ref": "#/$defs/sha1"
-        },
-        "resolvedAt": {
-          "type": "string",
-          "format": "date-time"
-        },
-        "approvedAt": {
-          "type": "string",
-          "format": "date-time"
-        }
-      },
-      "dependentRequired": {
-        "stageId": [
-          "previousHead",
-          "rewrittenHead"
-        ],
-        "previousHead": [
-          "stageId",
-          "rewrittenHead"
-        ],
-        "rewrittenHead": [
-          "stageId",
-          "previousHead"
-        ]
-      }
     }
   }
 }

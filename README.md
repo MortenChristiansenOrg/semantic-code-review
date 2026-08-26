@@ -124,3 +124,6 @@ truth rather than replacing it. Because the artifacts follow a published,
 versioned schema, you are free to build your own tooling around them - the
 viewer and command-line tool in this repository are simply one reference
 implementation.
+
+> **Schema stability:** Version 0.1 is experimental and may receive breaking
+> changes in place. It does not provide backward-compatibility guarantees yet.

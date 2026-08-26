@@ -7,10 +7,11 @@
   "required": [
     "$schema",
     "id",
-    "batchId",
     "status",
     "comments",
     "target",
+    "assignedStageId",
+    "stageHead",
     "createdAt"
   ],
   "properties": {
@@ -20,15 +21,10 @@
     "id": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
     },
-    "batchId": {
-      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
-    },
     "status": {
       "enum": [
-        "draft",
-        "submitted",
-        "resolved",
-        "approved"
+        "open",
+        "resolved"
       ]
     },
     "comments": {
@@ -44,15 +40,16 @@
     "assignedStageId": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
     },
-    "assignedStageHead": {
+    "stageHead": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/sha1"
     },
     "createdAt": {
       "type": "string",
       "format": "date-time"
     },
-    "resolution": {
-      "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/resolution"
+    "resolvedAt": {
+      "type": "string",
+      "format": "date-time"
     }
   },
   "allOf": [
@@ -60,10 +57,7 @@
       "if": {
         "properties": {
           "status": {
-            "enum": [
-              "resolved",
-              "approved"
-            ]
+            "const": "resolved"
           }
         },
         "required": [
@@ -72,50 +66,8 @@
       },
       "then": {
         "required": [
-          "resolution"
+          "resolvedAt"
         ]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "not": {
-              "const": "draft"
-            }
-          }
-        },
-        "required": [
-          "status"
-        ]
-      },
-      "then": {
-        "required": [
-          "assignedStageId",
-          "assignedStageHead"
-        ]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "const": "approved"
-          }
-        },
-        "required": [
-          "status"
-        ]
-      },
-      "then": {
-        "properties": {
-          "resolution": {
-            "type": "object",
-            "required": [
-              "approvedAt"
-            ]
-          }
-        }
       }
     }
   ]

@@ -28,7 +28,7 @@ Summarize:
 - Working stage, finalized stage count, and criterion coverage.
 - Failed, skipped, missing, or stale validation evidence.
 - Branch movement, ancestry drift, or required restacking.
-- Draft, submitted, resolved, and approved feedback threads.
+- Open and resolved feedback threads.
 - Metadata publication and local preparation state when detectable.
 - Whether the review is ready for implementation, continuation, review,
   feedback, preparation, or archive.

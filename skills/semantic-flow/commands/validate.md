@@ -22,8 +22,7 @@ If the user explicitly requests publication-readiness validation, run:
 
 Report failures in actionable groups such as schema, missing references,
 requirement coverage, branch identity, ancestry, moved heads, file inventory,
-node organization, feedback targets, stale snapshots, and unresolved
-resolutions.
+node organization, feedback targets, stale snapshots, and open threads.
 
 Do not automatically run `repair`, restack, edit metadata, switch branches, or
 change implementation code. Recommend `continue`, `feedback`, or the separate

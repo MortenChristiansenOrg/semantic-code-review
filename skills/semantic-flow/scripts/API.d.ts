@@ -295,32 +295,8 @@ export declare function validateArtifact(options?: ValidateArtifactOptions): voi
  * @command init
  */
 export declare function initializeFeedback(): void;
-export interface CreateFeedbackBatchOptions {
-    /** Stable identifier for the draft feedback batch. */
-    id: string;
-    /** Human-readable batch title. */
-    title: string;
-}
-/**
- * Creates an empty draft feedback batch.
- * @cli review-feedback.mjs
- * @command batch create
- */
-export declare function createFeedbackBatch(options: CreateFeedbackBatchOptions): void;
-export interface DeleteFeedbackBatchOptions {
-    /** Empty draft batch to delete. */
-    id: string;
-}
-/**
- * Deletes an empty draft feedback batch.
- * @cli review-feedback.mjs
- * @command batch delete
- */
-export declare function deleteFeedbackBatch(options: DeleteFeedbackBatchOptions): void;
 export interface AddFeedbackThreadOptions {
-    /** Draft batch receiving the thread. */
-    batch: string;
-    /** Stable identifier for the feedback thread. */
+    /** Stable identifier for the open feedback thread. */
     id: string;
     /** Stable identifier for the opening user comment. */
     "comment-id": string;
@@ -350,64 +326,18 @@ export interface AddFeedbackThreadOptions {
     "assigned-stage"?: string;
 }
 /**
- * Adds a draft feedback thread with an opening user comment.
+ * Adds an open feedback thread with an opening user comment.
  * Target-specific parameters are required by `target-kind`.
  * @cli review-feedback.mjs
  * @command thread add
  */
 export declare function addFeedbackThread(options: AddFeedbackThreadOptions): void;
-export interface EditFeedbackCommentOptions {
-    /** Draft feedback thread containing the comment. */
-    thread: string;
-    /** User comment to edit. */
-    id: string;
-    /** Replacement comment body. */
-    body: string;
-}
-/**
- * Replaces a user comment before its thread is submitted.
- * @cli review-feedback.mjs
- * @command comment edit
- */
-export declare function editFeedbackComment(options: EditFeedbackCommentOptions): void;
-export interface DeleteFeedbackThreadOptions {
-    /** Draft feedback thread to delete. */
-    id: string;
-}
-/**
- * Deletes a draft feedback thread.
- * @cli review-feedback.mjs
- * @command thread delete
- */
-export declare function deleteFeedbackThread(options: DeleteFeedbackThreadOptions): void;
-export interface AssignFeedbackThreadOptions {
-    /** Draft feedback thread to assign. */
-    id: string;
-    /** Stage responsible for resolving the thread. */
-    stage: string;
-}
-/**
- * Assigns a draft feedback thread to its resolution stage.
- * @cli review-feedback.mjs
- * @command thread assign
- */
-export declare function assignFeedbackThread(options: AssignFeedbackThreadOptions): void;
-export interface SubmitFeedbackBatchOptions {
-    /** Non-empty draft batch to freeze and submit. */
-    id: string;
-}
-/**
- * Freezes and submits a non-empty draft feedback batch.
- * @cli review-feedback.mjs
- * @command batch submit
- */
-export declare function submitFeedbackBatch(options: SubmitFeedbackBatchOptions): void;
 export interface NextFeedbackOptions {
     /** Emits machine-readable JSON instead of text. */
     json?: true;
 }
 /**
- * Lists submitted feedback threads grouped by resolution stage.
+ * Lists open feedback threads awaiting an agent reply, grouped by stage.
  * @cli review-feedback.mjs
  * @command next
  */
@@ -430,23 +360,16 @@ export interface ReplyFeedbackThreadOptions {
  */
 export declare function replyFeedbackThread(options: ReplyFeedbackThreadOptions): void;
 export interface ResolveFeedbackThreadOptions {
-    /** Submitted feedback thread being resolved. */
+    /** Open feedback thread being resolved. */
     id: string;
     /** Stable identifier for an optional reviewer closing comment. */
     "comment-id"?: string;
     /** Optional reviewer closing note; required with `comment-id`. */
     body?: string;
-    /** Stage rewritten to resolve a change request. */
-    stage?: string;
-    /** Full stage head captured when the thread was submitted. */
-    "previous-head"?: string;
-    /** Full current rewritten head for the assigned stage. */
-    "rewritten-head"?: string;
 }
 /**
- * Marks a submitted thread resolved. Resolution is a reviewer decision; the
- * agent never closes a thread. A closing note and stage-rewrite record are
- * optional.
+ * Marks an open thread resolved. Resolution is a reviewer decision; the agent
+ * never closes a thread. A closing note is optional.
  * @cli review-feedback.mjs
  * @command thread resolve
  */
@@ -461,48 +384,14 @@ export interface ReopenFeedbackThreadOptions {
  * @command thread reopen
  */
 export declare function reopenFeedbackThread(options: ReopenFeedbackThreadOptions): void;
-export interface RebindResolutionsOptions {
-    /** Stage that was rewritten again. */
-    stage: string;
-    /** Superseded rewritten head. */
-    "previous-head": string;
-    /** Current rewritten head. */
-    "rewritten-head": string;
-}
 /**
- * Moves existing resolutions to a later rewrite of the same stage.
- * @cli review-feedback.mjs
- * @command resolution rebind
- */
-export declare function rebindResolutions(options: RebindResolutionsOptions): void;
-export interface ApproveFeedbackThreadOptions {
-    /** Resolved feedback thread to approve. */
-    id: string;
-}
-/**
- * Approves one resolved feedback thread.
- * @cli review-feedback.mjs
- * @command thread approve
- */
-export declare function approveFeedbackThread(options: ApproveFeedbackThreadOptions): void;
-export interface ApproveFeedbackBatchOptions {
-    /** Batch whose resolved threads should be approved. */
-    id: string;
-}
-/**
- * Approves every resolved thread in a feedback batch.
- * @cli review-feedback.mjs
- * @command batch approve-all
- */
-export declare function approveFeedbackBatch(options: ApproveFeedbackBatchOptions): void;
-/**
- * Validates feedback, publishes semantic metadata, and reports the local stack.
+ * Requires all feedback resolved, publishes metadata, and reports the stack.
  * @cli review-feedback.mjs
  * @command approve-stack
  */
 export declare function approveStack(): void;
 /**
- * Validates feedback schemas, targets, statuses, and resolutions.
+ * Validates feedback schemas, targets, stage snapshots, and thread states.
  * @cli review-feedback.mjs
  * @command validate
  */

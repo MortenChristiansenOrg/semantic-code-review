@@ -387,48 +387,41 @@ export function createReviewDataScript(repoRoot) {
   return `window.SEMANTIC_REVIEW = ${JSON.stringify(buildReviewData(repoRoot))};\n`;
 }
 
-// Load submitted/resolved/approved feedback threads from the local
-// `.semantic-review-feedback` store so the viewer can render the reviewer <->
-// implementation-agent conversation. Draft threads stay private to the viewer
-// workspace; only threads that have been submitted are surfaced here. A thread
-// is flagged stale when the stage head it was anchored against has since been
-// rewritten.
+// Load open and resolved feedback threads from the local feedback store. A
+// thread is stale when its assigned stage has moved since the note was sent.
 function buildFeedbackThreads(repoRoot, stages) {
   const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
   const manifestPath = path.join(feedbackRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) return [];
   const manifest = readJson(manifestPath);
+  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
+    throw new Error(
+      "this feedback workspace uses an unsupported v0.1 layout",
+    );
+  }
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
   const threads: Array<Record<string, any>> = [];
-  for (const batchId of manifest.batches || []) {
-    const batch = readJson(
-      path.join(feedbackRoot, "batches", `${batchId}.json`),
+  for (const threadId of manifest.threads || []) {
+    const thread = readJson(
+      path.join(feedbackRoot, "threads", `${threadId}.json`),
     );
-    for (const threadId of batch.threads || []) {
-      const thread = readJson(
-        path.join(feedbackRoot, "threads", `${threadId}.json`),
-      );
-      if (thread.status === "draft") continue;
-      threads.push({
-        id: thread.id,
-        batchId: thread.batchId,
-        batchTitle: batch.title,
-        status: thread.status,
-        target: thread.target,
-        comments: (thread.comments || []).map((c) => ({
-          id: c.id,
-          author: c.author,
-          body: c.body,
-          createdAt: c.createdAt,
-        })),
-        resolution: thread.resolution || null,
-        assignedStageId: thread.assignedStageId || null,
-        createdAt: thread.createdAt,
-        anchorStale:
-          Boolean(thread.target && thread.target.stageHead) &&
-          currentHeads.get(thread.target.stageId) !== thread.target.stageHead,
-      });
-    }
+    threads.push({
+      id: thread.id,
+      status: thread.status,
+      target: thread.target,
+      comments: (thread.comments || []).map((c) => ({
+        id: c.id,
+        author: c.author,
+        body: c.body,
+        createdAt: c.createdAt,
+      })),
+      assignedStageId: thread.assignedStageId,
+      stageHead: thread.stageHead,
+      createdAt: thread.createdAt,
+      resolvedAt: thread.resolvedAt || null,
+      anchorStale:
+        currentHeads.get(thread.assignedStageId) !== thread.stageHead,
+    });
   }
   return threads;
 }
@@ -576,17 +569,10 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
   if (!fs.existsSync(manifest)) {
     runFeedbackCli(feedbackCli, repoRoot, ["init"]);
   }
-  const batchId = `viewer-${Date.now().toString(36)}`;
-  runFeedbackCli(
-    feedbackCli,
-    repoRoot,
-    ["batch", "create", "--input", "-"],
-    JSON.stringify({ id: batchId, title: `Reviewer feedback ${new Date().toISOString()}` }),
-  );
+  const exportId = `viewer-${Date.now().toString(36)}`;
   const exported: Array<{ ref: number; threadId: string }> = [];
-  const addedThreadIds: string[] = [];
   planned.forEach((thread, index) => {
-    const threadId = `${batchId}-t${String(index).padStart(3, "0")}`;
+    const threadId = `${exportId}-t${String(index).padStart(3, "0")}`;
     const commentId = `${threadId}-c000`;
     try {
       runFeedbackCli(
@@ -594,7 +580,6 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
         repoRoot,
         ["thread", "add", "--input", "-"],
         JSON.stringify({
-          batch: batchId,
           id: threadId,
           "comment-id": commentId,
           body: thread.body,
@@ -602,40 +587,14 @@ function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
         }),
       );
       exported.push({ ref: thread.ref, threadId });
-      addedThreadIds.push(threadId);
     } catch (error) {
       skipped.push({ ref: thread.ref, reason: cliErrorMessage(error) });
     }
   });
   if (exported.length === 0) {
-    discardBatch(feedbackCli, repoRoot, batchId, addedThreadIds);
     return { ok: false, error: "No notes could be exported.", skipped };
   }
-  try {
-    runFeedbackCli(feedbackCli, repoRoot, ["batch", "submit", "--id", batchId]);
-  } catch (error) {
-    // Roll the draft back so a failed submit cannot leave an invisible,
-    // non-empty draft batch that blocks or confuses later exports.
-    discardBatch(feedbackCli, repoRoot, batchId, addedThreadIds);
-    return { ok: false, error: cliErrorMessage(error), skipped };
-  }
-  return { ok: true, batchId, exported, skipped };
-}
-
-// Best-effort removal of a draft batch and its draft threads.
-function discardBatch(feedbackCli, repoRoot, batchId, threadIds) {
-  for (const threadId of threadIds) {
-    try {
-      runFeedbackCli(feedbackCli, repoRoot, ["thread", "delete", "--id", threadId]);
-    } catch {
-      // Ignore; surfacing the original failure matters more than perfect cleanup.
-    }
-  }
-  try {
-    runFeedbackCli(feedbackCli, repoRoot, ["batch", "delete", "--id", batchId]);
-  } catch {
-    // Ignore.
-  }
+  return { ok: true, exported, skipped };
 }
 
 // Reject cross-origin drivers. A local page served by this server has no
@@ -697,16 +656,15 @@ export function readFeedbackThread(repoRoot, threadId) {
   if (!fs.existsSync(manifestPath)) return null;
 
   const manifest = readJson(manifestPath);
-  for (const batchId of manifest.batches || []) {
-    const batch = readJson(
-      path.join(feedbackRoot, "batches", `${batchId}.json`),
+  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
+    throw new Error(
+      "this feedback workspace uses an unsupported v0.1 layout",
     );
-    const storedThreadId = (batch.threads || []).find((id) => id === threadId);
-    if (storedThreadId) {
-      return readJson(
-        path.join(feedbackRoot, "threads", `${storedThreadId}.json`),
-      );
-    }
+  }
+  if ((manifest.threads || []).includes(threadId)) {
+    return readJson(
+      path.join(feedbackRoot, "threads", `${threadId}.json`),
+    );
   }
   return null;
 }
@@ -787,7 +745,7 @@ async function handleThreadAction(request, response, context, action) {
     sendJson(response, 200, {
       ok: true,
       status: thread.status,
-      resolution: thread.resolution || null,
+      resolvedAt: thread.resolvedAt || null,
       comment: action === "reply" ? last : undefined,
     });
   } catch (error) {

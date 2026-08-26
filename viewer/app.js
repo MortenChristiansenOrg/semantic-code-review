@@ -255,7 +255,7 @@
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
   }
   function threadStatusIcon(status) {
-    if (status === "resolved" || status === "approved")
+    if (status === "resolved")
       return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg>`;
   }
@@ -403,10 +403,6 @@
         </div>`;
       })
       .join("");
-    const res =
-      t.resolution && t.resolution.previousHead && t.resolution.rewrittenHead
-        ? `<p class="tthread-rewrite">${esc(t.resolution.previousHead.slice(0, 9))} → ${esc(t.resolution.rewrittenHead.slice(0, 9))}</p>`
-        : "";
     const disp = threadTargetDisplay(t);
     const ref = threadElementRef(t);
     const kind = (t.target && t.target.kind) || "thread";
@@ -418,10 +414,13 @@
         ? `<strong class="tthread-title" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
         : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
     const busy = threadBusy(t.id);
+    const stale = t.anchorStale
+      ? `<p class="tthread-stale">Stage changed since this feedback was sent.</p>`
+      : "";
     const err = threadError(t.id)
       ? `<p class="tthread-err">${esc(threadError(t.id))}</p>`
       : "";
-    const actionable = t.status === "submitted" || t.status === "resolved";
+    const actionable = t.status === "open" || t.status === "resolved";
     const actions = actionable
       ? `<div class="tthread-act">
           ${t.status === "resolved"
@@ -446,8 +445,8 @@
       </div>
       <div class="tthread-body">
         <div class="tthread-body-inner">
+          ${stale}
           <div class="tthread-msgs">${msgs}</div>
-          ${res}
           ${err}
           ${actions}
           ${replyForm}
@@ -1331,7 +1330,7 @@
       if (!res.ok || !out.ok) throw new Error(out.error || `Reply failed (HTTP ${res.status}).`);
       if (out.comment) thread.comments.push(out.comment);
       if (out.status) thread.status = out.status;
-      if ("resolution" in out) thread.resolution = out.resolution;
+      if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
       threadOps[threadId] = { busy: false, error: "" };
       replyTo = null;
     } catch (err) {
@@ -1360,7 +1359,7 @@
       try { out = await res.json(); } catch { /* non-JSON */ }
       if (!res.ok || !out.ok) throw new Error(out.error || `Action failed (HTTP ${res.status}).`);
       if (out.status) thread.status = out.status;
-      if ("resolution" in out) thread.resolution = out.resolution;
+      if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
       threadOps[threadId] = { busy: false, error: "" };
       if (!state.threadCollapsed) state.threadCollapsed = {};
       if (kind === "resolve") state.threadCollapsed[threadId] = true;
@@ -1510,7 +1509,6 @@
         if (note) {
           note.exported = true;
           if (entry && entry.threadId) note.threadId = entry.threadId;
-          if (out.batchId) note.batchId = out.batchId;
         }
       });
       persist();

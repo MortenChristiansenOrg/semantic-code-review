@@ -13,7 +13,7 @@ Require:
 - Every stage finalized.
 - Complete criterion coverage.
 - Publication validation passing.
-- All submitted feedback threads resolved.
+- All feedback threads resolved.
 - Explicit human whole-stack approval.
 
 Run:
