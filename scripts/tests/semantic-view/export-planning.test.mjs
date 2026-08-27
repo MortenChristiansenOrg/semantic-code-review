@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
-  createReviewWithStages,
+  createImplementationWithStages,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
 
@@ -11,13 +11,13 @@ const moduleUrl = pathToFileURL(
   path.join(scriptsDirectory, "semantic-view.mjs"),
 ).href;
 const {
-  createReviewDataScript,
+  createImplementationDataScript,
   planFeedbackThreads,
   mapNoteTarget,
   readFeedbackThread,
 } = await import(moduleUrl);
 
-const review = {
+const implementation = {
   stages: [
     {
       id: "implementation",
@@ -33,7 +33,7 @@ const review = {
 };
 
 test("mapNoteTarget maps a stage note to a stage target", () => {
-  assert.deepEqual(mapNoteTarget({ kind: "stage", id: "implementation" }, review), {
+  assert.deepEqual(mapNoteTarget({ kind: "stage", id: "implementation" }, implementation), {
     "target-kind": "stage",
     stage: "implementation",
     label: "Implement behavior",
@@ -42,14 +42,14 @@ test("mapNoteTarget maps a stage note to a stage target", () => {
 
 test("mapNoteTarget maps a node note to its stage with the node title", () => {
   assert.deepEqual(
-    mapNoteTarget({ kind: "node", id: "impl-change", stageId: "implementation" }, review),
+    mapNoteTarget({ kind: "node", id: "impl-change", stageId: "implementation" }, implementation),
     { "target-kind": "stage", stage: "implementation", label: "Implementation change" },
   );
 });
 
 test("mapNoteTarget maps a file note id into a file target", () => {
   assert.deepEqual(
-    mapNoteTarget({ kind: "file", id: "f:implementation:src/app.js" }, review),
+    mapNoteTarget({ kind: "file", id: "f:implementation:src/app.js" }, implementation),
     {
       "target-kind": "file",
       stage: "implementation",
@@ -60,10 +60,10 @@ test("mapNoteTarget maps a file note id into a file target", () => {
 });
 
 test("mapNoteTarget rejects unknown targets", () => {
-  assert.throws(() => mapNoteTarget({ kind: "stage", id: "missing" }, review), /unknown stage/);
-  assert.throws(() => mapNoteTarget({ kind: "node", id: "missing" }, review), /unknown node/);
+  assert.throws(() => mapNoteTarget({ kind: "stage", id: "missing" }, implementation), /unknown stage/);
+  assert.throws(() => mapNoteTarget({ kind: "node", id: "missing" }, implementation), /unknown node/);
   assert.throws(
-    () => mapNoteTarget({ kind: "file", id: "not-a-file-id" }, review),
+    () => mapNoteTarget({ kind: "file", id: "not-a-file-id" }, implementation),
     /unrecognized file id/,
   );
 });
@@ -73,7 +73,7 @@ test("planFeedbackThreads plans valid notes and preserves ref order", () => {
     { ref: 0, kind: "stage", id: "implementation", body: "  needs a test  " },
     { ref: 1, kind: "file", id: "f:implementation:src/app.js", body: "rename this" },
   ];
-  const { planned, skipped } = planFeedbackThreads(notes, review);
+  const { planned, skipped } = planFeedbackThreads(notes, implementation);
   assert.equal(skipped.length, 0);
   assert.equal(planned.length, 2);
   assert.deepEqual(
@@ -91,7 +91,7 @@ test("planFeedbackThreads skips empty bodies and unresolved targets with reasons
     { ref: 6, kind: "stage", id: "ghost", body: "real body" },
     { ref: 7, kind: "stage", id: "implementation", body: "keep me" },
   ];
-  const { planned, skipped } = planFeedbackThreads(notes, review);
+  const { planned, skipped } = planFeedbackThreads(notes, implementation);
   assert.deepEqual(
     planned.map((p) => p.ref),
     [7],
@@ -105,21 +105,21 @@ test("planFeedbackThreads skips empty bodies and unresolved targets with reasons
 test("planFeedbackThreads falls back to array index when ref is absent", () => {
   const { planned } = planFeedbackThreads(
     [{ kind: "stage", id: "cleanup", body: "note without ref" }],
-    review,
+    implementation,
   );
   assert.equal(planned.length, 1);
   assert.equal(planned[0].ref, 0);
 });
 
 test("planFeedbackThreads tolerates a non-array payload", () => {
-  assert.deepEqual(planFeedbackThreads(null, review), { planned: [], skipped: [] });
+  assert.deepEqual(planFeedbackThreads(null, implementation), { planned: [], skipped: [] });
 });
 
-test("createReviewDataScript reloads feedback from disk", (t) => {
-  const { repository } = createReviewWithStages(t);
+test("createImplementationDataScript reloads feedback from disk", (t) => {
+  const { repository } = createImplementationWithStages(t);
   const readData = () => {
-    const script = createReviewDataScript(repository.root);
-    return JSON.parse(script.match(/^window\.SEMANTIC_REVIEW = (.*);\n$/s)[1]);
+    const script = createImplementationDataScript(repository.root);
+    return JSON.parse(script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
   };
 
   assert.deepEqual(readData().feedback, []);
@@ -163,8 +163,8 @@ test("createReviewDataScript reloads feedback from disk", (t) => {
   );
 });
 
-test("readFeedbackThread reloads one thread without rebuilding review data", (t) => {
-  const { repository } = createReviewWithStages(t);
+test("readFeedbackThread reloads one thread without rebuilding implementation data", (t) => {
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   repository.feedback(
     "thread",

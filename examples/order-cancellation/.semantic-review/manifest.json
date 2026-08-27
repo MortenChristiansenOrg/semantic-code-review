@@ -1,7 +1,7 @@
 {
   "$schema": "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json",
   "formatVersion": "0.1",
-  "reviewId": "customer-order-cancellation",
+  "implementationId": "customer-order-cancellation",
   "title": "Allow customers to cancel pending orders",
   "summary": "Adds a guarded order cancellation transition, persists the cancelled state, and exposes it through the orders API.",
   "baseRevision": "1111111111111111111111111111111111111111",
@@ -14,5 +14,5 @@
     "persist-cancellation",
     "expose-cancellation-endpoint"
   ],
-  "branchPrefix": "semantic-review/customer-order-cancellation"
+  "branchPrefix": "semantic-flow/customer-order-cancellation"
 }

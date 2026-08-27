@@ -6,7 +6,7 @@
   "dependsOn": [
     "persist-cancellation"
   ],
-  "requirementRefs": [
+  "specificationRefs": [
     "cancel-order#cancel-pending",
     "cancel-order#return-conflict"
   ],
@@ -31,8 +31,8 @@
     }
   ],
   "change": {
-    "branch": "semantic-review/customer-order-cancellation/03-expose-cancellation-endpoint",
-    "baseBranch": "semantic-review/customer-order-cancellation/02-persist-cancellation",
+    "branch": "semantic-flow/customer-order-cancellation/03-expose-cancellation-endpoint",
+    "baseBranch": "semantic-flow/customer-order-cancellation/02-persist-cancellation",
     "baseRevision": "3333333333333333333333333333333333333333",
     "headRevision": "4444444444444444444444444444444444444444",
     "files": [
@@ -54,7 +54,7 @@
   "decisions": [
     {
       "id": "use-conflict-response",
-      "category": "requirement",
+      "category": "specification",
       "summary": "Return HTTP 409 when the current order state disallows cancellation.",
       "rationale": "The request is valid but conflicts with the current resource state, matching acceptance criterion return-conflict.",
       "nodeRefs": [

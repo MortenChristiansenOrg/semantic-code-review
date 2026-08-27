@@ -1,4 +1,4 @@
-# Semantic review model
+# Semantic implementation model
 
 ## Semantic stage
 
@@ -6,7 +6,7 @@ A semantic stage is the smallest independently reviewable intent. It may touch
 many files and contain several linear commits, but every change serves one
 purpose.
 
-Each stage records requirement coverage, rationale, decisions, assumptions,
+Each stage records specification coverage, rationale, decisions, assumptions,
 alternatives, failed attempts, risks, validation, dependencies, branch/base
 relationship, immutable head snapshot, and affected files.
 
@@ -14,7 +14,7 @@ Affected files are organized into descriptive change nodes. A node represents
 one cause or coherent implementation move, such as renaming an abstraction and
 updating its consumers. Each file-to-node link has a predefined classification.
 A file owned by multiple causes is partitioned by changed hunks or line ranges.
-Every recorded context item links back to the nodes it explains.
+Every recorded insight links back to the nodes it explains.
 
 ## Stage ordering and Git shape
 
@@ -26,7 +26,7 @@ target <- stage 1 <- stage 2 <- stage 3
 ```
 
 Each stage has its own cumulative branch based on the branch immediately below
-it. The shared default prefix `semantic-review/<review-id>/` groups the
+it. The shared default prefix `semantic-flow/<implementation-id>/` groups the
 branches in clients such as GitKraken.
 
 This Git shape is hosting-neutral. After local review it can be exposed as
@@ -59,7 +59,7 @@ change-node coverage invariants, restacks descendants, publishes metadata
 separately, and prepares hosting-neutral local outputs.
 
 **The review UI** leads with node descriptions, exposes their classified file
-or hunk membership, renders linked context and Git diffs, gathers feedback, and
+or hunk membership, renders linked insights and Git diffs, gathers feedback, and
 shows stale anchors after branch rewrites.
 
 **The repository host** may consume either the cumulative branch or the branch

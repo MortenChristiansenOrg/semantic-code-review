@@ -1,12 +1,12 @@
 /* Semantic Flow review viewer — Cinema.
-   Renders a semantic review artifact (window.SEMANTIC_REVIEW) as a full-bleed
+   Renders a semantic implementation artifact (window.SEMANTIC_IMPLEMENTATION) as a full-bleed
    inline-diff reading experience. */
 (function () {
   "use strict";
 
-  const data = window.SEMANTIC_REVIEW;
+  const data = window.SEMANTIC_IMPLEMENTATION;
   const app = document.querySelector("#app");
-  const storeKey = `semantic-view:${data.reviewId}`;
+  const storeKey = `semantic-view:${data.implementationId}`;
 
   const INSIGHT = {
     decision:    { glyph: "◆", label: "Decision" },
@@ -29,13 +29,9 @@
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(n.id, n.title)));
 
-  // Reviews may carry more than one requirement list; render them all. Older
-  // single-requirement artifacts still expose `data.requirement`.
-  const requirements = Array.isArray(data.requirements) && data.requirements.length
-    ? data.requirements
-    : (data.requirement ? [data.requirement] : []);
-  // Criterion ids are only unique within a requirement, so every acceptance
-  // criterion is keyed by its full `<requirementId>#<criterionId>` ref.
+  const requirements = Array.isArray(data.requirements) ? data.requirements : [];
+  // Criterion ids are only unique within a specification, so every acceptance
+  // criterion is keyed by its full `<specificationId>#<criterionId>` ref.
   const allAcceptance = requirements.flatMap((r) =>
     (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` })));
 
@@ -78,7 +74,7 @@
       openStages: { [data.stages[0].id]: true },
       openThreads: {},
       lastNoteMode: "personal",
-      requirementOpen: {},
+      specificationOpen: {},
       coverageOpen: false,
       notesOpen: false,
       pinnedInsight: null,
@@ -93,9 +89,9 @@
   function load() {
     try {
       const merged = { ...defaults(), ...JSON.parse(localStorage.getItem(storeKey) || "{}") };
-      // Legacy state stored a single boolean; map it onto the first requirement.
-      if (typeof merged.requirementOpen !== "object" || merged.requirementOpen === null) {
-        merged.requirementOpen = merged.requirementOpen && requirements[0]
+      // Legacy state stored a single boolean; map it onto the first specification.
+      if (typeof merged.specificationOpen !== "object" || merged.specificationOpen === null) {
+        merged.specificationOpen = merged.specificationOpen && requirements[0]
           ? { [requirements[0].id]: true }
           : {};
       }
@@ -147,7 +143,7 @@
     return state.comments.map((c, i) => ({ c, i })).filter((x) => x.c.id === id);
   }
 
-  /* ---- artifact feedback threads (from window.SEMANTIC_REVIEW.feedback) -- */
+  /* ---- artifact feedback threads (from window.SEMANTIC_IMPLEMENTATION.feedback) -- */
   const artifactThreads = Array.isArray(data.feedback) ? data.feedback : [];
   function fileElementId(stageId, p) { return `f:${stageId}:${p}`; }
   function artifactThreadById(tid) {
@@ -205,13 +201,13 @@
   function acceptanceStatus(ref) {
     const stages = data.stages
       .map((s, i) => ({ s, i }))
-      .filter((x) => (x.s.requirementRefs || []).includes(ref));
+      .filter((x) => (x.s.specificationRefs || []).includes(ref));
     if (!stages.length) return { key: "uncovered", stages: [] };
     const allApproved = stages.every((x) => approved(x.s.id));
     return { key: allApproved ? "approved" : "pending", stages: stages.map((x) => x.i + 1) };
   }
   function stageAcceptanceRefs(stage) {
-    return (stage.requirementRefs || []).filter(Boolean);
+    return (stage.specificationRefs || []).filter(Boolean);
   }
   function acChip(ref) {
     const ac = allAcceptance.find((a) => a.ref === ref);
@@ -395,7 +391,7 @@
     const collapsed = collapsedOverride !== undefined ? collapsedOverride : threadCollapsed(t);
     const msgs = (t.comments || [])
       .map((cm) => {
-        const agent = cm.author === "assistant";
+        const agent = cm.author === "agent";
         const stamp = fmtTime(cm.createdAt);
         return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
           <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
@@ -766,7 +762,7 @@
       <header class="topbar">
         <div class="lockup">
           <span class="vindex">◆</span>
-          <div><strong>Semantic review</strong><span>${esc(data.reviewId)}</span></div>
+          <div><strong>Implementation</strong><span>${esc(data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
@@ -792,15 +788,15 @@
     </section>`;
   }
 
-  function requirementPanel() {
-    return requirements.map(renderRequirement).join("");
+  function specificationPanel() {
+    return requirements.map(renderSpecification).join("");
   }
-  function renderRequirement(req) {
-    const open = Boolean(state.requirementOpen && state.requirementOpen[req.id]);
-    return `<details class="requirement" ${open ? "open" : ""} data-req data-req-id="${esc(req.id)}">
+  function renderSpecification(req) {
+    const open = Boolean(state.specificationOpen && state.specificationOpen[req.id]);
+    return `<details class="specification" ${open ? "open" : ""} data-req data-req-id="${esc(req.id)}">
       <summary>
         <span class="req-mark">✦</span>
-        <div><span class="eyebrow">Requirement · ${esc(req.id)}</span><h2>${esc(req.title)}</h2></div>
+        <div><span class="eyebrow">Specification · ${esc(req.id)}</span><h2>${esc(req.title)}</h2></div>
         <span class="req-more">${req.acceptance.length} acceptance criteria</span>
       </summary>
       <div class="req-body">
@@ -872,7 +868,7 @@
   function storyColumn() {
     return `<div class="story">
       ${hero()}
-      ${requirementPanel()}
+      ${specificationPanel()}
       <div class="spine">
         ${data.stages.map((s, i) => stageSection(s, i)).join("")}
       </div>
@@ -1097,9 +1093,9 @@
     });
   }
   function syncReqState(det) {
-    if (det.matches(".requirement")) {
-      if (!state.requirementOpen || typeof state.requirementOpen !== "object") state.requirementOpen = {};
-      state.requirementOpen[det.dataset.reqId] = det.open;
+    if (det.matches(".specification")) {
+      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
+      state.specificationOpen[det.dataset.reqId] = det.open;
       persist();
     }
   }
@@ -1323,7 +1319,7 @@
       const res = await fetch("/api/feedback/reply", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reviewId: data.reviewId, threadId, body }),
+        body: JSON.stringify({ implementationId: data.implementationId, threadId, body }),
       });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
@@ -1353,7 +1349,7 @@
       const res = await fetch(`/api/feedback/${kind}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reviewId: data.reviewId, threadId }),
+        body: JSON.stringify({ implementationId: data.implementationId, threadId }),
       });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
@@ -1495,7 +1491,7 @@
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          reviewId: data.reviewId,
+          implementationId: data.implementationId,
           notes: pending.map(({ c, i }) => ({ ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body }))
         })
       });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createReviewWithStages,
+  createImplementationWithStages,
   flowCli,
 } from "../helpers/repository.mjs";
 
@@ -25,7 +25,7 @@ function addThread(repository, id, body = `Resolve ${id}.`) {
 }
 
 test("reviewers resolve threads without rewrite bookkeeping", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "first-comment");
   addThread(repository, "second-comment");
@@ -63,7 +63,7 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
     "--body",
     "Rewrote the implementation stage.",
     "--author",
-    "assistant",
+    "agent",
   );
   for (const id of ["first-comment", "second-comment"]) {
     repository.feedback("thread", "resolve", "--id", id);
@@ -88,12 +88,12 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
   assert.equal(thread.resolution, undefined);
   assert.deepEqual(
     thread.comments.map(({ author }) => author),
-    ["user", "assistant"],
+    ["user", "agent"],
   );
 });
 
 test("answer-only threads use the same resolution flow", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(
     repository,
@@ -119,7 +119,7 @@ test("answer-only threads use the same resolution flow", (t) => {
     "--body",
     "The invariant must apply to every caller.",
     "--author",
-    "assistant",
+    "agent",
   );
   repository.feedback("thread", "resolve", "--id", "why-this-way");
 
@@ -127,12 +127,12 @@ test("answer-only threads use the same resolution flow", (t) => {
     ".semantic-review-feedback/threads/why-this-way.json",
   );
   assert.equal(thread.status, "resolved");
-  assert.equal(thread.comments[1].author, "assistant");
+  assert.equal(thread.comments[1].author, "agent");
   repository.feedback("validate");
 });
 
 test("next lists only open threads awaiting an agent reply", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "needs-reply");
   addThread(repository, "already-answered");
@@ -153,7 +153,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
     "--body",
     "Done.",
     "--author",
-    "assistant",
+    "agent",
   );
   groups = JSON.parse(repository.feedback("next", "--json"));
   assert.deepEqual(
@@ -185,7 +185,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
 });
 
 test("reviewers reopen and continue resolved threads", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "chat", "Question?");
   const threadPath = ".semantic-review-feedback/threads/chat.json";
@@ -200,7 +200,7 @@ test("reviewers reopen and continue resolved threads", (t) => {
     "--body",
     "Answer.",
     "--author",
-    "assistant",
+    "agent",
   );
   repository.feedback("thread", "resolve", "--id", "chat");
   assert.equal(repository.readJson(threadPath).status, "resolved");

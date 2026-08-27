@@ -1,6 +1,6 @@
 /* ======================================================================
    Semantic review viewer — shared design system
-   A quiet, dark reading console for stacked semantic reviews.
+   A quiet, dark reading console for stacked semantic implementations.
    Typographic duality: IBM Plex Mono = machine, Space Grotesk/Plex Sans = human.
    ====================================================================== */
 
@@ -186,15 +186,15 @@ button { font-family: inherit; cursor: pointer; }
 .hero-line b { color: var(--text); font-weight: 600; }
 .hero-target { margin-left: auto; color: var(--signal); }
 
-/* ---- requirement ------------------------------------------------------ */
-.requirement {
+/* ---- specification ------------------------------------------------------ */
+.specification {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--panel), var(--ink-2));
   margin-bottom: 34px;
   overflow: hidden;
 }
-.requirement > summary {
+.specification > summary {
   list-style: none;
   display: flex;
   align-items: center;
@@ -202,9 +202,9 @@ button { font-family: inherit; cursor: pointer; }
   padding: 18px 22px;
   cursor: pointer;
 }
-.requirement > summary::-webkit-details-marker { display: none; }
+.specification > summary::-webkit-details-marker { display: none; }
 .req-mark { color: var(--signal); font-size: 18px; }
-.requirement summary h2 { font-size: 19px; margin-top: 2px; }
+.specification summary h2 { font-size: 19px; margin-top: 2px; }
 .req-more {
   margin-left: auto;
   font-family: var(--mono);

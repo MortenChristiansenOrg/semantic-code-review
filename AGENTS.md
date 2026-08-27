@@ -30,13 +30,13 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   branches, validate invariants, restack, manage feedback, publish metadata, and
   prepare local outputs.
 - **Viewer**: The local web app that renders stages, change nodes,
-  diffs, linked context, and feedback threads.
+  diffs, linked insights, and feedback threads.
 
 ### Implementation model
 
 - **Implementation**: The complete set of file changes made by the LLM using Semantic
   Flow to implement the requested work as well as any manual changes made. This
-  encompasses updates as response to review feedback. [Previously "review"]
+  encompasses updates as response to review feedback.
 - **Review**: The process of a human reviewing the current implementation, providing
   feedback, and the LLM responding and making corrections.
 - **Stage**: A logically distinct and independently reviewable part of the
@@ -50,13 +50,13 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   membership (such as behavior, refactor and test).
 - **Insight**: A recorded piece of reasoning or other observation attached to a
   stage and linked to the nodes it explains. Its kinds are decision, assumption,
-  alternative, failed attempt, risk, and open question. [Previously "context item"]
+  alternative, failed attempt, risk, and open question.
 - **Validation evidence**: A recorded observation that a check was run or considered
   for a stage (automated, manual, or analysis), with its status and link to nodes.
 - **Requirements**: The full set of specifications. When there is one specification,
   the requirements and the specification are one and the same.
 - **Specification**: The identification, description and scope for the
-  work including one or more acceptance criteria. [Previously "requirement"]
+  work including one or more acceptance criteria.
 - **Acceptance criterion**: A single testable condition of a specification.
 
 ### Artifacts and storage
@@ -64,14 +64,14 @@ version solely to preserve v0.1 behavior until versioning is declared active.
 - **Implementation artifact**: The `.semantic-review/` JSON data describing an
   implementation: its manifest, requirements, and stages.
 - **Manifest**: The single entry-point document (`manifest.json`) that indexes
-  the requirements and stages and records review-level fields.
+  the requirements and stages and records implementation-level fields.
 - **Stage branch**: The persistent branch whose head represents the cumulative
   implementation through one stage, based on the branch immediately below it.
   The stage's own changes are the diff between its recorded base and head
   revisions.
 - **Stage stack**: The linear chain of stage branches from the target branch
   upward.
-- **Target branch**: The repository branch the review is built on top of and
+- **Target branch**: The repository branch the implementation is built on top of and
   eventually lands on.
 - **Base revision / head revision**: Immutable commit snapshots recorded for a
   stage's diff range; they make mutable branches and feedback anchors
@@ -81,7 +81,7 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   heads, then moving the affected refs as one transaction and refreshing the
   recorded snapshots.
 - **Metadata branch**: The sibling branch (`<branch-prefix>/metadata`) that
-  carries published review metadata, kept out of implementation diffs.
+  carries published implementation metadata, kept out of implementation diffs.
 - **Publication**: Publishing the artifact to the metadata branch.
 - **Preparation**: The workflow represented by `/semantic-flow prepare`, which
   prepares hosting-neutral local outputs after review by validating and

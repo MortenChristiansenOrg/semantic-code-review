@@ -30,13 +30,13 @@ Run final validation:
 Then run:
 
 ```text
-<semantic-review> archive
+<semantic-implementation> archive
 ```
 
 The command stores the active artifact under:
 
 ```text
-.semantic-review-history/<review-id>/.semantic-review/
+.semantic-review-history/<implementation-id>/.semantic-review/
 ```
 
 and records the archive on the target branch. It must not delete stage

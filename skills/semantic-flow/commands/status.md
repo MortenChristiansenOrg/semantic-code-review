@@ -22,7 +22,7 @@ the user's question.
 
 Summarize:
 
-- Review ID, title, artifact worktree, target branch, and base revision.
+- Implementation ID, title, artifact worktree, target branch, and base revision.
 - Current checked-out branch and whether it matches an active or finalized
   stage.
 - Working stage, finalized stage count, and criterion coverage.
@@ -30,7 +30,7 @@ Summarize:
 - Branch movement, ancestry drift, or required restacking.
 - Open and resolved feedback threads.
 - Metadata publication and local preparation state when detectable.
-- Whether the review is ready for implementation, continuation, review,
+- Whether the implementation is ready for continuation, review,
   feedback, preparation, or archive.
 - One recommended next semantic-flow command.
 

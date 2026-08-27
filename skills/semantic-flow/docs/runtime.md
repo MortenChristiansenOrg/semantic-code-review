@@ -30,7 +30,7 @@ The platform guide defines these placeholders:
 
 ```text
 <semantic-flow> <command>
-<semantic-review> <command>
+<semantic-implementation> <command>
 <review-feedback> <command>
 <semantic-view> review <project-path>
 ```
@@ -53,17 +53,17 @@ worktree. Run:
 ```
 
 Use `--project <repository-path>` when the user supplied a project path and
-`--review-id <review-id>` when it identifies the requested review. The command
+`--implementation-id <implementation-id>` when it identifies the requested implementation. The command
 inspects the repository and every linked worktree without mutating them. It
 selects the current worktree's artifact when present, otherwise the only
 matching artifact.
 
-If several linked worktrees contain artifacts, use the review ID, title,
-requirement source reference, checked-out semantic stage branch, current
+If several linked worktrees contain artifacts, use the implementation ID, title,
+specification source reference, checked-out semantic stage branch, current
 branch, and revisions only as clues. Select a candidate only when the
-relationship is clear. Otherwise list each candidate's path, review ID, title,
+relationship is clear. Otherwise list each candidate's path, implementation ID, title,
 target branch, and checked-out branch, then ask the user to choose.
-If none contains an artifact, report that no active review was found. Do not
+If none contains an artifact, report that no active implementation was found. Do not
 initialize a replacement or copy an artifact during discovery.
 
 Run artifact and feedback commands from the resolved artifact worktree root.
@@ -90,7 +90,7 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   an unregistered, preparatory, or future numbered branch.
 - Semantic metadata must not be committed on implementation stage branches.
 - Keep the stage branch chain linear. Merge commits are unsupported.
-- Record only observed context and validation. Never reconstruct or invent
+- Record only observed insights and validation evidence. Never reconstruct or invent
   decisions, failures, evidence, or private chain-of-thought.
 - Use operating-system temporary files or stdin for command JSON. Do not dirty
   the target repository with transient inputs.

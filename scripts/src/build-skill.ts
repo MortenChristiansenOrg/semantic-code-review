@@ -39,7 +39,11 @@ fs.mkdirSync(outputDirectory, { recursive: true });
 
 await build({
   entryPoints: {
-    "semantic-review": path.join(scriptsRoot, "src", "semantic-review.ts"),
+    "semantic-implementation": path.join(
+      scriptsRoot,
+      "src",
+      "semantic-implementation.ts",
+    ),
     "review-feedback": path.join(scriptsRoot, "src", "review-feedback.ts"),
     "semantic-view": path.join(scriptsRoot, "src", "semantic-view.ts"),
     "semantic-flow": path.join(scriptsRoot, "src", "semantic-flow.ts"),
@@ -58,7 +62,7 @@ await build({
 });
 
 for (const file of [
-  "semantic-review.mjs",
+  "semantic-implementation.mjs",
   "review-feedback.mjs",
   "semantic-view.mjs",
   "semantic-flow.mjs",

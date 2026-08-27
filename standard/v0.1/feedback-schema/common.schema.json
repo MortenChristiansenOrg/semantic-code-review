@@ -29,7 +29,7 @@
         "author": {
           "enum": [
             "user",
-            "assistant"
+            "agent"
           ]
         },
         "body": {
@@ -66,10 +66,10 @@
       "properties": {
         "kind": {
           "enum": [
-            "requirement",
+            "specification",
             "criterion",
             "stage",
-            "context",
+            "insight",
             "file",
             "line"
           ]
@@ -77,7 +77,7 @@
         "label": {
           "$ref": "#/$defs/nonEmptyString"
         },
-        "requirementId": {
+        "specificationId": {
           "$ref": "#/$defs/id"
         },
         "criterionId": {
@@ -125,7 +125,7 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "requirement"
+                "const": "specification"
               }
             },
             "required": [
@@ -134,7 +134,7 @@
           },
           "then": {
             "required": [
-              "requirementId"
+              "specificationId"
             ]
           }
         },
@@ -151,7 +151,7 @@
           },
           "then": {
             "required": [
-              "requirementId",
+              "specificationId",
               "criterionId"
             ]
           }
@@ -179,7 +179,7 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "context"
+                "const": "insight"
               }
             },
             "required": [

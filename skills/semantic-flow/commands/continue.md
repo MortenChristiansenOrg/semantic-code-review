@@ -27,14 +27,14 @@ prevent safe continuation, stop and identify them.
 
 - If a working stage exists, check that its recorded branch is checked out,
   and that no other numbered branch is being used for its commits. Continue on
-  the recorded branch through implementation, context capture, organization,
+  the recorded branch through implementation, insight capture, organization,
   validation, and finalization.
 - If no working stage exists and acceptance criteria remain uncovered, require
   `HEAD` at the last finalized stage head. Before beginning, list local refs
   below the manifest's branch prefix and require that none already uses the
   next ordinal. Then plan the next coherent stage and let `stage begin` create
   its branch before editing.
-- If a numbered branch below the review's branch prefix is not recorded as the
+- If a numbered branch below the implementation's branch prefix is not recorded as the
   active or finalized branch for its ordinal, stop and report the inconsistent
   ref. Do not absorb its commits into another stage or create another branch
   with that ordinal.
@@ -42,7 +42,7 @@ prevent safe continuation, stop and identify them.
   validation described by `implement.md`.
 - If a finalized lower branch changed, restack from the earliest changed stage.
 - If the target branch advanced, check out a branch that will not be rewritten,
-  then run `<semantic-review> restack --base <target-branch>`, only when the
+  then run `<semantic-implementation> restack --base <target-branch>`, only when the
   artifact and Git state make that safe.
 - Use `repair` only for the unambiguous interrupted artifact writes supported
   by the CLI. Do not use it to conceal missing or inconsistent data.

@@ -11,14 +11,14 @@ directory to an absolute path, quote every filesystem path, and define:
 
 ```bash
 skill_root="/absolute/path/to/semantic-flow"
-semantic_review="$skill_root/scripts/semantic-review.mjs"
+semantic_implementation="$skill_root/scripts/semantic-implementation.mjs"
 review_feedback="$skill_root/scripts/review-feedback.mjs"
 semantic_view="$skill_root/scripts/semantic-view.mjs"
 semantic_flow="$skill_root/scripts/semantic-flow.mjs"
 
 node --version
 git --version
-test -f "$semantic_review"
+test -f "$semantic_implementation"
 test -f "$review_feedback"
 test -f "$semantic_view"
 test -f "$semantic_flow"
@@ -31,7 +31,7 @@ substitute:
 
 ```text
 <semantic-flow>    => node "$semantic_flow"
-<semantic-review>  => node "$semantic_review"
+<semantic-implementation>  => node "$semantic_implementation"
 <review-feedback>  => node "$review_feedback"
 <semantic-view>    => node "$semantic_view"
 ```
@@ -40,7 +40,7 @@ For example:
 
 ```bash
 node "$semantic_flow" inspect --json
-node "$semantic_review" validate
+node "$semantic_implementation" validate
 node "$review_feedback" next --json
 node "$semantic_view" review
 ```
@@ -54,13 +54,13 @@ repository paths stored in artifacts or supplied through options such as
 Prefer stdin for commands accepting `--input -`:
 
 ```bash
-node "$semantic_review" stage begin --input - <<'JSON'
+node "$semantic_implementation" stage begin --input - <<'JSON'
 {
   "id": "implement-behavior",
   "title": "Implement behavior",
   "summary": "Add the requested behavior.",
   "rationale": "Keep the behavior independently reviewable.",
-  "requirementRef": ["story#works"]
+  "specificationRef": ["story#works"]
 }
 JSON
 ```
@@ -71,7 +71,7 @@ quoted path, and remove that exact temporary file afterward:
 
 ```bash
 platform_input="$(mktemp)"
-node "$semantic_review" stage organize --file "$platform_input"
+node "$semantic_implementation" stage organize --file "$platform_input"
 rm -f -- "$platform_input"
 ```
 

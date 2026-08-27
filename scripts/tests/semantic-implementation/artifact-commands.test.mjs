@@ -4,16 +4,16 @@ import {
   beginStage,
   createRepository,
   finalizeStage,
-  initializeReview,
+  initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
 
-test("init and requirement add create complete requirement metadata", (t) => {
+test("init and specification add create complete specification metadata", (t) => {
   const repository = createRepository(t);
   const base = repository.git("rev-parse", "HEAD");
 
-  initializeReview(repository, {
-    reviewId: "42-orders",
+  initializeImplementation(repository, {
+    implementationId: "42-orders",
     sourceUrl: "https://example.invalid/stories/42",
     criteria: [
       ["cancel", "Pending orders can be cancelled."],
@@ -26,19 +26,19 @@ test("init and requirement add create complete requirement metadata", (t) => {
     ".semantic-review/requirements/story.json",
   );
   assert.equal(manifest.baseRevision, base);
-  assert.equal(manifest.branchPrefix, "semantic-review/42-orders");
+  assert.equal(manifest.branchPrefix, "semantic-flow/42-orders");
   assert.deepEqual(manifest.requirements, ["story"]);
   assert.equal(initial.source.url, "https://example.invalid/stories/42");
   assert.equal(initial.acceptanceCriteria.length, 2);
 
   repository.semantic(
-    "requirement",
+    "specification",
     "add",
-    "--requirement-id",
+    "--specification-id",
     "audit",
-    "--requirement-title",
+    "--specification-title",
     "Audit cancellation",
-    "--requirement-summary",
+    "--specification-summary",
     "Record who cancelled an order.",
     "--source-kind",
     "local",
@@ -53,14 +53,14 @@ test("init and requirement add create complete requirement metadata", (t) => {
   );
 
   repository.expectSemanticFailure(
-    "Requirement audit already exists.",
-    "requirement",
+    "Specification audit already exists.",
+    "specification",
     "add",
-    "--requirement-id",
+    "--specification-id",
     "audit",
-    "--requirement-title",
+    "--specification-title",
     "Duplicate",
-    "--requirement-summary",
+    "--specification-summary",
     "Duplicate",
     "--source-kind",
     "local",
@@ -70,19 +70,19 @@ test("init and requirement add create complete requirement metadata", (t) => {
     "duplicate=Duplicate",
   );
   repository.expectSemanticFailure(
-    "A semantic review already exists",
+    "A semantic implementation already exists",
     "init",
   );
   repository.semantic("validate", "--schema-only");
 });
 
-test("init rejects dirty repositories and rolls back invalid requirements", (t) => {
+test("init rejects dirty repositories and rolls back invalid specifications", (t) => {
   const repository = createRepository(t);
   repository.write("dirty.txt", "dirty\n");
   repository.expectSemanticFailure(
     "Initialization requires a clean worktree",
     "init",
-    "--review-id",
+    "--implementation-id",
     "dirty",
     "--title",
     "Dirty",
@@ -90,11 +90,11 @@ test("init rejects dirty repositories and rolls back invalid requirements", (t) 
     "Dirty",
     "--target-branch",
     "main",
-    "--requirement-id",
+    "--specification-id",
     "story",
-    "--requirement-title",
+    "--specification-title",
     "Story",
-    "--requirement-summary",
+    "--specification-summary",
     "Story",
     "--source-kind",
     "local",
@@ -109,7 +109,7 @@ test("init rejects dirty repositories and rolls back invalid requirements", (t) 
   repository.expectSemanticFailure(
     "At least one --criterion",
     "init",
-    "--review-id",
+    "--implementation-id",
     "missing-criterion",
     "--title",
     "Missing criterion",
@@ -117,11 +117,11 @@ test("init rejects dirty repositories and rolls back invalid requirements", (t) 
     "Missing criterion",
     "--target-branch",
     "main",
-    "--requirement-id",
+    "--specification-id",
     "story",
-    "--requirement-title",
+    "--specification-title",
     "Story",
-    "--requirement-summary",
+    "--specification-summary",
     "Story",
     "--source-kind",
     "local",
@@ -133,14 +133,14 @@ test("init rejects dirty repositories and rolls back invalid requirements", (t) 
 
 test("semantic IDs may start with digits", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository, {
-    reviewId: "1-review",
-    requirementId: "2-requirement",
+  initializeImplementation(repository, {
+    implementationId: "1-implementation",
+    specificationId: "2-specification",
     criteria: [["3-criterion", "Numeric-leading IDs work."]],
   });
   beginStage(repository, {
     id: "4-stage",
-    requirementRefs: ["2-requirement#3-criterion"],
+    specificationRefs: ["2-specification#3-criterion"],
   });
   repository.semantic(
     "stage",
@@ -168,27 +168,27 @@ test("semantic IDs may start with digits", (t) => {
 
 test("Windows-reserved semantic identifiers are rejected before mutation", (t) => {
   const repository = createRepository(t);
-  const expectInvalidInit = (reviewId, branchPrefix) => {
+  const expectInvalidInit = (implementationId, branchPrefix) => {
     const args = [
       "init",
-      "--review-id",
-      reviewId,
+      "--implementation-id",
+      implementationId,
       "--title",
-      "Portable review",
+      "Portable implementation",
       "--summary",
       "Reject identifiers that cannot become Windows filenames.",
       "--target-branch",
       "main",
-      "--requirement-id",
+      "--specification-id",
       "story",
-      "--requirement-title",
+      "--specification-title",
       "Story",
-      "--requirement-summary",
+      "--specification-summary",
       "Remain portable.",
       "--source-kind",
       "local",
       "--source-reference",
-      "portable-review",
+      "portable-implementation",
       "--criterion",
       "works=Portable identifiers work.",
     ];
@@ -196,23 +196,23 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
     repository.expectSemanticFailure("must match pattern", ...args);
   };
 
-  for (const reviewId of ["con", "aux", "com1", "lpt9"]) {
-    expectInvalidInit(reviewId);
+  for (const implementationId of ["con", "aux", "com1", "lpt9"]) {
+    expectInvalidInit(implementationId);
   }
 
-  expectInvalidInit("portable-review", "semantic-review/CON");
+  expectInvalidInit("portable-implementation", "semantic-flow/CON");
   assert.equal(repository.exists(".semantic-review"), false);
 
-  initializeReview(repository, { reviewId: "portable-review" });
+  initializeImplementation(repository, { implementationId: "portable-implementation" });
   repository.expectSemanticFailure(
     "must match pattern",
-    "requirement",
+    "specification",
     "add",
-    "--requirement-id",
+    "--specification-id",
     "aux",
-    "--requirement-title",
+    "--specification-title",
     "Invalid",
-    "--requirement-summary",
+    "--specification-summary",
     "Invalid on Windows.",
     "--source-kind",
     "local",
@@ -238,7 +238,7 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
     "Invalid on Windows.",
     "--rationale",
     "Verify portable filenames.",
-    "--requirement-ref",
+    "--specification-ref",
     "story#works",
   );
   assert.equal(repository.git("branch", "--show-current"), "main");
@@ -250,7 +250,7 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
 
 test("stage file inventories use locale-independent ordering", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
   repository.write("z.txt", "z\n");
   repository.write("ä.txt", "a-umlaut\n");
@@ -283,16 +283,16 @@ test("stage file inventories use locale-independent ordering", (t) => {
 test("JSON input and current stage simplify mutations", (t) => {
   const repository = createRepository(t);
   repository.write(
-    "review-input.json",
+    "implementation-input.json",
     `${JSON.stringify(
       {
-        reviewId: "easy-flow",
+        implementationId: "easy-flow",
         title: "Easy flow",
         summary: "Exercise concise command forms.",
         targetBranch: "main",
-        requirementId: "story",
-        requirementTitle: "Story",
-        requirementSummary: "Use concise commands.",
+        specificationId: "story",
+        specificationTitle: "Story",
+        specificationSummary: "Use concise commands.",
         sourceKind: "local",
         sourceReference: "easy-flow",
         criterion: ["works=Concise commands work."],
@@ -309,16 +309,16 @@ test("JSON input and current stage simplify mutations", (t) => {
         title: "Implement behavior",
         summary: "Add the implementation.",
         rationale: "Keep the change independently reviewable.",
-        requirementRef: ["story#works"],
+        specificationRef: ["story#works"],
       },
       null,
       2,
     )}\n`,
   );
-  repository.git("add", "review-input.json", "stage-input.json");
+  repository.git("add", "implementation-input.json", "stage-input.json");
   repository.git("commit", "-m", "Add semantic input");
 
-  repository.semantic("init", "--input", "review-input.json");
+  repository.semantic("init", "--input", "implementation-input.json");
   assert.equal(repository.git("status", "--short"), "");
   repository.semantic(
     "stage",
@@ -365,9 +365,9 @@ test("JSON input and current stage simplify mutations", (t) => {
   );
 });
 
-test("stage commands cover metadata, every context kind, and validation", (t) => {
+test("stage commands cover metadata, every insight kind, and validation", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
 
   repository.write("dirty.txt", "dirty\n");
   repository.expectSemanticFailure(
@@ -382,7 +382,7 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     "Implement.",
     "--rationale",
     "Test.",
-    "--requirement-ref",
+    "--specification-ref",
     "story#works",
   );
   repository.remove("dirty.txt");
@@ -406,7 +406,7 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     "Updated summary.",
     "--rationale",
     "Updated rationale.",
-    "--requirement-ref",
+    "--specification-ref",
     "story#works",
   );
 
@@ -503,7 +503,7 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
     "--item-id",
     "decision-one",
     "--category",
-    "requirement",
+    "specification",
     "--summary",
     "Use a readable fixture.",
     "--rationale",
@@ -629,11 +629,11 @@ test("stage commands cover metadata, every context kind, and validation", (t) =>
   assert.equal(stage.change.headRevision, commit);
   assert.equal(
     stage.change.branch,
-    "semantic-review/test-review/01-implementation",
+    "semantic-flow/test-implementation/01-implementation",
   );
   assert.equal(stage.change.baseBranch, "main");
   assert.equal(stage.title, "Updated implementation");
-  assert.equal(stage.decisions[0].category, "requirement");
+  assert.equal(stage.decisions[0].category, "specification");
   assert.equal(stage.assumptions.length, 1);
   assert.equal(stage.alternatives.length, 1);
   assert.equal(stage.failedAttempts.length, 1);
@@ -661,7 +661,7 @@ test("stage organization partitions multi-cause files by diff hunk", (t) => {
   );
   repository.git("add", "service.txt");
   repository.git("commit", "-m", "Add service fixture");
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
   repository.write(
     "service.txt",
@@ -738,11 +738,11 @@ function branchExists(repository, name) {
 
 test("stage discard removes an unchanged generated branch and frees the ordinal", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
   finalizeStage(repository);
 
-  const branch = "semantic-review/test-review/02-extra";
+  const branch = "semantic-flow/test-implementation/02-extra";
   beginStage(repository, { id: "extra", dependencies: ["implementation"] });
   assert.equal(branchExists(repository, branch), true);
 
@@ -757,11 +757,11 @@ test("stage discard removes an unchanged generated branch and frees the ordinal"
 
 test("stage discard keeps a branch that carries local commits", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
   finalizeStage(repository);
 
-  const branch = "semantic-review/test-review/02-extra";
+  const branch = "semantic-flow/test-implementation/02-extra";
   beginStage(repository, { id: "extra", dependencies: ["implementation"] });
   repository.commitFile("extra.txt", "extra\n", "Work in progress");
 
@@ -770,9 +770,9 @@ test("stage discard keeps a branch that carries local commits", (t) => {
   assert.equal(branchExists(repository, branch), true);
 });
 
-test("unresolved requirement ref reports valid normalized criteria", (t) => {
+test("unresolved specification ref reports valid normalized criteria", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository, {
+  initializeImplementation(repository, {
     criteria: [
       ["works", "The implementation works."],
       ["persists", "The result persists."],
@@ -790,8 +790,8 @@ test("unresolved requirement ref reports valid normalized criteria", (t) => {
     "Add the implementation.",
     "--rationale",
     "Keep the change independently reviewable.",
-    "--requirement-ref",
+    "--specification-ref",
     "story#missing",
   );
-  assert.match(failure.stderr + failure.stdout, /unresolved requirement ref/);
+  assert.match(failure.stderr + failure.stdout, /unresolved specification ref/);
 });

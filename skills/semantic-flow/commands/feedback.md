@@ -34,30 +34,30 @@ Process the earliest affected stage first:
 4. For a change instruction, implement the correction directly on that stage
    branch.
 5. Run relevant tests and commit the correction.
-6. Update finalized context and validation evidence when the correction changes
+6. Update finalized insights and validation evidence when the correction changes
    them.
 7. Rerun `stage organize --finalized` when causes, files, hunks, line ranges,
    or item links changed.
 8. Restack every later branch:
 
    ```text
-   <semantic-review> restack --from <stage-id>
+   <semantic-implementation> restack --from <stage-id>
    ```
 
 9. If rewritten later stages no longer match their organization, reorganize
    those stages before continuing.
-10. Reply to each thread with an assistant comment that answers the question or
+10. Reply to each thread with an agent comment that answers the question or
     states what changed. Never resolve a thread — closing a conversation is
     always the reviewer's decision.
 
     ```text
     <review-feedback> thread reply --id <thread-id> --comment-id <comment-id> \
-      --author assistant --body <answer-or-change-summary>
+      --author agent --body <answer-or-change-summary>
     ```
 
 You cannot mark threads resolved. Reply to every open thread you address,
 then leave them open for the reviewer to resolve or continue. Repeat in stage
-order until every returned thread has an assistant reply.
+order until every returned thread has an agent reply.
 Then run:
 
 ```text

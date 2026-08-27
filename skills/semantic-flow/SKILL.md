@@ -1,6 +1,6 @@
 ---
 name: semantic-flow
-description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, or to review, revise, validate, prepare, archive, inspect, or update a semantic-flow review. Supports explicit commands and natural-language requests.
+description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, or to review, revise, validate, prepare, archive, inspect, or update a semantic-flow implementation. Supports explicit commands and natural-language requests.
 ---
 
 # Semantic Flow

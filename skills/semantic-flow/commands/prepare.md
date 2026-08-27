@@ -24,7 +24,7 @@ Run:
 Publish metadata:
 
 ```text
-<semantic-review> publish
+<semantic-implementation> publish
 ```
 
 This creates or updates the sibling metadata branch so its heads match the
@@ -35,13 +35,13 @@ reviewed stage heads. Re-running `prepare` after later changes republishes it.
 For the stage stack, run:
 
 ```text
-<semantic-review> validate-stack
+<semantic-implementation> validate-stack
 ```
 
 For one cumulative branch, obtain the desired branch name and run:
 
 ```text
-<semantic-review> prepare-branch --branch <name>
+<semantic-implementation> prepare-branch --branch <name>
 ```
 
 If `/semantic-flow prepare` does not specify stack or branch output and the

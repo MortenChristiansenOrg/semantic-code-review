@@ -7,7 +7,7 @@
   "required": [
     "$schema",
     "formatVersion",
-    "reviewId",
+    "implementationId",
     "threads"
   ],
   "properties": {
@@ -17,7 +17,7 @@
     "formatVersion": {
       "const": "0.1"
     },
-    "reviewId": {
+    "implementationId": {
       "$ref": "https://semantic-code-review.dev/schemas/feedback/v0.1/common.schema.json#/$defs/id"
     },
     "threads": {

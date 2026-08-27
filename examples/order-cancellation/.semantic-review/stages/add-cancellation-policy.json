@@ -4,7 +4,7 @@
   "title": "Define the order cancellation policy",
   "summary": "Adds the domain transition and explicit outcomes for allowed and rejected cancellations.",
   "dependsOn": [],
-  "requirementRefs": [
+  "specificationRefs": [
     "cancel-order#cancel-pending",
     "cancel-order#reject-shipped"
   ],
@@ -29,7 +29,7 @@
     }
   ],
   "change": {
-    "branch": "semantic-review/customer-order-cancellation/01-add-cancellation-policy",
+    "branch": "semantic-flow/customer-order-cancellation/01-add-cancellation-policy",
     "baseBranch": "main",
     "baseRevision": "1111111111111111111111111111111111111111",
     "headRevision": "2222222222222222222222222222222222222222",
@@ -61,7 +61,7 @@
     },
     {
       "id": "reject-after-fulfilment",
-      "category": "requirement",
+      "category": "specification",
       "summary": "Treat any fulfilment state as non-cancellable.",
       "rationale": "Acceptance criterion reject-shipped forbids cancellation once fulfilment has started.",
       "nodeRefs": [

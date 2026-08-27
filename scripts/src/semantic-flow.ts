@@ -25,9 +25,9 @@ import { readJson } from "./shared/json.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
-const semanticReviewScript = path.join(
+const semanticImplementationScript = path.join(
   scriptDirectory,
-  "semantic-review.mjs",
+  "semantic-implementation.mjs",
 );
 const reviewFeedbackScript = path.join(
   scriptDirectory,
@@ -38,7 +38,7 @@ const HELP = renderCliHelp(semanticFlowApi);
 
 interface ArtifactCandidate {
   worktree: string;
-  reviewId: string;
+  implementationId: string;
   title: string;
   targetBranch: string;
   baseRevision: string;
@@ -117,7 +117,7 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
   const manifest = readJson(manifestPath);
   return {
     worktree: root,
-    reviewId: manifest.reviewId,
+    implementationId: manifest.implementationId,
     title: manifest.title,
     targetBranch: manifest.targetBranch,
     baseRevision: manifest.baseRevision,
@@ -140,14 +140,14 @@ function inspect(options: Options): Inspection {
     commandOptionNames(semanticFlowApi, "inspect"),
   );
   const project = option(options, "project");
-  const reviewId = option(options, "review-id");
+  const implementationId = option(options, "implementation-id");
   const root = repositoryRoot(path.resolve(project ?? process.cwd()));
   const candidates = worktreeRoots(root)
     .map(artifactCandidate)
     .filter((candidate): candidate is ArtifactCandidate => candidate !== null)
     .sort((left, right) => left.worktree.localeCompare(right.worktree));
-  const matching = reviewId
-    ? candidates.filter((candidate) => candidate.reviewId === reviewId)
+  const matching = implementationId
+    ? candidates.filter((candidate) => candidate.implementationId === implementationId)
     : candidates;
   const preferred = matching.find((candidate) =>
     samePath(candidate.worktree, root),
@@ -163,7 +163,7 @@ function printInspection(inspection: Inspection, json: boolean): void {
   }
   if (inspection.candidates.length === 0) {
     console.log(
-      `No active semantic review found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
     );
     return;
   }
@@ -174,7 +174,7 @@ function printInspection(inspection: Inspection, json: boolean): void {
         ? "*"
         : "-";
     console.log(
-      `${marker} ${candidate.reviewId}: ${candidate.title}\n  worktree: ${candidate.worktree}\n  target: ${candidate.targetBranch}\n  branch: ${candidate.currentBranch ?? "(detached)"}`,
+      `${marker} ${candidate.implementationId}: ${candidate.title}\n  worktree: ${candidate.worktree}\n  target: ${candidate.targetBranch}\n  branch: ${candidate.currentBranch ?? "(detached)"}`,
     );
   }
 }
@@ -193,23 +193,23 @@ function resolveSingle(
   if (inspection.selected) {
     return inspection.selected;
   }
-  const reviewId = option(selectionOptions, "review-id");
+  const implementationId = option(selectionOptions, "implementation-id");
   if (inspection.candidates.length === 0) {
     fail(
-      `No active semantic review found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
     );
   }
-  if (reviewId) {
-    fail(`No active semantic review has review ID ${reviewId}.`);
+  if (implementationId) {
+    fail(`No active semantic implementation has implementation ID ${implementationId}.`);
   }
   const choices = inspection.candidates
     .map(
       (candidate) =>
-        `${candidate.worktree} (${candidate.reviewId}: ${candidate.title})`,
+        `${candidate.worktree} (${candidate.implementationId}: ${candidate.title})`,
     )
     .join("\n");
   fail(
-    `Several linked worktrees contain semantic reviews. Select one with --project or --review-id:\n${choices}`,
+    `Several linked worktrees contain semantic implementations. Select one with --project or --implementation-id:\n${choices}`,
   );
 }
 
@@ -261,7 +261,7 @@ function validate(options: Options): void {
     execute(
       process.execPath,
       [
-        semanticReviewScript,
+        semanticImplementationScript,
         "validate",
         ...(publish ? ["--publish"] : []),
       ],
@@ -310,16 +310,16 @@ function status(options: Options): void {
   const workingStages = candidate.workingStageIds.map((id) =>
     readJson(path.join(artifact, ".work", "stages", `${id}.json`)),
   );
-  const allCriteria = requirements.flatMap((requirement) =>
-    (requirement.acceptanceCriteria ?? []).map(
-      (criterion) => `${requirement.id}#${criterion.id}`,
+  const allCriteria = requirements.flatMap((specification) =>
+    (specification.acceptanceCriteria ?? []).map(
+      (criterion) => `${specification.id}#${criterion.id}`,
     ),
   );
   const finalizedCoverage = new Set(
-    finalizedStages.flatMap((stage) => stage.requirementRefs ?? []),
+    finalizedStages.flatMap((stage) => stage.specificationRefs ?? []),
   );
   const workingCoverage = new Set(
-    workingStages.flatMap((stage) => stage.requirementRefs ?? []),
+    workingStages.flatMap((stage) => stage.specificationRefs ?? []),
   );
   const validations = [...finalizedStages, ...workingStages].flatMap(
     (stage) => stage.validation ?? [],
@@ -348,7 +348,7 @@ function status(options: Options): void {
 
   const artifactValidation = executeCapture(
     process.execPath,
-    [semanticReviewScript, "validate"],
+    [semanticImplementationScript, "validate"],
     candidate.worktree,
   );
   const feedbackValidation = candidate.feedbackExists
@@ -400,7 +400,7 @@ function status(options: Options): void {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  console.log(`${candidate.reviewId}: ${candidate.title}`);
+  console.log(`${candidate.implementationId}: ${candidate.title}`);
   console.log(`Artifact: ${candidate.worktree}`);
   console.log(
     `Stages: ${candidate.finalizedStageIds.length} finalized, ${candidate.workingStageIds.length} working`,
@@ -532,7 +532,7 @@ function requiredSkillFiles(root: string): string[] {
     "SKILL.md",
     "VERSION",
     path.join("scripts", "API.d.ts"),
-    path.join("scripts", "semantic-review.mjs"),
+    path.join("scripts", "semantic-implementation.mjs"),
     path.join("scripts", "review-feedback.mjs"),
     path.join("scripts", "semantic-view.mjs"),
     path.join("scripts", "semantic-flow.mjs"),

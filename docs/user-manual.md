@@ -1,6 +1,6 @@
-# Semantic Review user manual
+# Semantic Code Review user manual
 
-Semantic Review turns one implementation into an ordered stack of small,
+Semantic Code Review turns one implementation into an ordered stack of small,
 intent-focused local branches. Each stage has its own branch based on the
 branch immediately below it.
 
@@ -10,10 +10,10 @@ branch immediately below it.
 | --- | --- |
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
-| `semantic-review/<review-id>/<NN>-<stage-id>` | Cumulative stage branch |
+| `semantic-flow/<implementation-id>/<NN>-<stage-id>` | Cumulative stage branch |
 | `.semantic-review-feedback/` | Local open and resolved feedback threads |
-| `semantic-review/<review-id>/metadata` | Published metadata outside implementation branches |
-| `.semantic-review-history/<review-id>/` | Archived artifact after landing |
+| `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
+| `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
 
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
@@ -40,7 +40,7 @@ platform guide's concrete invocations as:
 
 ```text
 <semantic-flow> <command>
-<semantic-review> <command>
+<semantic-implementation> <command>
 <review-feedback> <command>
 ```
 
@@ -82,13 +82,13 @@ Start with a clean worktree at the local target branch head:
 
 ```json
 {
-  "reviewId": "customer-order-cancellation",
+  "implementationId": "customer-order-cancellation",
   "title": "Allow customers to cancel pending orders",
   "summary": "Add guarded cancellation and expose it through the API.",
   "targetBranch": "main",
-  "requirementId": "cancel-order",
-  "requirementTitle": "Customer cancels an order",
-  "requirementSummary": "A customer can cancel before fulfilment starts.",
+  "specificationId": "cancel-order",
+  "specificationTitle": "Customer cancels an order",
+  "specificationSummary": "A customer can cancel before fulfilment starts.",
   "sourceKind": "local",
   "sourceReference": "customer-order-cancellation",
   "criterion": [
@@ -102,12 +102,12 @@ Pass that document from an operating-system temporary file or through stdin as
 described by the selected platform guide:
 
 ```text
-<semantic-review> init --input <review-input.json>
+<semantic-implementation> init --input <implementation-input.json>
 ```
 
 Initialization records `main`'s current head as `baseRevision`. Override the
 default branch folder with `--branch-prefix`; otherwise it is
-`semantic-review/customer-order-cancellation`.
+`semantic-flow/customer-order-cancellation`.
 
 ## 3. Begin a stage
 
@@ -119,7 +119,7 @@ Place long mutation options in JSON:
   "title": "Define the cancellation policy",
   "summary": "Add the domain transition and rejection outcomes.",
   "rationale": "Every caller must use the same transition rule.",
-  "requirementRef": [
+  "specificationRef": [
     "cancel-order#cancel-pending",
     "cancel-order#reject-shipped"
   ]
@@ -127,26 +127,26 @@ Place long mutation options in JSON:
 ```
 
 ```text
-<semantic-review> stage begin --input <semantic-stage.json>
+<semantic-implementation> stage begin --input <semantic-stage.json>
 ```
 
 The command creates and checks out:
 
 ```text
-semantic-review/customer-order-cancellation/01-add-cancellation-policy
+semantic-flow/customer-order-cancellation/01-add-cancellation-policy
 ```
 
 A later stage might be:
 
 ```text
-semantic-review/customer-order-cancellation/02-persist-cancellation
+semantic-flow/customer-order-cancellation/02-persist-cancellation
 ```
 
 It starts at stage 1's head and records stage 1 as its base branch.
 
-## 4. Implement and record context
+## 4. Implement and record insights
 
-Record context when it becomes relevant:
+Record insights when they become relevant:
 
 ```json
 {
@@ -159,7 +159,7 @@ Record context when it becomes relevant:
 ```
 
 ```text
-<semantic-review> stage record --input <decision.json>
+<semantic-implementation> stage record --input <decision.json>
 ```
 
 Commit the implementation, then describe its causal change nodes in an
@@ -197,7 +197,7 @@ organization document:
 ```
 
 ```text
-<semantic-review> stage organize --file <stage-organization.json>
+<semantic-implementation> stage organize --file <stage-organization.json>
 ```
 
 Every changed file belongs to a node. If multiple nodes share one file, each
@@ -220,8 +220,8 @@ Record observed validation and link it to the relevant nodes:
 ```
 
 ```text
-<semantic-review> stage validation --input <validation.json>
-<semantic-review> stage finish
+<semantic-implementation> stage validation --input <validation.json>
+<semantic-implementation> stage finish
 ```
 
 A stage may contain several linear commits. Finalization rejects merge commits,
@@ -231,16 +231,16 @@ requires the recorded stage branch to be checked out, and captures:
 - Immutable base and head revisions.
 - Exact changed-file inventory for the stage-only diff.
 - Descriptive nodes with classified whole-file, hunk, or line-range ownership.
-- Node references on every recorded context and validation item.
+- Node references on all recorded insights and validation evidence.
 
 Repeat begin, implement, commit, and finish for each stage.
 
 ## 6. Validate and review
 
 ```text
-<semantic-review> validate
-<semantic-review> validate --publish
-<semantic-review> validate-stack
+<semantic-implementation> validate
+<semantic-implementation> validate --publish
+<semantic-implementation> validate-stack
 ```
 
 ```text
@@ -248,7 +248,7 @@ Repeat begin, implement, commit, and finish for each stage.
 ```
 
 The UI leads with each stage's node descriptions, then shows their classified
-file or hunk membership, linked semantic context, branch snapshots, and
+file or hunk membership, linked insights, branch snapshots, and
 Git-backed diffs.
 
 `validate-stack --json` emits machine-readable branch, base, and head entries.
@@ -266,10 +266,10 @@ stale anchor after restacking.
 The agent or user may check out any stage branch and commit a correction:
 
 ```text
-git switch semantic-review/customer-order-cancellation/01-add-cancellation-policy
+git switch semantic-flow/customer-order-cancellation/01-add-cancellation-policy
 # edit, test
 git commit -am "Handle paid pending orders"
-<semantic-review> restack --from add-cancellation-policy
+<semantic-implementation> restack --from add-cancellation-policy
 ```
 
 The command:
@@ -286,7 +286,7 @@ If trunk advanced:
 ```text
 git switch main
 git pull --ff-only
-<semantic-review> restack --base main
+<semantic-implementation> restack --base main
 ```
 
 Do not run a restack while an upper branch that must move is checked out.
@@ -306,7 +306,7 @@ After answering or restacking, the implementation agent replies:
 
 ```text
 <review-feedback> thread reply --id <thread-id> \
-  --comment-id <assistant-comment-id> --author assistant \
+  --comment-id <agent-comment-id> --author agent \
   --body "Updated the cancellation rule."
 ```
 
@@ -331,13 +331,13 @@ Once human review is complete, validate publication readiness:
 Then publish `.semantic-review/` to the metadata branch:
 
 ```text
-<semantic-review> publish
+<semantic-implementation> publish
 ```
 
 The default metadata branch is:
 
 ```text
-semantic-review/customer-order-cancellation/metadata
+semantic-flow/customer-order-cancellation/metadata
 ```
 
 The metadata branch is parented by the final stage head but remains separate
@@ -346,13 +346,13 @@ from implementation branches.
 The reviewed stack is now ready locally:
 
 ```text
-<semantic-review> validate-stack
+<semantic-implementation> validate-stack
 ```
 
 To create a single cumulative branch for a conventional remote review:
 
 ```text
-<semantic-review> prepare-branch --branch review/customer-order-cancellation
+<semantic-implementation> prepare-branch --branch review/customer-order-cancellation
 ```
 
 This creates the named branch at the final reviewed stage head without
@@ -369,7 +369,7 @@ After the chosen remote workflow has landed the code and the target branch is
 current:
 
 ```text
-<semantic-review> archive
+<semantic-implementation> archive
 ```
 
 ## Recovery

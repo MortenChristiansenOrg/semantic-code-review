@@ -17,7 +17,7 @@ export const scriptsDirectory = path.resolve(
 );
 export const semanticCli = path.join(
   scriptsDirectory,
-  "semantic-review.mjs",
+  "semantic-implementation.mjs",
 );
 export const feedbackCli = path.join(
   scriptsDirectory,
@@ -144,16 +144,16 @@ export function createRepository(t, prefix = "semantic-flow-") {
   return repository;
 }
 
-export function initializeReview(
+export function initializeImplementation(
   repository,
   {
-    reviewId = "test-review",
-    title = "Test review",
+    implementationId = "test-implementation",
+    title = "Test implementation",
     summary = "Exercise the semantic flow scripts.",
     targetBranch = "main",
-    requirementId = "story",
-    requirementTitle = "Test story",
-    requirementSummary = "Implement the requested behavior.",
+    specificationId = "story",
+    specificationTitle = "Test story",
+    specificationSummary = "Implement the requested behavior.",
     sourceKind = "local",
     sourceReference = "test-story",
     sourceUrl,
@@ -162,20 +162,20 @@ export function initializeReview(
 ) {
   const args = [
     "init",
-    "--review-id",
-    reviewId,
+    "--implementation-id",
+    implementationId,
     "--title",
     title,
     "--summary",
     summary,
     "--target-branch",
     targetBranch,
-    "--requirement-id",
-    requirementId,
-    "--requirement-title",
-    requirementTitle,
-    "--requirement-summary",
-    requirementSummary,
+    "--specification-id",
+    specificationId,
+    "--specification-title",
+    specificationTitle,
+    "--specification-summary",
+    specificationSummary,
     "--source-kind",
     sourceKind,
     "--source-reference",
@@ -196,7 +196,7 @@ export function beginStage(
     summary = "Add the implementation.",
     rationale = "Keep the change independently reviewable.",
     dependencies = [],
-    requirementRefs = ["story#works"],
+    specificationRefs = ["story#works"],
   } = {},
 ) {
   const args = [
@@ -214,8 +214,8 @@ export function beginStage(
   for (const dependency of dependencies) {
     args.push("--depends-on", dependency);
   }
-  for (const requirementRef of requirementRefs) {
-    args.push("--requirement-ref", requirementRef);
+  for (const specificationRef of specificationRefs) {
+    args.push("--specification-ref", specificationRef);
   }
   return repository.semantic(...args);
 }
@@ -324,13 +324,13 @@ export function organizeStage(
   }
 }
 
-export function createReviewWithStages(
+export function createImplementationWithStages(
   t,
   stageIds = ["implementation"],
-  reviewOptions = {},
+  implementationOptions = {},
 ) {
   const repository = createRepository(t);
-  initializeReview(repository, reviewOptions);
+  initializeImplementation(repository, implementationOptions);
   const commits = new Map();
   for (const [index, id] of stageIds.entries()) {
     beginStage(repository, {

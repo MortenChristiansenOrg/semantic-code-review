@@ -8,7 +8,7 @@ import {
   beginStage,
   createRepository,
   flowCli,
-  initializeReview,
+  initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
 
@@ -20,12 +20,12 @@ test("inspect reports repositories with and without active artifacts", (t) => {
   assert.deepEqual(empty.candidates, []);
   assert.equal(empty.selected, null);
 
-  initializeReview(repository, {
-    reviewId: "inspect-review",
-    title: "Inspect review",
+  initializeImplementation(repository, {
+    implementationId: "inspect-implementation",
+    title: "Inspect implementation",
   });
   const active = JSON.parse(repository.flow("inspect", "--json"));
-  assert.equal(active.selected.reviewId, "inspect-review");
+  assert.equal(active.selected.implementationId, "inspect-implementation");
   assert.equal(active.selected.worktree, repository.root);
   assert.deepEqual(active.selected.finalizedStageIds, []);
   assert.deepEqual(active.selected.workingStageIds, []);
@@ -33,7 +33,7 @@ test("inspect reports repositories with and without active artifacts", (t) => {
 
 test("validate resolves the artifact and runs both validators", (t) => {
   const repository = createRepository(t, "semantic-flow-validate-");
-  initializeReview(repository);
+  initializeImplementation(repository);
   repository.feedback("init");
 
   const output = repository.flow("validate");
@@ -42,11 +42,11 @@ test("validate resolves the artifact and runs both validators", (t) => {
 
 test("status reports coverage, evidence, feedback, and validation", (t) => {
   const repository = createRepository(t, "semantic-flow-status-");
-  initializeReview(repository);
+  initializeImplementation(repository);
   repository.feedback("init");
 
   const status = JSON.parse(repository.flow("status", "--json"));
-  assert.equal(status.artifact.reviewId, "test-review");
+  assert.equal(status.artifact.implementationId, "test-implementation");
   assert.equal(status.criteria.total, 1);
   assert.equal(status.criteria.covered, 0);
   assert.deepEqual(status.criteria.inProgress, []);

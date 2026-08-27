@@ -23,34 +23,34 @@ const option = (
   settings: Omit<OptionSignature, "name" | "value"> = {},
 ): OptionSignature => ({ name, value, ...settings });
 
-const requirementOptions: OptionSignature[] = [
-  option("requirement-id", "<id>", { required: true }),
-  option("requirement-title", "<title>", { required: true }),
-  option("requirement-summary", "<summary>", { required: true }),
+const specificationOptions: OptionSignature[] = [
+  option("specification-id", "<id>", { required: true }),
+  option("specification-title", "<title>", { required: true }),
+  option("specification-summary", "<summary>", { required: true }),
   option("source-kind", "<kind>", { required: true }),
   option("source-reference", "<reference>", { required: true }),
   option("source-url", "<url>"),
   option("criterion", "<id>=<text>", { required: true, repeatable: true }),
 ];
 
-export const semanticReviewApi: CliSignature = {
-  executable: "semantic-review.mjs",
-  title: "Semantic review artifact CLI",
+export const semanticImplementationApi: CliSignature = {
+  executable: "semantic-implementation.mjs",
+  title: "Semantic implementation artifact CLI",
   globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     {
       command: "init",
       options: [
-        option("review-id", "<id>", { required: true }),
+        option("implementation-id", "<id>", { required: true }),
         option("title", "<title>", { required: true }),
         option("summary", "<summary>", { required: true }),
         option("base-revision", "<revision>"),
         option("target-branch", "<branch>", { required: true }),
         option("branch-prefix", "<prefix>"),
-        ...requirementOptions,
+        ...specificationOptions,
       ],
     },
-    { command: "requirement add", options: requirementOptions },
+    { command: "specification add", options: specificationOptions },
     {
       command: "stage begin",
       options: [
@@ -59,7 +59,7 @@ export const semanticReviewApi: CliSignature = {
         option("summary", "<summary>", { required: true }),
         option("rationale", "<text>", { required: true }),
         option("depends-on", "<stage-id>", { repeatable: true }),
-        option("requirement-ref", "<requirement-id>#<criterion-id>", {
+        option("specification-ref", "<specification-id>#<criterion-id>", {
           required: true,
           repeatable: true,
         }),
@@ -73,7 +73,7 @@ export const semanticReviewApi: CliSignature = {
         option("summary", "<summary>"),
         option("rationale", "<text>"),
         option("depends-on", "<stage-id>", { repeatable: true }),
-        option("requirement-ref", "<requirement-id>#<criterion-id>", {
+        option("specification-ref", "<specification-id>#<criterion-id>", {
           repeatable: true,
         }),
       ],
@@ -90,7 +90,7 @@ export const semanticReviewApi: CliSignature = {
         option("item-id", "<id>", { required: true }),
         option("replace"),
         option("finalized"),
-        option("category", "<requirement|engineering>"),
+        option("category", "<specification|engineering>"),
         option("summary", "<text>"),
         option("rationale", "<text>"),
         option("statement", "<text>"),
@@ -180,10 +180,10 @@ export const reviewFeedbackApi: CliSignature = {
         option("label", "<text>", { required: true }),
         option(
           "target-kind",
-          "<requirement|criterion|stage|context|file|line>",
+          "<specification|criterion|stage|insight|file|line>",
           { required: true },
         ),
-        option("requirement", "<requirement-id>"),
+        option("specification", "<specification-id>"),
         option("criterion", "<criterion-id>"),
         option("stage", "<stage-id>"),
         option("collection", "<collection>"),
@@ -201,7 +201,7 @@ export const reviewFeedbackApi: CliSignature = {
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>", { required: true }),
         option("body", "<text>", { required: true }),
-        option("author", "<user|assistant>"),
+        option("author", "<user|agent>"),
       ],
     },
     {
@@ -225,7 +225,7 @@ export const reviewFeedbackApi: CliSignature = {
 
 const projectSelectionOptions: OptionSignature[] = [
   option("project", "<repository-path>"),
-  option("review-id", "<review-id>"),
+  option("implementation-id", "<implementation-id>"),
 ];
 
 export const semanticFlowApi: CliSignature = {
@@ -264,7 +264,7 @@ export const semanticFlowApi: CliSignature = {
 };
 
 export const cliApis = [
-  semanticReviewApi,
+  semanticImplementationApi,
   reviewFeedbackApi,
   semanticFlowApi,
 ] as const;

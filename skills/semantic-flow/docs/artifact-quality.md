@@ -7,7 +7,7 @@ not a story reconstructed afterward.
 
 ## Stage rules
 
-- Resume an active review instead of initializing another one.
+- Resume an active implementation instead of initializing another one.
 - Start new work in a clean, isolated worktree at the target branch head.
 - Keep future stages in the agent's task plan. Register only the stage about to
   be implemented because only one working stage may exist.
@@ -36,7 +36,7 @@ not a story reconstructed afterward.
   belongs in an existing boundary, and do not create a new numbered branch for
   it.
 
-## Context and change organization
+## Insights and change organization
 
 - Record useful decisions, assumptions, alternatives, failed attempts, risks,
   validation, and open questions when they arise.
@@ -52,40 +52,40 @@ not a story reconstructed afterward.
 - When several nodes share a file, partition every changed hunk or changed line
   exactly once and use one selector style for that file.
 - Classify every membership with the schema-defined classification.
-- Link every recorded context and validation item to its relevant nodes.
+- Link all recorded insights and validation evidence to their relevant nodes.
 
 ## Requirements and evidence
 
-A requirement represents one independently trackable product or business
+A specification represents one independently trackable product or business
 obligation. Its acceptance criteria are the testable outcomes that jointly
 define when that obligation is satisfied.
 
-- Default to one requirement for one requested user story, issue, or other
+- Default to one specification for one requested user story, issue, or other
   source work item, even when it has several acceptance criteria.
 - Preserve distinct source obligations as distinct requirements. Use more than
-  one requirement only when the request combines obligations that can be
+  one specification only when the request combines obligations that can be
   understood and tracked independently, or explicitly combines several source
   work items.
-- A requirement must remain meaningful if the other requirements are removed
-  from the review. If it would not, it is probably an acceptance criterion,
+- A specification must remain meaningful if the other requirements are removed
+  from the implementation. If it would not, it is probably an acceptance criterion,
   stage, or implementation detail instead.
 - Do not create separate requirements for acceptance criteria, edge cases,
   implementation stages, technical layers, components, test categories, or
   dependencies.
-- Do not merge unrelated source obligations into one requirement merely
-  because they are implemented in the same review.
+- Do not merge unrelated source obligations into one specification merely
+  because they are implemented within one implementation.
 - When a source boundary is materially ambiguous, ask the user instead of
   inventing or merging requirements.
 
 A stage should let a reviewer answer:
 
-1. Which requirement or acceptance criterion does this satisfy?
+1. Which specification or acceptance criterion does this satisfy?
 2. What coherent behavior changed?
 3. Why is this boundary and approach appropriate?
 4. What evidence supports it, and what needs attention?
 
 Rationale explains the approach or boundary rather than repeating the summary.
-Requirement references identify criteria actually addressed by the stage.
+Specification references identify criteria actually addressed by the stage.
 Dependencies list direct behavioral prerequisites, not chronology or Git
 ancestry.
 

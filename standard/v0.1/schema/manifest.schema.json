@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json",
-  "title": "Semantic Review Artifact Format manifest",
+  "title": "Semantic Implementation Artifact Format manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "$schema",
     "formatVersion",
-    "reviewId",
+    "implementationId",
     "title",
     "summary",
     "baseRevision",
@@ -23,7 +23,7 @@
     "formatVersion": {
       "const": "0.1"
     },
-    "reviewId": {
+    "implementationId": {
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
     },
     "title": {

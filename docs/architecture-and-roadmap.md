@@ -28,7 +28,7 @@ Git stores cumulative stage branches. `.semantic-review/` stores intent and
 immutable snapshots without duplicating diffs. The default branch family is:
 
 ```text
-semantic-review/<review-id>/
+semantic-flow/<implementation-id>/
   01-<stage>
   02-<stage>
   metadata

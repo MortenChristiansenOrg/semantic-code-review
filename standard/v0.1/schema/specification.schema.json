@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
-  "title": "Semantic Review Artifact Format requirement",
+  "$id": "https://semantic-code-review.dev/schemas/v0.1/specification.schema.json",
+  "title": "Semantic Implementation Artifact Format specification",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,7 +14,7 @@
   ],
   "properties": {
     "$schema": {
-      "const": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json"
+      "const": "https://semantic-code-review.dev/schemas/v0.1/specification.schema.json"
     },
     "id": {
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"

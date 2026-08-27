@@ -11,7 +11,7 @@
     "summary",
     "branch",
     "dependsOn",
-    "requirementRefs",
+    "specificationRefs",
     "nodes",
     "rationale",
     "decisions",
@@ -45,12 +45,12 @@
         "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
       }
     },
-    "requirementRefs": {
+    "specificationRefs": {
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/requirementRef"
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/specificationRef"
       }
     },
     "nodes": {
@@ -95,7 +95,7 @@
     "validation": {
       "type": "array",
       "items": {
-        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/validation"
+        "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/validationEvidence"
       }
     },
     "openQuestions": {

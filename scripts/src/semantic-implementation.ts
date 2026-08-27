@@ -11,7 +11,7 @@ import addFormats from "ajv-formats";
 import {
   commandOptionNames,
   renderCliHelp,
-  semanticReviewApi,
+  semanticImplementationApi,
 } from "./command-api.js";
 import {
   assertKnownOptions,
@@ -28,23 +28,23 @@ import { listJsonFiles, readJson, writeJson } from "./shared/json.js";
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json";
-const REQUIREMENT_SCHEMA =
-  "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json";
+const SPECIFICATION_SCHEMA =
+  "https://semantic-code-review.dev/schemas/v0.1/specification.schema.json";
 const STAGE_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json";
 const WORK_STAGE_SCHEMA =
   "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json";
 const STAGE_ORGANIZATION_SCHEMA =
   "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json";
-const CONTEXT_COLLECTIONS = [
+const INSIGHT_COLLECTIONS = [
   "decisions",
   "assumptions",
   "alternatives",
   "failedAttempts",
   "risks",
-  "validation",
   "openQuestions",
 ];
+const STAGE_ITEM_COLLECTIONS = [...INSIGHT_COLLECTIONS, "validation"];
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -54,7 +54,7 @@ const defaultSchemaDirectory = path.resolve(
   "schema",
 );
 const schemaDirectory =
-  process.env.SEMANTIC_REVIEW_SCHEMA_DIR ?? defaultSchemaDirectory;
+  process.env.SEMANTIC_IMPLEMENTATION_SCHEMA_DIR ?? defaultSchemaDirectory;
 const workStageSchemaPath = path.join(
   skillDirectory,
   "references",
@@ -66,7 +66,7 @@ const stageOrganizationSchemaPath = path.join(
   "stage-organization.schema.json",
 );
 
-const HELP = renderCliHelp(semanticReviewApi);
+const HELP = renderCliHelp(semanticImplementationApi);
 
 function repositoryRoot() {
   const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
@@ -101,13 +101,13 @@ function schemaValidator() {
   const required = [
     "common.schema.json",
     "manifest.schema.json",
-    "requirement.schema.json",
+    "specification.schema.json",
     "stage.schema.json",
   ];
   for (const file of required) {
     if (!fs.existsSync(path.join(schemaDirectory, file))) {
       fail(
-        `Schema ${file} was not found in ${schemaDirectory}. Rebuild the semantic-flow skill or set SEMANTIC_REVIEW_SCHEMA_DIR.`,
+        `Schema ${file} was not found in ${schemaDirectory}. Rebuild the semantic-flow skill or set SEMANTIC_IMPLEMENTATION_SCHEMA_DIR.`,
       );
     }
   }
@@ -150,7 +150,7 @@ function validateDocument(ajv, value, file) {
 
 function loadArtifact(paths, { includeWork = true } = {}) {
   if (!fs.existsSync(paths.manifest)) {
-    fail(`No semantic review manifest exists at ${paths.manifest}.`);
+    fail(`No semantic implementation manifest exists at ${paths.manifest}.`);
   }
 
   const manifest = readJson(paths.manifest);
@@ -158,7 +158,7 @@ function loadArtifact(paths, { includeWork = true } = {}) {
   for (const id of manifest.requirements ?? []) {
     const file = path.join(paths.requirements, `${id}.json`);
     if (!fs.existsSync(file)) {
-      fail(`Manifest requirement ${id} is missing ${file}.`);
+      fail(`Manifest specification ${id} is missing ${file}.`);
     }
     requirements.set(id, readJson(file));
   }
@@ -362,7 +362,7 @@ function changedFiles(root, parent, commit) {
       file.previousPath === ".semantic-review" ||
       file.previousPath?.startsWith(".semantic-review/")
     ) {
-      fail(`Stage head ${commit} contains semantic review artifact files.`);
+      fail(`Stage head ${commit} contains semantic implementation artifact files.`);
     }
   }
   return files;
@@ -426,18 +426,20 @@ function stageNodeErrors(stage, files, diffContext = undefined) {
     errors.push(`Stage ${stage.id} repeats node ID ${duplicate}.`);
   }
 
-  for (const collection of CONTEXT_COLLECTIONS) {
+  for (const collection of STAGE_ITEM_COLLECTIONS) {
+    const recordName =
+      collection === "validation" ? "validation evidence" : "insight";
     for (const item of stage[collection]) {
       if (!Array.isArray(item.nodeRefs) || item.nodeRefs.length === 0) {
         errors.push(
-          `Stage ${stage.id} ${collection} item ${item.id} has no node refs.`,
+          `Stage ${stage.id} ${collection} ${recordName} ${item.id} has no node refs.`,
         );
         continue;
       }
       for (const nodeRef of item.nodeRefs) {
         if (!knownNodeIds.has(nodeRef)) {
           errors.push(
-            `Stage ${stage.id} ${collection} item ${item.id} references missing node ${nodeRef}.`,
+            `Stage ${stage.id} ${collection} ${recordName} ${item.id} references missing node ${nodeRef}.`,
           );
         }
       }
@@ -596,15 +598,15 @@ function sameChanges(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function unresolvedRefHint(criterionIds, requirementId) {
-  const known = criterionIds.get(requirementId);
+function unresolvedRefHint(criterionIds, specificationId) {
+  const known = criterionIds.get(specificationId);
   if (!known) {
-    return ` Requirement ${requirementId} does not exist.`;
+    return ` Specification ${specificationId} does not exist.`;
   }
   if (known.size === 0) {
-    return ` Requirement ${requirementId} has no acceptance criteria.`;
+    return ` Specification ${specificationId} has no acceptance criteria.`;
   }
-  const valid = [...known].map((id) => `${requirementId}#${id}`).join(", ");
+  const valid = [...known].map((id) => `${specificationId}#${id}`).join(", ");
   return ` Valid criteria: ${valid}.`;
 }
 
@@ -616,15 +618,15 @@ function validateSemantic(
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
 
-  const requirementFiles = listJsonFiles(paths.requirements).map((file) =>
+  const specificationFiles = listJsonFiles(paths.requirements).map((file) =>
     path.basename(file, ".json"),
   );
   const stageFiles = listJsonFiles(paths.stages).map((file) =>
     path.basename(file, ".json"),
   );
-  for (const id of requirementFiles) {
+  for (const id of specificationFiles) {
     if (!manifest.requirements.includes(id)) {
-      errors.push(`Unlisted requirement file requirements/${id}.json.`);
+      errors.push(`Unlisted specification file requirements/${id}.json.`);
     }
   }
   for (const id of stageFiles) {
@@ -634,13 +636,13 @@ function validateSemantic(
   }
 
   const criterionIds = new Map();
-  for (const [id, requirement] of requirements) {
-    if (requirement.id !== id) {
-      errors.push(`Requirement ${id} has internal ID ${requirement.id}.`);
+  for (const [id, specification] of requirements) {
+    if (specification.id !== id) {
+      errors.push(`Specification ${id} has internal ID ${specification.id}.`);
     }
-    const criteria = requirement.acceptanceCriteria.map((item) => item.id);
+    const criteria = specification.acceptanceCriteria.map((item) => item.id);
     for (const duplicate of duplicateValues(criteria)) {
-      errors.push(`Requirement ${id} repeats criterion ID ${duplicate}.`);
+      errors.push(`Specification ${id} repeats criterion ID ${duplicate}.`);
     }
     criterionIds.set(id, new Set(criteria));
   }
@@ -662,15 +664,15 @@ function validateSemantic(
         errors.push(`Stage ${id} depends on later stage ${dependency}.`);
       }
     }
-    for (const reference of stage.requirementRefs) {
-      const [requirementId, criterionId] = reference.split("#", 2);
-      if (!criterionIds.get(requirementId)?.has(criterionId)) {
+    for (const reference of stage.specificationRefs) {
+      const [specificationId, criterionId] = reference.split("#", 2);
+      if (!criterionIds.get(specificationId)?.has(criterionId)) {
         errors.push(
-          `Stage ${id} has unresolved requirement ref ${reference}.${unresolvedRefHint(criterionIds, requirementId)}`,
+          `Stage ${id} has unresolved specification ref ${reference}.${unresolvedRefHint(criterionIds, specificationId)}`,
         );
       }
     }
-    for (const collection of CONTEXT_COLLECTIONS) {
+    for (const collection of STAGE_ITEM_COLLECTIONS) {
       const ids = stage[collection].map((item) => item.id);
       for (const duplicate of duplicateValues(ids)) {
         errors.push(`Stage ${id} repeats ${collection} ID ${duplicate}.`);
@@ -740,15 +742,15 @@ function validateSemantic(
         }
       }
     }
-    for (const reference of stage.requirementRefs) {
-      const [requirementId, criterionId] = reference.split("#", 2);
-      if (!criterionIds.get(requirementId)?.has(criterionId)) {
+    for (const reference of stage.specificationRefs) {
+      const [specificationId, criterionId] = reference.split("#", 2);
+      if (!criterionIds.get(specificationId)?.has(criterionId)) {
         errors.push(
-          `Working stage ${id} has unresolved requirement ref ${reference}.${unresolvedRefHint(criterionIds, requirementId)}`,
+          `Working stage ${id} has unresolved specification ref ${reference}.${unresolvedRefHint(criterionIds, specificationId)}`,
         );
       }
     }
-    for (const collection of CONTEXT_COLLECTIONS) {
+    for (const collection of STAGE_ITEM_COLLECTIONS) {
       const ids = stage[collection].map((item) => item.id);
       for (const duplicate of duplicateValues(ids)) {
         errors.push(
@@ -849,10 +851,10 @@ function validateArtifact(
   const artifact = loadArtifact(paths);
 
   validateDocument(ajv, artifact.manifest, paths.manifest);
-  for (const [id, requirement] of artifact.requirements) {
+  for (const [id, specification] of artifact.requirements) {
     validateDocument(
       ajv,
-      requirement,
+      specification,
       path.join(paths.requirements, `${id}.json`),
     );
   }
@@ -877,12 +879,12 @@ function validateArtifact(
       );
     }
     const covered = new Set(
-      [...artifact.stages.values()].flatMap((stage) => stage.requirementRefs),
+      [...artifact.stages.values()].flatMap((stage) => stage.specificationRefs),
     );
     const missing = [];
-    for (const [requirementId, requirement] of artifact.requirements) {
-      for (const criterion of requirement.acceptanceCriteria) {
-        const reference = `${requirementId}#${criterion.id}`;
+    for (const [specificationId, specification] of artifact.requirements) {
+      for (const criterion of specification.acceptanceCriteria) {
+        const reference = `${specificationId}#${criterion.id}`;
         if (!covered.has(reference)) missing.push(reference);
       }
     }
@@ -896,7 +898,7 @@ function validateArtifact(
   if (!quiet) {
     const mode = schemaOnly ? "schema" : publish ? "publication" : "full";
     console.log(
-      `Semantic review ${mode} validation passed: ${artifact.requirements.size} requirement(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`,
+      `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`,
     );
   }
   return artifact;
@@ -924,7 +926,7 @@ function ensureArtifactExcluded(root) {
   }
 }
 
-function requirementFromOptions(options) {
+function specificationFromOptions(options) {
   const criteria = repeatedOption(options, "criterion").map((value) => {
     const [id, text] = splitPair(value, "--criterion");
     return { id, text };
@@ -943,19 +945,19 @@ function requirementFromOptions(options) {
   }
 
   return {
-    $schema: REQUIREMENT_SCHEMA,
-    id: option(options, "requirement-id", { required: true }),
-    title: option(options, "requirement-title", { required: true }),
-    summary: option(options, "requirement-summary", { required: true }),
+    $schema: SPECIFICATION_SCHEMA,
+    id: option(options, "specification-id", { required: true }),
+    title: option(options, "specification-title", { required: true }),
+    summary: option(options, "specification-summary", { required: true }),
     source,
     acceptanceCriteria: criteria,
   };
 }
 
 function initialize(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "init"));
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "init"));
   if (fs.existsSync(paths.manifest)) {
-    fail(`A semantic review already exists at ${paths.manifest}.`);
+    fail(`A semantic implementation already exists at ${paths.manifest}.`);
   }
   if (
     fs.existsSync(paths.artifact) &&
@@ -967,8 +969,8 @@ function initialize(paths, options) {
   }
   assertCleanWorkingTree(paths.root, "Initialization");
 
-  const requirement = requirementFromOptions(options);
-  const reviewId = option(options, "review-id", { required: true });
+  const specification = specificationFromOptions(options);
+  const implementationId = option(options, "implementation-id", { required: true });
   const targetBranch = option(options, "target-branch", { required: true });
   git(["check-ref-format", "--branch", targetBranch], { cwd: paths.root });
   const targetHead = branchCommit(paths.root, targetBranch);
@@ -982,7 +984,7 @@ function initialize(paths, options) {
     );
   }
   const branchPrefix = option(options, "branch-prefix", {
-    defaultValue: `semantic-review/${reviewId}`,
+    defaultValue: `semantic-flow/${implementationId}`,
   });
   git(["check-ref-format", "--branch", `${branchPrefix}/01-probe`], {
     cwd: paths.root,
@@ -990,25 +992,25 @@ function initialize(paths, options) {
   const manifest = {
     $schema: MANIFEST_SCHEMA,
     formatVersion: "0.1",
-    reviewId,
+    implementationId,
     title: option(options, "title", { required: true }),
     summary: option(options, "summary", { required: true }),
     baseRevision,
     targetBranch,
     branchPrefix,
-    requirements: [requirement.id],
+    requirements: [specification.id],
     stages: [],
   };
 
   const ajv = schemaValidator();
-  validateDocument(ajv, requirement, "Requirement input");
+  validateDocument(ajv, specification, "Specification input");
   validateDocument(ajv, manifest, "Manifest input");
 
   ensureArtifactExcluded(paths.root);
   try {
     writeJson(
-      path.join(paths.requirements, `${requirement.id}.json`),
-      requirement,
+      path.join(paths.requirements, `${specification.id}.json`),
+      specification,
     );
     writeJson(paths.manifest, manifest);
     validateArtifact(paths, { quiet: true });
@@ -1016,26 +1018,26 @@ function initialize(paths, options) {
     fs.rmSync(paths.artifact, { recursive: true, force: true });
     throw error;
   }
-  console.log(`Initialized semantic review ${manifest.reviewId}.`);
+  console.log(`Initialized semantic implementation ${manifest.implementationId}.`);
 }
 
-function addRequirement(paths, options) {
+function addSpecification(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "requirement add"),
+    commandOptionNames(semanticImplementationApi, "specification add"),
   );
   const artifact = validateArtifact(paths, { quiet: true });
-  const requirement = requirementFromOptions(options);
-  if (artifact.requirements.has(requirement.id)) {
-    fail(`Requirement ${requirement.id} already exists.`);
+  const specification = specificationFromOptions(options);
+  if (artifact.requirements.has(specification.id)) {
+    fail(`Specification ${specification.id} already exists.`);
   }
-  validateDocument(schemaValidator(), requirement, "Requirement input");
+  validateDocument(schemaValidator(), specification, "Specification input");
 
-  const file = path.join(paths.requirements, `${requirement.id}.json`);
+  const file = path.join(paths.requirements, `${specification.id}.json`);
   const oldManifest = structuredClone(artifact.manifest);
-  artifact.manifest.requirements.push(requirement.id);
+  artifact.manifest.requirements.push(specification.id);
   try {
-    writeJson(file, requirement);
+    writeJson(file, specification);
     writeJson(paths.manifest, artifact.manifest);
     validateArtifact(paths, { quiet: true });
   } catch (error) {
@@ -1043,13 +1045,13 @@ function addRequirement(paths, options) {
     writeJson(paths.manifest, oldManifest);
     throw error;
   }
-  console.log(`Added requirement ${requirement.id}.`);
+  console.log(`Added specification ${specification.id}.`);
 }
 
 function beginStage(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage begin"),
+    commandOptionNames(semanticImplementationApi, "stage begin"),
   );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Beginning a stage");
@@ -1095,7 +1097,7 @@ function beginStage(paths, options) {
     summary: option(options, "summary", { required: true }),
     branch,
     dependsOn: repeatedOption(options, "depends-on"),
-    requirementRefs: repeatedOption(options, "requirement-ref"),
+    specificationRefs: repeatedOption(options, "specification-ref"),
     nodes: [],
     rationale: option(options, "rationale", { required: true }),
     decisions: [],
@@ -1106,8 +1108,8 @@ function beginStage(paths, options) {
     validation: [],
     openQuestions: [],
   };
-  if (stage.requirementRefs.length === 0) {
-    fail("At least one --requirement-ref is required.");
+  if (stage.specificationRefs.length === 0) {
+    fail("At least one --specification-ref is required.");
   }
   validateDocument(schemaValidator(), stage, "Stage input");
 
@@ -1166,7 +1168,7 @@ function updateWorkingStage(paths, id, update) {
   }
 }
 
-function updateStageContext(paths, id, finalized, update) {
+function updateStageInsight(paths, id, finalized, update) {
   if (!finalized) {
     updateWorkingStage(paths, id, update);
     return;
@@ -1195,7 +1197,7 @@ function updateStageContext(paths, id, finalized, update) {
 function setStage(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage set"),
+    commandOptionNames(semanticImplementationApi, "stage set"),
   );
   const artifact = validateArtifact(paths, {
     quiet: true,
@@ -1206,13 +1208,13 @@ function setStage(paths, options) {
   const summary = option(options, "summary");
   const rationale = option(options, "rationale");
   const hasDependencies = options.has("depends-on");
-  const hasRequirementRefs = options.has("requirement-ref");
+  const hasSpecificationRefs = options.has("specification-ref");
   if (
     title === undefined &&
     summary === undefined &&
     rationale === undefined &&
     !hasDependencies &&
-    !hasRequirementRefs
+    !hasSpecificationRefs
   ) {
     fail("stage set requires at least one field to update.");
   }
@@ -1222,8 +1224,8 @@ function setStage(paths, options) {
     if (summary !== undefined) stage.summary = summary;
     if (rationale !== undefined) stage.rationale = rationale;
     if (hasDependencies) stage.dependsOn = repeatedOption(options, "depends-on");
-    if (hasRequirementRefs) {
-      stage.requirementRefs = repeatedOption(options, "requirement-ref");
+    if (hasSpecificationRefs) {
+      stage.specificationRefs = repeatedOption(options, "specification-ref");
     }
   });
   console.log(`Updated working stage ${id}.`);
@@ -1306,7 +1308,7 @@ function itemForKind(kind, options) {
 function validateRecordedNodeRefs(stage, item) {
   if (!stage.nodes?.length) return;
   if (!item.nodeRefs?.length) {
-    fail("Recording context after stage organization requires --node-ref.");
+    fail("Recording an insight after stage organization requires --node-ref.");
   }
   const knownNodeIds = new Set(stage.nodes.map((node) => node.id));
   for (const nodeRef of item.nodeRefs) {
@@ -1319,7 +1321,7 @@ function validateRecordedNodeRefs(stage, item) {
 function recordStageItem(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage record"),
+    commandOptionNames(semanticImplementationApi, "stage record"),
   );
   const finalized = flag(options, "finalized");
   const requestedStage = option(options, "stage");
@@ -1352,7 +1354,7 @@ function recordStageItem(paths, options) {
     ]),
   );
 
-  updateStageContext(paths, stageId, finalized, (stage) => {
+  updateStageInsight(paths, stageId, finalized, (stage) => {
     const index = stage[item.collection].findIndex(
       (existing) => existing.id === item.value.id,
     );
@@ -1384,7 +1386,7 @@ function recordStageItem(paths, options) {
 function recordValidation(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage validation"),
+    commandOptionNames(semanticImplementationApi, "stage validation"),
   );
   const finalized = flag(options, "finalized");
   const requestedStage = option(options, "stage");
@@ -1413,18 +1415,18 @@ function recordValidation(paths, options) {
     value.nodeRefs = nodeRefs;
   }
 
-  updateStageContext(paths, stageId, finalized, (stage) => {
+  updateStageInsight(paths, stageId, finalized, (stage) => {
     const index = stage.validation.findIndex(
       (existing) => existing.id === value.id,
     );
     if (index >= 0 && !replace) {
       fail(
-        `Working stage ${stageId} already has validation item ${value.id}.`,
+        `Working stage ${stageId} already has validation evidence ${value.id}.`,
       );
     }
     if (index < 0 && replace) {
       fail(
-        `Working stage ${stageId} has no validation item ${value.id} to replace.`,
+        `Working stage ${stageId} has no validation evidence ${value.id} to replace.`,
       );
     }
     if (index >= 0 && !value.nodeRefs && stage.validation[index].nodeRefs) {
@@ -1438,7 +1440,7 @@ function recordValidation(paths, options) {
     }
   });
   console.log(
-    `${replace ? "Replaced" : "Recorded"} validation ${value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
+    `${replace ? "Replaced" : "Recorded"} validation evidence ${value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
   );
 }
 
@@ -1454,7 +1456,7 @@ function applyOrganization(stage, organization) {
     links.set(key, link.nodeRefs);
   }
 
-  for (const collection of CONTEXT_COLLECTIONS) {
+  for (const collection of STAGE_ITEM_COLLECTIONS) {
     for (const item of stage[collection]) {
       const key = `${collection}\0${item.id}`;
       const nodeRefs = links.get(key);
@@ -1478,7 +1480,7 @@ function applyOrganization(stage, organization) {
 function organizeStage(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage organize"),
+    commandOptionNames(semanticImplementationApi, "stage organize"),
   );
   const finalized = flag(options, "finalized");
   const requestedStage = option(options, "stage");
@@ -1583,7 +1585,7 @@ function canonicalStage(
     title: workStage.title,
     summary: workStage.summary,
     dependsOn: workStage.dependsOn,
-    requirementRefs: workStage.requirementRefs,
+    specificationRefs: workStage.specificationRefs,
     nodes: workStage.nodes,
     change: {
       branch: workStage.branch,
@@ -1606,7 +1608,7 @@ function canonicalStage(
 function finishStage(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage finish"),
+    commandOptionNames(semanticImplementationApi, "stage finish"),
   );
   const artifact = validateArtifact(paths, { quiet: true });
   assertCleanWorkingTree(paths.root, "Finalizing a stage");
@@ -1663,7 +1665,7 @@ function finishStage(paths, options) {
 function discardStage(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "stage discard"),
+    commandOptionNames(semanticImplementationApi, "stage discard"),
   );
   const artifact = validateArtifact(paths, {
     quiet: true,
@@ -1820,7 +1822,7 @@ function updateRefsAtomically(root, updates) {
 }
 
 function restack(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "restack"));
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
   assertCleanWorkingTree(paths.root, "Restacking");
   const artifact = validateArtifact(paths, {
     schemaOnly: true,
@@ -1856,7 +1858,7 @@ function restack(paths, options) {
 
   const indexFile = path.join(
     os.tmpdir(),
-    `semantic-review-restack-${process.pid}-${Date.now()}.index`,
+    `semantic-implementation-restack-${process.pid}-${Date.now()}.index`,
   );
   const plans = [];
   let parentBranch = artifact.manifest.targetBranch;
@@ -1983,9 +1985,9 @@ function restack(paths, options) {
 }
 
 function repairArtifact(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "repair"));
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "repair"));
   if (!fs.existsSync(paths.manifest)) {
-    fail(`No semantic review manifest exists at ${paths.manifest}.`);
+    fail(`No semantic implementation manifest exists at ${paths.manifest}.`);
   }
   const manifest = readJson(paths.manifest);
   const actions = [];
@@ -2021,10 +2023,10 @@ function repairArtifact(paths, options) {
   }
 
   for (const id of manifest.requirements) {
-    const requirementFile = path.join(paths.requirements, `${id}.json`);
-    if (!fs.existsSync(requirementFile)) {
+    const specificationFile = path.join(paths.requirements, `${id}.json`);
+    if (!fs.existsSync(specificationFile)) {
       ambiguous.push(
-        formatPath(path.relative(paths.artifact, requirementFile)),
+        formatPath(path.relative(paths.artifact, specificationFile)),
       );
     }
   }
@@ -2066,7 +2068,7 @@ function changedPathNames(root, from, to) {
 function lastStageHead(artifact) {
   const lastStageId = artifact.manifest.stages.at(-1);
   if (!lastStageId) {
-    fail("The review has no finalized stages.");
+    fail("The implementation has no finalized stages.");
   }
   return artifact.stages.get(lastStageId).change.headRevision;
 }
@@ -2078,7 +2080,7 @@ function metadataBranch(artifact) {
 function buildMetadataTree(paths, parent) {
   const indexFile = path.join(
     os.tmpdir(),
-    `semantic-review-metadata-${process.pid}-${Date.now()}.index`,
+    `semantic-implementation-metadata-${process.pid}-${Date.now()}.index`,
   );
   const env = { GIT_INDEX_FILE: indexFile };
   try {
@@ -2103,7 +2105,7 @@ function buildMetadataCommit(paths, parent, message) {
 }
 
 function publishArtifact(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "publish"));
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "publish"));
   const artifact = validateArtifact(paths, {
     publish: true,
     quiet: true,
@@ -2114,7 +2116,7 @@ function publishArtifact(paths, options) {
   const branch = metadataBranch(artifact);
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
   const message = option(options, "message", {
-    defaultValue: `Publish ${artifact.manifest.reviewId} semantic review`,
+    defaultValue: `Publish ${artifact.manifest.implementationId} semantic implementation`,
   });
   const publication = buildMetadataCommit(paths, stageTip, message);
   const existing = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
@@ -2127,7 +2129,7 @@ function publishArtifact(paths, options) {
     });
     const parents = commitParents(paths.root, existing);
     if (parents.length === 1 && parents[0] === stageTip && existingTree === publication.tree) {
-      console.log(`Semantic review metadata is already published on ${branch}.`);
+      console.log(`Semantic implementation metadata is already published on ${branch}.`);
       return;
     }
     const pathsChanged = parents.length === 1
@@ -2159,14 +2161,14 @@ function publishArtifact(paths, options) {
     { cwd: paths.root },
   );
   console.log(
-    `Published semantic review metadata on ${branch} at ${publication.commit}.`,
+    `Published semantic implementation metadata on ${branch} at ${publication.commit}.`,
   );
 }
 
 function validateStack(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "validate-stack"),
+    commandOptionNames(semanticImplementationApi, "validate-stack"),
   );
   const json = flag(options, "json");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
@@ -2203,7 +2205,7 @@ function validateStack(paths, options) {
 function prepareBranch(paths, options) {
   assertKnownOptions(
     options,
-    commandOptionNames(semanticReviewApi, "prepare-branch"),
+    commandOptionNames(semanticImplementationApi, "prepare-branch"),
   );
   const branch = option(options, "branch", { required: true });
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
@@ -2227,14 +2229,14 @@ function prepareBranch(paths, options) {
   );
 }
 
-function archiveReview(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticReviewApi, "archive"));
+function archiveImplementation(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive"));
   const artifact = validateArtifact(paths, {
     publish: true,
     quiet: true,
     allowLandedTarget: true,
   });
-  assertCleanWorkingTree(paths.root, "Review archival");
+  assertCleanWorkingTree(paths.root, "Implementation archival");
   const current = currentBranch(paths.root);
   if (current !== artifact.manifest.targetBranch) {
     fail(
@@ -2268,12 +2270,12 @@ function archiveReview(paths, options) {
     publicationTree !== expectedTree
   ) {
     fail(
-      `Metadata branch ${publicationBranch} does not publish the current semantic review; run publish again before archiving.`,
+      `Metadata branch ${publicationBranch} does not publish the current semantic implementation; run publish again before archiving.`,
     );
   }
 
   const destinationOption = option(options, "destination", {
-    defaultValue: `.semantic-review-history/${artifact.manifest.reviewId}/.semantic-review`,
+    defaultValue: `.semantic-review-history/${artifact.manifest.implementationId}/.semantic-review`,
   });
   if (
     path.isAbsolute(destinationOption) ||
@@ -2294,7 +2296,7 @@ function archiveReview(paths, options) {
   }
 
   const message = option(options, "message", {
-    defaultValue: `Archive ${artifact.manifest.reviewId} semantic review`,
+    defaultValue: `Archive ${artifact.manifest.implementationId} semantic implementation`,
   });
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.renameSync(paths.artifact, destination);
@@ -2322,7 +2324,7 @@ function archiveReview(paths, options) {
       { cwd: paths.root },
     );
     console.log(
-      `Archived ${artifact.manifest.reviewId} at ${relativeDestination}.`,
+      `Archived ${artifact.manifest.implementationId} at ${relativeDestination}.`,
     );
   } catch (error) {
     git(["reset", "--", destinationOption], {
@@ -2350,8 +2352,8 @@ function dispatch(paths, positionals, options) {
     initialize(paths, options);
     return;
   }
-  if (command === "requirement" && subcommand === "add") {
-    addRequirement(paths, options);
+  if (command === "specification" && subcommand === "add") {
+    addSpecification(paths, options);
     return;
   }
   if (command === "stage" && subcommand === "begin") {
@@ -2403,13 +2405,13 @@ function dispatch(paths, positionals, options) {
     return;
   }
   if (command === "archive" && subcommand === undefined) {
-    archiveReview(paths, options);
+    archiveImplementation(paths, options);
     return;
   }
   if (command === "validate" && subcommand === undefined) {
     assertKnownOptions(
       options,
-      commandOptionNames(semanticReviewApi, "validate"),
+      commandOptionNames(semanticImplementationApi, "validate"),
     );
     if (options.has("schema-only") && options.has("publish")) {
       fail("--schema-only and --publish cannot be combined.");

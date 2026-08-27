@@ -2,7 +2,7 @@
 
 Use to rebuild semantic-flow from its maintained local source checkout and
 replace the installed skill. This command does not touch the target
-repository's implementation or review artifacts.
+repository's implementation code or artifacts.
 
 Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
 operating-system guide.

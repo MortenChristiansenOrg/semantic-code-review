@@ -1,7 +1,7 @@
 /**
  * Semantic Flow review viewer launcher.
  *
- * Reads a repository's `.semantic-review` artifact, reconstructs the review
+ * Reads a repository's `.semantic-review` artifact, reconstructs the implementation
  * data model (stages, nodes, project-grouped files, full-context diffs), and
  * serves the bundled Cinema viewer on localhost.
  *
@@ -79,10 +79,10 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
-function activeReviewId(repoRoot) {
+function activeImplementationId(repoRoot) {
   return readJson(
     path.join(repoRoot, ".semantic-review", "manifest.json"),
-  ).reviewId;
+  ).implementationId;
 }
 
 function humanizeId(id) {
@@ -294,16 +294,16 @@ function buildInsights(stage) {
   return insights;
 }
 
-function buildReviewData(repoRoot) {
-  const reviewRoot = path.join(repoRoot, ".semantic-review");
-  const manifest = readJson(path.join(reviewRoot, "manifest.json"));
-  const requirementDocs = (manifest.requirements || []).map((requirementId) =>
-    readJson(path.join(reviewRoot, "requirements", `${requirementId}.json`)),
+function buildImplementationData(repoRoot) {
+  const implementationRoot = path.join(repoRoot, ".semantic-review");
+  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+  const specificationDocs = (manifest.requirements || []).map((specificationId) =>
+    readJson(path.join(implementationRoot, "requirements", `${specificationId}.json`)),
   );
   const projects = buildProjectIndex(repoRoot);
 
   const stages = manifest.stages.map((stageId) => {
-    const s = readJson(path.join(reviewRoot, "stages", `${stageId}.json`));
+    const s = readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const kindByPath = new Map(s.change.files.map((f) => [f.path, f.kind]));
@@ -349,7 +349,7 @@ function buildReviewData(repoRoot) {
       summary: s.summary,
       rationale: s.rationale,
       dependsOn: s.dependsOn || [],
-      requirementRefs: s.requirementRefs || [],
+      specificationRefs: s.specificationRefs || [],
       branch: s.change.branch,
       baseRevision: base,
       headRevision: head,
@@ -359,32 +359,31 @@ function buildReviewData(repoRoot) {
     };
   });
 
-  const requirements = requirementDocs.map((requirement) => ({
-    id: requirement.id,
-    title: requirement.title,
-    summary: requirement.summary,
-    source: requirement.source,
-    acceptance: (requirement.acceptanceCriteria || []).map((c) => ({
+  const requirements = specificationDocs.map((specification) => ({
+    id: specification.id,
+    title: specification.title,
+    summary: specification.summary,
+    source: specification.source,
+    acceptance: (specification.acceptanceCriteria || []).map((c) => ({
       id: c.id,
       text: c.text,
     })),
   }));
 
   return {
-    reviewId: manifest.reviewId,
+    implementationId: manifest.implementationId,
     title: manifest.title,
     summary: manifest.summary,
     targetBranch: manifest.targetBranch,
     baseRevision: manifest.baseRevision,
-    requirement: requirements[0],
     requirements,
     stages,
     feedback: buildFeedbackThreads(repoRoot, stages),
   };
 }
 
-export function createReviewDataScript(repoRoot) {
-  return `window.SEMANTIC_REVIEW = ${JSON.stringify(buildReviewData(repoRoot))};\n`;
+export function createImplementationDataScript(repoRoot) {
+  return `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(buildImplementationData(repoRoot))};\n`;
 }
 
 // Load open and resolved feedback threads from the local feedback store. A
@@ -470,16 +469,16 @@ function sendJson(response, status, payload) {
 // Map a browser-local note (kind: stage | node | file) onto review-feedback
 // target options. Nodes have no first-class feedback target, so they are
 // assigned to their owning stage with the node title carried in the label.
-export function mapNoteTarget(note, review) {
+export function mapNoteTarget(note, implementation) {
   if (note.kind === "stage") {
-    const stage = review.stages.find((s) => s.id === note.id);
+    const stage = implementation.stages.find((s) => s.id === note.id);
     if (!stage) throw new Error(`unknown stage "${note.id}"`);
     return { "target-kind": "stage", stage: stage.id, label: stage.title };
   }
   if (note.kind === "node") {
     const stages = note.stageId
-      ? review.stages.filter((s) => s.id === note.stageId)
-      : review.stages;
+      ? implementation.stages.filter((s) => s.id === note.stageId)
+      : implementation.stages;
     if (note.stageId && stages.length === 0) {
       throw new Error(`unknown stage "${note.stageId}"`);
     }
@@ -497,7 +496,7 @@ export function mapNoteTarget(note, review) {
     const match = /^f:([^:]+):(.+)$/.exec(note.id || "");
     if (!match) throw new Error(`unrecognized file id "${note.id}"`);
     const [, stageId, filePath] = match;
-    const stage = review.stages.find((s) => s.id === stageId);
+    const stage = implementation.stages.find((s) => s.id === stageId);
     if (!stage) throw new Error(`unknown stage "${stageId}"`);
     return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
   }
@@ -521,11 +520,11 @@ function cliErrorMessage(error) {
 }
 
 // Validate every note and resolve its target into review-feedback options.
-// Pure over (notes, review): produces the ordered list of threads to create
+// Pure over (notes, implementation): produces the ordered list of threads to create
 // and the reasons any note was skipped, without mutating any state. Kept
 // separate from the CLI mutations so a malformed payload can never leave a
 // partial or orphaned draft batch behind.
-export function planFeedbackThreads(notes, review) {
+export function planFeedbackThreads(notes, implementation) {
   const skipped: Array<{ ref: number; reason: string }> = [];
   const planned: Array<{ ref: number; body: string; target: Record<string, any> }> =
     [];
@@ -543,7 +542,7 @@ export function planFeedbackThreads(notes, review) {
     }
     let target;
     try {
-      target = mapNoteTarget(note, review);
+      target = mapNoteTarget(note, implementation);
     } catch (error) {
       skipped.push({ ref, reason: error.message });
       return;
@@ -553,14 +552,14 @@ export function planFeedbackThreads(notes, review) {
   return { planned, skipped };
 }
 
-function exportFeedback({ repoRoot, review, feedbackCli }, notes) {
+function exportFeedback({ repoRoot, implementation, feedbackCli }, notes) {
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
   if (!Array.isArray(notes) || notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
-  const { planned, skipped } = planFeedbackThreads(notes, review);
+  const { planned, skipped } = planFeedbackThreads(notes, implementation);
   if (planned.length === 0) {
     return { ok: false, error: "No notes could be exported.", skipped };
   }
@@ -635,15 +634,15 @@ async function handleFeedbackExport(request, response, context) {
       sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
       return;
     }
-    const review = buildReviewData(context.repoRoot);
-    if (payload.reviewId !== review.reviewId) {
+    const implementation = buildImplementationData(context.repoRoot);
+    if (payload.implementationId !== implementation.implementationId) {
       sendJson(response, 409, {
         ok: false,
-        error: "This viewer is showing a different review than the one being exported.",
+        error: "This viewer is showing a different implementation than the one being exported.",
       });
       return;
     }
-    const result = exportFeedback({ ...context, review }, payload.notes);
+    const result = exportFeedback({ ...context, implementation }, payload.notes);
     sendJson(response, result.ok ? 200 : 422, result);
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
@@ -695,15 +694,15 @@ async function handleThreadAction(request, response, context, action) {
       sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
-    const currentReviewId = activeReviewId(context.repoRoot);
+    const currentImplementationId = activeImplementationId(context.repoRoot);
     if (
       !payload ||
-      payload.reviewId !== context.reviewId ||
-      payload.reviewId !== currentReviewId
+      payload.implementationId !== context.implementationId ||
+      payload.implementationId !== currentImplementationId
     ) {
       sendJson(response, 409, {
         ok: false,
-        error: "This viewer is showing a different review than the one being edited.",
+        error: "This viewer is showing a different implementation than the one being edited.",
       });
       return;
     }
@@ -753,14 +752,14 @@ async function handleThreadAction(request, response, context, action) {
   }
 }
 
-function serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId }) {
+function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId }) {
   let server = null;
   const requestHandler = (request, response) => {
     const url = new URL(request.url, `http://${HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
 
     if (request.method === "GET" && pathname === "/api/whoami") {
-      sendJson(response, 200, { ok: true, app: VIEWER_APP_ID, reviewId });
+      sendJson(response, 200, { ok: true, app: VIEWER_APP_ID, implementationId });
       return;
     }
 
@@ -801,15 +800,15 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId }) {
       handleThreadAction(
         request,
         response,
-        { repoRoot, feedbackCli, port, reviewId },
+        { repoRoot, feedbackCli, port, implementationId },
         action,
       );
       return;
     }
 
-    if (pathname === "/review-data.js") {
+    if (pathname === "/implementation-data.js") {
       try {
-        const body = Buffer.from(createReviewDataScript(repoRoot), "utf8");
+        const body = Buffer.from(createImplementationDataScript(repoRoot), "utf8");
         response.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
           "content-length": body.length,
@@ -821,7 +820,7 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId }) {
           "content-type": "text/plain; charset=utf-8",
           "cache-control": "no-store",
         });
-        response.end(`Failed to refresh review data: ${cliErrorMessage(error)}`);
+        response.end(`Failed to refresh implementation data: ${cliErrorMessage(error)}`);
       }
       return;
     }
@@ -930,13 +929,13 @@ function openBrowser(url) {
 async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
-  const review = buildReviewData(repoRoot);
+  const implementation = buildImplementationData(repoRoot);
   const feedbackCli = locateFeedbackCli();
 
   const port = DEFAULT_PORT;
   let server = null;
   try {
-    server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId: review.reviewId });
+    server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId });
   } catch (error) {
     if (!error || error.code !== "EADDRINUSE") throw error;
     // The port is taken. Reclaim it only if our own viewer is holding it;
@@ -952,7 +951,7 @@ async function main() {
     for (let attempt = 0; attempt < 40 && !server; attempt += 1) {
       await delay(100);
       try {
-        server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, reviewId: review.reviewId });
+        server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId });
       } catch (retryError) {
         if (!retryError || retryError.code !== "EADDRINUSE") throw retryError;
       }
@@ -963,11 +962,11 @@ async function main() {
   }
 
   const url = `http://${HOST}:${port}/`;
-  const fileCount = review.stages.reduce((a, s) => a + s.files.length, 0);
+  const fileCount = implementation.stages.reduce((a, s) => a + s.files.length, 0);
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);
   console.log(
-    `Review: ${review.title} — ${review.stages.length} stages, ${fileCount} files`,
+    `Implementation: ${implementation.title} — ${implementation.stages.length} stages, ${fileCount} files`,
   );
   if (!feedbackCli) {
     console.log(

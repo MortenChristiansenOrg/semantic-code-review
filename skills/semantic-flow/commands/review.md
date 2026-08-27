@@ -1,7 +1,7 @@
 # Review command
 
 Use to open the local semantic review viewer. This command is read-only with
-respect to review artifacts and implementation branches.
+respect to implementation artifacts and implementation branches.
 
 Read `../docs/runtime.md` and the selected operating-system guide.
 
@@ -17,9 +17,9 @@ The helper resolves linked worktrees without requiring `targetBranch` to match
 the invoking branch, then starts the bundled viewer. Keep it running and
 confirm it is responsive at the reported local URL.
 
-The viewer renders stages, change nodes, project-grouped files, linked context,
+The viewer renders stages, change nodes, project-grouped files, linked insights,
 full-context diffs, and feedback threads. A user can add and edit draft notes
-before sending. Sent notes become open threads; assistant follow-ups appear in
+before sending. Sent notes become open threads; agent follow-ups appear in
 the same thread after the feedback workflow runs. It reads
 `.semantic-review` once at launch. Restart it to show later artifact changes.
 

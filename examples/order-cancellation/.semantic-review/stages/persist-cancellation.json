@@ -6,7 +6,7 @@
   "dependsOn": [
     "add-cancellation-policy"
   ],
-  "requirementRefs": [
+  "specificationRefs": [
     "cancel-order#persist-state"
   ],
   "nodes": [
@@ -34,8 +34,8 @@
     }
   ],
   "change": {
-    "branch": "semantic-review/customer-order-cancellation/02-persist-cancellation",
-    "baseBranch": "semantic-review/customer-order-cancellation/01-add-cancellation-policy",
+    "branch": "semantic-flow/customer-order-cancellation/02-persist-cancellation",
+    "baseBranch": "semantic-flow/customer-order-cancellation/01-add-cancellation-policy",
     "baseRevision": "2222222222222222222222222222222222222222",
     "headRevision": "3333333333333333333333333333333333333333",
     "files": [

@@ -16,7 +16,7 @@ const commands = new Map([
     semanticCli,
     [
       "init",
-      "requirement add",
+      "specification add",
       "stage begin",
       "stage set",
       "stage record",
@@ -74,7 +74,7 @@ test("production build exposes every documented command", () => {
 
   assert.equal(fs.existsSync(path.join(scriptsDirectory, "API.md")), false);
   assert.match(api, /"azure-devops"\s*\|\s*"github"\s*\|\s*"url"\s*\|\s*"local"/);
-  assert.doesNotMatch(api, /RequirementSourceKind[^;]*\|\s*string/);
+  assert.doesNotMatch(api, /SpecificationSourceKind[^;]*\|\s*string/);
 });
 
 test("command parsing rejects unknown commands, options, and malformed flags", () => {
@@ -184,7 +184,7 @@ test("skill indexes command-specific workflows", () => {
   assert.match(runtime, /node -p "process\.platform"/);
   assert.match(runtime, /<semantic-flow> inspect --json/);
   assert.match(runtime, /otherwise the only\s+matching artifact/);
-  assert.match(commandText.get("implement"), /<semantic-review> stage begin/);
+  assert.match(commandText.get("implement"), /<semantic-implementation> stage begin/);
   assert.match(commandText.get("feedback"), /<review-feedback> next --json/);
   assert.match(commandText.get("review"), /<semantic-flow> review/);
   assert.match(commandText.get("validate"), /<semantic-flow> validate/);
@@ -202,12 +202,12 @@ test("skill indexes command-specific workflows", () => {
     fs.readFileSync(path.join(skillRoot, "VERSION"), "utf8").trim(),
     packageJson.version,
   );
-  assert.match(linux, /<semantic-review>\s+=> node "\$semantic_review"/);
-  assert.match(windows, /<semantic-review>\s+=> node \$semanticReview/);
+  assert.match(linux, /<semantic-implementation>\s+=> node "\$semantic_implementation"/);
+  assert.match(windows, /<semantic-implementation>\s+=> node \$semanticImplementation/);
 
   for (const platformGuide of [linux, windows]) {
     assert.match(platformGuide, /semantic-flow\.mjs/);
-    assert.match(platformGuide, /semantic-review\.mjs/);
+    assert.match(platformGuide, /semantic-implementation\.mjs/);
     assert.match(platformGuide, /review-feedback\.mjs/);
     assert.doesNotMatch(platformGuide, /## [1-7]\./);
   }
@@ -259,7 +259,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);
   assert.doesNotMatch(repairSkill, /\.\\scripts|<source-repository>\\skills/);
-  assert.match(userManual, /<semantic-review> <command>/);
+  assert.match(userManual, /<semantic-implementation> <command>/);
   assert.match(userManual, /docs\/os\/linux\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);
 });

@@ -4,12 +4,12 @@ import {
   beginStage,
   createRepository,
   finalizeStage,
-  initializeReview,
+  initializeImplementation,
 } from "../helpers/repository.mjs";
 
 test("publish, local preparation, and archive enforce boundaries", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository, { reviewId: "publish-review" });
+  initializeImplementation(repository, { implementationId: "publish-implementation" });
   beginStage(repository);
   const stageTip = finalizeStage(repository);
 
@@ -30,13 +30,13 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   repository.semantic(
     "prepare-branch",
     "--branch",
-    "review/publish-review",
+    "review/publish-implementation",
   );
-  assert.equal(repository.git("rev-parse", "review/publish-review"), stageTip);
+  assert.equal(repository.git("rev-parse", "review/publish-implementation"), stageTip);
   repository.semantic(
     "prepare-branch",
     "--branch",
-    "review/publish-review",
+    "review/publish-implementation",
   );
   repository.git("branch", "review/conflict", "main");
   repository.expectSemanticFailure(
@@ -46,8 +46,8 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     "review/conflict",
   );
 
-  repository.semantic("publish", "--message", "Publish test review");
-  const metadataBranch = "semantic-review/publish-review/metadata";
+  repository.semantic("publish", "--message", "Publish test implementation");
+  const metadataBranch = "semantic-flow/publish-implementation/metadata";
   const published = repository.git("rev-parse", metadataBranch);
   assert.equal(repository.git("rev-parse", `${metadataBranch}^`), stageTip);
   assert.equal(repository.git("rev-parse", "HEAD"), stageTip);
@@ -91,17 +91,17 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     "--summary",
     "Archive only current metadata.",
     "--rationale",
-    "The archive is the durable copy of the review artifact.",
+    "The archive is the durable copy of the implementation artifact.",
     "--node-ref",
     "implementation-change",
   );
   repository.git(
     "merge",
     "--ff-only",
-    "semantic-review/publish-review/01-implementation",
+    "semantic-flow/publish-implementation/01-implementation",
   );
   repository.expectSemanticFailure(
-    "does not publish the current semantic review",
+    "does not publish the current semantic implementation",
     "archive",
   );
   repository.semantic("publish");
@@ -115,14 +115,14 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   repository.semantic(
     "archive",
     "--destination",
-    ".semantic-review-history/publish-review/.semantic-review",
+    ".semantic-review-history/publish-implementation/.semantic-review",
     "--message",
-    "Archive test review",
+    "Archive test implementation",
   );
   assert.equal(repository.exists(".semantic-review"), false);
   assert.equal(
     repository.exists(
-      ".semantic-review-history/publish-review/.semantic-review/manifest.json",
+      ".semantic-review-history/publish-implementation/.semantic-review/manifest.json",
     ),
     true,
   );
@@ -134,7 +134,7 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
 
 test("publication rejects target drift until the stack is restacked", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
   finalizeStage(repository);
 
@@ -156,13 +156,13 @@ test("publication rejects target drift until the stack is restacked", (t) => {
 
 test("publication requires every acceptance criterion to be covered", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository, {
+  initializeImplementation(repository, {
     criteria: [
       ["covered", "Covered by the implementation."],
       ["missing", "Must not be omitted."],
     ],
   });
-  beginStage(repository, { requirementRefs: ["story#covered"] });
+  beginStage(repository, { specificationRefs: ["story#covered"] });
   finalizeStage(repository);
 
   repository.semantic("validate");

@@ -3,21 +3,21 @@ import test from "node:test";
 import {
   beginStage,
   createRepository,
-  createReviewWithStages,
+  createImplementationWithStages,
   finalizeStage,
-  initializeReview,
+  initializeImplementation,
 } from "../helpers/repository.mjs";
 
 test("feedback IDs may start with digits", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository, {
-    reviewId: "1-review",
-    requirementId: "2-requirement",
+  initializeImplementation(repository, {
+    implementationId: "1-implementation",
+    specificationId: "2-specification",
     criteria: [["3-criterion", "Numeric-leading IDs work."]],
   });
   beginStage(repository, {
     id: "4-stage",
-    requirementRefs: ["2-requirement#3-criterion"],
+    specificationRefs: ["2-specification#3-criterion"],
   });
   finalizeStage(repository, { id: "4-stage" });
 
@@ -35,8 +35,8 @@ test("feedback IDs may start with digits", (t) => {
     "Criterion",
     "--target-kind",
     "criterion",
-    "--requirement",
-    "2-requirement",
+    "--specification",
+    "2-specification",
     "--criterion",
     "3-criterion",
     "--assigned-stage",
@@ -45,7 +45,7 @@ test("feedback IDs may start with digits", (t) => {
 });
 
 test("Windows-reserved feedback identifiers are rejected before mutation", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
 
   repository.expectFeedbackFailure(
@@ -72,7 +72,7 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
 });
 
 test("feedback init does not strand a manifest among pre-existing files", (t) => {
-  const { repository } = createReviewWithStages(t);
+  const { repository } = createImplementationWithStages(t);
   repository.write(
     ".semantic-review-feedback/threads/orphan.json",
     "{}\n",
@@ -93,11 +93,11 @@ test("feedback init does not strand a manifest among pre-existing files", (t) =>
 });
 
 test("thread add supports every target kind and concurrent mutation", async (t) => {
-  const { repository } = createReviewWithStages(t, [
+  const { repository } = createImplementationWithStages(t, [
     "implementation",
     "follow-up",
   ], {
-    reviewId: "42-feedback",
+    implementationId: "42-feedback",
   });
   repository.semantic(
     "stage",
@@ -124,9 +124,9 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
 
   const targets = [
     [
-      "requirement-target",
-      "requirement",
-      "--requirement",
+      "specification-target",
+      "specification",
+      "--specification",
       "story",
       "--assigned-stage",
       "follow-up",
@@ -134,7 +134,7 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     [
       "criterion-target",
       "criterion",
-      "--requirement",
+      "--specification",
       "story",
       "--criterion",
       "works",
@@ -143,8 +143,8 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     ],
     ["stage-target", "stage", "--stage", "implementation"],
     [
-      "context-target",
-      "context",
+      "insight-target",
+      "insight",
       "--stage",
       "implementation",
       "--collection",
@@ -287,7 +287,7 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
   assert.equal(groups[0].threads[0].comments[0].author, "user");
   assert.match(
     repository.feedback("next"),
-    /implementation \(semantic-review\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
+    /implementation \(semantic-implementation\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   repository.feedback("validate");
 });

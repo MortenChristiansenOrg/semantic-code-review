@@ -30,7 +30,7 @@ To get started, install the Semantic Flow skill into your project and then work
 through a typical cycle:
 
 1. **Ask for the work.** Tell your agent to implement a feature or user story
-   using semantic flow. It confirms the requirement, its goal, and the criteria
+   using semantic flow. It confirms the requirements, its goal, and the criteria
    that define "done".
 2. **Let it build in stages.** Instead of one large diff, the agent splits the
    work into a sequence of small, self-contained stages. As it works, it
@@ -38,7 +38,7 @@ through a typical cycle:
    checks it ran — while it still has that knowledge fresh.
 3. **Review the result.** Open the review viewer and walk the stages one at a
    time. Each stage tells you what it does and why, groups its changes by
-   purpose, links them back to the requirement, and shows the evidence behind
+   purpose, links them back to a specification, and shows the evidence behind
    them.
 4. **Give feedback.** Leave notes or questions on any stage, piece of reasoning,
    or line of code. The agent answers questions and makes targeted corrections,
@@ -60,9 +60,9 @@ is built to make an AI-generated change fast to understand:
   a flat diff, starting from the intent of each stage.
 - **Changes grouped by purpose.** Related edits are grouped by what they
   accomplish, not by where they happen to live in the file tree.
-- **Reasoning in context.** See the decisions, assumptions, alternatives, failed
+- **Recorded insights.** See the decisions, assumptions, alternatives, failed
   attempts, and open questions attached to the exact changes they explain.
-- **Requirement links and evidence.** Trace each stage back to the requirement
+- **Specification links and evidence.** Trace each stage back to the specification
   it satisfies and the checks that were run to validate it.
 - **Feedback threads.** Start a conversation on a stage, a piece of reasoning, or
   a specific line, and get an answer or a targeted revision back.
@@ -114,7 +114,7 @@ lost.
 
 It covers two things. The first is the implementation itself, described as an
 ordered set of stages - each with its intent, rationale, decisions, assumptions,
-links to the requirement, and the evidence that it works. The second is the
+links to the requirements, and the evidence that it works. The second is the
 review: the threads, questions, and revisions exchanged while a human evaluates
 the work.
 

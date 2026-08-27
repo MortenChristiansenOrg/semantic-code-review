@@ -13,7 +13,7 @@ smallest matching suite:
 
 ```text
 npm run test:flow --prefix ./scripts
-npm run test:review --prefix ./scripts
+npm run test:implementation --prefix ./scripts
 npm run test:feedback --prefix ./scripts
 npm run test:view --prefix ./scripts
 ```

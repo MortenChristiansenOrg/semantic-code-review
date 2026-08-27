@@ -247,24 +247,24 @@ function validateLineTarget(target, stage, root) {
 }
 
 function validateTarget(target, semantic, root) {
-  const requirement = target.requirementId
-    ? semantic.requirements.get(target.requirementId)
+  const specification = target.specificationId
+    ? semantic.requirements.get(target.specificationId)
     : undefined;
-  if (["requirement", "criterion"].includes(target.kind) && !requirement) {
-    fail(`Feedback target requirement ${target.requirementId} does not exist.`);
+  if (["specification", "criterion"].includes(target.kind) && !specification) {
+    fail(`Feedback target specification ${target.specificationId} does not exist.`);
   }
   if (
     target.kind === "criterion" &&
-    !requirement.acceptanceCriteria.some(
+    !specification.acceptanceCriteria.some(
       (criterion) => criterion.id === target.criterionId,
     )
   ) {
     fail(
-      `Feedback target criterion ${target.requirementId}#${target.criterionId} does not exist.`,
+      `Feedback target criterion ${target.specificationId}#${target.criterionId} does not exist.`,
     );
   }
 
-  if (["stage", "context", "file", "line"].includes(target.kind)) {
+  if (["stage", "insight", "file", "line"].includes(target.kind)) {
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Feedback target stage ${target.stageId} does not exist.`);
     if (
@@ -272,11 +272,11 @@ function validateTarget(target, semantic, root) {
       target.stageHead === stage.change.headRevision
     ) {
       if (
-        target.kind === "context" &&
+        target.kind === "insight" &&
         !collectionExists(stage, target.collection, target.itemId)
       ) {
         fail(
-          `Feedback context ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
+          `Feedback insight ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
         );
       }
       const changedFile =
@@ -303,8 +303,8 @@ function validateFeedback(
   const feedback = loadFeedback(paths);
   const ajv = schemaValidator();
   validateDocument(ajv, feedback.manifest, paths.feedbackManifest);
-  if (feedback.manifest.reviewId !== semantic.manifest.reviewId) {
-    fail("Feedback reviewId does not match the active semantic review.");
+  if (feedback.manifest.implementationId !== semantic.manifest.implementationId) {
+    fail("Feedback implementationId does not match the active semantic implementation.");
   }
 
   const listedThreads = new Set(feedback.manifest.threads);
@@ -380,7 +380,7 @@ function initialize(paths, options) {
     writeJson(paths.feedbackManifest, {
       $schema: MANIFEST_SCHEMA,
       formatVersion: "0.1",
-      reviewId: semantic.manifest.reviewId,
+      implementationId: semantic.manifest.implementationId,
       threads: [],
     });
     validateFeedback(paths, { quiet: true });
@@ -388,7 +388,7 @@ function initialize(paths, options) {
     fs.rmSync(paths.feedback, { recursive: true, force: true });
     throw error;
   }
-  console.log(`Initialized feedback for ${semantic.manifest.reviewId}.`);
+  console.log(`Initialized feedback for ${semantic.manifest.implementationId}.`);
 }
 
 function buildTarget(options, semantic, root) {
@@ -397,20 +397,20 @@ function buildTarget(options, semantic, root) {
     kind,
     label: option(options, "label", { required: true }),
   };
-  if (["requirement", "criterion"].includes(kind)) {
-    target.requirementId = option(options, "requirement", { required: true });
+  if (["specification", "criterion"].includes(kind)) {
+    target.specificationId = option(options, "specification", { required: true });
   }
   if (kind === "criterion") {
     target.criterionId = option(options, "criterion", { required: true });
   }
-  if (["stage", "context", "file", "line"].includes(kind)) {
+  if (["stage", "insight", "file", "line"].includes(kind)) {
     target.stageId = option(options, "stage", { required: true });
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Stage ${target.stageId} does not exist.`);
     target.stageBranch = stage.change.branch;
     target.stageHead = stage.change.headRevision;
   }
-  if (kind === "context") {
+  if (kind === "insight") {
     target.collection = option(options, "collection", { required: true });
     target.itemId = option(options, "item", { required: true });
   }
@@ -495,7 +495,7 @@ function nextFeedback(paths, options) {
   const awaiting = [...feedback.threads.values()].filter(
     (thread) =>
       thread.status === "open" &&
-      thread.comments[thread.comments.length - 1]?.author !== "assistant",
+      thread.comments[thread.comments.length - 1]?.author !== "agent",
   );
   const groups = [];
   for (const stageId of semantic.manifest.stages) {
@@ -549,8 +549,8 @@ function replyThread(paths, options) {
     fail(`Comment ${commentId} already exists in thread ${id}.`);
   }
   const author = option(options, "author") || "user";
-  if (!["user", "assistant"].includes(author)) {
-    fail("--author must be user or assistant.");
+  if (!["user", "agent"].includes(author)) {
+    fail("--author must be user or agent.");
   }
   thread.comments.push({
     id: commentId,

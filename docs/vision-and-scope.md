@@ -5,13 +5,13 @@
 AI can implement a user story end to end, but the resulting pull request is
 often too large and poorly structured for effective human review. A normal diff
 shows where code changed, not why it changed or how each change contributes to
-the requirement. When questioned later, the AI must reconstruct reasoning that
+the specification. When questioned later, the AI must reconstruct reasoning that
 was available during implementation.
 
 ## Vision
 
 Make AI-generated code understandable and trustworthy by presenting it as a
-sequence of small, semantic review stages. Each stage tells a coherent story:
+sequence of small semantic stages. Each stage tells a coherent story:
 the intent, relevant code, rationale, evidence, assumptions, decisions, and
 relationship to other stages.
 
@@ -33,9 +33,9 @@ revise the work, but does not approve it.
 ## Design principles
 
 1. **Review units are semantic.** Files and commits are supporting details.
-2. **Context is captured at creation time.** Explanations are not generated
+2. **Insights are captured at creation time.** Explanations are not generated
    retrospectively when avoidable.
-3. **Evidence beats confidence claims.** Tests, requirement links, and diffs
+3. **Evidence beats confidence claims.** Tests, specification links, and diffs
    matter more than an AI-generated score.
 4. **Dependencies are explicit.** Reviewers can see what later work relies on.
 5. **Git remains authoritative.** The tool adds structure; it does not replace
@@ -51,7 +51,7 @@ in a local Git repository:
 - An AI skill and scripts create and validate semantic-stage metadata.
 - Stages map to a linear chain of cumulative local branches.
 - A web UI displays stage narratives and diffs.
-- Review threads can be attached to semantic context or code evidence.
+- Review threads can be attached to insights or code evidence.
 - The coding agent can revise a stage and replay dependent stages.
 - The complete result can be prepared as one cumulative branch or as a branch
   stack for the team's existing hosting process.

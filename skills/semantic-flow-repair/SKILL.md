@@ -1,6 +1,6 @@
 ---
 name: semantic-flow-repair
-description: Use when the semantic-flow skill fails, gives incorrect or incomplete instructions, rejects valid work, corrupts or cannot repair its state, or its bundled CLI and documented API disagree. This skill is for repairing semantic-flow in its source repository while working from another target repository. Do not use for ordinary semantic-flow usage errors or for manually repairing a target repository's generated review artifacts.
+description: Use when the semantic-flow skill fails, gives incorrect or incomplete instructions, rejects valid work, corrupts or cannot repair its state, or its bundled CLI and documented API disagree. This skill is for repairing semantic-flow in its source repository while working from another target repository. Do not use for ordinary semantic-flow usage errors or for manually repairing a target repository's generated implementation artifacts.
 ---
 
 # Semantic Flow Repair
@@ -14,7 +14,7 @@ copy: that hides the source defect and will be lost when the skill is updated.
 Keep these locations explicit throughout the repair:
 
 - **Target repository:** the repository where `semantic-flow` failed. Run
-  semantic-review and feedback commands from this repository root because the
+  semantic-implementation and feedback commands from this repository root because the
   CLI operates on the current Git repository.
 - **Source repository:** the local checkout containing
   `skills/semantic-flow/SKILL.md`, `scripts/package.json`, and
@@ -58,7 +58,7 @@ Choose files by responsibility:
 | Command routing | `skills/semantic-flow/SKILL.md` |
 | Command workflows | `skills/semantic-flow/commands/` |
 | Shared runtime and quality rules | `skills/semantic-flow/docs/runtime.md`, `skills/semantic-flow/docs/artifact-quality.md` |
-| Semantic review CLI | `scripts/src/semantic-review.ts` |
+| Semantic implementation CLI | `scripts/src/semantic-implementation.ts` |
 | Review feedback CLI | `scripts/src/review-feedback.ts` |
 | Runtime command and option definitions | `scripts/src/command-api.ts` |
 | Published TypeScript command contract and JSDoc | `scripts/src/api.ts` |
@@ -114,14 +114,14 @@ directory remains the target repository root:
 
 ```text
 node "<source-repository>/skills/semantic-flow/scripts/semantic-flow.mjs" <command>
-node "<source-repository>/skills/semantic-flow/scripts/semantic-review.mjs" <command>
+node "<source-repository>/skills/semantic-flow/scripts/semantic-implementation.mjs" <command>
 node "<source-repository>/skills/semantic-flow/scripts/review-feedback.mjs" <command>
 ```
 
 Repeat the original failing operation and the nearest unaffected workflow.
 Confirm both the command result and resulting Git or artifact state. Use a
 disposable reproduction or a backup when the command is destructive; do not
-experiment on valuable active review state.
+experiment on valuable active implementation state.
 
 Do not copy individual generated files into the installed skill. Once the
 source repair is verified, update or reinstall the complete `semantic-flow`

@@ -4,12 +4,12 @@ import {
   beginStage,
   createRepository,
   finalizeStage,
-  initializeReview,
+  initializeImplementation,
 } from "../helpers/repository.mjs";
 
 test("repair removes unambiguous interrupted writes", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository);
 
   repository.write(".semantic-review/stages/implementation.json", "{}\n");
@@ -34,7 +34,7 @@ test("repair removes unambiguous interrupted writes", (t) => {
 
 test("restack refreshes an edited stage branch and rebuilds branches above it", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository, { id: "policy" });
   const originalPolicy = finalizeStage(repository, {
     id: "policy",
@@ -51,7 +51,7 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
     contents: "persistence v1\n",
   });
 
-  repository.git("switch", "semantic-review/test-review/01-policy");
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
   repository.commitFile("policy.txt", "policy v2\n", "Fix policy");
   repository.semantic("restack", "--from", "policy");
 
@@ -64,7 +64,7 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
   assert.notEqual(rewrittenPolicy, originalPolicy);
   assert.notEqual(rewrittenPersistence, originalPersistence);
   assert.equal(
-    repository.git("rev-parse", "semantic-review/test-review/02-persistence"),
+    repository.git("rev-parse", "semantic-flow/test-implementation/02-persistence"),
     rewrittenPersistence,
   );
   assert.equal(repository.read("policy.txt"), "policy v2\n");
@@ -73,7 +73,7 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
 
 test("feedback can remove a finalized stage file before restacking", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   beginStage(repository, { id: "policy" });
   repository.write("keep.txt", "keep v1\n");
   repository.write("obsolete.txt", "obsolete\n");
@@ -116,7 +116,7 @@ test("feedback can remove a finalized stage file before restacking", (t) => {
     contents: "persistence v1\n",
   });
 
-  repository.git("switch", "semantic-review/test-review/01-policy");
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
   repository.write("keep.txt", "keep v2\n");
   repository.remove("obsolete.txt");
   repository.git("add", "-A");
@@ -201,7 +201,7 @@ test("feedback can remove a finalized stage file before restacking", (t) => {
 
 test("restack rebases every stage branch onto an advanced target", (t) => {
   const repository = createRepository(t);
-  initializeReview(repository);
+  initializeImplementation(repository);
   const originalBase = repository.git("rev-parse", "HEAD");
   beginStage(repository, { id: "policy" });
   const policy = finalizeStage(repository, { id: "policy" });
@@ -221,11 +221,11 @@ test("restack rebases every stage branch onto an advanced target", (t) => {
   repository.semantic("restack", "--base", "main");
   const rebasedPolicy = repository.git(
     "rev-parse",
-    "semantic-review/test-review/01-policy",
+    "semantic-flow/test-implementation/01-policy",
   );
   const rebasedPersistence = repository.git(
     "rev-parse",
-    "semantic-review/test-review/02-persistence",
+    "semantic-flow/test-implementation/02-persistence",
   );
   assert.equal(
     repository.readJson(".semantic-review/manifest.json").baseRevision,

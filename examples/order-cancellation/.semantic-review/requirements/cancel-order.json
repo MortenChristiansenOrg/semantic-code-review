@@ -1,5 +1,5 @@
 {
-  "$schema": "https://semantic-code-review.dev/schemas/v0.1/requirement.schema.json",
+  "$schema": "https://semantic-code-review.dev/schemas/v0.1/specification.schema.json",
   "id": "cancel-order",
   "title": "Customer cancels an order",
   "summary": "A customer can cancel an order before fulfilment starts and immediately see the cancelled state.",

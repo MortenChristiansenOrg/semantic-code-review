@@ -1,4 +1,4 @@
-# Semantic Review Artifact Format
+# Semantic Implementation Artifact Format
 
 **Status:** Proposal 0.1
 
@@ -23,7 +23,7 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
 ```text
 .semantic-review/
   manifest.json
-  requirements/<requirement-id>.json
+  requirements/<specification-id>.json
   stages/<stage-id>.json
 ```
 
@@ -52,15 +52,15 @@ Required fields:
 | Field | Meaning |
 | --- | --- |
 | `formatVersion` | Exact value `0.1` |
-| `reviewId` | Stable review identity |
+| `implementationId` | Stable implementation identity |
 | `title`, `summary` | Complete work description |
 | `baseRevision` | Target branch head captured before stage 1 |
 | `targetBranch` | Repository branch below stage 1 |
 | `branchPrefix` | Shared folder-like prefix for all stage branches |
-| `requirements` | Indexed requirement IDs |
+| `requirements` | Indexed specification IDs |
 | `stages` | Stage IDs in bottom-to-top branch order |
 
-The default prefix is `semantic-review/<review-id>`. Writers SHOULD use:
+The default prefix is `semantic-flow/<implementation-id>`. Writers SHOULD use:
 
 ```text
 <branch-prefix>/<two-digit-position>-<stage-id>
@@ -72,16 +72,16 @@ GitKraken.
 `baseRevision` MUST equal `targetBranch` when initialized. If trunk advances,
 restacking updates `baseRevision` and every affected stage snapshot.
 
-## Requirement
+## Specification
 
-A requirement records `id`, `title`, `summary`, source provenance, and at least
+A specification records `id`, `title`, `summary`, source provenance, and at least
 one acceptance criterion. Criterion references use
-`<requirement-id>#<criterion-id>`.
+`<specification-id>#<criterion-id>`.
 
 ## Stage
 
-A stage records its intent, dependencies, requirement references, rationale,
-context, validation, and `change`.
+A stage records its intent, dependencies, specification references, rationale,
+insights, validation evidence, and `change`.
 
 `dependsOn` contains only direct semantic prerequisites. Manifest order is both a topological order and the linear branch order.
 
@@ -110,7 +110,7 @@ baseRevision = previousStage.change.headRevision
 ```
 
 `branch` MUST equal the deterministic branch name for its manifest position.
-The local branch ref MUST point to `headRevision` during an active review.
+The local branch ref MUST point to `headRevision` during an active implementation.
 `headRevision` MUST descend linearly from `baseRevision` and the range MUST
 contain at least one commit and no merge commit.
 
@@ -176,7 +176,7 @@ Validation layers:
    inventories, and exclusion of semantic metadata from stage diffs.
 
 Publication validation also requires at least one finalized stage, no working
-stage, and coverage of every acceptance criterion indexed by the review.
+stage, and coverage of every acceptance criterion indexed by the implementation.
 
 ## Publication and archive
 
@@ -187,12 +187,12 @@ The recommended publication branch is:
 ```
 
 It contains one metadata-only commit parented by the final stage head. Keeping
-it separate prevents review metadata from appearing in implementation diffs.
+it separate prevents implementation metadata from appearing in implementation diffs.
 
 After the result is landed, the artifact may be archived under:
 
 ```text
-.semantic-review-history/<review-id>/.semantic-review/
+.semantic-review-history/<implementation-id>/.semantic-review/
 ```
 
 Archived artifacts preserve branch and revision provenance even if stage

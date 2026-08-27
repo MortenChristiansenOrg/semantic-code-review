@@ -1,16 +1,16 @@
-export type RequirementSourceKind =
+export type SpecificationSourceKind =
   | "azure-devops"
   | "github"
   | "url"
   | "local";
-export type ContextKind =
+export type InsightKind =
   | "decision"
   | "assumption"
   | "alternative"
   | "failed-attempt"
   | "risk"
   | "question";
-export type DecisionCategory = "requirement" | "engineering";
+export type DecisionCategory = "specification" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";
 export type ValidationStatus = "passed" | "failed" | "not-run";
 export type ChangeClassification =
@@ -25,10 +25,10 @@ export type ChangeClassification =
   | "chore"
   | "trivial";
 export type FeedbackTargetKind =
-  | "requirement"
+  | "specification"
   | "criterion"
   | "stage"
-  | "context"
+  | "insight"
   | "file"
   | "line";
 export type DiffSide = "old" | "new";
@@ -40,67 +40,67 @@ export interface GlobalCliOptions {
   input?: string;
 }
 
-export interface InitializeReviewOptions {
-  /** Stable kebab-case identifier for the complete review. */
-  "review-id": string;
+export interface InitializeImplementationOptions {
+  /** Stable kebab-case identifier for the complete implementation. */
+  "implementation-id": string;
   /** Human-readable title for the complete body of work. */
   title: string;
-  /** Concise summary of the review scope. */
+  /** Concise summary of the implementation scope. */
   summary: string;
   /** Target branch revision immediately before the first semantic stage. @defaultValue "<target-branch>" */
   "base-revision"?: string;
   /** Branch into which the completed implementation is intended to merge. */
   "target-branch": string;
-  /** Folder-like prefix shared by every stage branch. @defaultValue "semantic-review/<review-id>" */
+  /** Folder-like prefix shared by every stage branch. @defaultValue "semantic-flow/<implementation-id>" */
   "branch-prefix"?: string;
-  /** Stable kebab-case identifier for the initial requirement. */
-  "requirement-id": string;
-  /** Human-readable title for the initial requirement. */
-  "requirement-title": string;
+  /** Stable kebab-case identifier for the initial specification. */
+  "specification-id": string;
+  /** Human-readable title for the initial specification. */
+  "specification-title": string;
   /** Concise description of the required behavior. */
-  "requirement-summary": string;
-  /** Origin type for the requirement, such as local or azure-devops. */
-  "source-kind": RequirementSourceKind;
-  /** Identifier at the requirement source, such as a story number. */
+  "specification-summary": string;
+  /** Origin type for the specification, such as local or azure-devops. */
+  "source-kind": SpecificationSourceKind;
+  /** Identifier at the specification source, such as a story number. */
   "source-reference": string;
-  /** Optional URL for the source requirement. */
+  /** Optional URL for the source specification. */
   "source-url"?: string;
   /** Acceptance criteria formatted as `<criterion-id>=<text>`; supply one entry per criterion. */
   criterion: readonly string[];
 }
 
 /**
- * Initializes a semantic review and its first requirement.
- * @cli semantic-review.mjs
+ * Initializes a semantic implementation and its first specification.
+ * @cli semantic-implementation.mjs
  * @command init
  */
-export declare function initializeReview(
-  options: InitializeReviewOptions,
+export declare function initializeImplementation(
+  options: InitializeImplementationOptions,
 ): void;
 
-export interface AddRequirementOptions {
-  /** Stable kebab-case identifier for the requirement. */
-  "requirement-id": string;
-  /** Human-readable requirement title. */
-  "requirement-title": string;
+export interface AddSpecificationOptions {
+  /** Stable kebab-case identifier for the specification. */
+  "specification-id": string;
+  /** Human-readable specification title. */
+  "specification-title": string;
   /** Concise description of the required behavior. */
-  "requirement-summary": string;
-  /** Origin type for the requirement, such as local or azure-devops. */
-  "source-kind": RequirementSourceKind;
-  /** Identifier at the requirement source, such as a story number. */
+  "specification-summary": string;
+  /** Origin type for the specification, such as local or azure-devops. */
+  "source-kind": SpecificationSourceKind;
+  /** Identifier at the specification source, such as a story number. */
   "source-reference": string;
-  /** Optional URL for the source requirement. */
+  /** Optional URL for the source specification. */
   "source-url"?: string;
   /** Acceptance criteria formatted as `<criterion-id>=<text>`; supply one entry per criterion. */
   criterion: readonly string[];
 }
 
 /**
- * Adds another requirement to the active review.
- * @cli semantic-review.mjs
- * @command requirement add
+ * Adds another specification to the active implementation.
+ * @cli semantic-implementation.mjs
+ * @command specification add
  */
-export declare function addRequirement(options: AddRequirementOptions): void;
+export declare function addSpecification(options: AddSpecificationOptions): void;
 
 export interface BeginStageOptions {
   /** Stable kebab-case identifier for the stage. */
@@ -113,13 +113,13 @@ export interface BeginStageOptions {
   rationale: string;
   /** Direct stage dependencies; omit when the stage has none. */
   "depends-on"?: readonly string[];
-  /** Covered criteria formatted as `<requirement-id>#<criterion-id>`. */
-  "requirement-ref": readonly string[];
+  /** Covered criteria formatted as `<specification-id>#<criterion-id>`. */
+  "specification-ref": readonly string[];
 }
 
 /**
  * Creates the single active working stage before its code changes begin.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage begin
  */
 export declare function beginStage(options: BeginStageOptions): void;
@@ -136,25 +136,25 @@ export interface SetStageOptions {
   /** Complete replacement dependency list. */
   "depends-on"?: readonly string[];
   /** Complete replacement criterion coverage list. */
-  "requirement-ref"?: readonly string[];
+  "specification-ref"?: readonly string[];
 }
 
 /**
  * Updates mutable metadata on the active working stage.
  * At least one optional field must be supplied.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage set
  */
 export declare function setStage(options: SetStageOptions): void;
 
-export interface RecordStageContextOptions {
-  /** Stage receiving the context item; omitted or `current` selects the only active stage. */
+export interface RecordStageInsightOptions {
+  /** Stage receiving the insight; omitted or `current` selects the only active stage. */
   stage?: string;
-  /** Context item shape, which determines the required conditional fields. */
-  kind: ContextKind;
-  /** Stable identifier within the selected context collection. */
+  /** Insight shape, which determines the required conditional fields. */
+  kind: InsightKind;
+  /** Stable identifier within the selected insight collection. */
   "item-id": string;
-  /** Replaces an existing context item with the same identifier. */
+  /** Replaces an existing insight with the same identifier. */
   replace?: true;
   /** Updates a finalized stage instead of the active working stage. */
   finalized?: true;
@@ -187,11 +187,11 @@ export interface RecordStageContextOptions {
 /**
  * Records a decision, discovery, failure, risk, or question when it occurs.
  * Unrelated kind-specific parameters are rejected.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage record
  */
-export declare function recordStageContext(
-  options: RecordStageContextOptions,
+export declare function recordStageInsight(
+  options: RecordStageInsightOptions,
 ): void;
 
 export interface OrganizeStageOptions {
@@ -207,7 +207,7 @@ export interface OrganizeStageOptions {
  * Post-processes a committed stage diff into descriptive change nodes.
  * Every changed file must belong to a node. Multi-node files must partition
  * their changed hunks or line ranges.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage organize
  */
 export declare function organizeStage(options: OrganizeStageOptions): void;
@@ -215,7 +215,7 @@ export declare function organizeStage(options: OrganizeStageOptions): void;
 export interface RecordValidationOptions {
   /** Stage receiving the validation evidence; omitted or `current` selects the only active stage. */
   stage?: string;
-  /** Stable identifier for this validation result. */
+  /** Stable identifier for this validation evidence. */
   "item-id": string;
   /** How the validation was performed. */
   type: ValidationType;
@@ -235,7 +235,7 @@ export interface RecordValidationOptions {
 
 /**
  * Records real validation evidence for a working or finalized stage.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage validation
  */
 export declare function recordValidation(
@@ -249,7 +249,7 @@ export interface FinishStageOptions {
 
 /**
  * Finalizes a working stage against the current stage branch head.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage finish
  */
 export declare function finishStage(options: FinishStageOptions): void;
@@ -261,7 +261,7 @@ export interface DiscardStageOptions {
 
 /**
  * Deletes an unfinished working stage without reverting code changes.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command stage discard
  */
 export declare function discardStage(options: DiscardStageOptions): void;
@@ -275,26 +275,26 @@ export interface RestackOptions {
 
 /**
  * Refreshes an edited stage branch and rebases every branch above it.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command restack
  */
 export declare function restack(options: RestackOptions): void;
 
 /**
  * Repairs unambiguous interrupted artifact mutations.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command repair
  */
 export declare function repairArtifact(): void;
 
 export interface PublishArtifactOptions {
-  /** Metadata commit message. @defaultValue "Publish <review-id> semantic review" */
+  /** Metadata commit message. @defaultValue "Publish <implementation-id> semantic implementation" */
   message?: string;
 }
 
 /**
  * Commits validated semantic metadata to the metadata branch.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command publish
  */
 export declare function publishArtifact(
@@ -308,7 +308,7 @@ export interface ValidateStackOptions {
 
 /**
  * Verifies stage branches and prints their local base chain.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command validate-stack
  */
 export declare function validateStack(options?: ValidateStackOptions): void;
@@ -319,27 +319,27 @@ export interface PrepareBranchOptions {
 }
 
 /**
- * Creates a local single-branch review head without changing the worktree.
- * @cli semantic-review.mjs
+ * Creates a local cumulative implementation branch without changing the worktree.
+ * @cli semantic-implementation.mjs
  * @command prepare-branch
  */
 export declare function prepareBranch(options: PrepareBranchOptions): void;
 
-export interface ArchiveReviewOptions {
-  /** Repository-relative archive directory ending in `.semantic-review`. @defaultValue ".semantic-review-history/<review-id>/.semantic-review" */
+export interface ArchiveImplementationOptions {
+  /** Repository-relative archive directory ending in `.semantic-review`. @defaultValue ".semantic-review-history/<implementation-id>/.semantic-review" */
   destination?: string;
-  /** Archive commit message. @defaultValue "Archive <review-id> semantic review" */
+  /** Archive commit message. @defaultValue "Archive <implementation-id> semantic implementation" */
   message?: string;
 }
 
 /**
- * Moves a merged and published review into repository history.
+ * Moves a merged and published implementation into repository history.
  * The target branch must be checked out, contain the final stage head, and have
  * a metadata branch that exactly matches the current artifact.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command archive
  */
-export declare function archiveReview(options?: ArchiveReviewOptions): void;
+export declare function archiveImplementation(options?: ArchiveImplementationOptions): void;
 
 export interface ValidateArtifactOptions {
   /** Validates JSON schemas only and skips semantic and Git validation. */
@@ -351,7 +351,7 @@ export interface ValidateArtifactOptions {
 /**
  * Validates schemas, references, dependencies, artifact state, and Git state.
  * `schema-only` and `publish` are mutually exclusive.
- * @cli semantic-review.mjs
+ * @cli semantic-implementation.mjs
  * @command validate
  */
 export declare function validateArtifact(
@@ -359,7 +359,7 @@ export declare function validateArtifact(
 ): void;
 
 /**
- * Initializes mutable feedback state for the active semantic review.
+ * Initializes mutable feedback state for the active semantic implementation.
  * @cli review-feedback.mjs
  * @command init
  */
@@ -376,15 +376,15 @@ export interface AddFeedbackThreadOptions {
   label: string;
   /** Anchor shape, which determines the required conditional fields. */
   "target-kind": FeedbackTargetKind;
-  /** Requirement identifier for requirement and criterion targets. */
-  requirement?: string;
+  /** Specification identifier for specification and criterion targets. */
+  specification?: string;
   /** Criterion identifier for criterion targets. */
   criterion?: string;
-  /** Stage identifier for stage, context, file, and line targets. */
+  /** Stage identifier for stage, insight, file, and line targets. */
   stage?: string;
-  /** Context collection name for a context target. */
+  /** Insight collection name for an insight target. */
   collection?: string;
-  /** Context item identifier for a context target. */
+  /** Insight identifier for an insight target. */
   item?: string;
   /** Repository path for file and line targets. */
   path?: string;
@@ -425,8 +425,8 @@ export interface ReplyFeedbackThreadOptions {
   "comment-id": string;
   /** Comment text. */
   body: string;
-  /** Comment author; defaults to `user`. Agents reply with `assistant`. */
-  author?: "user" | "assistant";
+  /** Comment author; defaults to `user`. Implementation agents reply with `agent`. */
+  author?: "user" | "agent";
 }
 
 /**
@@ -486,24 +486,24 @@ export declare function validateFeedback(
   options?: ValidateFeedbackOptions,
 ): void;
 
-export interface SelectSemanticFlowReviewOptions {
-  /** Repository or worktree used to discover linked semantic review artifacts. */
+export interface SelectSemanticFlowImplementationOptions {
+  /** Repository or worktree used to discover linked semantic implementation artifacts. */
   project?: string;
-  /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
-  "review-id"?: string;
+  /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+  "implementation-id"?: string;
 }
 
 export interface InspectSemanticFlowOptions {
-  /** Repository or worktree used to discover linked semantic review artifacts. */
+  /** Repository or worktree used to discover linked semantic implementation artifacts. */
   project?: string;
-  /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
-  "review-id"?: string;
+  /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+  "implementation-id"?: string;
   /** Emits machine-readable repository, candidate, and selected artifact details. */
   json?: true;
 }
 
 /**
- * Finds semantic review artifacts in the selected repository and its linked worktrees.
+ * Finds semantic implementation artifacts in the selected repository and its linked worktrees.
  * This command does not fail when no artifact exists.
  * @cli semantic-flow.mjs
  * @command inspect
@@ -513,10 +513,10 @@ export declare function inspectSemanticFlow(
 ): void;
 
 export interface ValidateSemanticFlowOptions {
-  /** Repository or worktree used to discover linked semantic review artifacts. */
+  /** Repository or worktree used to discover linked semantic implementation artifacts. */
   project?: string;
-  /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
-  "review-id"?: string;
+  /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+  "implementation-id"?: string;
   /** Applies the stricter artifact publication validation gate. */
   publish?: true;
 }
@@ -531,17 +531,17 @@ export declare function validateSemanticFlow(
 ): void;
 
 export interface SemanticFlowStatusOptions {
-  /** Repository or worktree used to discover linked semantic review artifacts. */
+  /** Repository or worktree used to discover linked semantic implementation artifacts. */
   project?: string;
-  /** Selects one artifact by its review ID when several linked worktrees contain reviews. */
-  "review-id"?: string;
+  /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+  "implementation-id"?: string;
   /** Emits the complete machine-readable status snapshot. */
   json?: true;
 }
 
 /**
  * Reports lifecycle state, criterion coverage, evidence, feedback, metadata,
- * and validation results for one active semantic review.
+ * and validation results for one active semantic implementation.
  * @cli semantic-flow.mjs
  * @command status
  */
@@ -555,7 +555,7 @@ export declare function semanticFlowStatus(
  * @command review
  */
 export declare function reviewSemanticFlow(
-  options?: SelectSemanticFlowReviewOptions,
+  options?: SelectSemanticFlowImplementationOptions,
 ): void;
 
 export interface SemanticFlowVersionOptions {

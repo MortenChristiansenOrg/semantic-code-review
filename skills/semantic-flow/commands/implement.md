@@ -16,28 +16,28 @@ flow is sufficient. Do not silently downgrade to an ordinary implementation.
 Inspect the current branch, `HEAD`, and worktree state. Run
 `<semantic-flow> inspect --json` to find active artifacts across linked
 worktrees. If one already represents the requested work, follow `continue.md`
-instead of initializing another review.
+instead of initializing another implementation.
 
 For new work:
 
 1. Require a clean source worktree at the intended target branch head.
 2. Create or use a clean isolated implementation worktree.
-3. Gather the source work items and apply the requirement boundaries in
+3. Gather the source work items and apply the specification boundaries in
    `../docs/artifact-quality.md`. Default each requested user story or source
-   work item to one requirement with all of its acceptance criteria. Create
+   work item to one specification with all of its acceptance criteria. Create
    multiple requirements only for independently trackable source obligations.
 4. Plan coherent ordered stages. Keep future stages in the agent's task plan
    and register only the next stage.
 5. Initialize from the isolated worktree:
 
    ```text
-   <semantic-review> init <options>
+   <semantic-implementation> init <options>
    ```
 
 Initialization records the target branch head as `baseRevision`. The default
-branch prefix is `semantic-review/<review-id>`. Initialization creates the
-first requirement. When the boundary rules identify additional requirements,
-add each with `requirement add` before a stage references it. Do not turn
+branch prefix is `semantic-flow/<implementation-id>`. Initialization creates the
+first specification. When the boundary rules identify additional requirements,
+add each with `specification add` before a stage references it. Do not turn
 acceptance criteria or implementation stages into requirements.
 
 ## Implement each stage
@@ -50,7 +50,7 @@ preparatory branch or a future stage branch with Git.
 From the current stack tip:
 
 ```text
-<semantic-review> stage begin --input -
+<semantic-implementation> stage begin --input -
 ```
 
 The command creates and checks out the deterministic stage branch. The first
@@ -77,13 +77,13 @@ commits, discard keeps it and reports that you must delete it manually before
 reusing the ordinal. If the immutable stage ID or order is wrong, stop and ask
 the user rather than creating another numbered branch.
 
-### Implement and capture context
+### Implement and capture insights
 
-Implement only the active stage intent. Record review-relevant context when it
-arises:
+Implement only the active stage intent. Record review-relevant insights when they
+arise:
 
 ```text
-<semantic-review> stage record --input -
+<semantic-implementation> stage record --input -
 ```
 
 Run focused checks while implementing. Preserve useful failures and skipped
@@ -98,13 +98,13 @@ Create an organization document conforming to
 `../references/stage-organization.schema.json`, then run:
 
 ```text
-<semantic-review> stage organize --file <organization-json>
+<semantic-implementation> stage organize --file <organization-json>
 ```
 
 Every changed file must be covered. Whole-file ownership needs no selector.
 Shared files must use `hunks` or `lineRanges` consistently and cover every
 changed hunk or line exactly once. Include `itemLinks` for every recorded
-context and validation item.
+insight and validation evidence.
 
 ### Validate and finish
 
@@ -114,17 +114,17 @@ repository root are that worktree before running so checks never execute against
 the source checkout. Record each observed result:
 
 ```text
-<semantic-review> stage validation --input -
+<semantic-implementation> stage validation --input -
 ```
 
 Inspect the complete stage diff. Update its summary, rationale, dependencies,
-or requirement references when needed. Regenerate organization after any
-change that affects the diff or semantic context.
+or specification references when needed. Regenerate organization after any
+change that affects the diff or recorded insights.
 
 Finalize:
 
 ```text
-<semantic-review> stage finish
+<semantic-implementation> stage finish
 ```
 
 Run `<semantic-flow> validate --project <artifact-worktree-path>` before
@@ -144,7 +144,7 @@ After all stages:
 
    ```text
    <semantic-flow> validate --publish --project <artifact-worktree-path>
-   <semantic-review> validate-stack
+   <semantic-implementation> validate-stack
    ```
 
 Stop with the local stack ready for human review. Do not approve, publish
