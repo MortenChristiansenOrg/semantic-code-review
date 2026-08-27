@@ -142,17 +142,31 @@ function projectFor(projects, p) {
   return seg.length > 1 ? `${seg[0]}/` : "Repository root";
 }
 
-function parseDiff(repoRoot, base, head, filePath) {
+function parseDiff(repoRoot, base, head, filePath, previousPath) {
+  const renamed = Boolean(previousPath) && previousPath !== filePath;
   let raw;
   try {
-    raw = gitCapture(repoRoot, [
-      "--no-pager",
-      "diff",
-      "-U100000",
-      `${base}..${head}`,
-      "--",
-      filePath,
-    ]);
+    // For a renamed/moved file, diff the recorded pre-rename blob directly
+    // against the new blob so only real content edits show. Diffing just the
+    // new path would make Git see it as absent at base and mark every line as
+    // an addition (a pure move would then look like a whole new file).
+    const args = renamed
+      ? [
+          "--no-pager",
+          "diff",
+          "-U100000",
+          `${base}:${previousPath}`,
+          `${head}:${filePath}`,
+        ]
+      : [
+          "--no-pager",
+          "diff",
+          "-U100000",
+          `${base}..${head}`,
+          "--",
+          filePath,
+        ];
+    raw = gitCapture(repoRoot, args);
   } catch {
     return null;
   }
@@ -307,6 +321,11 @@ function buildImplementationData(repoRoot) {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const kindByPath = new Map(s.change.files.map((f) => [f.path, f.kind]));
+    const previousPathByPath = new Map(
+      s.change.files
+        .filter((f) => f.previousPath)
+        .map((f) => [f.path, f.previousPath]),
+    );
 
     const nodes = s.nodes.map((node) => ({
       id: node.id,
@@ -329,10 +348,13 @@ function buildImplementationData(repoRoot) {
     });
 
     const files = s.change.files.map((f) => f.path).map((p) => {
-      const diff = parseDiff(repoRoot, base, head, p);
+      const diff = parseDiff(repoRoot, base, head, p, previousPathByPath.get(p));
       return {
         path: p,
         kind: kindByPath.get(p) || "modified",
+        ...(previousPathByPath.has(p)
+          ? { previousPath: previousPathByPath.get(p) }
+          : {}),
         project: projectFor(projects, p),
         memberships: membershipByPath.get(p) || [],
         additions: diff ? diff.additions : 0,
@@ -466,9 +488,10 @@ function sendJson(response, status, payload) {
   response.end(body);
 }
 
-// Map a browser-local note (kind: stage | node | file) onto review-feedback
-// target options. Nodes have no first-class feedback target, so they are
-// assigned to their owning stage with the node title carried in the label.
+// Map a browser-local note (kind: stage | node | file | line) onto
+// review-feedback target options. Nodes have no first-class feedback target, so
+// they are assigned to their owning stage with the node title carried in the
+// label. Line notes encode the diff side and line number in their id.
 export function mapNoteTarget(note, implementation) {
   if (note.kind === "stage") {
     const stage = implementation.stages.find((s) => s.id === note.id);
@@ -499,6 +522,21 @@ export function mapNoteTarget(note, implementation) {
     const stage = implementation.stages.find((s) => s.id === stageId);
     if (!stage) throw new Error(`unknown stage "${stageId}"`);
     return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
+  }
+  if (note.kind === "line") {
+    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(note.id || "");
+    if (!match) throw new Error(`unrecognized line id "${note.id}"`);
+    const [, stageId, side, line, filePath] = match;
+    const stage = implementation.stages.find((s) => s.id === stageId);
+    if (!stage) throw new Error(`unknown stage "${stageId}"`);
+    return {
+      "target-kind": "line",
+      stage: stageId,
+      path: filePath,
+      side,
+      line: Number(line),
+      label: `${filePath}:${line}`,
+    };
   }
   throw new Error(`unsupported note kind "${note.kind}"`);
 }

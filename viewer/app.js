@@ -26,6 +26,15 @@
 
   /* ---- ids & lookups ---------------------------------------------------- */
   const fileKey = (stageId, path) => `f:${stageId}:${path}`;
+  // A line thread's element id carries everything needed to resolve a feedback
+  // target: the stage, which diff side the line lives on, its line number, and
+  // the file path (kept last so paths with no colons parse unambiguously).
+  const lineKey = (stageId, side, line, path) => `l:${stageId}:${side}:${line}:${path}`;
+  function parseLineId(id) {
+    const m = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(id || "");
+    if (!m) return null;
+    return { stageId: m[1], side: m[2], line: Number(m[3]), path: m[4] };
+  }
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(n.id, n.title)));
 
@@ -40,6 +49,19 @@
     flatFiles.push({ id: fileKey(stage.id, file.path), stage, file });
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
+  // A renamed file no longer answers to its old path, but feedback anchored
+  // before the rename still targets that old path. Index the pre-rename path so
+  // such a thread can resolve to the file at its new destination.
+  const fileByPreviousId = new Map(
+    flatFiles
+      .filter((f) => f.file.previousPath)
+      .map((f) => [fileKey(f.stage.id, f.file.previousPath), f]),
+  );
+  // Resolve a stage-scoped path to the file entry that currently holds it,
+  // following a rename when the path was the file's pre-rename name.
+  function currentFileEntry(stageId, p) {
+    return fileById.get(fileKey(stageId, p)) || fileByPreviousId.get(fileKey(stageId, p)) || null;
+  }
 
   function stageFileEntry(stageId, path) {
     return fileById.get(fileKey(stageId, path));
@@ -82,6 +104,7 @@
       fileView: {},
       hideDeleted: {},
       threadCollapsed: {},
+      openLineThreads: {},
       activeFiles: {},
       notesFilter: "active"
     };
@@ -131,11 +154,25 @@
     const entry = fileById.get(id);
     return entry ? fileFingerprint(entry) : null;
   }
+  // A renamed file's approval was recorded under its pre-rename element id. Map
+  // to that id so the sign-off is not lost when the path changes.
+  function previousApprovalId(id) {
+    const entry = fileById.get(id);
+    if (entry && entry.file.kind === "renamed" && entry.file.previousPath)
+      return fileKey(entry.stage.id, entry.file.previousPath);
+    return null;
+  }
   function approvalState(id) {
     const rec = state.approvals[id];
-    if (!rec) return "none";
-    if (rec === true || rec.fp == null) return "approved";
-    return rec.fp === fingerprintFor(id) ? "approved" : "stale";
+    if (rec) {
+      if (rec === true || rec.fp == null) return "approved";
+      return rec.fp === fingerprintFor(id) ? "approved" : "stale";
+    }
+    // An approval inherited from before a rename can never still match the file
+    // as it stands now, so surface it as stale to prompt a fresh look.
+    const prevId = previousApprovalId(id);
+    if (prevId && state.approvals[prevId]) return "stale";
+    return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
   const approvalStale = (id) => approvalState(id) === "stale";
@@ -155,6 +192,11 @@
       if (kind === "stage") return tk === "stage" && t.target.stageId === id;
       if (kind === "file")
         return tk === "file" && fileElementId(t.target.stageId, t.target.path) === id;
+      if (kind === "line")
+        return (
+          tk === "line" &&
+          lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path) === id
+        );
       return false;
     });
   }
@@ -288,7 +330,16 @@
     return `…/${parts.slice(-2).join("/")}`;
   }
   function kindGlyph(kind) {
-    return kind === "added" ? "A" : kind === "deleted" ? "D" : "M";
+    return kind === "added" ? "A" : kind === "deleted" ? "D" : kind === "renamed" ? "R" : "M";
+  }
+  function kindLabel(kind) {
+    return kind === "added" ? "Added" : kind === "deleted" ? "Deleted" : kind === "renamed" ? "Renamed" : "Modified";
+  }
+  // A renamed/moved file shows where it came from so reviewers can place it; the
+  // full pre-rename path stays in the tooltip when the shown one is shortened.
+  function renameFrom(file) {
+    if (file.kind !== "renamed" || !file.previousPath) return "";
+    return `<span class="fp-from" title="Renamed from ${esc(file.previousPath)}">← ${esc(shortPath(file.previousPath))}</span>`;
   }
   function caret() {
     return `<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -378,12 +429,41 @@
   }
   // Which reviewable element (if any) an artifact thread points at, so the
   // notes list can offer a "show" jump. Only file and stage targets map cleanly.
+  // File and line targets resolve against the file that currently holds the
+  // path (following a rename); a target whose file no longer exists yields no
+  // ref so the jump control can be withheld.
   function threadElementRef(t) {
     const tgt = (t && t.target) || {};
-    if (tgt.kind === "file" && tgt.path && tgt.stageId)
-      return { kind: "file", id: fileElementId(tgt.stageId, tgt.path) };
-    if (tgt.kind === "stage" && tgt.stageId) return { kind: "stage", id: tgt.stageId };
+    if (tgt.kind === "file" && tgt.path && tgt.stageId) {
+      const entry = currentFileEntry(tgt.stageId, tgt.path);
+      return entry ? { kind: "file", id: entry.id } : null;
+    }
+    if (tgt.kind === "line" && tgt.path && tgt.stageId && tgt.line) {
+      const entry = currentFileEntry(tgt.stageId, tgt.path);
+      if (!entry) return null;
+      // The exact line only survives when the path is unchanged; after a rename
+      // the diff is recomputed, so fall back to the file at its new location.
+      if (entry.file.path === tgt.path)
+        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
+      return { kind: "file", id: entry.id };
+    }
+    if (tgt.kind === "stage" && tgt.stageId)
+      return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
     return null;
+  }
+  // Classify what became of a file/line thread's target so the reviewer can be
+  // told precisely why the anchor is stale: the file was renamed, was deleted,
+  // or the stage simply moved on around a file that is still present.
+  function threadTargetState(t) {
+    const tgt = (t && t.target) || {};
+    if ((tgt.kind === "file" || tgt.kind === "line") && tgt.path && tgt.stageId) {
+      const direct = fileById.get(fileKey(tgt.stageId, tgt.path));
+      if (direct) return { state: "present" };
+      const renamed = fileByPreviousId.get(fileKey(tgt.stageId, tgt.path));
+      if (renamed) return { state: "renamed", to: renamed.file.path };
+      return { state: "deleted" };
+    }
+    return { state: "present" };
   }
   // An exported feedback thread: a reviewer <-> agent conversation the reviewer
   // can continue, mark resolved, or reopen. Only the reviewer controls closure.
@@ -402,16 +482,28 @@
     const disp = threadTargetDisplay(t);
     const ref = threadElementRef(t);
     const kind = (t.target && t.target.kind) || "thread";
-    const jump = withLabel && ref
-      ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
-      : "";
+    const tstate = threadTargetState(t);
+    const jump = !withLabel
+      ? ""
+      : ref
+        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
+        : tstate.state === "deleted"
+          ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
+          : "";
     const title =
       withLabel && t.target && t.target.label
         ? `<strong class="tthread-title" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
         : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
     const busy = threadBusy(t.id);
-    const stale = t.anchorStale
-      ? `<p class="tthread-stale">Stage changed since this feedback was sent.</p>`
+    let staleMsg = "";
+    if (tstate.state === "deleted")
+      staleMsg = `This file was deleted after the feedback was sent.`;
+    else if (tstate.state === "renamed")
+      staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.`;
+    else if (t.anchorStale)
+      staleMsg = `Stage changed since this feedback was sent.`;
+    const stale = staleMsg
+      ? `<p class="tthread-stale">${staleMsg}</p>`
       : "";
     const err = threadError(t.id)
       ? `<p class="tthread-err">${esc(threadError(t.id))}</p>`
@@ -533,8 +625,8 @@
     return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="Inspect diff (click filename to select it)">
-          <span class="kind k-${file.kind}">${kindGlyph(file.kind)}</span>
-          <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong></span>
+          <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
+          <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}
           ${fileMetrics(file)}
         </div>
@@ -649,20 +741,70 @@
     return out || esc(" ");
   }
 
-  function drowHtml(r, lang) {
+  // The diff sign column doubles as each line's note affordance: on hover it
+  // reveals a faint "+" to start a note, and a line that already has notes shows
+  // a comment bubble that toggles its thread in and out of view. This keeps the
+  // code itself untouched — the gutter carries the whole interaction.
+  function lineActionCell(lineId, count, sign) {
+    const has = count > 0;
+    const open = Boolean(state.openLineThreads[lineId]);
+    const label = has
+      ? `${count} note${count === 1 ? "" : "s"} on this line — click to ${open ? "hide" : "show"}`
+      : "Add a note on this line";
+    return `<button class="lact${has ? " has-note" : ""}${open ? " is-open" : ""}" type="button" data-action="line-note" data-id="${esc(lineId)}" title="${esc(label)}" aria-label="${esc(label)}"><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlus()}</span>${has ? `<span class="lact-bub" aria-hidden="true">${bubble()}${count > 1 ? `<b>${count}</b>` : ""}</span>` : ""}</button>`;
+  }
+  // A collapsible conversation attached to a single diff line. It renders as a
+  // full-width row directly beneath its line and stays hidden until the line's
+  // gutter bubble is toggled open, so notes never crowd the surrounding code.
+  function lineThreadRow(lineId) {
+    const composingNew =
+      compose && compose.kind === "line" && compose.id === lineId && compose.editIndex == null;
+    const open = Boolean(state.openLineThreads[lineId]);
+    const arts = artifactThreadsForElement("line", lineId);
+    const locals = localVisibleForElement(lineId);
+    const hasContent = arts.length || locals.length;
+    if ((!open && !composingNew) || (!hasContent && !composingNew)) return "";
+    const rows =
+      arts.map((t) => renderArtifactThread(t, false)).join("") +
+      locals.map((ln) => renderLocalNote(ln)).join("");
+    const footer = composingNew
+      ? renderComposer(compose)
+      : `<button class="thread-add" data-action="comment" data-kind="line" data-id="${esc(lineId)}" type="button">＋ Add note</button>`;
+    const hide = hasContent
+      ? `<button class="line-thread-hide" data-action="line-note" data-id="${esc(lineId)}" type="button" title="Hide these notes">Hide</button>`
+      : "";
+    return `<div class="drow drow-thread"><div class="line-thread" data-thread="${esc(lineId)}"><div class="line-thread-h"><span class="line-thread-where">Line notes</span>${hide}</div>${rows}${footer}</div></div>`;
+  }
+  // Render one code row plus, when the file is diff-anchored (ctx present) and
+  // the row maps to a real line, its gutter affordance and any attached thread.
+  function codeRow(rowClass, gutterOld, gutterNew, sign, code, ctx, side, lineNo) {
+    if (!ctx || !ctx.stageId || !lineNo) {
+      return `<div class="${rowClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span><i>${sign}</i><code>${code}</code></div>`;
+    }
+    const lineId = lineKey(ctx.stageId, side, lineNo, ctx.path);
+    const count = visibleThreadCount("line", lineId);
+    const has = count > 0;
+    const act = lineActionCell(lineId, count, sign);
+    const row = `<div class="${rowClass}${has ? " has-line-note" : ""}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
+    return row + lineThreadRow(lineId);
+  }
+  function drowHtml(r, lang, ctx) {
     const sign = r.t === "add" ? "+" : r.t === "del" ? "−" : "";
     const code = highlightCode(r.s || " ", lang);
-    return `<div class="drow d-${r.t}"><span class="ln">${r.o || ""}</span><span class="ln">${r.n || ""}</span><i>${sign}</i><code>${code}</code></div>`;
+    const side = r.t === "del" ? "old" : "new";
+    const lineNo = r.t === "del" ? r.o : r.n;
+    return codeRow(`drow d-${r.t}`, r.o || "", r.n || "", sign, code, ctx, side, lineNo);
   }
-  function newFileRowHtml(r, lang) {
+  function newFileRowHtml(r, lang, ctx, side) {
     const num = r.n || r.o || "";
     const code = highlightCode(r.s || " ", lang);
-    return `<div class="drow d-newline"><span class="ln"></span><span class="ln">${num}</span><i></i><code>${code}</code></div>`;
+    const lineNo = side === "old" ? r.o || r.n : r.n || r.o;
+    return codeRow("drow d-newline", "", num, "", code, ctx, side, lineNo);
   }
   function gapHtml(count) {
     return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} ⋯</code></div>`;
   }
-  function diffBody(file, mode, hideDel) {
+  function diffBody(file, mode, hideDel, ctx) {
     if (file.binary) return `<div class="diff-empty">Binary file — not shown.</div>`;
     const lines = file.lines || [];
     if (!lines.length) return `<div class="diff-empty">No line changes recorded for this file.</div>`;
@@ -672,14 +814,14 @@
       // Added file: content is identical in both views, so render the full file
       // once as neutral lines (not an all-green wall) with a clear "new file" banner.
       out.push(`<div class="drow d-newfile"><span class="ln"></span><span class="ln"></span><i>＋</i><code>New file — full contents</code></div>`);
-      lines.forEach((r) => out.push(newFileRowHtml(r, lang)));
+      lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "new")));
     } else if (file.kind === "deleted") {
       // Deleted file: mirror the added-file presentation — the full previous
       // contents once as neutral lines with a clear "deleted file" banner.
       out.push(`<div class="drow d-oldfile"><span class="ln"></span><span class="ln"></span><i>－</i><code>Deleted file — previous contents</code></div>`);
-      lines.forEach((r) => out.push(newFileRowHtml(r, lang)));
+      lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "old")));
     } else if (mode === "full") {
-      lines.forEach((r) => { if (!(hideDel && r.t === "del")) out.push(drowHtml(r, lang)); });
+      lines.forEach((r) => { if (!(hideDel && r.t === "del")) out.push(drowHtml(r, lang, ctx)); });
     } else {
       const CTX = 3;
       const n = lines.length;
@@ -691,7 +833,7 @@
       }
       let i = 0;
       while (i < n) {
-        if (keep[i]) { if (!(hideDel && lines[i].t === "del")) out.push(drowHtml(lines[i], lang)); i++; }
+        if (keep[i]) { if (!(hideDel && lines[i].t === "del")) out.push(drowHtml(lines[i], lang, ctx)); i++; }
         else { let j = i; while (j < n && !keep[j]) j++; out.push(gapHtml(j - i)); i = j; }
       }
     }
@@ -724,8 +866,8 @@
     const id = entry.id;
     return `<header class="diff-head">
       <div class="diff-id">
-        <span class="kind k-${file.kind}">${kindGlyph(file.kind)}</span>
-        <span class="diff-path"><small>${esc(dir)}</small><strong>${esc(name)}</strong></span>
+        <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
+        <span class="diff-path"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
       </div>
       <div class="diff-facts">
         <span class="metrics"><i class="add">+${file.additions}</i><i class="del">−${file.deletions}</i></span>
@@ -742,9 +884,10 @@
   }
   function diffPanel(entry, opts = {}) {
     if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
+    const ctx = { stageId: entry.stage.id, path: entry.file.path };
     return `<section class="diff-panel ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]))}
+      ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
     </section>`;
   }
   function diffToolbar(entry) {
@@ -925,6 +1068,19 @@
       if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${nodeId}`, nodeTitle: s.nodes[ni].title };
       return { si, stageTitle: s.title, ni: 800, nodeKey: `${s.id}::__files__`, nodeTitle: "Files" };
     }
+    if (c.kind === "line") {
+      const p = parseLineId(c.id);
+      const lineEntry = p && fileById.get(fileKey(p.stageId, p.path));
+      if (lineEntry) {
+        const s = lineEntry.stage;
+        const si = data.stages.findIndex((x) => x.id === s.id);
+        const membership = (lineEntry.file.memberships || [])[0];
+        const nodeId = membership && membership.nodeId;
+        const ni = nodeId ? s.nodes.findIndex((n) => n.id === nodeId) : -1;
+        if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${nodeId}`, nodeTitle: s.nodes[ni].title };
+        return { si, stageTitle: s.title, ni: 800, nodeKey: `${s.id}::__files__`, nodeTitle: "Files" };
+      }
+    }
     return { si: 900, stageTitle: "Unknown stage", ni: 900, nodeKey: "::__other__", nodeTitle: "Other" };
   }
   function noteDayKey(c) {
@@ -1029,6 +1185,10 @@
   }
   function labelFor(kind, id) {
     if (kind === "file") return fileById.get(id)?.file.path || id;
+    if (kind === "line") {
+      const p = parseLineId(id);
+      return p ? `${p.path}:${p.line}` : id;
+    }
     for (const s of data.stages) {
       if (s.id === id) return s.title;
       const n = s.nodes.find((x) => x.id === id);
@@ -1041,6 +1201,10 @@
     if (c.kind === "file") {
       const full = fileById.get(c.id)?.file.path || c.id;
       return { text: splitPath(full).name, title: full };
+    }
+    if (c.kind === "line") {
+      const p = parseLineId(c.id);
+      if (p) return { text: `${splitPath(p.path).name}:${p.line}`, title: `${p.path}:${p.line}` };
     }
     const t = labelFor(c.kind, c.id);
     return { text: t, title: t };
@@ -1201,6 +1365,10 @@
     if (a === "approve") {
       const id = btn.dataset.id;
       const st = approvalState(id);
+      // A rename carried its old approval forward as stale; clear that orphaned
+      // record so acting on the file now writes a single canonical entry.
+      const prevId = previousApprovalId(id);
+      if (prevId) delete state.approvals[prevId];
       if (st === "approved") delete state.approvals[id];
       else {
         state.approvals[id] = { fp: fingerprintFor(id), at: Date.now() };
@@ -1218,6 +1386,19 @@
       state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState();
     } else if (a === "comment") {
       openComment(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
+    } else if (a === "line-note") {
+      const id = btn.dataset.id;
+      const hasContent =
+        artifactThreadsForElement("line", id).length || localVisibleForElement(id).length;
+      if (hasContent) {
+        const opening = !state.openLineThreads[id];
+        state.openLineThreads[id] = opening;
+        persist();
+        if (opening) { render(); }
+        else { collapseThenRender(app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)); }
+      } else {
+        openComment("line", id);
+      }
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
       const opening = !state.openThreads[id];
@@ -1277,19 +1458,31 @@
   function jumpToElement(kind, id) {
     state.notesOpen = false;
     state.coverageOpen = false;
-    state.openThreads[id] = true;
+    if (kind === "line") state.openLineThreads[id] = true;
+    else state.openThreads[id] = true;
+    let lineFileId = null;
+    let lineMembership = null;
     if (kind === "file") {
       const entry = fileById.get(id);
       if (entry) {
         state.openStages[entry.stage.id] = true;
         state.activeFiles[id] = true;
       }
+    } else if (kind === "line") {
+      const p = parseLineId(id);
+      const entry = p && fileById.get(fileKey(p.stageId, p.path));
+      if (entry) {
+        lineFileId = entry.id;
+        lineMembership = (entry.file.memberships || [])[0];
+        state.openStages[entry.stage.id] = true;
+        state.activeFiles[entry.id] = true;
+      }
     } else if (kind === "stage") {
       state.openStages[id] = true;
     }
     persist();
     render();
-    // Expand the owning node <details> for file targets, then scroll.
+    // Expand the owning node <details> for file/line targets, then scroll.
     requestAnimationFrame(() => {
       if (kind === "file") {
         const entry = fileById.get(id);
@@ -1298,13 +1491,18 @@
           const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(membership.nodeId)}"]`);
           if (nodeEl) nodeEl.open = true;
         }
+      } else if (kind === "line" && lineMembership && lineMembership.nodeId) {
+        const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(lineMembership.nodeId)}"]`);
+        if (nodeEl) nodeEl.open = true;
       }
       requestAnimationFrame(() => {
         const thread = app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
+          || app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.frow[data-file="${cssEsc(id)}"]`)
           || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`);
         if (thread) thread.scrollIntoView({ behavior: "smooth", block: "center" });
         if (kind === "file") fadeFileHighlight(id, "in");
+        else if (kind === "line" && lineFileId) fadeFileHighlight(lineFileId, "in");
       });
     });
   }
@@ -1666,7 +1864,8 @@
       mode: state.lastNoteMode === "feedback" ? "feedback" : "personal",
       body: "",
     };
-    state.openThreads[id] = true;
+    if (kind === "line") state.openLineThreads[id] = true;
+    else state.openThreads[id] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
     if (kind === "file") { state.activeFiles[id] = true; pendingHighlight = id; }
     persist();
@@ -1687,7 +1886,8 @@
       mode: c.mode || "personal",
       body: c.body,
     };
-    state.openThreads[c.id] = true;
+    if (c.kind === "line") state.openLineThreads[c.id] = true;
+    else state.openThreads[c.id] = true;
     if (c.kind === "file") { state.activeFiles[c.id] = true; pendingHighlight = c.id; }
     persist();
     render();
@@ -1833,6 +2033,18 @@
     const notesEl = app.querySelector(".notes-list");
     const notesScroll = notesEl ? notesEl.scrollTop : 0;
     const winScroll = window.scrollY;
+    // Each open file's diff has its own inner scroll; capture it per file so
+    // adding a line note (or any re-render) never resets where the reviewer is
+    // looking within the diff.
+    const diffScrolls = {};
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!state.activeFiles[fid]) return;
+      const holder = app.querySelector(`.frow[data-file="${cssEsc(fid)}"]`)?.nextElementSibling;
+      const scroller = holder && holder.classList.contains("cinema-diff")
+        ? holder.querySelector(".diff-scroll")
+        : null;
+      if (scroller) diffScrolls[fid] = { top: scroller.scrollTop, left: scroller.scrollLeft };
+    });
     _render();
     restoreOpen(open);
     Object.keys(state.activeFiles).forEach((fid) => {
@@ -1845,6 +2057,11 @@
         holder.className = "cinema-diff";
         holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" }) + fileNotesBlock(fid);
         row.after(holder);
+        const saved = diffScrolls[fid];
+        if (saved) {
+          const scroller = holder.querySelector(".diff-scroll");
+          if (scroller) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
+        }
       }
     });
     const newNotes = app.querySelector(".notes-list");

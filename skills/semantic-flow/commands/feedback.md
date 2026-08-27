@@ -61,7 +61,7 @@ order until every returned thread has an agent reply.
 Then run:
 
 ```text
-<semantic-flow> validate --publish --project <artifact-worktree-path>
+<semantic-flow> validate --project <artifact-worktree-path>
 ```
 
 Stop with the revised stack ready for human review. Do not resolve threads,

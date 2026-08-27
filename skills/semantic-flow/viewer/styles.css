@@ -885,9 +885,14 @@ button { font-family: inherit; cursor: pointer; }
 .k-added { color: var(--add); background: var(--add-bg); border: 1px solid var(--add-ln); }
 .k-modified { color: var(--t-assumption); background: rgba(224, 176, 84, .1); border: 1px solid rgba(224, 176, 84, .4); }
 .k-deleted { color: var(--del); background: var(--del-bg); border: 1px solid var(--del-ln); }
+.k-renamed { color: var(--signal); background: rgba(90, 156, 248, .1); border: 1px solid rgba(90, 156, 248, .4); }
 .fp { min-width: 0; display: flex; align-items: baseline; overflow: hidden; }
 .fp small { color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fp strong { color: var(--text); font-weight: 500; font-size: 12.5px; white-space: nowrap; flex: none; user-select: text; cursor: text; }
+.fp-from, .diff-path .fp-from {
+  color: var(--faint); font-size: 11px; margin-left: 8px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; font-style: normal;
+}
 .cls {
   flex: none;
   font-family: var(--mono);
@@ -1078,6 +1083,81 @@ button { font-family: inherit; cursor: pointer; }
 .drow code .tok-str { color: #9ece6a; }
 .drow code .tok-num { color: #e0af68; }
 .drow code .tok-com { color: var(--faint); font-style: italic; }
+/* ---- per-line note affordance & threads -------------------------------- */
+/* The sign column doubles as an interactive gutter button: the diff sign at
+   rest, a faint "+" on row hover to start a note, and a comment bubble once a
+   line carries notes. The code itself is never shifted or dimmed. */
+.drow .lact {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  width: 100%;
+  height: 1.62em;
+  cursor: pointer;
+  color: var(--faint);
+  font-style: normal;
+  overflow: visible;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.drow .lact:focus-visible { outline: 1px solid var(--signal); outline-offset: -2px; border-radius: 3px; }
+.drow .lact .lact-add,
+.drow .lact .lact-bub { display: none; align-items: center; }
+.drow .lact .lact-add { color: var(--signal); }
+.drow .lact .lact-add .bub { width: 14px; height: 14px; }
+.drow .lact .lact-bub { color: var(--signal); }
+.drow .lact .lact-bub .bub { width: 12px; height: 12px; }
+.drow .lact .lact-bub b { font-size: 9px; margin-left: 1px; font-weight: 600; }
+.drow:hover .lact:not(.has-note) .lact-sign { display: none; }
+.drow:hover .lact:not(.has-note) .lact-add { display: inline-flex; }
+.drow .lact.has-note .lact-sign { display: none; }
+.drow .lact.has-note .lact-bub { display: inline-flex; }
+.drow .lact.has-note:hover { color: var(--signal); }
+/* The gutter sign keeps its diff colour whether rendered as a bare <i> (banner,
+   gap, and non-anchored rows) or inside the interactive line button. */
+.d-add .lact-sign { color: var(--add); }
+.d-del .lact-sign { color: var(--del); }
+/* A faint left accent flags lines that carry a conversation, so a collapsed
+   thread is still locatable while scanning the diff. */
+.drow.has-line-note { box-shadow: inset 2px 0 0 var(--signal); }
+
+/* The thread row spans the diff width but pins its panel to the left so the
+   conversation stays readable however far the code scrolls sideways. */
+.drow-thread {
+  display: block;
+  background: rgba(110, 168, 255, .05);
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.line-thread {
+  position: sticky;
+  left: 0;
+  width: min(680px, 100%);
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 6px 16px 12px;
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  animation: thread-in .2s var(--ease);
+}
+.line-thread-h { display: flex; align-items: center; gap: 8px; }
+.line-thread-where {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--muted);
+}
+.line-thread-hide {
+  margin-left: auto;
+  font-family: var(--mono); font-size: 10.5px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer;
+  transition: border-color .16s var(--ease), color .16s var(--ease);
+}
+.line-thread-hide:hover { border-color: var(--signal); color: var(--signal); }
 .diff-empty { padding: 50px; text-align: center; color: var(--faint); font-family: var(--mono); font-size: 12.5px; }
 
 /* ---- story end -------------------------------------------------------- */
@@ -1320,6 +1400,8 @@ button { font-family: inherit; cursor: pointer; }
   transition: all .16s var(--ease);
 }
 .tthread-jump:hover { border-color: var(--signal); color: var(--signal); }
+.tthread-jump:disabled { opacity: .4; cursor: not-allowed; }
+.tthread-jump:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 /* ---- diff selection match highlight ----------------------------------- */
 .diff-grid mark.sel-hit {

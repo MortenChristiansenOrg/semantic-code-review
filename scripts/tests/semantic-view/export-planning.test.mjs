@@ -59,12 +59,45 @@ test("mapNoteTarget maps a file note id into a file target", () => {
   );
 });
 
+test("mapNoteTarget maps a line note id into a line target", () => {
+  assert.deepEqual(
+    mapNoteTarget({ kind: "line", id: "l:implementation:new:42:src/app.js" }, implementation),
+    {
+      "target-kind": "line",
+      stage: "implementation",
+      path: "src/app.js",
+      side: "new",
+      line: 42,
+      label: "src/app.js:42",
+    },
+  );
+  assert.deepEqual(
+    mapNoteTarget({ kind: "line", id: "l:implementation:old:7:src/app.js" }, implementation),
+    {
+      "target-kind": "line",
+      stage: "implementation",
+      path: "src/app.js",
+      side: "old",
+      line: 7,
+      label: "src/app.js:7",
+    },
+  );
+});
+
 test("mapNoteTarget rejects unknown targets", () => {
   assert.throws(() => mapNoteTarget({ kind: "stage", id: "missing" }, implementation), /unknown stage/);
   assert.throws(() => mapNoteTarget({ kind: "node", id: "missing" }, implementation), /unknown node/);
   assert.throws(
     () => mapNoteTarget({ kind: "file", id: "not-a-file-id" }, implementation),
     /unrecognized file id/,
+  );
+  assert.throws(
+    () => mapNoteTarget({ kind: "line", id: "not-a-line-id" }, implementation),
+    /unrecognized line id/,
+  );
+  assert.throws(
+    () => mapNoteTarget({ kind: "line", id: "l:ghost:new:1:src/app.js" }, implementation),
+    /unknown stage/,
   );
 });
 

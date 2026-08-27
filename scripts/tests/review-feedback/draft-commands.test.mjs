@@ -287,7 +287,7 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
   assert.equal(groups[0].threads[0].comments[0].author, "user");
   assert.match(
     repository.feedback("next"),
-    /implementation \(semantic-implementation\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
+    /implementation \(semantic-flow\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   repository.feedback("validate");
 });
