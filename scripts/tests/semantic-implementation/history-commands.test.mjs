@@ -5,6 +5,7 @@ import {
   createRepository,
   finalizeStage,
   initializeImplementation,
+  organizeStage,
 } from "../helpers/repository.mjs";
 
 test("repair removes unambiguous interrupted writes", (t) => {
@@ -68,6 +69,83 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
     rewrittenPersistence,
   );
   assert.equal(repository.read("policy.txt"), "policy v2\n");
+  repository.semantic("validate", "--publish");
+});
+
+test("restack applies the finalized net stage diff", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, {
+    id: "policy",
+    file: "shared.txt",
+    contents: "original\n",
+  });
+  beginStage(repository, {
+    id: "persistence",
+    dependencies: ["policy"],
+  });
+  repository.write("shared.txt", "temporary\n");
+  repository.write("persistence.txt", "persistence\n");
+  repository.git("add", "shared.txt", "persistence.txt");
+  repository.git("commit", "-m", "Implement persistence");
+  organizeStage(repository, { id: "persistence" });
+  repository.semantic("stage", "finish", "--id", "persistence");
+
+  repository.commitFile("shared.txt", "original\n", "Restore shared file");
+  const organization = {
+    $schema:
+      "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+    nodes: [
+      {
+        id: "implementation-change",
+        description: "Implement the persistence behavior.",
+        changes: [
+          {
+            path: "persistence.txt",
+            classification: "behavior",
+          },
+        ],
+      },
+    ],
+    itemLinks: [],
+  };
+  repository.write(
+    "organization.json",
+    `${JSON.stringify(organization, null, 2)}\n`,
+  );
+  try {
+    repository.semantic(
+      "stage",
+      "organize",
+      "--stage",
+      "persistence",
+      "--file",
+      "organization.json",
+      "--finalized",
+    );
+  } finally {
+    repository.remove("organization.json");
+  }
+
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  repository.commitFile("shared.txt", "revised\n", "Address policy feedback");
+  repository.semantic("restack", "--from", "policy");
+
+  assert.equal(
+    repository.git(
+      "show",
+      "semantic-flow/test-implementation/02-persistence:shared.txt",
+    ),
+    "revised",
+  );
+  assert.equal(
+    repository.git(
+      "show",
+      "semantic-flow/test-implementation/02-persistence:persistence.txt",
+    ),
+    "persistence",
+  );
   repository.semantic("validate", "--publish");
 });
 

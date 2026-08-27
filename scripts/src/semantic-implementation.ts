@@ -1774,36 +1774,17 @@ function applyCommitPatch({
   });
 }
 
-function commitsInRange(root, base, head, label) {
-  assertLinearRange(root, base, head, label);
-  const output = git(["rev-list", "--reverse", `${base}..${head}`], {
-    cwd: root,
-  });
-  return output ? output.split(/\r?\n/) : [];
-}
-
 function replayRange(root, indexFile, oldBase, oldHead, newBase, label) {
-  const commits = commitsInRange(root, oldBase, oldHead, label);
-  if (commits.length === 0) {
-    fail(`${label} has no commits to replay.`);
-  }
-  let newParent = newBase;
-  for (const commit of commits) {
-    const parents = commitParents(root, commit);
-    if (parents.length !== 1) {
-      fail(`${label} commit ${commit} must have exactly one parent.`);
-    }
-    newParent = applyCommitPatch({
-      root,
-      indexFile,
-      baseTree: newParent,
-      patchParent: parents[0],
-      patchCommit: commit,
-      metadataCommit: commit,
-      newParent,
-    });
-  }
-  return newParent;
+  assertLinearRange(root, oldBase, oldHead, label);
+  return applyCommitPatch({
+    root,
+    indexFile,
+    baseTree: newBase,
+    patchParent: oldBase,
+    patchCommit: oldHead,
+    metadataCommit: oldHead,
+    newParent: newBase,
+  });
 }
 
 function updateRefsAtomically(root, updates) {
