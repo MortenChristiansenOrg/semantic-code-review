@@ -1116,6 +1116,12 @@ button { font-family: inherit; cursor: pointer; }
 .drow .lact.has-note .lact-sign { display: none; }
 .drow .lact.has-note .lact-bub { display: inline-flex; }
 .drow .lact.has-note:hover { color: var(--signal); }
+/* A resolved line keeps a faint, muted bubble so a settled conversation is
+   still discoverable in the diff; hovering reveals the "+" to add a new note. */
+.drow .lact .lact-bub-resolved { color: var(--faint); }
+.drow .lact.has-resolved:not(.has-note) .lact-sign { display: none; }
+.drow .lact.has-resolved:not(.has-note) .lact-bub-resolved { display: inline-flex; }
+.drow:hover .lact.has-resolved:not(.has-note) .lact-bub-resolved { display: none; }
 /* The gutter sign keeps its diff colour whether rendered as a bare <i> (banner,
    gap, and non-anchored rows) or inside the interactive line button. */
 .d-add .lact-sign { color: var(--add); }
@@ -1123,6 +1129,9 @@ button { font-family: inherit; cursor: pointer; }
 /* A faint left accent flags lines that carry a conversation, so a collapsed
    thread is still locatable while scanning the diff. */
 .drow.has-line-note { box-shadow: inset 2px 0 0 var(--signal); }
+/* A resolved-only line keeps a muted accent so a settled conversation stays
+   locatable without competing with open threads. */
+.drow.has-line-note-resolved { box-shadow: inset 2px 0 0 var(--line); }
 
 /* The thread row spans the diff width but pins its panel to the left so the
    conversation stays readable however far the code scrolls sideways. */
@@ -1413,7 +1422,7 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- stage acceptance chip status ------------------------------------- */
 .ac-chip-stat {
-  margin-left: 5px;
+  margin-left: 2.5px;
   font-size: 11px;
   line-height: 1;
 }
@@ -1498,7 +1507,7 @@ button { font-family: inherit; cursor: pointer; }
 .cinema-diff .diff-panel { border-radius: 0; border-bottom: 0; }
 .cinema-diff .file-notes {
   margin: 0;
-  border-radius: 0;
+  border-radius: 0 0 var(--radius) var(--radius);
   border-top: 1px solid var(--line);
 }
 .cinema-diff .diff-scroll { max-height: min(70vh, 680px); }

@@ -78,6 +78,7 @@
   let state = load();
   let compose = null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
   let replyTo = null;              // artifact thread id currently being replied to
+  let replyDraft = "";             // unsent text of the open reply, kept across re-renders
   const threadOps = {};            // thread id -> { busy, error } for server actions
   let exportState = { phase: "idle", message: "" };
   function threadBusy(id) { return Boolean(threadOps[id] && threadOps[id].busy); }
@@ -500,7 +501,7 @@
       staleMsg = `This file was deleted after the feedback was sent.`;
     else if (tstate.state === "renamed")
       staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.`;
-    else if (t.anchorStale)
+    else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
       staleMsg = `Stage changed since this feedback was sent.`;
     const stale = staleMsg
       ? `<p class="tthread-stale">${staleMsg}</p>`
@@ -519,7 +520,7 @@
       : "";
     const replyForm = replyTo === t.id
       ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
-          <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…"></textarea>
+          <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>
           <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${busy ? "disabled" : ""}>${busy ? "Sending…" : "Send reply"}</button></div>
         </form>`
       : "";
@@ -624,7 +625,7 @@
     // thread badge opens the file just like the filename does.
     return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
-        <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="Inspect diff (click filename to select it)">
+        <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
           <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}
@@ -745,13 +746,15 @@
   // reveals a faint "+" to start a note, and a line that already has notes shows
   // a comment bubble that toggles its thread in and out of view. This keeps the
   // code itself untouched — the gutter carries the whole interaction.
-  function lineActionCell(lineId, count, sign) {
+  function lineActionCell(lineId, count, sign, resolved) {
     const has = count > 0;
     const open = Boolean(state.openLineThreads[lineId]);
     const label = has
       ? `${count} note${count === 1 ? "" : "s"} on this line — click to ${open ? "hide" : "show"}`
-      : "Add a note on this line";
-    return `<button class="lact${has ? " has-note" : ""}${open ? " is-open" : ""}" type="button" data-action="line-note" data-id="${esc(lineId)}" title="${esc(label)}" aria-label="${esc(label)}"><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlus()}</span>${has ? `<span class="lact-bub" aria-hidden="true">${bubble()}${count > 1 ? `<b>${count}</b>` : ""}</span>` : ""}</button>`;
+      : resolved
+        ? `Resolved note on this line — click to ${open ? "hide" : "show"}`
+        : "Add a note on this line";
+    return `<button class="lact${has ? " has-note" : ""}${resolved ? " has-resolved" : ""}${open ? " is-open" : ""}" type="button" data-action="line-note" data-id="${esc(lineId)}" title="${esc(label)}" aria-label="${esc(label)}"><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlus()}</span>${has ? `<span class="lact-bub" aria-hidden="true">${bubble()}${count > 1 ? `<b>${count}</b>` : ""}</span>` : resolved ? `<span class="lact-bub lact-bub-resolved" aria-hidden="true">${bubble()}</span>` : ""}</button>`;
   }
   // A collapsible conversation attached to a single diff line. It renders as a
   // full-width row directly beneath its line and stays hidden until the line's
@@ -784,8 +787,11 @@
     const lineId = lineKey(ctx.stageId, side, lineNo, ctx.path);
     const count = visibleThreadCount("line", lineId);
     const has = count > 0;
-    const act = lineActionCell(lineId, count, sign);
-    const row = `<div class="${rowClass}${has ? " has-line-note" : ""}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
+    const resolved =
+      !has &&
+      artifactThreadsForElement("line", lineId).some((t) => t.status === "resolved");
+    const act = lineActionCell(lineId, count, sign, resolved);
+    const row = `<div class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
     return row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
@@ -1436,10 +1442,11 @@
     } else if (a === "thread-reply") {
       compose = null;
       replyTo = btn.dataset.id;
+      replyDraft = "";
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
       render(); focusComposer();
     } else if (a === "reply-cancel") {
-      replyTo = null; render();
+      replyTo = null; replyDraft = ""; render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -1527,6 +1534,7 @@
       if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
       threadOps[threadId] = { busy: false, error: "" };
       replyTo = null;
+      replyDraft = "";
     } catch (err) {
       threadOps[threadId] = { busy: false, error: err.message || "Reply failed." };
     }
@@ -1901,6 +1909,17 @@
     });
   }
 
+  // Keep unsent editor text in state so a re-render (which fully rebuilds the
+  // DOM) never drops what the reviewer is typing.
+  document.addEventListener("input", (e) => {
+    const t = e.target;
+    if (compose && t.matches('.note-compose textarea[name="nc-body"]')) compose.body = t.value;
+    else if (t.matches('.tthread-reply textarea[name="reply-body"]')) replyDraft = t.value;
+  });
+  document.addEventListener("change", (e) => {
+    const t = e.target;
+    if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) compose.mode = t.value;
+  });
   document.addEventListener("submit", (e) => {
     if (e.target.matches("[data-note-form]")) {
       e.preventDefault();
@@ -1939,7 +1958,7 @@
     }
     if (e.key === "Escape") {
       if (compose) { compose = null; render(); return; }
-      if (replyTo) { replyTo = null; render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
