@@ -63,6 +63,11 @@
     return fileById.get(fileKey(stageId, p)) || fileByPreviousId.get(fileKey(stageId, p)) || null;
   }
 
+  function fileHasLine(file, side, line) {
+    const key = side === "old" ? "o" : "n";
+    return (file.lines || []).some((row) => row[key] === line);
+  }
+
   function stageFileEntry(stageId, path) {
     return fileById.get(fileKey(stageId, path));
   }
@@ -442,9 +447,9 @@
     if (tgt.kind === "line" && tgt.path && tgt.stageId && tgt.line) {
       const entry = currentFileEntry(tgt.stageId, tgt.path);
       if (!entry) return null;
-      // The exact line only survives when the path is unchanged; after a rename
-      // the diff is recomputed, so fall back to the file at its new location.
-      if (entry.file.path === tgt.path)
+      // A later stage head can remove or move the saved line. Only offer an
+      // exact jump while that side and line still exist in the rendered diff.
+      if (entry.file.path === tgt.path && fileHasLine(entry.file, tgt.side, tgt.line))
         return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
       return { kind: "file", id: entry.id };
     }
