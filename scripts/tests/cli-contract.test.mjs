@@ -255,6 +255,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(editorConfig, /^end_of_line = lf$/m);
   assert.match(editorConfig, /^charset = utf-8$/m);
   assert.match(viewerApp, /t\.anchorStale/);
+  assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);

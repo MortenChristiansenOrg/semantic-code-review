@@ -2048,6 +2048,13 @@
     if (!keys || !keys.size) return;
     app.querySelectorAll("details.node").forEach((d) => { if (keys.has(`node:${d.dataset.node}`)) d.open = true; });
   }
+  function restoreWindowScroll(left, top) {
+    const root = document.documentElement;
+    const previousBehavior = root.style.scrollBehavior;
+    root.style.scrollBehavior = "auto";
+    window.scrollTo(left, top);
+    root.style.scrollBehavior = previousBehavior;
+  }
 
   const _render = render;
   render = function () {
@@ -2056,7 +2063,7 @@
     // Preserve scroll so a re-render never yanks the reviewer's position.
     const notesEl = app.querySelector(".notes-list");
     const notesScroll = notesEl ? notesEl.scrollTop : 0;
-    const winScroll = window.scrollY;
+    const winScroll = { left: window.scrollX, top: window.scrollY };
     // Each open file's diff has its own inner scroll; capture it per file so
     // adding a line note (or any re-render) never resets where the reviewer is
     // looking within the diff.
@@ -2091,7 +2098,8 @@
     const newNotes = app.querySelector(".notes-list");
     if (newNotes) newNotes.scrollTop = notesScroll;
     document.body.classList.toggle("no-scroll", state.notesOpen);
-    if (window.scrollY !== winScroll) window.scrollTo(0, winScroll);
+    if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
+      restoreWindowScroll(winScroll.left, winScroll.top);
   };
 
   render();
