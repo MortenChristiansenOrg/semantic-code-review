@@ -685,6 +685,21 @@ button { font-family: inherit; cursor: pointer; }
 .tmsg-user .tmsg-who { color: var(--signal); }
 .tmsg-h time { font-family: var(--mono); font-size: 9.5px; color: var(--faint); white-space: nowrap; }
 .tmsg p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+/* an unsent reviewer reply held as a revisable draft */
+.tmsg-draft { border-style: dashed; border-color: var(--signal); background: color-mix(in srgb, var(--signal) 7%, var(--ink-2)); }
+.tmsg-draft-tag {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--signal);
+}
+.tmsg-act { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+.tmsg-act button {
+  font-family: var(--mono); font-size: 10px; padding: 1px 6px; line-height: 1.4;
+  background: transparent; border: 1px solid var(--line-soft); border-radius: var(--radius-sm);
+  color: var(--muted); cursor: pointer;
+}
+.tmsg-act button:hover { border-color: var(--signal); color: var(--signal); }
+.tmsg-del { border: 0 !important; font-size: 15px !important; padding: 0 6px !important; line-height: 1; }
+.tmsg-del:hover { color: var(--t-risk) !important; }
 .tthread-stale { font-family: var(--mono); font-size: 10.5px; color: var(--t-risk); margin: 0; }
 .tthread-hint { font-size: 11px; color: var(--muted); margin: 0; }
 

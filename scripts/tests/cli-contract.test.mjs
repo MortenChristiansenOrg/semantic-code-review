@@ -157,6 +157,7 @@ test("skill indexes command-specific workflows", () => {
     "implement",
     "review",
     "feedback",
+    "reconcile",
     "status",
     "continue",
     "validate",
@@ -186,6 +187,16 @@ test("skill indexes command-specific workflows", () => {
   assert.match(runtime, /otherwise the only\s+matching artifact/);
   assert.match(commandText.get("implement"), /<semantic-implementation> stage begin/);
   assert.match(commandText.get("feedback"), /<review-feedback> next --json/);
+  assert.match(commandText.get("reconcile"), /temporary recovery branch/);
+  assert.match(commandText.get("reconcile"), /restack --from <stage-id>/);
+  assert.match(
+    commandText.get("reconcile"),
+    /git branch --delete --force <temporary-recovery-branch>/,
+  );
+  assert.match(
+    commandText.get("reconcile"),
+    /successful reconciliation is incomplete while that ref remains/,
+  );
   assert.match(commandText.get("review"), /<semantic-flow> review/);
   assert.match(commandText.get("validate"), /<semantic-flow> validate/);
   assert.match(commandText.get("status"), /<semantic-flow> status/);

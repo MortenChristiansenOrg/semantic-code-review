@@ -17,6 +17,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | `/semantic-flow implement` | | `commands/implement.md` |
 | `/semantic-flow review` | `rv` | `commands/review.md` |
 | `/semantic-flow feedback` | `fb` | `commands/feedback.md` |
+| `/semantic-flow reconcile` | `rc` | `commands/reconcile.md` |
 | `/semantic-flow status` | | `commands/status.md` |
 | `/semantic-flow continue` | | `commands/continue.md` |
 | `/semantic-flow validate` | | `commands/validate.md` |

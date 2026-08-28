@@ -78,14 +78,15 @@ story using semantic flow") or with explicit commands:
 | --- | --- |
 | `implement` | Start a new piece of work and build it out in reviewable stages. |
 | `continue` | Resume an implementation that was interrupted. |
-| `review` | Launch the local review viewer for the current work. |
-| `feedback` | Have the agent address the feedback you submitted in the viewer. |
+| `review` or `rv` | Launch the local review viewer for the current work. |
+| `feedback` or `fb` | Have the agent address the feedback you submitted in the viewer. |
+| `reconcile` or `rc` | Have the agent distribute current manual edits into their responsible stages. |
 | `status` | Show a read-only summary of where the work stands. |
 | `validate` | Check the work for consistency and flag anything that needs attention. |
 | `prepare` | After review, prepare a validated branch stack or cumulative branch for handoff. |
 | `archive` | Store the captured reasoning once the change has landed. |
 | `version` | Report the installed skill version. |
-| `update` | Update the installed skill from its source. |
+| `update` or `up` | Update the installed skill from its source. |
 | `help` | Explain the available commands, or one command in detail. |
 
 ## Contained in this Repository

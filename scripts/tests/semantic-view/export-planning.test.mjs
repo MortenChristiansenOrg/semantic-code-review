@@ -196,6 +196,62 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
   );
 });
 
+test("feedback target stays present when it leaves the current stage diff", (t) => {
+  const { repository, commits } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "moved-to-earlier-stage",
+    "--comment-id",
+    "moved-to-earlier-stage-comment",
+    "--body",
+    "Move this change to an earlier stage.",
+    "--label",
+    "implementation.txt",
+    "--target-kind",
+    "file",
+    "--stage",
+    "implementation",
+    "--path",
+    "implementation.txt",
+  );
+
+  const newHead = repository.commitFile(
+    "README.md",
+    "Updated test repository\n",
+    "Update unrelated stage file",
+  );
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.baseRevision = commits.get("implementation");
+  stage.change.headRevision = newHead;
+  stage.change.files = [
+    {
+      path: "README.md",
+      kind: "modified",
+    },
+  ];
+  stage.nodes[0].changes = [
+    {
+      path: "README.md",
+      classification: "behavior",
+    },
+  ];
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  const script = createImplementationDataScript(repository.root);
+  const data = JSON.parse(
+    script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  );
+  assert.deepEqual(data.feedback[0].targetState, { state: "present" });
+  assert.deepEqual(
+    data.stages[0].files.map((file) => file.path),
+    ["README.md"],
+  );
+});
+
 test("readFeedbackThread reloads one thread without rebuilding implementation data", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");

@@ -53,6 +53,7 @@ The installed skill also supports intent-level commands:
 /semantic-flow implement
 /semantic-flow review
 /semantic-flow feedback
+/semantic-flow reconcile
 /semantic-flow status
 /semantic-flow continue
 /semantic-flow validate

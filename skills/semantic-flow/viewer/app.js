@@ -84,6 +84,7 @@
   let compose = null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
   let replyTo = null;              // artifact thread id currently being replied to
   let replyDraft = "";             // unsent text of the open reply, kept across re-renders
+  let replyEditId = null;          // id of the pending reply draft being edited (if any)
   const threadOps = {};            // thread id -> { busy, error } for server actions
   let exportState = { phase: "idle", message: "" };
   function threadBusy(id) { return Boolean(threadOps[id] && threadOps[id].busy); }
@@ -112,7 +113,8 @@
       threadCollapsed: {},
       openLineThreads: {},
       activeFiles: {},
-      notesFilter: "active"
+      notesFilter: "active",
+      replyDrafts: []
     };
   }
   function load() {
@@ -457,9 +459,9 @@
       return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
     return null;
   }
-  // Classify what became of a file/line thread's target so the reviewer can be
-  // told precisely why the anchor is stale: the file was renamed, was deleted,
-  // or the stage simply moved on around a file that is still present.
+  // Classify what became of a file/line thread's target. The current stage diff
+  // controls whether the thread can jump to a file; snapshot status distinguishes
+  // a file removed from this stage's diff from one deleted from the repository.
   function threadTargetState(t) {
     const tgt = (t && t.target) || {};
     if ((tgt.kind === "file" || tgt.kind === "line") && tgt.path && tgt.stageId) {
@@ -467,7 +469,13 @@
       if (direct) return { state: "present" };
       const renamed = fileByPreviousId.get(fileKey(tgt.stageId, tgt.path));
       if (renamed) return { state: "renamed", to: renamed.file.path };
-      return { state: "deleted" };
+      if (t.targetState && t.targetState.state === "present")
+        return { state: "not-in-stage" };
+      if (t.targetState && t.targetState.state === "renamed")
+        return { state: "renamed", to: t.targetState.path };
+      if (t.targetState && t.targetState.state === "deleted")
+        return { state: "deleted" };
+      return { state: "not-in-stage" };
     }
     return { state: "present" };
   }
@@ -506,6 +514,8 @@
       staleMsg = `This file was deleted after the feedback was sent.`;
     else if (tstate.state === "renamed")
       staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.`;
+    else if (tstate.state === "not-in-stage")
+      staleMsg = `This file is no longer changed in this stage.`;
     else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
       staleMsg = `Stage changed since this feedback was sent.`;
     const stale = staleMsg
@@ -514,6 +524,20 @@
     const err = threadError(t.id)
       ? `<p class="tthread-err">${esc(threadError(t.id))}</p>`
       : "";
+    // Pending reply drafts render as unsent messages the reviewer can revise or
+    // remove before preparing feedback; the one being edited is shown as a form.
+    const draftReplies = repliesForThread(t.id)
+      .filter((r) => r.id !== replyEditId)
+      .map((r) => `<div class="tmsg tmsg-user tmsg-draft" data-reply-id="${esc(r.id)}">
+          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">Draft</span>
+            <span class="tmsg-act">
+              <button data-action="reply-edit" data-id="${esc(t.id)}" data-reply-id="${esc(r.id)}" type="button">Edit</button>
+              <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
+            </span>
+          </div>
+          <p>${esc(r.body)}</p>
+        </div>`)
+      .join("");
     const actionable = t.status === "open" || t.status === "resolved";
     const actions = actionable
       ? `<div class="tthread-act">
@@ -523,10 +547,11 @@
           ${replyTo === t.id ? "" : `<button data-action="thread-reply" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>Reply</button>`}
         </div>`
       : "";
+    const editing = replyTo === t.id && replyEditId != null;
     const replyForm = replyTo === t.id
       ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
           <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>
-          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${busy ? "disabled" : ""}>${busy ? "Sending…" : "Send reply"}</button></div>
+          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit">${editing ? "Update reply" : "Save reply"}</button></div>
         </form>`
       : "";
     return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
@@ -540,7 +565,7 @@
       <div class="tthread-body">
         <div class="tthread-body-inner">
           ${stale}
-          <div class="tthread-msgs">${msgs}</div>
+          <div class="tthread-msgs">${msgs}${draftReplies}</div>
           ${err}
           ${actions}
           ${replyForm}
@@ -632,7 +657,7 @@
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
-          <span class="fp"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
+          <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}
           ${fileMetrics(file)}
         </div>
@@ -920,7 +945,7 @@
         </div>
         <div class="tb-actions">
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
-          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${artifactThreads.length + visibleLocalNotes().length}</b></button>
+          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length + pendingReplies().length}</b></button>
         </div>
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
@@ -1127,6 +1152,17 @@
       .map((c, i) => ({ c, i }))
       .filter(({ c }) => c.mode === "feedback" && !c.exported);
   }
+  // Reviewer replies are held as revisable local drafts (like unsent feedback
+  // notes) and only sent to the artifact when the reviewer prepares feedback.
+  function pendingReplies() {
+    return Array.isArray(state.replyDrafts) ? state.replyDrafts : [];
+  }
+  function repliesForThread(threadId) {
+    return pendingReplies().filter((r) => r.threadId === threadId);
+  }
+  function pendingFeedbackCount() {
+    return pendingFeedback().length + pendingReplies().length;
+  }
   function notesPanel() {
     const noteCard = ({ c, i }) => {
       const sent = Boolean(c.exported);
@@ -1166,7 +1202,7 @@
           : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
     const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
     const filter = state.notesFilter === "resolved" ? "resolved" : "active";
-    const activeCount = activeThreads.length + localEntries.length;
+    const activeCount = activeThreads.length + localEntries.length + pendingReplies().length;
     const resolvedCount = resolvedThreads.length;
     const toggle = `<div class="notes-switch" role="tablist">
       <button class="notes-switch-btn ${filter === "active" ? "is-on" : ""}" data-action="notes-filter" data-filter="active" type="button" role="tab" aria-selected="${filter === "active"}">Active${activeCount ? `<b>${activeCount}</b>` : ""}</button>
@@ -1177,7 +1213,7 @@
       <div class="notes-col notes-col-resolved">${resolvedConvos}${resolvedThreads.length ? "" : resolvedEmpty}</div>
     </div>`;
     const body = `${toggle}${track}`;
-    const pending = pendingFeedback().length;
+    const pending = pendingFeedbackCount();
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
     const foot = `<div class="notes-foot">
@@ -1431,6 +1467,10 @@
       const c = state.comments[idx];
       if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
     } else if (a === "open-file") {
+      // Let the reviewer select the filename text without toggling the diff:
+      // a click that completes a selection over the name is not a toggle.
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && e.target.closest && e.target.closest(".fp-name")) return;
       toggleCinema(btn.dataset.id);
     } else if (a === "cinema-close") {
       const holder = btn.closest(".cinema-diff");
@@ -1448,10 +1488,23 @@
       compose = null;
       replyTo = btn.dataset.id;
       replyDraft = "";
+      replyEditId = null;
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
       render(); focusComposer();
+    } else if (a === "reply-edit") {
+      compose = null;
+      const draft = pendingReplies().find((r) => r.id === btn.dataset.replyId);
+      if (!draft) return;
+      replyTo = btn.dataset.id;
+      replyEditId = draft.id;
+      replyDraft = draft.body;
+      render(); focusComposer();
+    } else if (a === "reply-del") {
+      state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
+      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; }
+      persist(); render();
     } else if (a === "reply-cancel") {
-      replyTo = null; replyDraft = ""; render();
+      replyTo = null; replyDraft = ""; replyEditId = null; render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -1520,16 +1573,39 @@
   }
 
   // Continue an artifact thread with a reviewer reply (server-backed).
-  async function sendThreadReply(threadId, body) {
-    const thread = artifactThreadById(threadId);
-    if (!thread) return;
-    threadOps[threadId] = { busy: true, error: "" };
+  // Save (or update) a reviewer reply as a local draft. Drafts are revisable
+  // and only sent to the artifact when the reviewer prepares feedback.
+  function saveReplyDraft(threadId, body) {
+    if (!artifactThreadById(threadId)) return;
+    if (!Array.isArray(state.replyDrafts)) state.replyDrafts = [];
+    if (replyEditId != null) {
+      const draft = state.replyDrafts.find((r) => r.id === replyEditId);
+      if (draft) draft.body = body;
+    } else {
+      state.replyDrafts.push({
+        id: `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        threadId,
+        body,
+        createdAt: Date.now(),
+      });
+    }
+    replyTo = null;
+    replyDraft = "";
+    replyEditId = null;
+    persist();
     render();
+  }
+
+  // Send a single pending reply draft to the artifact (used at prepare time).
+  // Resolves to true on success so the caller can clear the draft.
+  async function submitReplyDraft(draft) {
+    const thread = artifactThreadById(draft.threadId);
+    if (!thread) return { ok: false, reason: "thread no longer exists" };
     try {
       const res = await fetch("/api/feedback/reply", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ implementationId: data.implementationId, threadId, body }),
+        body: JSON.stringify({ implementationId: data.implementationId, threadId: draft.threadId, body: draft.body }),
       });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
@@ -1537,13 +1613,10 @@
       if (out.comment) thread.comments.push(out.comment);
       if (out.status) thread.status = out.status;
       if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
-      threadOps[threadId] = { busy: false, error: "" };
-      replyTo = null;
-      replyDraft = "";
+      return { ok: true };
     } catch (err) {
-      threadOps[threadId] = { busy: false, error: err.message || "Reply failed." };
+      return { ok: false, reason: err.message || "reply failed" };
     }
-    render();
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
@@ -1572,6 +1645,25 @@
       if (kind === "resolve") state.threadCollapsed[threadId] = true;
       else if (kind === "reopen") state.threadCollapsed[threadId] = false;
       persist();
+      // Resolving the last active thread/comment on a diff line should hide the
+      // whole line-notes section, not leave a collapsed thread the reviewer must
+      // dismiss by hand. Collapse the inline row and re-render.
+      if (kind === "resolve" && thread.target && thread.target.kind === "line") {
+        const lineId = lineKey(
+          thread.target.stageId, thread.target.side, thread.target.line, thread.target.path,
+        );
+        const activeLeft =
+          artifactThreadsForElement("line", lineId).some((t) => t.status !== "resolved") ||
+          localVisibleForElement(lineId).length > 0;
+        if (!activeLeft) {
+          state.openLineThreads[lineId] = false;
+          persist();
+          const inline = app.querySelector(`.line-thread[data-thread="${cssEsc(lineId)}"]`);
+          const rowEl = inline ? inline.closest(".drow-thread") : null;
+          collapseThenRender(rowEl);
+          return;
+        }
+      }
       // Move the thread between the notes-list Active/Resolved columns: fade the
       // old copy out, drop a fresh copy into the destination column. Inline file
       // copies are updated in place (they always show, resolved or not).
@@ -1617,7 +1709,7 @@
   // Keep the Active/Resolved toggle counts in sync after an in-place move.
   function refreshNotesFilterCounts() {
     const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
+    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length + pendingReplies().length;
     const set = (filter, n) => {
       const btn = app.querySelector(`.notes-switch-btn[data-filter="${filter}"]`);
       if (!btn) return;
@@ -1694,46 +1786,67 @@
   async function exportFeedback() {
     if (exportState.phase === "working") return;
     const pending = pendingFeedback();
-    if (!pending.length) return;
+    const replies = pendingReplies().slice();
+    if (!pending.length && !replies.length) return;
     exportState = { phase: "working", message: "" };
     render();
-    try {
-      const res = await fetch("/api/feedback/export", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          implementationId: data.implementationId,
-          notes: pending.map(({ c, i }) => ({ ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body }))
-        })
-      });
-      let out = {};
-      try { out = await res.json(); } catch { /* non-JSON error body */ }
-      if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
-      const byRef = new Map(pending.map(({ c, i }) => [i, c]));
-      (out.exported || []).forEach((entry) => {
-        const ref = typeof entry === "number" ? entry : entry && entry.ref;
-        const note = byRef.get(ref);
-        if (note) {
-          note.exported = true;
-          if (entry && entry.threadId) note.threadId = entry.threadId;
-        }
-      });
-      persist();
-      const n = (out.exported || []).length;
-      const skipped = out.skipped || [];
-      const skips = skipped.map((s) => {
-        const c = state.comments[s.ref];
-        const label = c ? labelFor(c.kind, c.id) : `note ${s.ref}`;
-        return `${label} — ${s.reason}`;
-      });
-      exportState = {
-        phase: "done",
-        message: `Sent ${n} feedback thread${n === 1 ? "" : "s"} to the artifact${skipped.length ? `, ${skipped.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent, then reload to see replies.`,
-        skips
-      };
-    } catch (err) {
-      exportState = { phase: "error", message: err.message || "Export failed.", skips: [] };
+    const skips = [];
+    let notesSent = 0;
+    if (pending.length) {
+      try {
+        const res = await fetch("/api/feedback/export", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            implementationId: data.implementationId,
+            notes: pending.map(({ c, i }) => ({ ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body }))
+          })
+        });
+        let out = {};
+        try { out = await res.json(); } catch { /* non-JSON error body */ }
+        if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
+        const byRef = new Map(pending.map(({ c, i }) => [i, c]));
+        (out.exported || []).forEach((entry) => {
+          const ref = typeof entry === "number" ? entry : entry && entry.ref;
+          const note = byRef.get(ref);
+          if (note) {
+            note.exported = true;
+            if (entry && entry.threadId) note.threadId = entry.threadId;
+          }
+        });
+        notesSent = (out.exported || []).length;
+        (out.skipped || []).forEach((s) => {
+          const c = state.comments[s.ref];
+          const label = c ? labelFor(c.kind, c.id) : `note ${s.ref}`;
+          skips.push(`${label} — ${s.reason}`);
+        });
+      } catch (err) {
+        persist();
+        exportState = { phase: "error", message: err.message || "Export failed.", skips: [] };
+        render();
+        return;
+      }
     }
+    // Send reply drafts one by one, clearing each on success.
+    let repliesSent = 0;
+    for (const draft of replies) {
+      const result = await submitReplyDraft(draft);
+      if (result.ok) {
+        repliesSent += 1;
+        state.replyDrafts = pendingReplies().filter((x) => x.id !== draft.id);
+      } else {
+        skips.push(`reply — ${result.reason}`);
+      }
+    }
+    persist();
+    const parts = [];
+    if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
+    if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
+    exportState = {
+      phase: "done",
+      message: `Sent ${parts.join(" and ")} to the artifact${skips.length ? `, ${skips.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent, then reload to see replies.`,
+      skips
+    };
     render();
   }
 
@@ -1841,8 +1954,6 @@
   }
 
   function toggleCinema(id) {
-    // Let the user select the filename text without toggling the diff.
-    if (window.getSelection && String(window.getSelection()).trim().length) return;
     if (state.activeFiles[id]) { closeCinema(id); return; }
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
@@ -1949,7 +2060,8 @@
     if (e.target.matches("[data-reply-form]")) {
       e.preventDefault();
       const body = e.target.querySelector("textarea").value.trim();
-      if (body) sendThreadReply(e.target.dataset.id, body);
+      if (body) saveReplyDraft(e.target.dataset.id, body);
+      return;
     }
   });
 
@@ -1963,7 +2075,7 @@
     }
     if (e.key === "Escape") {
       if (compose) { compose = null; render(); return; }
-      if (replyTo) { replyTo = null; replyDraft = ""; render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }

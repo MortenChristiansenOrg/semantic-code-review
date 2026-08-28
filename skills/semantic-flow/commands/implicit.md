@@ -10,6 +10,8 @@ or mentions semantic flow in a natural-language request.
 - A request to resume interrupted implementation routes to `continue.md`.
 - A request to inspect or open the completed implementation routes to `review.md`.
 - A request to address open reviewer comments routes to `feedback.md`.
+- A request to distribute current manual edits into their responsible stages
+  routes to `reconcile.md`.
 - A request matching another indexed command routes to that command file.
 - A bare `/semantic-flow` invocation routes to `help.md`.
 

@@ -75,6 +75,45 @@ function gitCapture(cwd, args) {
   });
 }
 
+function gitPathExists(repoRoot, revision, filePath) {
+  try {
+    gitCapture(repoRoot, ["cat-file", "-e", `${revision}:${filePath}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
+  let raw;
+  try {
+    raw = gitCapture(repoRoot, [
+      "--no-pager",
+      "diff",
+      "--name-status",
+      "-z",
+      "--find-renames=50%",
+      fromRevision,
+      toRevision,
+    ]);
+  } catch {
+    return null;
+  }
+
+  const fields = raw.split("\0");
+  for (let index = 0; index < fields.length && fields[index];) {
+    const status = fields[index++];
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const previousPath = fields[index++];
+      const currentPath = fields[index++];
+      if (status.startsWith("R") && previousPath === filePath) return currentPath;
+    } else {
+      index += 1;
+    }
+  }
+  return null;
+}
+
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
@@ -426,10 +465,40 @@ function buildFeedbackThreads(repoRoot, stages) {
     const thread = readJson(
       path.join(feedbackRoot, "threads", `${threadId}.json`),
     );
+    const currentHead = currentHeads.get(thread.target?.stageId);
+    const targetHead = thread.target?.stageHead;
+    let targetState = null;
+    if (
+      ["file", "line"].includes(thread.target?.kind) &&
+      thread.target?.path &&
+      currentHead &&
+      targetHead
+    ) {
+      if (gitPathExists(repoRoot, currentHead, thread.target.path)) {
+        targetState = { state: "present" };
+      } else {
+        const renamedPath = renamedPathBetween(
+          repoRoot,
+          targetHead,
+          currentHead,
+          thread.target.path,
+        );
+        if (renamedPath && gitPathExists(repoRoot, currentHead, renamedPath)) {
+          targetState = { state: "renamed", path: renamedPath };
+        } else if (
+          gitPathExists(repoRoot, targetHead, thread.target.path)
+        ) {
+          targetState = { state: "deleted" };
+        } else {
+          targetState = { state: "not-in-stage" };
+        }
+      }
+    }
     threads.push({
       id: thread.id,
       status: thread.status,
       target: thread.target,
+      ...(targetState ? { targetState } : {}),
       comments: (thread.comments || []).map((c) => ({
         id: c.id,
         author: c.author,
