@@ -90,7 +90,8 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   an unregistered, preparatory, or future numbered branch.
 - Semantic metadata must not be committed on implementation stage branches.
 - Keep the stage branch chain linear. Merge commits are unsupported.
-- Record only observed insights and validation evidence. Never reconstruct or invent
+- Record only observed insights and review-relevant validation evidence. Never
+  record routine execution of existing test suites. Never reconstruct or invent
   decisions, failures, evidence, or private chain-of-thought.
 - Use operating-system temporary files or stdin for command JSON. Do not dirty
   the target repository with transient inputs.

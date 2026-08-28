@@ -86,8 +86,10 @@ arise:
 <semantic-implementation> stage record --input -
 ```
 
-Run focused checks while implementing. Preserve useful failures and skipped
-checks for later evidence.
+Run focused checks while implementing. Do not record routine execution of
+existing test suites. Preserve only review-relevant validation, such as
+temporary tests or probes that are later removed, manual checks, and noteworthy
+failures or skipped checks.
 
 ### Commit and organize
 
@@ -111,7 +113,9 @@ insight and validation evidence.
 Run the smallest existing checks that cover the organized stage. Run them from
 the artifact/implementation worktree, and confirm the working directory and
 repository root are that worktree before running so checks never execute against
-the source checkout. Record each observed result:
+the source checkout. Routine test-suite execution is implied and must not be
+recorded as validation evidence. Record only review-relevant results under the
+rules in `../docs/artifact-quality.md`:
 
 ```text
 <semantic-implementation> stage validation --input -
@@ -138,8 +142,9 @@ After all stages:
 2. Exercise the complete acceptance path.
 3. Put any discovered omission into the earliest responsible stage, then
    restack later stages.
-4. Run whole-stack checks from the artifact worktree and attach final evidence
-   to relevant finalized stages.
+4. Run whole-stack checks from the artifact worktree. Attach evidence to
+   relevant finalized stages only when it meets the review-relevance rules in
+   `../docs/artifact-quality.md`.
 5. Run:
 
    ```text

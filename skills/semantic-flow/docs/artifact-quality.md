@@ -39,7 +39,7 @@ not a story reconstructed afterward.
 ## Insights and change organization
 
 - Record useful decisions, assumptions, alternatives, failed attempts, risks,
-  validation, and open questions when they arise.
+  review-relevant validation, and open questions when they arise.
 - Exclude routine choices, secrets, raw logs, fabricated history, confidence
   claims, and private chain-of-thought.
 - After committing, run `stage organize` over the complete stage diff.
@@ -89,12 +89,19 @@ Specification references identify criteria actually addressed by the stage.
 Dependencies list direct behavioral prerequisites, not chronology or Git
 ancestry.
 
-Record validation only after it runs, with the exact command and observed
-result. Preserve failures and skipped checks. Before requesting review,
-exercise the complete acceptance path rather than relying only on isolated
-tests. For user-facing work, use the available runtime or browser workflow at
-representative viewport sizes. For reactive interfaces, verify that server
-updates and rerenders do not erase unsaved input or report stale success.
+Do not record routine execution of existing test suites as validation evidence,
+including repeated runs while implementing or addressing feedback. Test
+execution is implied. Record only checks that give the reviewer information
+beyond normal test-suite execution, such as temporary tests or probes created
+for a specific scenario and removed afterward, manual acceptance checks, or
+noteworthy failures and skipped checks. Record such evidence only after the
+check runs, with the exact command or procedure and observed result.
+
+Before requesting review, exercise the complete acceptance path rather than
+relying only on isolated tests. For user-facing work, use the available runtime
+or browser workflow at representative viewport sizes. For reactive interfaces,
+verify that server updates and rerenders do not erase unsaved input or report
+stale success.
 
 Review, approval, metadata publication, preparation, and archive are human
 gates. The agent must not approve its own implementation or feedback response.
