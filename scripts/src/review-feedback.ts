@@ -547,13 +547,9 @@ function addThreadBatch(paths, options) {
 
 function nextFeedback(paths, options) {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "next"));
-  const json = options.has("json");
-  if (
-    json &&
-    (options.get("json").length !== 1 || options.get("json")[0] !== true)
-  ) {
-    fail("--json is a flag.");
-  }
+  const json = flag(options, "json");
+  const compact = flag(options, "compact");
+  if (compact && !json) fail("--compact requires --json.");
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const awaiting = [...feedback.threads.values()].filter(
     (thread) =>
@@ -566,21 +562,54 @@ function nextFeedback(paths, options) {
       (thread) => thread.assignedStageId === stageId,
     );
     if (threads.length) {
-      groups.push({
-        stageId,
-        stageBranch: semantic.stages.get(stageId).change.branch,
-        stageHead: semantic.stages.get(stageId).change.headRevision,
-        threads: threads.map((thread) => ({
-          id: thread.id,
-          stageHead: thread.stageHead,
-          comments: thread.comments,
-          target: thread.target,
-        })),
-      });
+      const stage = semantic.stages.get(stageId);
+      groups.push(
+        compact
+          ? {
+              stageId,
+              stageBranch: stage.change.branch,
+              threads: threads.map((thread) => {
+                const {
+                  stageBranch: _targetBranch,
+                  stageHead: targetHead,
+                  ...target
+                } = thread.target;
+                const targetStage = target.stageId
+                  ? semantic.stages.get(target.stageId)
+                  : null;
+                return {
+                  id: thread.id,
+                  stale:
+                    thread.stageHead !== stage.change.headRevision ||
+                    Boolean(
+                      targetHead &&
+                        targetStage &&
+                        targetHead !== targetStage.change.headRevision,
+                    ),
+                  comments: thread.comments.map(({ author, body }) => ({
+                    author,
+                    body,
+                  })),
+                  target,
+                };
+              }),
+            }
+          : {
+              stageId,
+              stageBranch: stage.change.branch,
+              stageHead: stage.change.headRevision,
+              threads: threads.map((thread) => ({
+                id: thread.id,
+                stageHead: thread.stageHead,
+                comments: thread.comments,
+                target: thread.target,
+              })),
+            },
+      );
     }
   }
   if (json) {
-    console.log(JSON.stringify(groups, null, 2));
+    console.log(JSON.stringify(groups, null, compact ? undefined : 2));
     return;
   }
   if (!groups.length) {

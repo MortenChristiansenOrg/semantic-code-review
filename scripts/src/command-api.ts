@@ -139,6 +139,7 @@ export const semanticImplementationApi: CliSignature = {
       options: [
         option("from", "<stage-id>"),
         option("base", "<revision>"),
+        option("json"),
       ],
     },
     { command: "repair" },
@@ -198,7 +199,10 @@ export const reviewFeedbackApi: CliSignature = {
       command: "thread add-batch",
       options: [option("threads", "<json-array>", { required: true })],
     },
-    { command: "next", options: [option("json")] },
+    {
+      command: "next",
+      options: [option("json"), option("compact")],
+    },
     {
       command: "thread reply",
       options: [
@@ -256,6 +260,10 @@ export const semanticFlowApi: CliSignature = {
     {
       command: "review",
       options: projectSelectionOptions,
+    },
+    {
+      command: "feedback",
+      options: [...projectSelectionOptions, option("json")],
     },
     {
       command: "version",

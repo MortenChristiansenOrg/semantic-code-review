@@ -49,7 +49,7 @@ const commands = new Map([
   ],
   [
     flowCli,
-    ["inspect", "validate", "status", "review", "version", "update"],
+    ["inspect", "validate", "status", "review", "feedback", "version", "update"],
   ],
 ]);
 
@@ -193,9 +193,22 @@ test("skill indexes command-specific workflows", () => {
   assert.match(runtime, /<semantic-flow> inspect --json/);
   assert.match(runtime, /otherwise the only\s+matching artifact/);
   assert.match(commandText.get("implement"), /<semantic-implementation> stage begin/);
-  assert.match(commandText.get("feedback"), /<review-feedback> next --json/);
+  assert.match(commandText.get("feedback"), /<semantic-flow> feedback --json/);
+  assert.match(commandText.get("feedback"), /thread reply-batch --input -/);
+  assert.match(
+    commandText.get("feedback"),
+    /one restack[\s\S]*<earliest-changed-stage-id>/,
+  );
+  assert.doesNotMatch(commandText.get("feedback"), /Read `\.\.\/docs\/runtime\.md`/);
   assert.match(commandText.get("reconcile"), /temporary recovery branch/);
-  assert.match(commandText.get("reconcile"), /restack --from <stage-id>/);
+  assert.match(
+    commandText.get("reconcile"),
+    /restack --from <earliest-changed-stage-id>/,
+  );
+  assert.match(
+    commandText.get("reconcile"),
+    /Do not restack after each stage/,
+  );
   assert.match(
     commandText.get("reconcile"),
     /git branch --delete --force <temporary-recovery-branch>/,
@@ -224,6 +237,7 @@ test("skill indexes command-specific workflows", () => {
   assert.match(skill, /\| `\/semantic-flow simulate` \| `sim` \|/);
   assert.match(readme, /\| `simulate` or `sim` \|/);
   assert.match(commandText.get("review"), /<semantic-flow> review/);
+  assert.doesNotMatch(commandText.get("review"), /Read `\.\.\/docs\/runtime\.md`/);
   assert.match(commandText.get("validate"), /<semantic-flow> validate/);
   assert.match(commandText.get("status"), /<semantic-flow> status/);
   assert.match(commandText.get("version"), /<semantic-flow> version/);

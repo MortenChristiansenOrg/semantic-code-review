@@ -3,19 +3,17 @@
 Use to open the local semantic review viewer. This command is read-only with
 respect to implementation artifacts and implementation branches.
 
-Read `../docs/runtime.md` and the selected operating-system guide.
-
-## Resolve and launch
-
-Launch:
+`<semantic-flow>` means `node <installed-skill-root>/scripts/semantic-flow.mjs`.
+Quote the script path. Launch:
 
 ```text
-<semantic-flow> review [--project <repository-or-worktree-path>]
+<semantic-flow> review [--project <repository-or-worktree-path>] [--implementation-id <id>]
 ```
 
 The helper resolves linked worktrees without requiring `targetBranch` to match
-the invoking branch, then starts the bundled viewer. Keep it running and
-confirm it is responsive at the reported local URL.
+the invoking branch, then starts the bundled viewer. It reports the local URL
+only after the server is listening, so do not run a separate inspect,
+validation, or HTTP probe. Keep the process running.
 
 The viewer renders stages, change nodes, project-grouped files, linked insights,
 full-context diffs, and feedback threads. A user can add and edit draft notes

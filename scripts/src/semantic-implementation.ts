@@ -789,7 +789,7 @@ function validateSemantic(
     isAncestor(paths.root, finalStageHead, targetHead);
   if (targetHead !== base && !targetContainsLandedStack) {
     fail(
-      `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; run restack --base ${manifest.targetBranch}.`,
+      `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; check it out, then run restack --base ${manifest.targetBranch}.`,
     );
   }
   let expectedBaseBranch = manifest.targetBranch;
@@ -814,7 +814,7 @@ function validateSemantic(
     const head = commitObject(paths.root, headRevision);
     if (branchHead !== head) {
       fail(
-        `Stage ${id} branch ${branch} moved from ${head} to ${branchHead}; run restack --from ${id}.`,
+        `Stage ${id} branch ${branch} moved from ${head} to ${branchHead}; check it out, then run restack --from ${id}.`,
       );
     }
     assertLinearRange(paths.root, expectedParent, head, `Stage ${id}`);
@@ -1718,13 +1718,15 @@ function discardStage(paths, options) {
 }
 
 function commitMetadata(root, commit) {
+  const [authorName, authorEmail, authorDate, message] = gitRaw(
+    ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", commit],
+    { cwd: root },
+  ).split("\0");
   return {
-    authorName: git(["show", "-s", "--format=%an", commit], { cwd: root }),
-    authorEmail: git(["show", "-s", "--format=%ae", commit], { cwd: root }),
-    authorDate: git(["show", "-s", "--format=%aI", commit], { cwd: root }),
-    message: gitRaw(["show", "-s", "--format=%B", commit], {
-      cwd: root,
-    }),
+    authorName,
+    authorEmail,
+    authorDate,
+    message,
   };
 }
 
@@ -1804,6 +1806,7 @@ function updateRefsAtomically(root, updates) {
 
 function restack(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
+  const json = flag(options, "json");
   assertCleanWorkingTree(paths.root, "Restacking");
   const artifact = validateArtifact(paths, {
     schemaOnly: true,
@@ -1818,11 +1821,22 @@ function restack(paths, options) {
   if (!fromId && !baseOption) {
     fail("restack requires --from <stage-id> or --base <revision>.");
   }
+  if (fromId && baseOption) {
+    fail("restack accepts either --from or --base, not both.");
+  }
   const fromIndex = fromId
     ? artifact.manifest.stages.indexOf(fromId)
     : artifact.manifest.stages.length;
   if (fromId && fromIndex < 0) {
     fail(`Stage ${fromId} does not exist.`);
+  }
+  if (fromId) {
+    const branch = artifact.stages.get(fromId).change.branch;
+    if (currentBranch(paths.root) !== branch) {
+      fail(
+        `Restacking from ${fromId} requires checked-out stage branch ${branch}.`,
+      );
+    }
   }
   const startIndex = baseOption ? 0 : fromIndex;
   const newBase = baseOption
@@ -1952,12 +1966,35 @@ function restack(paths, options) {
       throw error;
     }
 
-    console.log(
-      `Restacked ${plans.length} stage branch(es)${baseOption ? ` onto ${newBase}` : ` from ${fromId}`}:`,
-    );
-    for (const plan of plans) {
+    if (json) {
       console.log(
-        `  ${plan.branch}: ${plan.previousHead} -> ${plan.nextHead} (base ${plan.baseBranch})`,
+        JSON.stringify({
+          mode: baseOption ? "base" : "stage",
+          fromStage: fromId ?? null,
+          targetBranch: artifact.manifest.targetBranch,
+          baseRevision: newBase,
+          refreshedStages: plans.length,
+          rewrittenBranches: refUpdates.length,
+          stages: plans.map((plan) => ({
+            id: plan.id,
+            branch: plan.branch,
+            previousHead: plan.previousHead,
+            nextHead: plan.nextHead,
+            baseBranch: plan.baseBranch,
+            baseRevision: plan.baseRevision,
+            rewritten: plan.previousHead !== plan.nextHead,
+          })),
+        }),
+      );
+    } else {
+      console.log(
+        `Restacked ${plans.length} stage(s) ${
+          baseOption
+            ? `onto ${artifact.manifest.targetBranch}`
+            : `from ${fromId}`
+        }; rewrote ${refUpdates.length} ${
+          refUpdates.length === 1 ? "branch" : "branches"
+        }.`,
       );
     }
   } finally {

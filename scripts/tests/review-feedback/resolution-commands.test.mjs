@@ -258,6 +258,39 @@ test("next lists only open threads awaiting an agent reply", (t) => {
     groups.flatMap((g) => g.threads.map((thread) => thread.id)).sort(),
     ["already-answered", "needs-reply"],
   );
+
+  const compactOutput = repository.feedback("next", "--json", "--compact");
+  const compact = JSON.parse(compactOutput);
+  const compactThread = compact
+    .flatMap((group) => group.threads)
+    .find((thread) => thread.id === "already-answered");
+  assert.equal(compactOutput.includes("\n"), false);
+  assert.equal(compactThread.stale, false);
+  assert.equal("stageHead" in compact[0], false);
+  assert.equal("stageHead" in compactThread, false);
+  assert.equal("stageBranch" in compactThread.target, false);
+  assert.equal("stageHead" in compactThread.target, false);
+  assert.deepEqual(compactThread.comments[0], {
+    author: "user",
+    body: "Resolve already-answered.",
+  });
+  assert.equal("createdAt" in compactThread.comments[0], false);
+  repository.expectFeedbackFailure(
+    "--compact requires --json",
+    "next",
+    "--compact",
+  );
+
+  repository.commitFile(
+    "implementation.txt",
+    "implementation changed after feedback\n",
+    "Change reviewed stage",
+  );
+  repository.semantic("restack", "--from", "implementation");
+  const stale = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  );
+  assert.equal(stale[0].threads[0].stale, true);
 });
 
 test("reviewers reopen and continue resolved threads", (t) => {

@@ -279,9 +279,16 @@ The command:
 1. Accepts the edited lower branch's current head.
 2. Replays every branch above it, bottom-up.
 3. Moves all affected refs only after every replay succeeds.
-4. Refreshes base/head snapshots and file inventories while requiring node
-   partitions to remain valid for the rewritten diffs.
+4. Refreshes base/head snapshots and file inventories.
 5. Leaves the edited branch checked out.
+
+Several stage branches may be edited before one restack. Check out the earliest
+edited stage before running `restack --from`; the command accepts later edited
+heads and replays each descendant once. Reorganize a descendant afterward only
+when its rewritten diff no longer matches its node coverage.
+
+Default output is a one-line summary. Add `--json` when exact old and new
+revisions are needed.
 
 If trunk advanced:
 
@@ -301,15 +308,14 @@ hosting operation and should use lease-protected force pushes where available.
 Get work grouped by stage:
 
 ```text
-<review-feedback> next --json
+<semantic-flow> feedback --json
 ```
 
-After answering or restacking, the implementation agent replies:
+After answering or restacking, the implementation agent sends all replies in
+one batch:
 
 ```text
-<review-feedback> thread reply --id <thread-id> \
-  --comment-id <agent-comment-id> --author agent \
-  --body "Updated the cancellation rule."
+<review-feedback> thread reply-batch --input <replies-json>
 ```
 
 The same reply flow handles questions that require no code change. The

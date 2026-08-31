@@ -54,6 +54,17 @@ interface Inspection {
   selected: ArtifactCandidate | null;
 }
 
+interface PendingFeedbackStage {
+  stageId: string;
+  stageBranch: string;
+  threads: Array<{
+    id: string;
+    stale: boolean;
+    comments: Array<{ author: string; body: string }>;
+    target: { label: string };
+  }>;
+}
+
 function normalizedPath(value: string): string {
   const resolved = path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
@@ -237,17 +248,30 @@ function executeCapture(
   args: string[],
   cwd: string,
 ): { passed: boolean; output: string } {
+  const result = executeCaptureStreams(executable, args, cwd);
+  return {
+    passed: result.passed,
+    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim(),
+  };
+}
+
+function executeCaptureStreams(
+  executable: string,
+  args: string[],
+  cwd: string,
+): { passed: boolean; stdout: string; stderr: string } {
   const result = spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
-    return { passed: false, output: result.error.message };
+    return { passed: false, stdout: "", stderr: result.error.message };
   }
   return {
     passed: result.status === 0,
-    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim(),
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
   };
 }
 
@@ -439,6 +463,96 @@ function review(options: Options): void {
   );
   if (status !== 0) {
     fail(`Semantic review viewer exited with code ${status}.`);
+  }
+}
+
+function feedback(options: Options): void {
+  const candidate = resolveSingle(options, "feedback");
+  const json = flag(options, "json");
+  const artifactValidation = executeCapture(
+    process.execPath,
+    [semanticImplementationScript, "validate"],
+    candidate.worktree,
+  );
+  if (!artifactValidation.passed) {
+    if (artifactValidation.output) console.error(artifactValidation.output);
+    fail("Semantic implementation validation failed.");
+  }
+
+  const worktreeStatus =
+    git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
+  const worktreeChanges = worktreeStatus
+    ? worktreeStatus.split(/\r?\n/).filter(Boolean)
+    : [];
+  const feedbackRoot = path.join(
+    candidate.worktree,
+    ".semantic-review-feedback",
+  );
+  if (
+    !candidate.feedbackExists &&
+    fs.existsSync(feedbackRoot) &&
+    fs.readdirSync(feedbackRoot).length > 0
+  ) {
+    fail(
+      `Incomplete feedback state in ${feedbackRoot}: manifest.json is missing.`,
+    );
+  }
+  let stages: PendingFeedbackStage[] = [];
+  if (candidate.feedbackExists) {
+    const pending = executeCaptureStreams(
+      process.execPath,
+      [reviewFeedbackScript, "next", "--json", "--compact"],
+      candidate.worktree,
+    );
+    if (!pending.passed) {
+      const output = [pending.stdout, pending.stderr]
+        .filter(Boolean)
+        .join("\n");
+      if (output) console.error(output);
+      fail("Feedback validation failed.");
+    }
+    if (pending.stderr) console.error(pending.stderr);
+    try {
+      stages = JSON.parse(pending.stdout);
+    } catch {
+      fail("Feedback command returned invalid JSON.");
+    }
+  }
+
+  const result = {
+    worktree: candidate.worktree,
+    currentBranch: candidate.currentBranch,
+    worktreeChanges,
+    feedbackExists: candidate.feedbackExists,
+    stages,
+  };
+  if (json) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  console.log(`Artifact: ${candidate.worktree}`);
+  if (worktreeChanges.length) {
+    console.log(`Worktree changes:\n${worktreeChanges.join("\n")}`);
+  }
+  if (!candidate.feedbackExists) {
+    console.log("No feedback has been sent.");
+    return;
+  }
+  if (!stages.length) {
+    console.log("No feedback awaits an agent reply.");
+    return;
+  }
+  for (const stage of stages) {
+    console.log(`${stage.stageId} (${stage.stageBranch}):`);
+    for (const thread of stage.threads) {
+      console.log(
+        `  ${thread.id} [${thread.target.label}]${thread.stale ? " (stale)" : ""}:`,
+      );
+      for (const comment of thread.comments) {
+        console.log(`    ${comment.author}: ${comment.body}`);
+      }
+    }
   }
 }
 
@@ -744,6 +858,10 @@ function dispatch(positionals: string[], options: Options): void {
   }
   if (command === "review") {
     review(options);
+    return;
+  }
+  if (command === "feedback") {
+    feedback(options);
     return;
   }
   if (command === "version") {

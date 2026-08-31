@@ -87,14 +87,22 @@ Process affected stages from earliest to latest:
    user's reasoning or reconstruct history.
 6. Rerun `stage organize --finalized` when causes, files, hunks, line ranges,
    or item links changed.
-7. Restack from the changed stage:
 
-   ```text
-   <semantic-implementation> restack --from <stage-id>
-   ```
+Do not restack after each stage. Keep the earliest changed stage ID. After all
+assigned corrections are committed and organized, check out that earliest
+changed branch and run:
 
-8. Reinspect later assigned changes against the rewritten branches. Reorganize
-   any descendant whose existing node coverage no longer matches its diff.
+```text
+<semantic-implementation> restack --from <earliest-changed-stage-id>
+```
+
+This replays each descendant once. If a later correction requires code from an
+earlier correction before it can be recreated coherently, restack before that
+stage, then continue and run one final restack from the earliest stage changed
+afterward.
+
+Reinspect the rewritten stack once. Reorganize only descendants whose existing
+node coverage no longer matches their diff.
 
 Resolve replay conflicts according to the captured final tree and the recorded
 stage intents. If that cannot be done without choosing new product behavior,

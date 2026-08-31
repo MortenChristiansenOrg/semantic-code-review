@@ -215,10 +215,12 @@ export interface DiscardStageOptions {
  */
 export declare function discardStage(options: DiscardStageOptions): void;
 export interface RestackOptions {
-    /** Earliest stage branch that was edited manually. */
+    /** Earliest edited stage. Its recorded branch must be checked out. Mutually exclusive with `base`. */
     from?: string;
-    /** Replacement trunk revision, usually the current target branch head. */
+    /** Replacement trunk revision, usually the current target branch head. Mutually exclusive with `from`. */
     base?: string;
+    /** Emits exact old and new revisions for every refreshed stage. */
+    json?: true;
 }
 /**
  * Refreshes an edited stage branch and rebases every branch above it.
@@ -346,6 +348,8 @@ export declare function addFeedbackThreads(options: AddFeedbackThreadsOptions): 
 export interface NextFeedbackOptions {
     /** Emits machine-readable JSON instead of text. */
     json?: true;
+    /** Omits comment metadata and repeated revision data, reports staleness as a boolean, and emits minified JSON. Requires `json`. */
+    compact?: true;
 }
 /**
  * Lists open feedback threads awaiting an agent reply, grouped by stage.
@@ -472,6 +476,21 @@ export declare function semanticFlowStatus(options?: SemanticFlowStatusOptions):
  * @command review
  */
 export declare function reviewSemanticFlow(options?: SelectSemanticFlowImplementationOptions): void;
+export interface SemanticFlowFeedbackOptions {
+    /** Repository or worktree used to discover linked semantic implementation artifacts. */
+    project?: string;
+    /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+    "implementation-id"?: string;
+    /** Emits a compact machine-readable preflight and pending-feedback snapshot. */
+    json?: true;
+}
+/**
+ * Resolves one active artifact, validates it, and lists feedback awaiting an
+ * agent reply. The result also reports the artifact worktree and local changes.
+ * @cli semantic-flow.mjs
+ * @command feedback
+ */
+export declare function semanticFlowFeedback(options?: SemanticFlowFeedbackOptions): void;
 export interface SemanticFlowVersionOptions {
     /** Emits machine-readable installed skill and format versions. */
     json?: true;

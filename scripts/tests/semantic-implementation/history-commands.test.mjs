@@ -54,7 +54,12 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
 
   repository.git("switch", "semantic-flow/test-implementation/01-policy");
   repository.commitFile("policy.txt", "policy v2\n", "Fix policy");
-  repository.semantic("restack", "--from", "policy");
+  const output = repository.semantic("restack", "--from", "policy");
+  assert.match(
+    output,
+    /Restacked 2 stage\(s\) from policy; rewrote 1 branch\./,
+  );
+  assert.doesNotMatch(output, /[0-9a-f]{40}/);
 
   const rewrittenPolicy = repository.readJson(
     ".semantic-review/stages/policy.json",
@@ -69,6 +74,98 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
     rewrittenPersistence,
   );
   assert.equal(repository.read("policy.txt"), "policy v2\n");
+  repository.semantic("validate", "--publish");
+});
+
+test("restack accepts several edited stage heads in one pass", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, {
+    id: "policy",
+    file: "policy.txt",
+    contents: "policy v1\n",
+  });
+  beginStage(repository, {
+    id: "persistence",
+    dependencies: ["policy"],
+  });
+  finalizeStage(repository, {
+    id: "persistence",
+    file: "persistence.txt",
+    contents: "persistence v1\n",
+  });
+  beginStage(repository, {
+    id: "api",
+    dependencies: ["persistence"],
+  });
+  const originalApi = finalizeStage(repository, {
+    id: "api",
+    file: "api.txt",
+    contents: "api v1\n",
+  });
+
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  repository.commitFile("policy.txt", "policy v2\n", "Fix policy");
+  repository.git("switch", "semantic-flow/test-implementation/02-persistence");
+  repository.write("persistence.txt", "persistence v2\n");
+  repository.git("add", "persistence.txt");
+  repository.git(
+    "commit",
+    "--author",
+    "Original Author <original@example.test>",
+    "-m",
+    "Fix persistence",
+  );
+  repository.expectSemanticFailure(
+    "requires checked-out stage branch",
+    "restack",
+    "--from",
+    "policy",
+  );
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  repository.expectSemanticFailure(
+    "either --from or --base",
+    "restack",
+    "--from",
+    "policy",
+    "--base",
+    "main",
+  );
+
+  const result = JSON.parse(
+    repository.semantic("restack", "--from", "policy", "--json"),
+  );
+  assert.equal(result.refreshedStages, 3);
+  assert.equal(result.rewrittenBranches, 2);
+  assert.deepEqual(
+    result.stages.map(({ id, rewritten }) => ({ id, rewritten })),
+    [
+      { id: "policy", rewritten: false },
+      { id: "persistence", rewritten: true },
+      { id: "api", rewritten: true },
+    ],
+  );
+  assert.equal(
+    repository.git(
+      "show",
+      "semantic-flow/test-implementation/02-persistence:persistence.txt",
+    ),
+    "persistence v2",
+  );
+  assert.equal(
+    repository.git(
+      "show",
+      "-s",
+      "--format=%an <%ae>%n%B",
+      "semantic-flow/test-implementation/02-persistence",
+    ),
+    "Original Author <original@example.test>\nFix persistence",
+  );
+  assert.notEqual(
+    repository.git("rev-parse", "semantic-flow/test-implementation/03-api"),
+    originalApi,
+  );
   repository.semantic("validate", "--publish");
 });
 

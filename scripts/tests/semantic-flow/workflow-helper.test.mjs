@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   beginStage,
+  createImplementationWithStages,
   createRepository,
   flowCli,
   initializeImplementation,
@@ -38,6 +39,62 @@ test("validate resolves the artifact and runs both validators", (t) => {
 
   const output = repository.flow("validate");
   assert.match(output, /Artifact:/);
+});
+
+test("feedback resolves, validates, and returns compact pending work", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "pending-review",
+    "--comment-id",
+    "pending-review-note",
+    "--body",
+    "Tighten the implementation.",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+
+  const result = JSON.parse(repository.flow("feedback", "--json"));
+  assert.equal(result.worktree, repository.root);
+  assert.equal(result.feedbackExists, true);
+  assert.deepEqual(result.worktreeChanges, []);
+  assert.equal(result.stages[0].stageId, "implementation");
+  assert.equal(result.stages[0].threads[0].stale, false);
+  assert.equal("stageHead" in result.stages[0], false);
+  assert.deepEqual(result.stages[0].threads[0].comments, [
+    { author: "user", body: "Tighten the implementation." },
+  ]);
+});
+
+test("feedback reports an implementation with no feedback state", (t) => {
+  const { repository } = createImplementationWithStages(t);
+
+  const result = JSON.parse(repository.flow("feedback", "--json"));
+  assert.equal(result.feedbackExists, false);
+  assert.deepEqual(result.stages, []);
+});
+
+test("feedback rejects incomplete feedback state", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.write(".semantic-review-feedback/orphan.json", "{}\n");
+
+  const result = repository.result(process.execPath, [
+    flowCli,
+    "feedback",
+    "--json",
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Incomplete feedback state.*manifest\.json is missing/,
+  );
 });
 
 test("status reports coverage, evidence, feedback, and validation", (t) => {
