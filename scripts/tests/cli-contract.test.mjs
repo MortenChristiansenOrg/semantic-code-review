@@ -151,6 +151,10 @@ test("skill indexes command-specific workflows", () => {
     path.join(skillRoot, "docs", "os", "windows.md"),
     "utf8",
   );
+  const readme = fs.readFileSync(
+    path.resolve(skillRoot, "..", "..", "README.md"),
+    "utf8",
+  );
 
   const commands = [
     "implicit",
@@ -158,6 +162,7 @@ test("skill indexes command-specific workflows", () => {
     "review",
     "feedback",
     "reconcile",
+    "simulate",
     "status",
     "continue",
     "validate",
@@ -197,6 +202,25 @@ test("skill indexes command-specific workflows", () => {
     commandText.get("reconcile"),
     /successful reconciliation is incomplete while that ref remains/,
   );
+  assert.match(
+    commandText.get("simulate"),
+    /\.semantic-review\/manifest\.json/,
+  );
+  assert.match(commandText.get("simulate"), /temporary simulation snapshot/);
+  assert.match(
+    commandText.get("simulate"),
+    /source branch and source commit are unchanged/,
+  );
+  assert.match(
+    commandText.get("simulate"),
+    /Do not invent historical decisions/,
+  );
+  assert.match(
+    commandText.get("simulate"),
+    /successful simulation is incomplete while that ref remains/,
+  );
+  assert.match(skill, /\| `\/semantic-flow simulate` \| `sim` \|/);
+  assert.match(readme, /\| `simulate` or `sim` \|/);
   assert.match(commandText.get("review"), /<semantic-flow> review/);
   assert.match(commandText.get("validate"), /<semantic-flow> validate/);
   assert.match(commandText.get("status"), /<semantic-flow> status/);

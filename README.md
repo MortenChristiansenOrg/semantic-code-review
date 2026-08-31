@@ -81,6 +81,7 @@ story using semantic flow") or with explicit commands:
 | `review` or `rv` | Launch the local review viewer for the current work. |
 | `feedback` or `fb` | Have the agent address the feedback you submitted in the viewer. |
 | `reconcile` or `rc` | Have the agent distribute current manual edits into their responsible stages. |
+| `simulate` or `sim` | Reconstruct a completed external change as a reviewable semantic stage stack. |
 | `status` | Show a read-only summary of where the work stands. |
 | `validate` | Check the work for consistency and flag anything that needs attention. |
 | `prepare` | After review, prepare a validated branch stack or cumulative branch for handoff. |
