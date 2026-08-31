@@ -406,6 +406,21 @@ export declare function addFeedbackThread(
   options: AddFeedbackThreadOptions,
 ): void;
 
+export interface AddFeedbackThreadsOptions {
+  /** JSON array of feedback thread inputs using the same fields as `thread add`. */
+  threads: string;
+}
+
+/**
+ * Adds several feedback threads as one locked and validated mutation.
+ * No thread is kept when any input is invalid.
+ * @cli review-feedback.mjs
+ * @command thread add-batch
+ */
+export declare function addFeedbackThreads(
+  options: AddFeedbackThreadsOptions,
+): void;
+
 export interface NextFeedbackOptions {
   /** Emits machine-readable JSON instead of text. */
   json?: true;
@@ -437,6 +452,21 @@ export interface ReplyFeedbackThreadOptions {
  */
 export declare function replyFeedbackThread(
   options: ReplyFeedbackThreadOptions,
+): void;
+
+export interface ReplyFeedbackThreadsOptions {
+  /** JSON array of reply inputs using the same fields as `thread reply`. */
+  replies: string;
+}
+
+/**
+ * Appends several replies as one locked and validated mutation.
+ * No reply is kept when any input is invalid.
+ * @cli review-feedback.mjs
+ * @command thread reply-batch
+ */
+export declare function replyFeedbackThreads(
+  options: ReplyFeedbackThreadsOptions,
 ): void;
 
 export interface ResolveFeedbackThreadOptions {

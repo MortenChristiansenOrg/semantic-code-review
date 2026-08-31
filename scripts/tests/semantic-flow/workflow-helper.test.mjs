@@ -144,7 +144,6 @@ test("update rebuilds and replaces a copied installation", (t) => {
       stdio: "ignore",
     });
   }
-
   const copiedCli = path.join(
     installedSkill,
     "scripts",

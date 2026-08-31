@@ -761,6 +761,7 @@ button { font-family: inherit; cursor: pointer; }
   margin-top: 1px;
 }
 .node.is-approved .node-check { border-color: var(--ok); background: var(--ok-soft); }
+.node.is-stale .node-check { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); font-weight: 700; }
 .node-ix {
   font-family: var(--mono);
   font-size: 12px;
@@ -977,6 +978,8 @@ button { font-family: inherit; cursor: pointer; }
   transition: all .2s var(--ease);
 }
 .approve:hover { border-color: var(--ok); }
+.approve:disabled { cursor: not-allowed; opacity: .45; }
+.approve:disabled:hover { border-color: var(--line); }
 .approve.is-on { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
 .approve.is-on .check { border-color: var(--ok); background: var(--ok); color: var(--ink); }
 .approve.is-stale { border-color: var(--warn); background: var(--warn-soft); color: var(--warn); }

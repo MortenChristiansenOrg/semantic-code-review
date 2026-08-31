@@ -38,8 +38,10 @@ const commands = new Map([
     [
       "init",
       "thread add",
+      "thread add-batch",
       "next",
       "thread reply",
+      "thread reply-batch",
       "thread resolve",
       "thread reopen",
       "validate",
@@ -291,6 +293,24 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(editorConfig, /^charset = utf-8$/m);
   assert.match(viewerApp, /t\.anchorStale/);
   assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
+  assert.doesNotMatch(viewerApp, /approveBtn\("node"/);
+  assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
+  const aggregateStart = viewerApp.indexOf("function aggregateApprovalState(states)");
+  const aggregateEnd = viewerApp.indexOf("\n  function nodeApprovalState", aggregateStart);
+  assert.notEqual(aggregateStart, -1);
+  assert.notEqual(aggregateEnd, -1);
+  const aggregateApprovalState = new Function(
+    `${viewerApp.slice(aggregateStart, aggregateEnd)}; return aggregateApprovalState;`,
+  )();
+  assert.equal(aggregateApprovalState([]), "none");
+  assert.equal(aggregateApprovalState(["none", "approved"]), "none");
+  assert.equal(aggregateApprovalState(["approved", "approved"]), "approved");
+  assert.equal(aggregateApprovalState(["stale", "stale"]), "stale");
+  assert.equal(aggregateApprovalState(["approved", "stale"]), "stale");
+  assert.match(viewerApp, /stage\.nodes\.every\(\(node\) => nodeApprovalState\(stage, node\) === "approved"\)/);
+  assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
+  assert.match(viewerApp, /Approve every step before approving the stage/);
+  assert.match(viewerApp, /if \(stage && !stageNodesApproved\(stage\)\) return;/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);

@@ -131,6 +131,82 @@ test("answer-only threads use the same resolution flow", (t) => {
   repository.feedback("validate");
 });
 
+test("thread reply-batch validates and writes one atomic batch", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "batch-first");
+  addThread(repository, "batch-second");
+  repository.write(
+    "reply-batch.json",
+    `${JSON.stringify({
+      replies: [
+        {
+          id: "batch-first",
+          "comment-id": "batch-first-reply",
+          body: "First reply.",
+          author: "agent",
+        },
+        {
+          id: "batch-second",
+          "comment-id": "batch-second-reply",
+          body: "Second reply.",
+          author: "agent",
+        },
+      ],
+    })}\n`,
+  );
+
+  repository.feedback(
+    "thread",
+    "reply-batch",
+    "--input",
+    "reply-batch.json",
+  );
+  assert.equal(
+    repository.readJson(
+      ".semantic-review-feedback/threads/batch-first.json",
+    ).comments.at(-1).body,
+    "First reply.",
+  );
+  assert.equal(
+    repository.readJson(
+      ".semantic-review-feedback/threads/batch-second.json",
+    ).comments.at(-1).body,
+    "Second reply.",
+  );
+
+  repository.write(
+    "invalid-reply-batch.json",
+    `${JSON.stringify({
+      replies: [
+        {
+          id: "batch-first",
+          "comment-id": "batch-first-not-kept",
+          body: "Must roll back.",
+        },
+        {
+          id: "missing-thread",
+          "comment-id": "missing-thread-reply",
+          body: "Invalid.",
+        },
+      ],
+    })}\n`,
+  );
+  repository.expectFeedbackFailure(
+    "Feedback thread missing-thread does not exist",
+    "thread",
+    "reply-batch",
+    "--input",
+    "invalid-reply-batch.json",
+  );
+  assert.equal(
+    repository.readJson(
+      ".semantic-review-feedback/threads/batch-first.json",
+    ).comments.some((comment) => comment.id === "batch-first-not-kept"),
+    false,
+  );
+});
+
 test("next lists only open threads awaiting an agent reply", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");

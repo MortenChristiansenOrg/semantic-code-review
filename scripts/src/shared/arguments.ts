@@ -23,6 +23,7 @@ function inputOptionName(name: string): string {
 }
 
 function inputOptionValues(name: string, value: unknown): OptionValue[] {
+  const structuredOptions = new Set(["threads", "replies"]);
   if (value === true) {
     return [true];
   }
@@ -33,17 +34,25 @@ function inputOptionValues(name: string, value: unknown): OptionValue[] {
     return [String(value)];
   }
   if (Array.isArray(value) && value.length > 0) {
-    return value.map((item) => {
-      if (typeof item === "string") {
-        return item;
-      }
-      if (typeof item === "number" && Number.isFinite(item)) {
-        return String(item);
-      }
-      fail(
-        `Input option ${name} arrays may contain only strings or finite numbers.`,
-      );
-    });
+    if (value.every((item) => typeof item === "string")) {
+      return value;
+    }
+    if (
+      value.every(
+        (item) => typeof item === "number" && Number.isFinite(item),
+      )
+    ) {
+      return value.map(String);
+    }
+    if (structuredOptions.has(name)) {
+      return [JSON.stringify(value)];
+    }
+    fail(
+      `Input option ${name} arrays may contain only strings or finite numbers.`,
+    );
+  }
+  if (structuredOptions.has(name) && value && typeof value === "object") {
+    return [JSON.stringify(value)];
   }
   fail(
     `Input option ${name} must be a string, finite number, true, or a non-empty array of strings or numbers.`,
@@ -117,7 +126,7 @@ export function expandInputOptions(options: Options, cwd: string): Options {
         `Option --${name} is set both on the command line and in ${file}.`,
       );
     }
-    expanded.set(name, inputOptionValues(rawName, rawValue));
+    expanded.set(name, inputOptionValues(name, rawValue));
   }
   return expanded;
 }

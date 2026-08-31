@@ -10,21 +10,21 @@
  * reads naturally ("semantic-view review").
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  probeViewer,
+  requestViewerShutdown,
+  VIEWER_APP_ID,
+  VIEWER_HOST,
+  viewerPort,
+} from "./shared/viewer-lifecycle.js";
 
 const MAX_ROWS = 900; // per-file diff row cap to keep the payload sane
-// Uncommon fixed port so the viewer origin (and thus its localStorage) stays
-// stable across runs. Kept below the ephemeral range and clear of the ports
-// popular web dev servers grab (3000/4200/5173/8080/…).
-const DEFAULT_PORT = 29180;
-const HOST = "127.0.0.1";
-// Identity returned by GET /api/whoami so a new launch can recognise (and stop)
-// a previous review viewer that is still holding the port.
-const VIEWER_APP_ID = "semantic-flow-review-viewer";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -116,6 +116,51 @@ function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function listJsonDocuments(directory) {
+  if (!fs.existsSync(directory)) return [];
+  return fs
+    .readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => path.join(directory, entry.name))
+    .sort();
+}
+
+export function viewerSnapshot(repoRoot) {
+  const semanticRoot = path.join(repoRoot, ".semantic-review");
+  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const files = [
+    path.join(semanticRoot, "manifest.json"),
+    ...listJsonDocuments(path.join(semanticRoot, "requirements")),
+    ...listJsonDocuments(path.join(semanticRoot, "stages")),
+  ];
+  const feedbackManifestPath = path.join(feedbackRoot, "manifest.json");
+  let awaitingAgentReplies = 0;
+  if (fs.existsSync(feedbackManifestPath)) {
+    files.push(feedbackManifestPath);
+    const manifest = readJson(feedbackManifestPath);
+    for (const threadId of manifest.threads || []) {
+      const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
+      files.push(file);
+      const thread = readJson(file);
+      const lastComment = thread.comments?.[thread.comments.length - 1];
+      if (thread.status === "open" && lastComment?.author !== "agent") {
+        awaitingAgentReplies += 1;
+      }
+    }
+  }
+  const hash = createHash("sha256");
+  for (const file of files.sort()) {
+    hash.update(path.relative(repoRoot, file));
+    hash.update("\0");
+    hash.update(fs.readFileSync(file));
+    hash.update("\0");
+  }
+  return {
+    revision: hash.digest("hex"),
+    awaitingAgentReplies,
+  };
 }
 
 function activeImplementationId(repoRoot) {
@@ -431,6 +476,8 @@ function buildImplementationData(repoRoot) {
     })),
   }));
 
+  const feedback = buildFeedbackThreads(repoRoot, stages);
+  const snapshot = viewerSnapshot(repoRoot);
   return {
     implementationId: manifest.implementationId,
     title: manifest.title,
@@ -439,7 +486,9 @@ function buildImplementationData(repoRoot) {
     baseRevision: manifest.baseRevision,
     requirements,
     stages,
-    feedback: buildFeedbackThreads(repoRoot, stages),
+    feedback,
+    viewerRevision: snapshot.revision,
+    awaitingAgentReplies: snapshot.awaitingAgentReplies,
   };
 }
 
@@ -610,6 +659,27 @@ export function mapNoteTarget(note, implementation) {
   throw new Error(`unsupported note kind "${note.kind}"`);
 }
 
+export function buildFeedbackTargetData(repoRoot) {
+  const implementationRoot = path.join(repoRoot, ".semantic-review");
+  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+  return {
+    implementationId: manifest.implementationId,
+    stages: manifest.stages.map((stageId) => {
+      const stage = readJson(
+        path.join(implementationRoot, "stages", `${stageId}.json`),
+      );
+      return {
+        id: stage.id,
+        title: stage.title,
+        nodes: (stage.nodes || []).map((node) => ({
+          id: node.id,
+          title: humanizeId(node.id),
+        })),
+      };
+    }),
+  };
+}
+
 function runFeedbackCli(feedbackCli, repoRoot, args, input?: string) {
   return execFileSync(process.execPath, [feedbackCli, ...args], {
     cwd: repoRoot,
@@ -659,7 +729,7 @@ export function planFeedbackThreads(notes, implementation) {
   return { planned, skipped };
 }
 
-function exportFeedback({ repoRoot, implementation, feedbackCli }, notes) {
+export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes) {
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -676,31 +746,143 @@ function exportFeedback({ repoRoot, implementation, feedbackCli }, notes) {
     runFeedbackCli(feedbackCli, repoRoot, ["init"]);
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
-  const exported: Array<{ ref: number; threadId: string }> = [];
-  planned.forEach((thread, index) => {
+  const batch = planned.map((thread, index) => {
     const threadId = `${exportId}-t${String(index).padStart(3, "0")}`;
     const commentId = `${threadId}-c000`;
-    try {
-      runFeedbackCli(
-        feedbackCli,
-        repoRoot,
-        ["thread", "add", "--input", "-"],
-        JSON.stringify({
-          id: threadId,
-          "comment-id": commentId,
-          body: thread.body,
-          ...thread.target,
-        }),
-      );
-      exported.push({ ref: thread.ref, threadId });
-    } catch (error) {
-      skipped.push({ ref: thread.ref, reason: cliErrorMessage(error) });
-    }
+    return {
+      ref: thread.ref,
+      threadId,
+      input: {
+        id: threadId,
+        "comment-id": commentId,
+        body: thread.body,
+        ...thread.target,
+      },
+    };
   });
-  if (exported.length === 0) {
-    return { ok: false, error: "No notes could be exported.", skipped };
+  try {
+    runFeedbackCli(
+      feedbackCli,
+      repoRoot,
+      ["thread", "add-batch", "--input", "-"],
+      JSON.stringify({ threads: batch.map((entry) => entry.input) }),
+    );
+  } catch (error) {
+    const exported: Array<{ ref: number; threadId: string }> = [];
+    for (const entry of batch) {
+      try {
+        runFeedbackCli(
+          feedbackCli,
+          repoRoot,
+          ["thread", "add", "--input", "-"],
+          JSON.stringify(entry.input),
+        );
+        exported.push({ ref: entry.ref, threadId: entry.threadId });
+      } catch (threadError) {
+        skipped.push({
+          ref: entry.ref,
+          reason: cliErrorMessage(threadError),
+        });
+      }
+    }
+    if (exported.length === 0) {
+      return { ok: false, error: cliErrorMessage(error), skipped };
+    }
+    return { ok: true, exported, skipped };
   }
-  return { ok: true, exported, skipped };
+  return {
+    ok: true,
+    exported: batch.map(({ ref, threadId }) => ({ ref, threadId })),
+    skipped,
+  };
+}
+
+export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
+  if (!feedbackCli) {
+    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
+  }
+  if (!Array.isArray(drafts) || drafts.length === 0) {
+    return { ok: false, error: "No feedback replies to export." };
+  }
+  const skipped: Array<{ ref: string; reason: string }> = [];
+  const prefix = `reply-${Date.now().toString(36)}`;
+  const batch = [];
+  drafts.forEach((draft, index) => {
+    const ref =
+      draft && typeof draft.ref === "string" ? draft.ref : String(index);
+    const threadId =
+      draft && typeof draft.threadId === "string" ? draft.threadId : "";
+    const body = draft && typeof draft.body === "string" ? draft.body.trim() : "";
+    if (!threadId) {
+      skipped.push({ ref, reason: "thread no longer exists" });
+      return;
+    }
+    if (!body) {
+      skipped.push({ ref, reason: "empty body" });
+      return;
+    }
+    batch.push({
+      ref,
+      threadId,
+      commentId: `${prefix}-${String(index).padStart(3, "0")}`,
+      input: {
+        id: threadId,
+        "comment-id": `${prefix}-${String(index).padStart(3, "0")}`,
+        author: "user",
+        body,
+      },
+    });
+  });
+  if (batch.length === 0) {
+    return { ok: false, error: "No feedback replies could be exported.", skipped };
+  }
+
+  const resultFor = (entry) => {
+    const thread = readFeedbackThread(repoRoot, entry.threadId);
+    return {
+      ref: entry.ref,
+      threadId: entry.threadId,
+      comment: thread?.comments.find((comment) => comment.id === entry.commentId),
+      status: thread?.status,
+      resolvedAt: thread?.resolvedAt || null,
+    };
+  };
+
+  try {
+    runFeedbackCli(
+      feedbackCli,
+      repoRoot,
+      ["thread", "reply-batch", "--input", "-"],
+      JSON.stringify({ replies: batch.map((entry) => entry.input) }),
+    );
+    return {
+      ok: true,
+      replied: batch.map(resultFor),
+      skipped,
+    };
+  } catch (error) {
+    const replied = [];
+    for (const entry of batch) {
+      try {
+        runFeedbackCli(
+          feedbackCli,
+          repoRoot,
+          ["thread", "reply", "--input", "-"],
+          JSON.stringify(entry.input),
+        );
+        replied.push(resultFor(entry));
+      } catch (replyError) {
+        skipped.push({
+          ref: entry.ref,
+          reason: cliErrorMessage(replyError),
+        });
+      }
+    }
+    if (replied.length === 0) {
+      return { ok: false, error: cliErrorMessage(error), skipped };
+    }
+    return { ok: true, replied, skipped };
+  }
 }
 
 // Reject cross-origin drivers. A local page served by this server has no
@@ -714,7 +896,7 @@ function isTrustedRequest(request, port) {
   const origin = request.headers["origin"];
   if (!origin) return true;
   const allowed = new Set([
-    `http://${HOST}:${port}`,
+    `http://${VIEWER_HOST}:${port}`,
     `http://localhost:${port}`,
   ]);
   return allowed.has(origin);
@@ -741,7 +923,7 @@ async function handleFeedbackExport(request, response, context) {
       sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
       return;
     }
-    const implementation = buildImplementationData(context.repoRoot);
+    const implementation = buildFeedbackTargetData(context.repoRoot);
     if (payload.implementationId !== implementation.implementationId) {
       sendJson(response, 409, {
         ok: false,
@@ -750,7 +932,56 @@ async function handleFeedbackExport(request, response, context) {
       return;
     }
     const result = exportFeedback({ ...context, implementation }, payload.notes);
-    sendJson(response, result.ok ? 200 : 422, result);
+    sendJson(response, result.ok ? 200 : 422, {
+      ...result,
+      ...viewerSnapshot(context.repoRoot),
+    });
+  } catch (error) {
+    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
+  }
+}
+
+async function handleFeedbackReplyBatch(request, response, context) {
+  try {
+    if (!isTrustedRequest(request, context.port)) {
+      sendJson(response, 403, {
+        ok: false,
+        error: "Feedback replies require a same-origin application/json request.",
+      });
+      return;
+    }
+    if (!context.feedbackCli) {
+      sendJson(response, 422, {
+        ok: false,
+        error: "The review-feedback CLI was not found next to the viewer.",
+      });
+      return;
+    }
+    const raw = await readRequestBody(request);
+    let payload;
+    try {
+      payload = JSON.parse(raw || "{}");
+    } catch {
+      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
+      return;
+    }
+    const currentImplementationId = activeImplementationId(context.repoRoot);
+    if (
+      !payload ||
+      payload.implementationId !== context.implementationId ||
+      payload.implementationId !== currentImplementationId
+    ) {
+      sendJson(response, 409, {
+        ok: false,
+        error: "This viewer is showing a different implementation than the one being edited.",
+      });
+      return;
+    }
+    const result = exportFeedbackReplies(context, payload.replies);
+    sendJson(response, result.ok ? 200 : 422, {
+      ...result,
+      ...viewerSnapshot(context.repoRoot),
+    });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
@@ -853,6 +1084,7 @@ async function handleThreadAction(request, response, context, action) {
       status: thread.status,
       resolvedAt: thread.resolvedAt || null,
       comment: action === "reply" ? last : undefined,
+      ...viewerSnapshot(context.repoRoot),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
@@ -862,11 +1094,32 @@ async function handleThreadAction(request, response, context, action) {
 function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId }) {
   let server = null;
   const requestHandler = (request, response) => {
-    const url = new URL(request.url, `http://${HOST}`);
+    const url = new URL(request.url, `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
 
     if (request.method === "GET" && pathname === "/api/whoami") {
-      sendJson(response, 200, { ok: true, app: VIEWER_APP_ID, implementationId });
+      sendJson(response, 200, {
+        ok: true,
+        app: VIEWER_APP_ID,
+        implementationId,
+        repositoryRoot: repoRoot,
+        processId: process.pid,
+      });
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/revision") {
+      try {
+        sendJson(response, 200, {
+          ok: true,
+          ...viewerSnapshot(repoRoot),
+        });
+      } catch (error) {
+        sendJson(response, 500, {
+          ok: false,
+          error: cliErrorMessage(error),
+        });
+      }
       return;
     }
 
@@ -895,6 +1148,16 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId 
         repoRoot,
         feedbackCli,
         port,
+      });
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/feedback/reply-batch") {
+      handleFeedbackReplyBatch(request, response, {
+        repoRoot,
+        feedbackCli,
+        port,
+        implementationId,
       });
       return;
     }
@@ -960,59 +1223,7 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId 
   server = http.createServer(requestHandler);
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, HOST, () => resolve(server));
-  });
-}
-
-// Probe an occupied port to see whether our own review viewer is holding it.
-function probeViewer(port) {
-  return new Promise((resolve) => {
-    const req = http.get(
-      { host: HOST, port, path: "/api/whoami", timeout: 1500 },
-      (res) => {
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve(parsed && parsed.app === VIEWER_APP_ID ? parsed : null);
-          } catch {
-            resolve(null);
-          }
-        });
-      },
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-// Ask a previous viewer instance to shut down so we can reclaim the port.
-function requestShutdown(port) {
-  return new Promise((resolve) => {
-    const req = http.request(
-      {
-        host: HOST,
-        port,
-        path: "/api/shutdown",
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        timeout: 1500,
-      },
-      (res) => {
-        res.on("data", () => {});
-        res.on("end", () => resolve(res.statusCode === 200));
-      },
-    );
-    req.on("error", () => resolve(false));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(false);
-    });
-    req.end("{}");
+    server.listen(port, VIEWER_HOST, () => resolve(server));
   });
 }
 
@@ -1039,7 +1250,7 @@ async function main() {
   const implementation = buildImplementationData(repoRoot);
   const feedbackCli = locateFeedbackCli();
 
-  const port = DEFAULT_PORT;
+  const port = viewerPort();
   let server = null;
   try {
     server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId });
@@ -1054,7 +1265,7 @@ async function main() {
       );
     }
     console.log(`A semantic review viewer is already running on port ${port}; restarting it…`);
-    await requestShutdown(port);
+    await requestViewerShutdown(port);
     for (let attempt = 0; attempt < 40 && !server; attempt += 1) {
       await delay(100);
       try {
@@ -1068,7 +1279,7 @@ async function main() {
     }
   }
 
-  const url = `http://${HOST}:${port}/`;
+  const url = `http://${VIEWER_HOST}:${port}/`;
   const fileCount = implementation.stages.reduce((a, s) => a + s.files.length, 0);
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);

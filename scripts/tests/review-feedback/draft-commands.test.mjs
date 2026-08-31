@@ -44,6 +44,86 @@ test("feedback IDs may start with digits", (t) => {
   );
 });
 
+test("thread add-batch validates and writes one atomic batch", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.write(
+    "feedback-batch.json",
+    `${JSON.stringify({
+      threads: [
+        {
+          id: "batch-one",
+          "comment-id": "batch-one-comment",
+          body: "First batch comment.",
+          label: "Implementation",
+          "target-kind": "stage",
+          stage: "implementation",
+        },
+        {
+          id: "batch-two",
+          "comment-id": "batch-two-comment",
+          body: "Second batch comment.",
+          label: "implementation.txt",
+          "target-kind": "file",
+          stage: "implementation",
+          path: "implementation.txt",
+        },
+      ],
+    })}\n`,
+  );
+
+  repository.feedback(
+    "thread",
+    "add-batch",
+    "--input",
+    "feedback-batch.json",
+  );
+  const manifest = repository.readJson(
+    ".semantic-review-feedback/manifest.json",
+  );
+  assert.deepEqual(manifest.threads, ["batch-one", "batch-two"]);
+
+  repository.write(
+    "invalid-feedback-batch.json",
+    `${JSON.stringify({
+      threads: [
+        {
+          id: "batch-not-kept",
+          "comment-id": "batch-not-kept-comment",
+          body: "Must roll back.",
+          label: "Implementation",
+          "target-kind": "stage",
+          stage: "implementation",
+        },
+        {
+          id: "batch-invalid",
+          "comment-id": "batch-invalid-comment",
+          label: "Implementation",
+          "target-kind": "stage",
+          stage: "implementation",
+        },
+      ],
+    })}\n`,
+  );
+  repository.expectFeedbackFailure(
+    "Missing required option --body",
+    "thread",
+    "add-batch",
+    "--input",
+    "invalid-feedback-batch.json",
+  );
+  assert.equal(
+    repository.exists(
+      ".semantic-review-feedback/threads/batch-not-kept.json",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    repository.readJson(".semantic-review-feedback/manifest.json").threads,
+    ["batch-one", "batch-two"],
+  );
+});
+
 test("Windows-reserved feedback identifiers are rejected before mutation", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");

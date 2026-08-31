@@ -194,6 +194,10 @@ export const reviewFeedbackApi: CliSignature = {
         option("assigned-stage", "<stage-id>"),
       ],
     },
+    {
+      command: "thread add-batch",
+      options: [option("threads", "<json-array>", { required: true })],
+    },
     { command: "next", options: [option("json")] },
     {
       command: "thread reply",
@@ -203,6 +207,10 @@ export const reviewFeedbackApi: CliSignature = {
         option("body", "<text>", { required: true }),
         option("author", "<user|agent>"),
       ],
+    },
+    {
+      command: "thread reply-batch",
+      options: [option("replies", "<json-array>", { required: true })],
     },
     {
       command: "thread resolve",

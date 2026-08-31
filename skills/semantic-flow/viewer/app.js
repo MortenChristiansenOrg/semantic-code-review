@@ -7,6 +7,41 @@
   const data = window.SEMANTIC_IMPLEMENTATION;
   const app = document.querySelector("#app");
   const storeKey = `semantic-view:${data.implementationId}`;
+  let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
+
+  function adoptViewerSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot.revision !== "string") return;
+    observedAwaitingAgentReplies = Number(snapshot.awaitingAgentReplies) || 0;
+  }
+
+  async function pollViewerRevision() {
+    try {
+      const response = await fetch("/api/revision", { cache: "no-store" });
+      if (!response.ok) return;
+      const snapshot = await response.json();
+      if (!snapshot.ok || typeof snapshot.revision !== "string") return;
+      const awaiting = Number(snapshot.awaitingAgentReplies) || 0;
+      const feedbackCompleted =
+        observedAwaitingAgentReplies > 0 && awaiting === 0;
+      if (feedbackCompleted) {
+        const hasUnsavedNote =
+          Boolean(compose && compose.dirty) ||
+          Boolean(replyTo && replyDirty);
+        if (
+          !hasUnsavedNote ||
+          window.confirm(
+            "Feedback is ready. Reload now and lose your unsaved note? Select Cancel to keep editing and reload manually.",
+          )
+        ) {
+          window.location.reload();
+          return;
+        }
+      }
+      observedAwaitingAgentReplies = awaiting;
+    } catch {
+      // The viewer may be restarting. The next poll will retry.
+    }
+  }
 
   const INSIGHT = {
     decision:    { glyph: "◆", label: "Decision" },
@@ -37,6 +72,7 @@
   }
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(n.id, n.title)));
+  const stageById = new Map(data.stages.map((stage) => [stage.id, stage]));
 
   const requirements = Array.isArray(data.requirements) ? data.requirements : [];
   // Criterion ids are only unique within a specification, so every acceptance
@@ -85,6 +121,7 @@
   let replyTo = null;              // artifact thread id currently being replied to
   let replyDraft = "";             // unsent text of the open reply, kept across re-renders
   let replyEditId = null;          // id of the pending reply draft being edited (if any)
+  let replyDirty = false;
   const threadOps = {};            // thread id -> { busy, error } for server actions
   let exportState = { phase: "idle", message: "" };
   function threadBusy(id) { return Boolean(threadOps[id] && threadOps[id].busy); }
@@ -143,9 +180,9 @@
       .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   }
   /* File approvals carry a fingerprint of the diff at approval time so we can
-     tell when a file has changed since it was approved (stale). Stage/node
-     approvals have no fingerprint and are always current once approved. Legacy
-     boolean approvals (older stored state) are trusted as approved. */
+     tell when a file has changed since it was approved (stale). Stage approvals
+     have no fingerprint and are always current once approved. Legacy boolean
+     approvals (older stored state) are trusted as approved. */
   function hashStr(s) {
     let h = 0x811c9dc5;
     for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
@@ -184,6 +221,42 @@
   }
   const approved = (id) => approvalState(id) === "approved";
   const approvalStale = (id) => approvalState(id) === "stale";
+  function aggregateApprovalState(states) {
+    if (!states.length || states.some((st) => st === "none")) return "none";
+    return states.every((st) => st === "approved") ? "approved" : "stale";
+  }
+  function nodeApprovalState(stage, node) {
+    return aggregateApprovalState(
+      nodeFileList(stage, node).map((file) => approvalState(fileKey(stage.id, file.path))),
+    );
+  }
+  function stageNodesApproved(stage) {
+    return stage.nodes.every((node) => nodeApprovalState(stage, node) === "approved");
+  }
+  function stageApprovalState(stage) {
+    return stageNodesApproved(stage) ? approvalState(stage.id) : "none";
+  }
+  function stageApproved(stage) {
+    return stageApprovalState(stage) === "approved";
+  }
+  function revokeInvalidStageApprovals() {
+    let changed = false;
+    data.stages.forEach((stage) => {
+      if (state.approvals[stage.id] && !stageNodesApproved(stage)) {
+        delete state.approvals[stage.id];
+        changed = true;
+      }
+      // Node approvals are derived from their files now; drop any legacy
+      // node-keyed entries left behind by older stored state.
+      stage.nodes.forEach((node) => {
+        if (node.id in state.approvals) {
+          delete state.approvals[node.id];
+          changed = true;
+        }
+      });
+    });
+    if (changed) persist();
+  }
   function elementNotes(id) {
     return state.comments.map((c, i) => ({ c, i })).filter((x) => x.c.id === id);
   }
@@ -253,7 +326,7 @@
       .map((s, i) => ({ s, i }))
       .filter((x) => (x.s.specificationRefs || []).includes(ref));
     if (!stages.length) return { key: "uncovered", stages: [] };
-    const allApproved = stages.every((x) => approved(x.s.id));
+    const allApproved = stages.every((x) => stageApproved(x.s));
     return { key: allApproved ? "approved" : "pending", stages: stages.map((x) => x.i + 1) };
   }
   function stageAcceptanceRefs(stage) {
@@ -314,8 +387,8 @@
   function approvedCount() {
     let n = 0;
     data.stages.forEach((s) => {
-      if (approved(s.id)) n += 1;
-      s.nodes.forEach((node) => { if (approved(node.id)) n += 1; });
+      if (stageApproved(s)) n += 1;
+      s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
       s.files.forEach((file) => { if (approved(fileKey(s.id, file.path))) n += 1; });
     });
     return n;
@@ -402,13 +475,19 @@
 
   /* ---- approvals / comments UI ----------------------------------------- */
   function approveBtn(kind, id, size = "") {
-    const st = approvalState(id);
+    const stage = kind === "stage" ? stageById.get(id) : null;
+    const blocked = stage && !stageNodesApproved(stage);
+    const st = stage ? stageApprovalState(stage) : approvalState(id);
+    if (blocked) {
+      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" disabled title="Approve every step before approving the stage">
+        <span class="check"></span>Approve</button>`;
+    }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-id="${id}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
         <span class="check">!</span>Re-approve</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${on}">
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="${on}">
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
   function commentBtn(kind, id, stageId) {
@@ -423,6 +502,9 @@
   }
   function noteCluster(kind, id, stageId) {
     return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id)}</div>`;
+  }
+  function stageNoteCluster(id) {
+    return `<div class="note-cluster">${notesToggle("stage", id)}${commentBtn("stage", id)}</div>`;
   }
   // Notes list: show only the filename for file targets, keep the full path on hover.
   function threadTargetDisplay(t) {
@@ -991,10 +1073,12 @@
   }
 
   function stageNode(stage, node, nodeIndex, stageIndex) {
-    const done = approved(node.id);
-    return `<details class="node ${done ? "is-approved" : ""}" data-node="${node.id}">
+    const approval = nodeApprovalState(stage, node);
+    const done = approval === "approved";
+    const stale = approval === "stale";
+    return `<details class="node ${done ? "is-approved" : ""} ${stale ? "is-stale" : ""}" data-node="${node.id}">
       <summary>
-        <span class="node-check">${done ? "✓" : ""}</span>
+        <span class="node-check" title="${stale ? "One or more file approvals are stale" : ""}">${stale ? "!" : done ? "✓" : ""}</span>
         <span class="node-ix">${stageIndex + 1}.${nodeIndex + 1}</span>
         <div class="node-head">
           <h3>${esc(node.title)}</h3>
@@ -1005,7 +1089,7 @@
       <div class="node-body">
         ${nodeReasoning(stage, node)}
         ${nodeFilesPanel(stage, node)}
-        <div class="node-foot">${approveBtn("node", node.id)}${noteCluster("node", node.id, stage.id)}</div>
+        <div class="node-foot">${noteCluster("node", node.id, stage.id)}</div>
         ${threadInline(node.id, "node")}
       </div>
     </details>`;
@@ -1014,8 +1098,8 @@
   function stageSection(stage, i) {
     const open = Boolean(state.openStages[stage.id]);
     const filesDone = stage.files.filter((f) => approved(fileKey(stage.id, f.path))).length;
-    const nodesDone = stage.nodes.filter((n) => approved(n.id)).length;
-    const done = approved(stage.id);
+    const nodesDone = stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length;
+    const done = stageApproved(stage);
     const acIds = stageAcceptanceRefs(stage);
     return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}">
       <div class="stage-bar">
@@ -1034,7 +1118,7 @@
             ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
         </div>
-        <div class="stage-approve">${approveBtn("stage", stage.id, "sm")}${noteCluster("stage", stage.id)}</div>
+        <div class="stage-approve">${stageNoteCluster(stage.id)}${approveBtn("stage", stage.id, "sm")}</div>
       </div>
       ${threadInline(stage.id, "stage")}
       <div class="stage-body">
@@ -1061,10 +1145,10 @@
   /* ---- side panels ------------------------------------------------------ */
   function coveragePanel() {
     const rows = data.stages.map((s, i) => {
-      const nd = s.nodes.filter((n) => approved(n.id)).length;
+      const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
       const fd = s.files.filter((f) => approved(fileKey(s.id, f.path))).length;
-      return `<div class="cov-stage ${approved(s.id) ? "is-approved" : ""}">
-        <div class="cov-h"><span>${approved(s.id) ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
+      return `<div class="cov-stage ${stageApproved(s) ? "is-approved" : ""}">
+        <div class="cov-h"><span>${stageApproved(s) ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
         <div class="cov-bars">
           <span class="cov-bar" title="${nd}/${s.nodes.length} steps"><i style="width:${Math.round(nd / s.nodes.length * 100)}%"></i></span>
           <span class="cov-bar files" title="${fd}/${s.files.length} files"><i style="width:${Math.round(fd / s.files.length * 100)}%"></i></span>
@@ -1202,7 +1286,7 @@
           : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
     const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
     const filter = state.notesFilter === "resolved" ? "resolved" : "active";
-    const activeCount = activeThreads.length + localEntries.length + pendingReplies().length;
+    const activeCount = activeThreads.length + localEntries.length;
     const resolvedCount = resolvedThreads.length;
     const toggle = `<div class="notes-switch" role="tablist">
       <button class="notes-switch-btn ${filter === "active" ? "is-on" : ""}" data-action="notes-filter" data-filter="active" type="button" role="tab" aria-selected="${filter === "active"}">Active${activeCount ? `<b>${activeCount}</b>` : ""}</button>
@@ -1221,7 +1305,7 @@
           ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
         </button>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Reload to see agent replies."}</p>`}
+          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies reload this viewer automatically."}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -1411,6 +1495,8 @@
 
     if (a === "approve") {
       const id = btn.dataset.id;
+      const stage = btn.dataset.kind === "stage" ? stageById.get(id) : null;
+      if (stage && !stageNodesApproved(stage)) return;
       const st = approvalState(id);
       // A rename carried its old approval forward as stale; clear that orphaned
       // record so acting on the file now writes a single canonical entry.
@@ -1489,6 +1575,7 @@
       replyTo = btn.dataset.id;
       replyDraft = "";
       replyEditId = null;
+      replyDirty = false;
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
       render(); focusComposer();
     } else if (a === "reply-edit") {
@@ -1498,13 +1585,14 @@
       replyTo = btn.dataset.id;
       replyEditId = draft.id;
       replyDraft = draft.body;
+      replyDirty = false;
       render(); focusComposer();
     } else if (a === "reply-del") {
       state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
-      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; }
+      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyDirty = false; }
       persist(); render();
     } else if (a === "reply-cancel") {
-      replyTo = null; replyDraft = ""; replyEditId = null; render();
+      replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -1592,30 +1680,51 @@
     replyTo = null;
     replyDraft = "";
     replyEditId = null;
+    replyDirty = false;
     persist();
     render();
   }
 
-  // Send a single pending reply draft to the artifact (used at prepare time).
-  // Resolves to true on success so the caller can clear the draft.
-  async function submitReplyDraft(draft) {
-    const thread = artifactThreadById(draft.threadId);
-    if (!thread) return { ok: false, reason: "thread no longer exists" };
+  // Send all pending reviewer replies as one feedback mutation.
+  async function submitReplyDrafts(drafts) {
+    const sendable = drafts.filter((draft) => artifactThreadById(draft.threadId));
+    const skips = drafts
+      .filter((draft) => !artifactThreadById(draft.threadId))
+      .map(() => "reply — thread no longer exists");
+    if (!sendable.length) return { sentIds: [], skips };
     try {
-      const res = await fetch("/api/feedback/reply", {
+      const res = await fetch("/api/feedback/reply-batch", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ implementationId: data.implementationId, threadId: draft.threadId, body: draft.body }),
+        body: JSON.stringify({
+          implementationId: data.implementationId,
+          replies: sendable.map((draft) => ({
+            ref: draft.id,
+            threadId: draft.threadId,
+            body: draft.body,
+          })),
+        }),
       });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
-      if (!res.ok || !out.ok) throw new Error(out.error || `Reply failed (HTTP ${res.status}).`);
-      if (out.comment) thread.comments.push(out.comment);
-      if (out.status) thread.status = out.status;
-      if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
-      return { ok: true };
+      if (!res.ok || !out.ok) throw new Error(out.error || `Replies failed (HTTP ${res.status}).`);
+      adoptViewerSnapshot(out);
+      (out.replied || []).forEach((entry) => {
+        const thread = artifactThreadById(entry.threadId);
+        if (!thread) return;
+        if (entry.comment) thread.comments.push(entry.comment);
+        if (entry.status) thread.status = entry.status;
+        if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+      });
+      return {
+        sentIds: (out.replied || []).map((entry) => entry.ref),
+        skips: skips.concat((out.skipped || []).map((entry) => `reply — ${entry.reason}`)),
+      };
     } catch (err) {
-      return { ok: false, reason: err.message || "reply failed" };
+      return {
+        sentIds: [],
+        skips: skips.concat(sendable.map(() => `reply — ${err.message || "reply failed"}`)),
+      };
     }
   }
 
@@ -1638,6 +1747,7 @@
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
       if (!res.ok || !out.ok) throw new Error(out.error || `Action failed (HTTP ${res.status}).`);
+      adoptViewerSnapshot(out);
       if (out.status) thread.status = out.status;
       if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
       threadOps[threadId] = { busy: false, error: "" };
@@ -1709,7 +1819,7 @@
   // Keep the Active/Resolved toggle counts in sync after an in-place move.
   function refreshNotesFilterCounts() {
     const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length + pendingReplies().length;
+    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
     const set = (filter, n) => {
       const btn = app.querySelector(`.notes-switch-btn[data-filter="${filter}"]`);
       if (!btn) return;
@@ -1805,6 +1915,7 @@
         let out = {};
         try { out = await res.json(); } catch { /* non-JSON error body */ }
         if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
+        adoptViewerSnapshot(out);
         const byRef = new Map(pending.map(({ c, i }) => [i, c]));
         (out.exported || []).forEach((entry) => {
           const ref = typeof entry === "number" ? entry : entry && entry.ref;
@@ -1827,16 +1938,13 @@
         return;
       }
     }
-    // Send reply drafts one by one, clearing each on success.
     let repliesSent = 0;
-    for (const draft of replies) {
-      const result = await submitReplyDraft(draft);
-      if (result.ok) {
-        repliesSent += 1;
-        state.replyDrafts = pendingReplies().filter((x) => x.id !== draft.id);
-      } else {
-        skips.push(`reply — ${result.reason}`);
-      }
+    if (replies.length) {
+      const result = await submitReplyDrafts(replies);
+      const sentIds = new Set(result.sentIds);
+      repliesSent = sentIds.size;
+      state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
+      skips.push(...result.skips);
     }
     persist();
     const parts = [];
@@ -1844,7 +1952,7 @@
     if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
     exportState = {
       phase: "done",
-      message: `Sent ${parts.join(" and ")} to the artifact${skips.length ? `, ${skips.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent, then reload to see replies.`,
+      message: `Sent ${parts.join(" and ")} to the artifact${skips.length ? `, ${skips.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent. Replies and edits appear here when it finishes.`,
       skips
     };
     render();
@@ -1987,6 +2095,7 @@
       editIndex: null,
       mode: state.lastNoteMode === "feedback" ? "feedback" : "personal",
       body: "",
+      dirty: false,
     };
     if (kind === "line") state.openLineThreads[id] = true;
     else state.openThreads[id] = true;
@@ -2009,6 +2118,7 @@
       editIndex: index,
       mode: c.mode || "personal",
       body: c.body,
+      dirty: false,
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
     else state.openThreads[c.id] = true;
@@ -2029,12 +2139,20 @@
   // DOM) never drops what the reviewer is typing.
   document.addEventListener("input", (e) => {
     const t = e.target;
-    if (compose && t.matches('.note-compose textarea[name="nc-body"]')) compose.body = t.value;
-    else if (t.matches('.tthread-reply textarea[name="reply-body"]')) replyDraft = t.value;
+    if (compose && t.matches('.note-compose textarea[name="nc-body"]')) {
+      compose.body = t.value;
+      compose.dirty = true;
+    } else if (t.matches('.tthread-reply textarea[name="reply-body"]')) {
+      replyDraft = t.value;
+      replyDirty = true;
+    }
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
-    if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) compose.mode = t.value;
+    if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
+      compose.mode = t.value;
+      compose.dirty = true;
+    }
   });
   document.addEventListener("submit", (e) => {
     if (e.target.matches("[data-note-form]")) {
@@ -2075,7 +2193,7 @@
     }
     if (e.key === "Escape") {
       if (compose) { compose = null; render(); return; }
-      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
@@ -2171,6 +2289,7 @@
   const _render = render;
   render = function () {
     forceHidePop();
+    revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.
     const notesEl = app.querySelector(".notes-list");
@@ -2215,4 +2334,5 @@
   };
 
   render();
+  window.setInterval(pollViewerRevision, 1000);
 })();

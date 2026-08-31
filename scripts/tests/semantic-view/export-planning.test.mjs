@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
   createImplementationWithStages,
+  feedbackCli,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
 
@@ -11,10 +13,14 @@ const moduleUrl = pathToFileURL(
   path.join(scriptsDirectory, "semantic-view.mjs"),
 ).href;
 const {
+  buildFeedbackTargetData,
   createImplementationDataScript,
+  exportFeedback,
+  exportFeedbackReplies,
   planFeedbackThreads,
   mapNoteTarget,
   readFeedbackThread,
+  viewerSnapshot,
 } = await import(moduleUrl);
 
 const implementation = {
@@ -148,6 +154,139 @@ test("planFeedbackThreads tolerates a non-array payload", () => {
   assert.deepEqual(planFeedbackThreads(null, implementation), { planned: [], skipped: [] });
 });
 
+test("feedback export target data omits diff reconstruction", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const targetData = buildFeedbackTargetData(repository.root);
+
+  assert.equal(targetData.implementationId, "test-implementation");
+  assert.deepEqual(
+    targetData.stages.map((stage) => ({
+      id: stage.id,
+      nodes: stage.nodes.map((node) => node.id),
+    })),
+    [{ id: "implementation", nodes: ["implementation-change"] }],
+  );
+  assert.equal("files" in targetData.stages[0], false);
+});
+
+test("feedback export falls back per note when one batch item is stale", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const result = exportFeedback(
+    {
+      repoRoot: repository.root,
+      implementation: buildFeedbackTargetData(repository.root),
+      feedbackCli,
+    },
+    [
+      {
+        ref: 0,
+        kind: "stage",
+        id: "implementation",
+        body: "Keep this valid note.",
+      },
+      {
+        ref: 1,
+        kind: "file",
+        id: "f:implementation:missing.txt",
+        body: "This target is stale.",
+      },
+    ],
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.exported.map((entry) => entry.ref),
+    [0],
+  );
+  assert.equal(result.skipped.length, 1);
+  assert.equal(result.skipped[0].ref, 1);
+  assert.match(result.skipped[0].reason, /not changed/);
+});
+
+test("feedback reply export batches reviewer replies", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["reply-first", "reply-second"]) {
+    repository.feedback(
+      "thread",
+      "add",
+      "--id",
+      id,
+      "--comment-id",
+      `${id}-comment`,
+      "--body",
+      "Review comment.",
+      "--label",
+      "Implementation",
+      "--target-kind",
+      "stage",
+      "--stage",
+      "implementation",
+    );
+  }
+
+  const result = exportFeedbackReplies(
+    { repoRoot: repository.root, feedbackCli },
+    [
+      { ref: "draft-first", threadId: "reply-first", body: "First response." },
+      { ref: "draft-second", threadId: "reply-second", body: "Second response." },
+    ],
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(
+    result.replied.map((entry) => entry.ref),
+    ["draft-first", "draft-second"],
+  );
+  assert.deepEqual(
+    result.replied.map((entry) => entry.comment.body),
+    ["First response.", "Second response."],
+  );
+});
+
+test("viewer snapshot detects when the feedback command finishes replies", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const initial = viewerSnapshot(repository.root);
+  assert.equal(initial.awaitingAgentReplies, 0);
+
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "auto-reload",
+    "--comment-id",
+    "auto-reload-comment",
+    "--body",
+    "Update this.",
+    "--label",
+    "Implementation",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "implementation",
+  );
+  const awaiting = viewerSnapshot(repository.root);
+  assert.equal(awaiting.awaitingAgentReplies, 1);
+  assert.notEqual(awaiting.revision, initial.revision);
+
+  repository.feedback(
+    "thread",
+    "reply",
+    "--id",
+    "auto-reload",
+    "--comment-id",
+    "auto-reload-response",
+    "--author",
+    "agent",
+    "--body",
+    "Updated.",
+  );
+  const completed = viewerSnapshot(repository.root);
+  assert.equal(completed.awaitingAgentReplies, 0);
+  assert.notEqual(completed.revision, awaiting.revision);
+});
+
 test("createImplementationDataScript reloads feedback from disk", (t) => {
   const { repository } = createImplementationWithStages(t);
   const readData = () => {
@@ -189,10 +328,35 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
   );
 
   const refreshed = readData();
+  assert.equal(typeof refreshed.viewerRevision, "string");
+  assert.equal(refreshed.awaitingAgentReplies, 0);
   assert.equal(refreshed.feedback[0].comments.length, 2);
   assert.equal(
     refreshed.feedback[0].comments[1].body,
     "This reply should appear after refresh.",
+  );
+});
+
+test("viewer client polls for completed feedback and reloads", () => {
+  const app = fs.readFileSync(
+    path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
+    "utf8",
+  );
+  assert.match(app, /fetch\("\/api\/revision"/);
+  assert.match(app, /fetch\("\/api\/feedback\/reply-batch"/);
+  assert.match(app, /observedAwaitingAgentReplies > 0 && awaiting === 0/);
+  assert.match(app, /Boolean\(compose && compose\.dirty\)/);
+  assert.match(app, /window\.confirm\(/);
+  assert.doesNotMatch(app, /stableSince/);
+  assert.match(app, /window\.location\.reload\(\)/);
+  assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
+  assert.match(
+    app,
+    /<div class="stage-approve">\$\{stageNoteCluster\(stage\.id\)\}\$\{approveBtn\("stage", stage\.id, "sm"\)\}<\/div>/,
+  );
+  assert.match(
+    app,
+    /<div class="note-cluster">\$\{notesToggle\("stage", id\)\}\$\{commentBtn\("stage", id\)\}<\/div>/,
   );
 });
 

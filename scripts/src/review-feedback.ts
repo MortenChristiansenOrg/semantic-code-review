@@ -17,6 +17,7 @@ import {
   flag,
   option,
   parseArguments,
+  type Options,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
 import { git, gitRaw } from "./shared/git.js";
@@ -433,14 +434,9 @@ function writeThread(paths, thread) {
   writeJson(path.join(paths.threads, `${thread.id}.json`), thread);
 }
 
-function addThread(paths, options) {
-  assertKnownOptions(
-    options,
-    commandOptionNames(reviewFeedbackApi, "thread add"),
-  );
-  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
+function createThread(paths, options, semantic, knownIds, ajv) {
   const id = option(options, "id", { required: true });
-  if (feedback.threads.has(id)) fail(`Feedback thread ${id} already exists.`);
+  if (knownIds.has(id)) fail(`Feedback thread ${id} already exists.`);
   const target = buildTarget(options, semantic, paths.root);
   const assignedStageId =
     option(options, "assigned-stage") ?? target.stageId;
@@ -466,20 +462,87 @@ function addThread(paths, options) {
     stageHead: assignedStage.change.headRevision,
     createdAt: now,
   };
-  validateDocument(schemaValidator(), thread, "Feedback thread input");
+  validateDocument(ajv, thread, "Feedback thread input");
+  knownIds.add(id);
+  return thread;
+}
+
+function addThreads(paths, optionSets: Options[]) {
+  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
+  const ajv = schemaValidator();
+  const knownIds = new Set(feedback.threads.keys());
+  const threads = optionSets.map((options) =>
+    createThread(paths, options, semantic, knownIds, ajv),
+  );
   const oldManifest = structuredClone(feedback.manifest);
-  feedback.manifest.threads.push(id);
-  const file = path.join(paths.threads, `${id}.json`);
+  feedback.manifest.threads.push(...threads.map((thread) => thread.id));
+  const files = threads.map((thread) =>
+    path.join(paths.threads, `${thread.id}.json`),
+  );
   try {
-    writeThread(paths, thread);
+    for (const thread of threads) writeThread(paths, thread);
     writeJson(paths.feedbackManifest, feedback.manifest);
     validateFeedback(paths, { quiet: true });
   } catch (error) {
-    fs.rmSync(file, { force: true });
+    for (const file of files) fs.rmSync(file, { force: true });
     writeJson(paths.feedbackManifest, oldManifest);
     throw error;
   }
-  console.log(`Added feedback thread ${id}.`);
+  return threads;
+}
+
+function addThread(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread add"),
+  );
+  const [thread] = addThreads(paths, [options]);
+  console.log(`Added feedback thread ${thread.id}.`);
+}
+
+function batchThreadOptions(value, index): Options {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`Feedback thread batch item ${index + 1} must be an object.`);
+  }
+  const options: Options = new Map();
+  for (const [name, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      options.set(name, [item]);
+    } else if (typeof item === "number" && Number.isFinite(item)) {
+      options.set(name, [String(item)]);
+    } else {
+      fail(
+        `Feedback thread batch item ${index + 1} option ${name} must be a string or finite number.`,
+      );
+    }
+  }
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread add"),
+  );
+  return options;
+}
+
+function addThreadBatch(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread add-batch"),
+  );
+  const raw = option(options, "threads", { required: true })!;
+  let values: unknown;
+  try {
+    values = JSON.parse(raw);
+  } catch {
+    fail("--threads must contain a JSON array.");
+  }
+  if (!Array.isArray(values) || values.length === 0) {
+    fail("--threads must contain a non-empty JSON array.");
+  }
+  const threads = addThreads(
+    paths,
+    values.map((value, index) => batchThreadOptions(value, index)),
+  );
+  console.log(`Added ${threads.length} feedback thread(s).`);
 }
 
 function nextFeedback(paths, options) {
@@ -540,7 +603,15 @@ function replyThread(paths, options) {
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply"),
   );
-  const { feedback } = validateFeedback(paths, { quiet: true });
+  const [{ id, commentId }] = replyThreads(paths, [options]);
+  console.log(`Added reply ${commentId} to feedback thread ${id}.`);
+}
+
+function applyReply(options, feedback) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread reply"),
+  );
   const id = option(options, "id", { required: true });
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
@@ -562,9 +633,73 @@ function replyThread(paths, options) {
     thread.status = "open";
     delete thread.resolvedAt;
   }
-  writeThread(paths, thread);
-  validateFeedback(paths, { quiet: true });
-  console.log(`Added reply ${commentId} to feedback thread ${id}.`);
+  return { id, commentId, thread };
+}
+
+function replyThreads(paths, optionSets: Options[]) {
+  const { feedback } = validateFeedback(paths, { quiet: true });
+  const originals = new Map();
+  for (const options of optionSets) {
+    const id = option(options, "id", { required: true });
+    const thread = feedback.threads.get(id);
+    if (thread && !originals.has(id)) {
+      originals.set(id, structuredClone(thread));
+    }
+  }
+  const replies = optionSets.map((options) => applyReply(options, feedback));
+  try {
+    for (const id of originals.keys()) {
+      writeThread(paths, feedback.threads.get(id));
+    }
+    validateFeedback(paths, { quiet: true });
+  } catch (error) {
+    for (const [id, thread] of originals) writeThread(paths, thread);
+    throw error;
+  }
+  return replies;
+}
+
+function batchReplyOptions(value, index): Options {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    fail(`Feedback reply batch item ${index + 1} must be an object.`);
+  }
+  const options: Options = new Map();
+  for (const [name, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      options.set(name, [item]);
+    } else {
+      fail(
+        `Feedback reply batch item ${index + 1} option ${name} must be a string.`,
+      );
+    }
+  }
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread reply"),
+  );
+  return options;
+}
+
+function replyThreadBatch(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(reviewFeedbackApi, "thread reply-batch"),
+  );
+  const raw = option(options, "replies", { required: true })!;
+  let values: unknown;
+  try {
+    values = JSON.parse(raw);
+  } catch {
+    fail("--replies must contain a JSON array.");
+  }
+  if (!Array.isArray(values) || values.length === 0) {
+    fail("--replies must contain a non-empty JSON array.");
+  }
+  const replies = replyThreads(
+    paths,
+    values.map((value, index) => batchReplyOptions(value, index)),
+  );
+  console.log(`Added ${replies.length} feedback reply/replies.`);
 }
 
 function resolveThread(paths, options) {
@@ -637,9 +772,15 @@ function dispatch(paths, positionals, options) {
   if (command === "thread" && subcommand === "add") {
     return addThread(paths, options);
   }
+  if (command === "thread" && subcommand === "add-batch") {
+    return addThreadBatch(paths, options);
+  }
   if (command === "next" && !subcommand) return nextFeedback(paths, options);
   if (command === "thread" && subcommand === "reply") {
     return replyThread(paths, options);
+  }
+  if (command === "thread" && subcommand === "reply-batch") {
+    return replyThreadBatch(paths, options);
   }
   if (command === "thread" && subcommand === "resolve") {
     return resolveThread(paths, options);
