@@ -92,7 +92,7 @@ story using semantic flow") or with explicit commands:
 
 ## Contained in this Repository
 
-The Semantic Code Review package is made up of a few components:
+The Semantic Code Review package is made up of these components:
 
 - **A standard** that describes how to represent two aspects of a piece of work
   as portable JSON artifacts:
