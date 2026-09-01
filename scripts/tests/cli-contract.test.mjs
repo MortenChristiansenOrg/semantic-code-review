@@ -348,6 +348,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
   assert.match(viewerApp, /Approve every step before approving the stage/);
   assert.match(viewerApp, /if \(stage && !stageNodesApproved\(stage\)\) return;/);
+  assert.match(viewerApp, /Stage approval pending/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);

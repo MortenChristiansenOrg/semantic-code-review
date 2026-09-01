@@ -1417,13 +1417,14 @@
     const rows = data.stages.map((s, i) => {
       const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
       const fd = s.files.filter((f) => approved(fileKey(s.id, f.path))).length;
-      return `<div class="cov-stage ${stageApproved(s) ? "is-approved" : ""}">
-        <div class="cov-h"><span>${stageApproved(s) ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
+      const stageDone = stageApproved(s);
+      return `<div class="cov-stage ${stageDone ? "is-approved" : ""}">
+        <div class="cov-h"><span>${stageDone ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
         <div class="cov-bars">
           <span class="cov-bar" title="${nd}/${s.nodes.length} steps"><i style="width:${Math.round(nd / s.nodes.length * 100)}%"></i></span>
           <span class="cov-bar files" title="${fd}/${s.files.length} files"><i style="width:${Math.round(fd / s.files.length * 100)}%"></i></span>
         </div>
-        <small>${nd}/${s.nodes.length} steps · ${fd}/${s.files.length} files</small>
+        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${s.files.length} files</small>
       </div>`;
     }).join("");
     return `<aside class="side coverage ${state.coverageOpen ? "is-open" : ""}" aria-hidden="${!state.coverageOpen}" ${state.coverageOpen ? "" : "inert"}>
