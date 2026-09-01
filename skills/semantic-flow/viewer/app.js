@@ -367,6 +367,9 @@
       .map((c, i) => ({ c, i }))
       .filter(({ c }) => !c.exported || !artifactThreadById(c.threadId));
   }
+  function activeNoteCount() {
+    return artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
+  }
   function fmtTime(v) {
     const d = new Date(v);
     if (Number.isNaN(d.getTime())) return "";
@@ -1169,7 +1172,7 @@
         </div>
         <div class="tb-actions">
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
-          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length + pendingReplies().length}</b></button>
+          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${activeNoteCount()}</b></button>
         </div>
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
@@ -1464,7 +1467,7 @@
           : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
     const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
     const filter = state.notesFilter === "resolved" ? "resolved" : "active";
-    const activeCount = activeThreads.length + localEntries.length;
+    const activeCount = activeNoteCount();
     const resolvedCount = resolvedThreads.length;
     const toggle = `<div class="notes-switch" role="tablist">
       <button class="notes-switch-btn ${filter === "active" ? "is-on" : ""}" data-action="notes-filter" data-filter="active" type="button" role="tab" aria-selected="${filter === "active"}">Active${activeCount ? `<b>${activeCount}</b>` : ""}</button>
@@ -2015,7 +2018,7 @@
   // Keep the Active/Resolved toggle counts in sync after an in-place move.
   function refreshNotesFilterCounts() {
     const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const activeCount = artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
+    const activeCount = activeNoteCount();
     const set = (filter, n) => {
       const btn = app.querySelector(`.notes-switch-btn[data-filter="${filter}"]`);
       if (!btn) return;

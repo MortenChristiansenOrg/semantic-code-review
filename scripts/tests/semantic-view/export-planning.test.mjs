@@ -418,6 +418,8 @@ test("viewer client polls for completed feedback and reloads", () => {
   assert.doesNotMatch(app, /stableSince/);
   assert.match(app, /window\.location\.reload\(\)/);
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
+  assert.match(app, /Notes <b>\$\{activeNoteCount\(\)\}<\/b>/);
+  assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 2);
   assert.match(
     app,
     /<div class="stage-approve">\$\{stageNoteCluster\(stage\.id\)\}\$\{approveBtn\("stage", stage\.id, "sm"\)\}<\/div>/,

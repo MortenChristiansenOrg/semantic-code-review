@@ -199,6 +199,14 @@ test("skill indexes command-specific workflows", () => {
     commandText.get("feedback"),
     /one restack[\s\S]*<earliest-changed-stage-id>/,
   );
+  assert.match(
+    commandText.get("feedback"),
+    /This is not an\s+interrupted artifact write[\s\S]*Do not run `repair`/,
+  );
+  assert.match(
+    commandText.get("feedback"),
+    /git update-ref refs\/heads\/<stage-branch> <resolution-head> <reported-stage-head>/,
+  );
   assert.doesNotMatch(commandText.get("feedback"), /Read `\.\.\/docs\/runtime\.md`/);
   assert.match(commandText.get("reconcile"), /temporary recovery branch/);
   assert.match(

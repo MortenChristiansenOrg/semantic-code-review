@@ -1718,17 +1718,35 @@ function discardStage(paths, options) {
 }
 
 function commitMetadata(root, commit) {
-  const [authorName, authorEmail, authorDate, message] = gitRaw(
-    ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", commit],
+  const [
+    authorName,
+    authorEmail,
+    authorDate,
+    committerName,
+    committerEmail,
+    committerDate,
+    message,
+  ] = gitRaw(
+    [
+      "show",
+      "-s",
+      "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B",
+      commit,
+    ],
     { cwd: root },
   ).split("\0");
   return {
     authorName,
     authorEmail,
     authorDate,
+    committerName,
+    committerEmail,
+    committerDate,
     message,
   };
 }
+
+class PatchConflictError extends Error {}
 
 function applyCommitPatch({
   root,
@@ -1757,12 +1775,22 @@ function applyCommitPatch({
   if (patch.length === 0) {
     fail(`Commit ${patchCommit} has no patch to apply.`);
   }
-  gitRaw(["apply", "--cached", "--3way", "--whitespace=nowarn", "-"], {
-    cwd: root,
-    env,
-    input: patch,
-    encoding: "buffer",
-  });
+  try {
+    gitRaw(["apply", "--cached", "--3way", "--whitespace=nowarn", "-"], {
+      cwd: root,
+      env,
+      input: patch,
+      encoding: "buffer",
+    });
+  } catch (error) {
+    const unmerged = gitRaw(["ls-files", "-u"], { cwd: root, env });
+    if (unmerged) {
+      throw new PatchConflictError(
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    throw error;
+  }
   const tree = gitRaw(["write-tree"], { cwd: root, env });
   const metadata = commitMetadata(root, metadataCommit);
   return gitRaw(["commit-tree", tree, "-p", newParent], {
@@ -1772,6 +1800,9 @@ function applyCommitPatch({
       GIT_AUTHOR_NAME: metadata.authorName,
       GIT_AUTHOR_EMAIL: metadata.authorEmail,
       GIT_AUTHOR_DATE: metadata.authorDate,
+      GIT_COMMITTER_NAME: metadata.committerName,
+      GIT_COMMITTER_EMAIL: metadata.committerEmail,
+      GIT_COMMITTER_DATE: metadata.committerDate,
     },
   });
 }
@@ -1879,14 +1910,28 @@ function restack(paths, options) {
         assertLinearRange(paths.root, parentHead, actualHead, `Stage ${id}`);
         nextHead = actualHead;
       } else {
-        nextHead = replayRange(
-          paths.root,
-          indexFile,
-          stage.change.baseRevision,
-          actualHead,
-          parentHead,
-          `Stage ${id}`,
-        );
+        try {
+          nextHead = replayRange(
+            paths.root,
+            indexFile,
+            stage.change.baseRevision,
+            actualHead,
+            parentHead,
+            `Stage ${id}`,
+          );
+        } catch (error) {
+          if (!(error instanceof PatchConflictError)) throw error;
+          const detail =
+            error instanceof Error ? error.message : String(error);
+          fail(
+            [
+              `Restacking stage ${id} onto ${parentHead} failed.`,
+              "No stage refs or artifacts were changed.",
+              `Conflict context: stage base ${stage.change.baseRevision}, stage head ${actualHead}, new parent ${parentHead}.`,
+              detail,
+            ].join("\n"),
+          );
+        }
       }
       plans.push({
         id,

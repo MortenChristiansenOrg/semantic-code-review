@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   beginStage,
@@ -166,6 +168,140 @@ test("restack accepts several edited stage heads in one pass", (t) => {
     repository.git("rev-parse", "semantic-flow/test-implementation/03-api"),
     originalApi,
   );
+  repository.semantic("validate", "--publish");
+});
+
+test("restack reports enough context to resolve a conflicting stage", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, {
+    id: "policy",
+    file: "policy.txt",
+    contents: "policy=original\n",
+  });
+  beginStage(repository, {
+    id: "persistence",
+    dependencies: ["policy"],
+  });
+  finalizeStage(repository, {
+    id: "persistence",
+    file: "shared.txt",
+    contents: "setting=original\npersistence=true\n",
+  });
+  beginStage(repository, {
+    id: "api",
+    dependencies: ["persistence"],
+  });
+  const originalApi = finalizeStage(repository, {
+    id: "api",
+    file: "shared.txt",
+    contents: "setting=api\npersistence=true\napi=true\n",
+  });
+  const api = repository.readJson(".semantic-review/stages/api.json");
+
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  repository.commitFile(
+    "policy.txt",
+    "policy=revised\n",
+    "Revise policy",
+  );
+  repository.git(
+    "switch",
+    "semantic-flow/test-implementation/02-persistence",
+  );
+  repository.commitFile(
+    "shared.txt",
+    "setting=persistence\npersistence=true\n",
+    "Revise persistence",
+  );
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  const failure = repository.expectSemanticFailure(
+    "Restacking stage api",
+    "restack",
+    "--from",
+    "policy",
+  );
+  const output = `${failure.stdout}\n${failure.stderr}`;
+  assert.match(output, /No stage refs or artifacts were changed\./);
+  const context = output.match(
+    /Conflict context: stage base ([0-9a-f]{40}), stage head ([0-9a-f]{40}), new parent ([0-9a-f]{40})\./,
+  );
+  assert.ok(context);
+  const [, stageBase, stageHead, newParent] = context;
+  assert.equal(stageBase, api.change.baseRevision);
+  assert.equal(stageHead, originalApi);
+  assert.notEqual(
+    newParent,
+    repository.git(
+      "rev-parse",
+      "semantic-flow/test-implementation/02-persistence",
+    ),
+  );
+  assert.equal(
+    repository.git(
+      "rev-parse",
+      "semantic-flow/test-implementation/03-api",
+    ),
+    originalApi,
+  );
+  assert.equal(
+    repository.readJson(".semantic-review/stages/api.json").change.headRevision,
+    originalApi,
+  );
+
+  const recoveryBranch = "restack-recovery-api";
+  const resolutionBranch = "restack-resolution-api";
+  const patch = repository.path("..", `${path.basename(repository.root)}.patch`);
+  t.after(() => fs.rmSync(patch, { force: true }));
+  repository.git("branch", recoveryBranch, stageHead);
+  repository.git("switch", "-c", resolutionBranch, newParent);
+  repository.git(
+    "diff",
+    "--binary",
+    "--full-index",
+    "--find-renames=50%",
+    `--output=${patch}`,
+    stageBase,
+    stageHead,
+    "--",
+  );
+  const apply = repository.result("git", [
+    "apply",
+    "--3way",
+    "--index",
+    patch,
+  ]);
+  assert.notEqual(apply.status, 0);
+  assert.match(repository.git("ls-files", "-u"), /shared\.txt/);
+
+  repository.write(
+    "shared.txt",
+    "setting=resolved\npersistence=true\napi=true\n",
+  );
+  repository.git("add", "shared.txt");
+  repository.git("commit", "-m", "Resolve API restack");
+  const resolutionHead = repository.git("rev-parse", "HEAD");
+  repository.git(
+    "update-ref",
+    "refs/heads/semantic-flow/test-implementation/03-api",
+    resolutionHead,
+    stageHead,
+  );
+  repository.git("switch", "semantic-flow/test-implementation/01-policy");
+  repository.git("branch", "-D", resolutionBranch);
+  fs.rmSync(patch, { force: true });
+
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100);
+  repository.semantic("restack", "--from", "policy");
+  assert.equal(
+    repository.git(
+      "show",
+      "semantic-flow/test-implementation/03-api:shared.txt",
+    ),
+    "setting=resolved\npersistence=true\napi=true",
+  );
+  repository.git("branch", "-D", recoveryBranch);
   repository.semantic("validate", "--publish");
 });
 
