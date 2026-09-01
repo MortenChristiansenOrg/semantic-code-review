@@ -428,11 +428,16 @@
       ({ c }) => !c.exported || !artifactThreadById(c.threadId),
     );
   }
+  function threadToggleCounts(kind, id) {
+    const threads = artifactThreadsForElement(kind, id);
+    const locals = localVisibleForElement(id);
+    return {
+      total: threads.length + locals.length,
+      open: threads.filter((t) => t.status !== "resolved").length + locals.length,
+    };
+  }
   function visibleThreadCount(kind, id) {
-    return (
-      artifactThreadsForElement(kind, id).filter((t) => t.status !== "resolved").length +
-      localVisibleForElement(id).length
-    );
+    return threadToggleCounts(kind, id).open;
   }
   // Files list splits its badge into two: unresolved feedback conversations
   // (exported threads + local feedback drafts) and browser-local personal notes.
@@ -661,11 +666,11 @@
     return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
   }
   function notesToggle(kind, id) {
-    const count = visibleThreadCount(kind, id);
-    if (!count) return "";
+    const { total, open: openCount } = threadToggleCounts(kind, id);
+    if (!total) return "";
     const open = Boolean(state.openThreads[id]);
-    return `<button class="notes-toggle ${open ? "is-open" : ""}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${count} thread${count === 1 ? "" : "s"}">
-      ${bubble()}<b>${count}</b></button>`;
+    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
+      ${bubble()}<b>${total}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
   }
   function noteCluster(kind, id, stageId) {
     return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id)}</div>`;
@@ -2157,16 +2162,28 @@
     setThreadCollapsed(id, collapsed);
   }
   // Keep the file/stage thread-count badges in sync after an in-place resolve
-  // (resolved threads no longer count) without disturbing scroll position.
+  // without disturbing scroll position.
   function refreshThreadCounts() {
     app.querySelectorAll(".notes-toggle[data-id]").forEach((btn) => {
       const id = btn.dataset.id;
       const kind = id.startsWith("f:") ? "file" : "stage";
-      const count = visibleThreadCount(kind, id);
-      if (!count) { btn.remove(); return; }
+      const { total, open: openCount } = threadToggleCounts(kind, id);
+      if (!total) { btn.remove(); return; }
       const b = btn.querySelector("b");
-      if (b) b.textContent = String(count);
-      btn.setAttribute("title", `${count} thread${count === 1 ? "" : "s"}`);
+      if (b) b.textContent = String(total);
+      btn.classList.toggle("all-resolved", !openCount);
+      let dot = btn.querySelector(".nt-dot");
+      if (openCount && !dot) {
+        dot = document.createElement("i");
+        dot.className = "nt-dot";
+        btn.appendChild(dot);
+      } else if (!openCount && dot) {
+        dot.remove();
+      }
+      btn.setAttribute(
+        "title",
+        `${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}`,
+      );
     });
     app.querySelectorAll(".mini-threads[data-id]").forEach((btn) => {
       const id = btn.dataset.id;

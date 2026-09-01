@@ -656,7 +656,20 @@ test("viewer client renders lazy metadata without runtime errors", () => {
         files: [],
         insights: [],
       }],
-      feedback: [],
+      feedback: [{
+        id: "resolved-stage-thread",
+        status: "resolved",
+        target: {
+          kind: "stage",
+          stageId: "implementation",
+          label: "Implementation",
+        },
+        comments: [{
+          id: "resolved-stage-comment",
+          author: "user",
+          body: "Resolved feedback.",
+        }],
+      }],
       awaitingAgentReplies: 0,
     },
     addEventListener() {},
@@ -674,7 +687,9 @@ test("viewer client renders lazy metadata without runtime errors", () => {
     documentElement: { style: {} },
   };
   const storage = {
-    getItem: () => null,
+    getItem: () => JSON.stringify({
+      openThreads: { implementation: true },
+    }),
     setItem() {},
   };
 
@@ -696,6 +711,11 @@ test("viewer client renders lazy metadata without runtime errors", () => {
   );
 
   assert.match(app.innerHTML, /Client test/);
+  assert.match(
+    app.innerHTML,
+    /class="notes-toggle is-open all-resolved"[^>]*data-id="implementation"[^>]*title="1 thread, all resolved"/,
+  );
+  assert.match(app.innerHTML, /data-thread="implementation"/);
 });
 
 test("feedback target stays present when it leaves the current stage diff", (t) => {
