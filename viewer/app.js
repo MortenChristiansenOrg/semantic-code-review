@@ -235,6 +235,9 @@
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
   }
+  function formatCommentBody(v) {
+    return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
+  }
   /* File approvals carry a fingerprint of the diff at approval time so we can
      tell when a file has changed since it was approved (stale). Stage approvals
      have no fingerprint and are always current once approved. Legacy boolean
@@ -679,7 +682,7 @@
         const stamp = fmtTime(cm.createdAt);
         return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
           <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
-          <p>${esc(cm.body)}</p>
+          <p class="comment-body">${formatCommentBody(cm.body)}</p>
         </div>`;
       })
       .join("");
@@ -738,7 +741,7 @@
               <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
             </span>
           </div>
-          <p>${esc(r.body)}</p>
+          <p class="comment-body">${formatCommentBody(r.body)}</p>
         </div>`)
       .join("");
     const actionable = t.status === "open" || t.status === "resolved";
@@ -795,7 +798,7 @@
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
           ${acts}
         </div>
-        <p>${esc(c.body)}</p>
+        <p class="comment-body">${formatCommentBody(c.body)}</p>
       </article>`;
   }
   // Inline note composer, rendered directly in the element's own thread so the
@@ -1446,7 +1449,7 @@
           </div>`}
         </header>
         <strong title="${esc(lbl.title)}">${esc(lbl.text)}</strong>
-        <p>${esc(c.body)}</p>
+        <p class="comment-body">${formatCommentBody(c.body)}</p>
       </article>`;
     };
     const localEntries = visibleLocalNotes();

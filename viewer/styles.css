@@ -708,6 +708,16 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .tmsg-user .tmsg-who { color: var(--signal); }
 .tmsg-h time { font-family: var(--mono); font-size: 9.5px; color: var(--faint); white-space: nowrap; }
 .tmsg p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.comment-body { white-space: pre-wrap; }
+.comment-body code {
+  font-family: var(--mono);
+  font-size: .92em;
+  padding: .08em .32em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--ink);
+  color: var(--signal-2);
+}
 /* an unsent reviewer reply held as a revisable draft */
 .tmsg-draft { border-style: dashed; border-color: var(--signal); background: color-mix(in srgb, var(--signal) 7%, var(--ink-2)); }
 .tmsg-draft-tag {

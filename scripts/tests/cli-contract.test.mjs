@@ -329,6 +329,21 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.equal(aggregateApprovalState(["approved", "approved"]), "approved");
   assert.equal(aggregateApprovalState(["stale", "stale"]), "stale");
   assert.equal(aggregateApprovalState(["approved", "stale"]), "stale");
+  const formatterStart = viewerApp.indexOf("function esc(v)");
+  const formatterEnd = viewerApp.indexOf("\n  /* File approvals", formatterStart);
+  assert.notEqual(formatterStart, -1);
+  assert.notEqual(formatterEnd, -1);
+  const formatCommentBody = new Function(
+    `${viewerApp.slice(formatterStart, formatterEnd)}; return formatCommentBody;`,
+  )();
+  assert.equal(
+    formatCommentBody("First line\n\nUse `my code`."),
+    "First line\n\nUse <code>my code</code>.",
+  );
+  assert.equal(
+    formatCommentBody("<script>\n`<b>`"),
+    "&lt;script&gt;\n<code>&lt;b&gt;</code>",
+  );
   assert.match(viewerApp, /stage\.nodes\.every\(\(node\) => nodeApprovalState\(stage, node\) === "approved"\)/);
   assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
   assert.match(viewerApp, /Approve every step before approving the stage/);
