@@ -191,10 +191,10 @@ const PROJECT_GLOBS = [
   "build.gradle.kts",
 ];
 
-function buildProjectIndex(repoRoot) {
+function buildProjectIndex(repoRoot, captureGit = gitCapture) {
   let listed = "";
   try {
-    listed = gitCapture(repoRoot, ["--no-pager", "ls-files", "--", ...PROJECT_GLOBS]);
+    listed = captureGit(repoRoot, ["--no-pager", "ls-files", "--", ...PROJECT_GLOBS]);
   } catch {
     return [];
   }
@@ -226,46 +226,20 @@ function projectFor(projects, p) {
   return seg.length > 1 ? `${seg[0]}/` : "Repository root";
 }
 
-function parseDiff(repoRoot, base, head, filePath, previousPath) {
-  const renamed = Boolean(previousPath) && previousPath !== filePath;
-  const diffArgs = (unified) =>
-    renamed
-      ? [
-          "--no-pager",
-          "diff",
-          `-U${unified}`,
-          `${base}:${previousPath}`,
-          `${head}:${filePath}`,
-        ]
-      : [
-          "--no-pager",
-          "diff",
-          `-U${unified}`,
-          `${base}..${head}`,
-          "--",
-          filePath,
-        ];
-  let raw;
-  let selectorRaw;
-  try {
-    // For a renamed/moved file, diff the recorded pre-rename blob directly
-    // against the new blob so only real content edits show. Diffing just the
-    // new path would make Git see it as absent at base and mark every line as
-    // an addition (a pure move would then look like a whole new file).
-    raw = gitCapture(repoRoot, diffArgs(100000));
-    selectorRaw = gitCapture(repoRoot, diffArgs(0));
-  } catch {
-    return null;
-  }
+function parseDiffPatch(raw, selectorRaw, stats) {
   if (!raw.trim()) {
-    return { lines: [], additions: 0, deletions: 0, binary: false, truncated: false };
+    return {
+      lines: [],
+      additions: stats?.additions ?? 0,
+      deletions: stats?.deletions ?? 0,
+      binary: stats?.binary ?? false,
+      truncated: false,
+    };
   }
   const src = raw.split("\n");
   const lines = [];
   let oldNo = 0;
   let newNo = 0;
-  let additions = 0;
-  let deletions = 0;
   let binary = false;
   let truncated = false;
   let started = false;
@@ -343,7 +317,6 @@ function parseDiff(repoRoot, base, head, filePath, previousPath) {
         h: hunkByLine.get(`new:${newNo}`),
       });
       newNo += 1;
-      additions += 1;
     } else if (tag === "-") {
       lines.push({
         t: "del",
@@ -352,7 +325,6 @@ function parseDiff(repoRoot, base, head, filePath, previousPath) {
         h: hunkByLine.get(`old:${oldNo}`),
       });
       oldNo += 1;
-      deletions += 1;
     } else {
       lines.push({ t: "ctx", o: oldNo, n: newNo, s: text });
       oldNo += 1;
@@ -360,7 +332,148 @@ function parseDiff(repoRoot, base, head, filePath, previousPath) {
     }
     rowCount += 1;
   }
-  return { lines, additions, deletions, binary, truncated };
+  return {
+    lines,
+    additions: stats?.additions ?? lines.filter((line) => line.t === "add").length,
+    deletions: stats?.deletions ?? lines.filter((line) => line.t === "del").length,
+    binary: stats?.binary ?? binary,
+    truncated,
+  };
+}
+
+function stageDiffKey(stage) {
+  return `${stage.id}\0${stage.change.baseRevision}\0${stage.change.headRevision}`;
+}
+
+function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
+  const raw = captureGit(repoRoot, [
+    "--no-pager",
+    "diff",
+    "--no-ext-diff",
+    "--find-renames=50%",
+    "--raw",
+    "--numstat",
+    "--no-abbrev",
+    "-z",
+    stage.change.baseRevision,
+    stage.change.headRevision,
+  ]);
+  const stats = new Map();
+  const fields = raw.split("\0");
+  const blobs = new Map();
+  let index = 0;
+  while (index < fields.length && fields[index].startsWith(":")) {
+    const metadata = fields[index++].slice(1).split(" ");
+    const status = metadata[4] || "";
+    const previousPath = fields[index++] || "";
+    const filePath =
+      status.startsWith("R") || status.startsWith("C")
+        ? fields[index++] || ""
+        : previousPath;
+    if (!filePath) continue;
+    blobs.set(filePath, {
+      oldBlob: metadata[2] || "",
+      newBlob: metadata[3] || "",
+    });
+  }
+  for (; index < fields.length && fields[index];) {
+    const record = fields[index++];
+    const firstTab = record.indexOf("\t");
+    const secondTab = record.indexOf("\t", firstTab + 1);
+    if (firstTab < 0 || secondTab < 0) continue;
+    const additionsText = record.slice(0, firstTab);
+    const deletionsText = record.slice(firstTab + 1, secondTab);
+    let filePath = record.slice(secondTab + 1);
+    if (!filePath) {
+      index += 1;
+      filePath = fields[index++] || "";
+    }
+    if (!filePath) continue;
+    stats.set(filePath, {
+      additions: additionsText === "-" ? 0 : Number(additionsText),
+      deletions: deletionsText === "-" ? 0 : Number(deletionsText),
+      binary: additionsText === "-" || deletionsText === "-",
+      ...(blobs.get(filePath) || {}),
+    });
+  }
+  return stats;
+}
+
+function decodePatchPath(value) {
+  const withoutTimestamp = value.replace(/\r$/, "").split("\t", 1)[0];
+  if (withoutTimestamp === "/dev/null") return "";
+  let decoded = withoutTimestamp;
+  if (decoded.startsWith('"') && decoded.endsWith('"')) {
+    try {
+      decoded = JSON.parse(decoded);
+    } catch {
+      return "";
+    }
+  }
+  return decoded.replace(/^[ab]\//, "");
+}
+
+function patchSectionPath(section) {
+  const current = /^\+\+\+ (.*)$/m.exec(section);
+  if (current) {
+    const currentPath = decodePatchPath(current[1]);
+    if (currentPath) return currentPath;
+  }
+  const renamed = /^rename to (.*)$/m.exec(section);
+  if (renamed) return renamed[1].replace(/\r$/, "");
+  const previous = /^--- (.*)$/m.exec(section);
+  return previous ? decodePatchPath(previous[1]) : "";
+}
+
+function indexPatchSections(raw, expectedPaths) {
+  const expected = new Set(expectedPaths);
+  const indexed = new Map();
+  const unresolved = [];
+  const sections = raw
+    .split(/(?=^diff --git )/m)
+    .filter((section) => section.startsWith("diff --git "));
+  for (const section of sections) {
+    const filePath = patchSectionPath(section);
+    if (filePath && expected.has(filePath) && !indexed.has(filePath)) {
+      indexed.set(filePath, section);
+    } else {
+      unresolved.push(section);
+    }
+  }
+  const missing = expectedPaths.filter((filePath) => !indexed.has(filePath));
+  if (unresolved.length === missing.length) {
+    unresolved.forEach((section, index) => indexed.set(missing[index], section));
+  }
+  return indexed;
+}
+
+function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
+  const args = (unified) => [
+    "-c",
+    "core.quotePath=false",
+    "--no-pager",
+    "diff",
+    "--no-ext-diff",
+    "--find-renames=50%",
+    `-U${unified}`,
+    stage.change.baseRevision,
+    stage.change.headRevision,
+  ];
+  const full = captureGit(repoRoot, args(100000));
+  const selector = captureGit(repoRoot, args(0));
+  const expectedPaths = stage.change.files.map((file) => file.path);
+  const fullByPath = indexPatchSections(full, expectedPaths);
+  const selectorByPath = indexPatchSections(selector, expectedPaths);
+  return new Map(
+    expectedPaths.map((filePath) => [
+      filePath,
+      parseDiffPatch(
+        fullByPath.get(filePath) || "",
+        selectorByPath.get(filePath) || "",
+        stats.get(filePath),
+      ),
+    ]),
+  );
 }
 
 function buildInsights(stage) {
@@ -441,18 +554,31 @@ function buildInsights(stage) {
   return insights;
 }
 
-function buildImplementationData(repoRoot) {
+function fileRevision(stage, file, stats) {
+  return createHash("sha256")
+    .update(stats?.oldBlob || stage.change.baseRevision)
+    .update("\0")
+    .update(stats?.newBlob || stage.change.headRevision)
+    .update("\0")
+    .update(file.path)
+    .update("\0")
+    .update(file.previousPath || "")
+    .digest("hex");
+}
+
+function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) {
   const implementationRoot = path.join(repoRoot, ".semantic-review");
   const manifest = readJson(path.join(implementationRoot, "manifest.json"));
   const specificationDocs = (manifest.requirements || []).map((specificationId) =>
     readJson(path.join(implementationRoot, "requirements", `${specificationId}.json`)),
   );
-  const projects = buildProjectIndex(repoRoot);
+  const projects = buildProjectIndex(repoRoot, captureGit);
 
   const stages = manifest.stages.map((stageId) => {
     const s = readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
+    const stats = statsForStage(s);
     const kindByPath = new Map(s.change.files.map((f) => [f.path, f.kind]));
     const previousPathByPath = new Map(
       s.change.files
@@ -485,8 +611,9 @@ function buildImplementationData(repoRoot) {
       });
     });
 
-    const files = s.change.files.map((f) => f.path).map((p) => {
-      const diff = parseDiff(repoRoot, base, head, p, previousPathByPath.get(p));
+    const files = s.change.files.map((file) => {
+      const p = file.path;
+      const fileStats = stats.get(p);
       return {
         path: p,
         kind: kindByPath.get(p) || "modified",
@@ -495,11 +622,10 @@ function buildImplementationData(repoRoot) {
           : {}),
         project: projectFor(projects, p),
         memberships: membershipByPath.get(p) || [],
-        additions: diff ? diff.additions : 0,
-        deletions: diff ? diff.deletions : 0,
-        binary: diff ? diff.binary : false,
-        truncated: diff ? diff.truncated : false,
-        lines: diff ? diff.lines : [],
+        additions: fileStats?.additions ?? 0,
+        deletions: fileStats?.deletions ?? 0,
+        binary: fileStats?.binary ?? false,
+        revision: fileRevision(s, file, fileStats),
       };
     });
 
@@ -531,7 +657,6 @@ function buildImplementationData(repoRoot) {
   }));
 
   const feedback = buildFeedbackThreads(repoRoot, stages);
-  const snapshot = viewerSnapshot(repoRoot);
   return {
     implementationId: manifest.implementationId,
     title: manifest.title,
@@ -546,8 +671,90 @@ function buildImplementationData(repoRoot) {
   };
 }
 
+export function createViewerDataSource(
+  repoRoot,
+  options: { gitCapture?: typeof gitCapture } = {},
+) {
+  const captureGit = options.gitCapture || gitCapture;
+  const stageCache = new Map();
+  let cachedRevision = "";
+  let cachedScript = "";
+
+  const stageRecord = (stage) => {
+    const key = stageDiffKey(stage);
+    let record = stageCache.get(key);
+    if (!record) {
+      record = {
+        stats: buildStageStats(repoRoot, stage, captureGit),
+        diffs: null,
+        stage,
+      };
+      stageCache.set(key, record);
+    }
+    return record;
+  };
+
+  const readStage = (stageId) => {
+    const implementationRoot = path.join(repoRoot, ".semantic-review");
+    const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+    if (!manifest.stages.includes(stageId)) {
+      throw new Error(`unknown stage "${stageId}"`);
+    }
+    return readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
+  };
+
+  return {
+    implementationDataScript() {
+      const snapshot = viewerSnapshot(repoRoot);
+      if (snapshot.revision !== cachedRevision) {
+        const data = buildImplementationData(
+          repoRoot,
+          (stage) => stageRecord(stage).stats,
+          snapshot,
+          captureGit,
+        );
+        cachedScript = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(data)};\n`;
+        cachedRevision = snapshot.revision;
+      }
+      return cachedScript;
+    },
+    fileDiff(stageId, filePath, baseRevision, headRevision) {
+      let record = stageCache.get(
+        `${stageId}\0${baseRevision}\0${headRevision}`,
+      );
+      let stage = record?.stage;
+      if (!stage) {
+        stage = readStage(stageId);
+        if (
+          stage.change.baseRevision !== baseRevision ||
+          stage.change.headRevision !== headRevision
+        ) {
+          throw new Error(`stage "${stageId}" changed; reload the viewer`);
+        }
+        record = stageRecord(stage);
+      }
+      if (!stage.change.files.some((file) => file.path === filePath)) {
+        throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
+      }
+      if (!record.diffs) {
+        record.diffs = buildStageDiffs(
+          repoRoot,
+          stage,
+          record.stats,
+          captureGit,
+        );
+      }
+      const diff = record.diffs.get(filePath);
+      if (!diff) {
+        throw new Error(`diff for "${filePath}" was not generated`);
+      }
+      return diff;
+    },
+  };
+}
+
 export function createImplementationDataScript(repoRoot) {
-  return `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(buildImplementationData(repoRoot))};\n`;
+  return createViewerDataSource(repoRoot).implementationDataScript();
 }
 
 // Load open and resolved feedback threads from the local feedback store. A
@@ -1145,7 +1352,14 @@ async function handleThreadAction(request, response, context, action) {
   }
 }
 
-function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId }) {
+function serveViewer({
+  viewerDir,
+  port,
+  repoRoot,
+  feedbackCli,
+  implementationId,
+  dataSource,
+}) {
   let server = null;
   const requestHandler = (request, response) => {
     const url = new URL(request.url, `http://${VIEWER_HOST}`);
@@ -1170,6 +1384,37 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId 
         });
       } catch (error) {
         sendJson(response, 500, {
+          ok: false,
+          error: cliErrorMessage(error),
+        });
+      }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/diff") {
+      const stageId = url.searchParams.get("stage");
+      const filePath = url.searchParams.get("path");
+      const baseRevision = url.searchParams.get("base");
+      const headRevision = url.searchParams.get("head");
+      if (!stageId || !filePath || !baseRevision || !headRevision) {
+        sendJson(response, 400, {
+          ok: false,
+          error: "Diff requests require stage, path, base, and head query parameters.",
+        });
+        return;
+      }
+      try {
+        sendJson(response, 200, {
+          ok: true,
+          ...dataSource.fileDiff(
+            stageId,
+            filePath,
+            baseRevision,
+            headRevision,
+          ),
+        });
+      } catch (error) {
+        sendJson(response, 422, {
           ok: false,
           error: cliErrorMessage(error),
         });
@@ -1232,7 +1477,7 @@ function serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId 
 
     if (pathname === "/implementation-data.js") {
       try {
-        const body = Buffer.from(createImplementationDataScript(repoRoot), "utf8");
+        const body = Buffer.from(dataSource.implementationDataScript(), "utf8");
         response.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
           "content-length": body.length,
@@ -1298,16 +1543,41 @@ function openBrowser(url) {
   }
 }
 
+function implementationSummary(repoRoot) {
+  const implementationRoot = path.join(repoRoot, ".semantic-review");
+  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+  const fileCount = manifest.stages.reduce((total, stageId) => {
+    const stage = readJson(
+      path.join(implementationRoot, "stages", `${stageId}.json`),
+    );
+    return total + stage.change.files.length;
+  }, 0);
+  return {
+    implementationId: manifest.implementationId,
+    title: manifest.title,
+    stageCount: manifest.stages.length,
+    fileCount,
+  };
+}
+
 async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
-  const implementation = buildImplementationData(repoRoot);
+  const implementation = implementationSummary(repoRoot);
+  const dataSource = createViewerDataSource(repoRoot);
   const feedbackCli = locateFeedbackCli();
 
   const port = viewerPort();
   let server = null;
   try {
-    server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId });
+    server = await serveViewer({
+      viewerDir,
+      port,
+      repoRoot,
+      feedbackCli,
+      implementationId: implementation.implementationId,
+      dataSource,
+    });
   } catch (error) {
     if (!error || error.code !== "EADDRINUSE") throw error;
     // The port is taken. Reclaim it only if our own viewer is holding it;
@@ -1323,7 +1593,14 @@ async function main() {
     for (let attempt = 0; attempt < 40 && !server; attempt += 1) {
       await delay(100);
       try {
-        server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId });
+        server = await serveViewer({
+          viewerDir,
+          port,
+          repoRoot,
+          feedbackCli,
+          implementationId: implementation.implementationId,
+          dataSource,
+        });
       } catch (retryError) {
         if (!retryError || retryError.code !== "EADDRINUSE") throw retryError;
       }
@@ -1332,13 +1609,11 @@ async function main() {
       fail(`Port ${port} is still busy after asking the existing viewer to stop.`);
     }
   }
-
   const url = `http://${VIEWER_HOST}:${port}/`;
-  const fileCount = implementation.stages.reduce((a, s) => a + s.files.length, 0);
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);
   console.log(
-    `Implementation: ${implementation.title} — ${implementation.stages.length} stages, ${fileCount} files`,
+    `Implementation: ${implementation.title} — ${implementation.stageCount} stages, ${implementation.fileCount} files`,
   );
   if (!feedbackCli) {
     console.log(

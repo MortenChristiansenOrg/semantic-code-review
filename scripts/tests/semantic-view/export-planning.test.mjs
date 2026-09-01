@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -19,6 +20,7 @@ const moduleUrl = pathToFileURL(
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
+  createViewerDataSource,
   exportFeedback,
   exportFeedbackReplies,
   planFeedbackThreads,
@@ -218,14 +220,25 @@ test("viewer data preserves zero-context hunk ownership", (t) => {
   });
   repository.semantic("stage", "finish");
 
-  const script = createImplementationDataScript(repository.root);
+  const dataSource = createViewerDataSource(repository.root);
+  const script = dataSource.implementationDataScript();
   const data = JSON.parse(
     script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
   );
+  const stage = data.stages[0];
   const file = data.stages[0].files[0];
+  const diff = dataSource.fileDiff(
+    "implementation",
+    "service.txt",
+    stage.baseRevision,
+    stage.headRevision,
+  );
 
+  assert.equal("lines" in file, false);
+  assert.equal(file.additions, 2);
+  assert.equal(file.deletions, 2);
   assert.deepEqual(
-    [...new Set(file.lines.filter((line) => line.t !== "ctx").map((line) => line.h))],
+    [...new Set(diff.lines.filter((line) => line.t !== "ctx").map((line) => line.h))],
     [1, 2],
   );
   assert.deepEqual(
@@ -234,6 +247,179 @@ test("viewer data preserves zero-context hunk ownership", (t) => {
       { nodeId: "refresh-imports", hunks: [1] },
       { nodeId: "change-behavior", hunks: [2] },
     ],
+  );
+});
+
+test("viewer data caches metadata and batches lazy diffs by stage", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.write("first.txt", "first\n");
+  repository.write("second.txt", "second\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Add viewer fixtures");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+
+  const calls = [];
+  const dataSource = createViewerDataSource(repository.root, {
+    gitCapture(cwd, args) {
+      calls.push(args);
+      return execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+    },
+  });
+
+  const firstScript = dataSource.implementationDataScript();
+  const stage = JSON.parse(
+    firstScript.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  ).stages[0];
+  const initialDiffCalls = calls.filter((args) => args.includes("diff")).length;
+  assert.equal(initialDiffCalls, 1);
+  assert.equal(dataSource.implementationDataScript(), firstScript);
+  assert.equal(calls.filter((args) => args.includes("diff")).length, 1);
+
+  assert.equal(
+    dataSource.fileDiff(
+      "implementation",
+      "first.txt",
+      stage.baseRevision,
+      stage.headRevision,
+    ).additions,
+    1,
+  );
+  assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
+  assert.equal(
+    dataSource.fileDiff(
+      "implementation",
+      "second.txt",
+      stage.baseRevision,
+      stage.headRevision,
+    ).additions,
+    1,
+  );
+  assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
+});
+
+test("lazy stage diff preserves renamed file content changes", (t) => {
+  const repository = createRepository(t);
+  repository.write("old name.txt", "stable\nbefore\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Add rename fixture");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("mv", "old name.txt", "new name.txt");
+  repository.write("new name.txt", "stable\nafter\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Rename and update fixture");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+
+  const dataSource = createViewerDataSource(repository.root);
+  const data = JSON.parse(
+    dataSource.implementationDataScript()
+      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  );
+  assert.deepEqual(
+    data.stages[0].files.map(({ path, previousPath, kind }) => ({
+      path,
+      previousPath,
+      kind,
+    })),
+    [{
+      path: "new name.txt",
+      previousPath: "old name.txt",
+      kind: "renamed",
+    }],
+  );
+
+  const stage = data.stages[0];
+  const diff = dataSource.fileDiff(
+    "implementation",
+    "new name.txt",
+    stage.baseRevision,
+    stage.headRevision,
+  );
+  assert.equal(diff.additions, 1);
+  assert.equal(diff.deletions, 1);
+  assert.deepEqual(
+    diff.lines.filter((line) => line.t !== "ctx").map((line) => line.s),
+    ["before", "after"],
+  );
+});
+
+test("file revisions ignore unrelated changes in the same stage", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.write("first.txt", "first\n");
+  repository.write("second.txt", "second\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Add revision fixtures");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+
+  const dataSource = createViewerDataSource(repository.root);
+  const readData = () => JSON.parse(
+    dataSource.implementationDataScript()
+      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  );
+  const initial = readData();
+  const initialRevisions = new Map(
+    initial.stages[0].files.map((file) => [file.path, file.revision]),
+  );
+
+  repository.write("second.txt", "second updated\n");
+  repository.git("add", "second.txt");
+  repository.git("commit", "-m", "Update second fixture");
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.headRevision = repository.git("rev-parse", "HEAD");
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  const refreshed = readData();
+  const refreshedRevisions = new Map(
+    refreshed.stages[0].files.map((file) => [file.path, file.revision]),
+  );
+  assert.equal(
+    refreshedRevisions.get("first.txt"),
+    initialRevisions.get("first.txt"),
+  );
+  assert.notEqual(
+    refreshedRevisions.get("second.txt"),
+    initialRevisions.get("second.txt"),
+  );
+});
+
+test("lazy diff stays bound to the metadata stage revision", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const dataSource = createViewerDataSource(repository.root);
+  const initial = JSON.parse(
+    dataSource.implementationDataScript()
+      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  );
+  const initialStage = initial.stages[0];
+
+  repository.write("implementation.txt", "changed after viewer load\n");
+  repository.git("add", "implementation.txt");
+  repository.git("commit", "-m", "Advance stage after viewer load");
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const currentStage = repository.readJson(stagePath);
+  currentStage.change.headRevision = repository.git("rev-parse", "HEAD");
+  repository.write(stagePath, `${JSON.stringify(currentStage, null, 2)}\n`);
+
+  const diff = dataSource.fileDiff(
+    "implementation",
+    "implementation.txt",
+    initialStage.baseRevision,
+    initialStage.headRevision,
+  );
+  assert.deepEqual(
+    diff.lines.filter((line) => line.t === "add").map((line) => line.s),
+    ["implementation"],
   );
 });
 
@@ -357,8 +543,9 @@ test("viewer snapshot detects when the feedback command finishes replies", (t) =
 
 test("createImplementationDataScript reloads feedback from disk", (t) => {
   const { repository } = createImplementationWithStages(t);
+  const dataSource = createViewerDataSource(repository.root);
   const readData = () => {
-    const script = createImplementationDataScript(repository.root);
+    const script = dataSource.implementationDataScript();
     return JSON.parse(script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
   };
 
@@ -411,6 +598,9 @@ test("viewer client polls for completed feedback and reloads", () => {
     "utf8",
   );
   assert.match(app, /fetch\("\/api\/revision"/);
+  assert.match(app, /fetch\(`\/api\/diff\?\$\{query\}`/);
+  assert.match(app, /Loading diff…/);
+  assert.match(app, /pendingDiffs\.forEach\(ensureFileDiff\)/);
   assert.match(app, /fetch\("\/api\/feedback\/reply-batch"/);
   assert.match(app, /observedAwaitingAgentReplies > 0 && awaiting === 0/);
   assert.match(app, /Boolean\(compose && compose\.dirty\)/);
@@ -419,6 +609,10 @@ test("viewer client polls for completed feedback and reloads", () => {
   assert.match(app, /window\.location\.reload\(\)/);
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
   assert.match(app, /Notes <b>\$\{activeNoteCount\(\)\}<\/b>/);
+  assert.match(app, /base: entry\.stage\.baseRevision/);
+  assert.match(app, /head: entry\.stage\.headRevision/);
+  assert.match(app, /pendingLazyJump = null;\s+state\.notesOpen = false/);
+  assert.match(app, /function resumePendingLazyJump\(\)/);
   assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 2);
   assert.match(
     app,
@@ -428,6 +622,80 @@ test("viewer client polls for completed feedback and reloads", () => {
     app,
     /<div class="note-cluster">\$\{notesToggle\("stage", id\)\}\$\{commentBtn\("stage", id\)\}<\/div>/,
   );
+});
+
+test("viewer client renders lazy metadata without runtime errors", () => {
+  const source = fs.readFileSync(
+    path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
+    "utf8",
+  );
+  const app = {
+    innerHTML: "",
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const classList = { toggle() {}, add() {}, remove() {} };
+  const windowObject = {
+    SEMANTIC_IMPLEMENTATION: {
+      implementationId: "client-test",
+      title: "Client test",
+      summary: "Render metadata without loading diffs.",
+      targetBranch: "main",
+      baseRevision: "0123456789abcdef",
+      requirements: [],
+      stages: [{
+        id: "implementation",
+        title: "Implementation",
+        summary: "Summary",
+        rationale: "Rationale",
+        dependsOn: [],
+        specificationRefs: [],
+        baseRevision: "base",
+        headRevision: "head",
+        nodes: [],
+        files: [],
+        insights: [],
+      }],
+      feedback: [],
+      awaitingAgentReplies: 0,
+    },
+    addEventListener() {},
+    matchMedia: () => ({ matches: true }),
+    setInterval() {},
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo() {},
+  };
+  const documentObject = {
+    querySelector: () => app,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    body: { classList },
+    documentElement: { style: {} },
+  };
+  const storage = {
+    getItem: () => null,
+    setItem() {},
+  };
+
+  new Function(
+    "window",
+    "document",
+    "localStorage",
+    "CSS",
+    "fetch",
+    "requestAnimationFrame",
+    source,
+  )(
+    windowObject,
+    documentObject,
+    storage,
+    { escape: (value) => String(value) },
+    () => Promise.reject(new Error("unexpected fetch")),
+    (callback) => callback(),
+  );
+
+  assert.match(app.innerHTML, /Client test/);
 });
 
 test("feedback target stays present when it leaves the current stage diff", (t) => {

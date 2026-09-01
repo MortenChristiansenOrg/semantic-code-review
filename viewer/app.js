@@ -88,6 +88,43 @@
     flatFiles.push({ id: fileKey(stage.id, file.path), stage, file });
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
+  const diffRequests = new Map();
+  async function ensureFileDiff(entry) {
+    if (!entry || Array.isArray(entry.file.lines) || diffRequests.has(entry.id)) return;
+    entry.file._diffLoading = true;
+    delete entry.file._diffError;
+    const query = new URLSearchParams({
+      stage: entry.stage.id,
+      path: entry.file.path,
+      base: entry.stage.baseRevision,
+      head: entry.stage.headRevision,
+    });
+    const request = fetch(`/api/diff?${query}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || `Diff request failed with status ${response.status}.`);
+        }
+        if (!Array.isArray(payload.lines)) {
+          throw new Error("Diff response did not include lines.");
+        }
+        entry.file.lines = payload.lines;
+        entry.file.additions = Number(payload.additions) || 0;
+        entry.file.deletions = Number(payload.deletions) || 0;
+        entry.file.binary = Boolean(payload.binary);
+        entry.file.truncated = Boolean(payload.truncated);
+        delete entry.file._ownership;
+      })
+      .catch((error) => {
+        entry.file._diffError = error.message || "Diff could not be loaded.";
+      })
+      .finally(() => {
+        entry.file._diffLoading = false;
+        diffRequests.delete(entry.id);
+        render();
+      });
+    diffRequests.set(entry.id, request);
+  }
   // A renamed file no longer answers to its old path, but feedback anchored
   // before the rename still targets that old path. Index the pre-rename path so
   // such a thread can resolve to the file at its new destination.
@@ -148,6 +185,7 @@
           });
         });
       }
+
     });
     file._ownership = map.size ? map : null;
     return file._ownership;
@@ -178,6 +216,40 @@
   let replyDraft = "";             // unsent text of the open reply, kept across re-renders
   let replyEditId = null;          // id of the pending reply draft being edited (if any)
   let replyDirty = false;
+  let pendingLazyJump = null;
+  function resumePendingLazyJump() {
+    if (!pendingLazyJump) return;
+    const pending = pendingLazyJump;
+    const entry = fileById.get(pending.fileId);
+    if (
+      entry &&
+      !Array.isArray(entry.file.lines) &&
+      !entry.file._diffError
+    ) return;
+    pendingLazyJump = null;
+    const parsed = parseLineId(pending.id);
+    const exact =
+      entry &&
+      parsed &&
+      Array.isArray(entry.file.lines) &&
+      fileHasLine(entry.file, parsed.side, parsed.line);
+    requestAnimationFrame(() => {
+      if (pending.membership?.nodeId) {
+        const node = app.querySelector(
+          `details.node[data-node="${cssEsc(pending.membership.nodeId)}"]`,
+        );
+        if (node) node.open = true;
+      }
+      requestAnimationFrame(() => {
+        const target = exact
+          ? app.querySelector(`.line-thread[data-thread="${cssEsc(pending.id)}"]`)
+          : app.querySelector(`.frow[data-file="${cssEsc(pending.fileId)}"]`);
+        if (target)
+          target.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (entry) fadeFileHighlight(entry.id, "in");
+      });
+    });
+  }
   const threadOps = {};            // thread id -> { busy, error } for server actions
   let exportState = { phase: "idle", message: "" };
   function threadBusy(id) { return Boolean(threadOps[id] && threadOps[id].busy); }
@@ -258,6 +330,9 @@
     const entry = fileById.get(id);
     return entry ? fileFingerprint(entry) : null;
   }
+  function revisionFor(id) {
+    return fileById.get(id)?.file.revision || null;
+  }
   // A renamed file's approval was recorded under its pre-rename element id. Map
   // to that id so the sign-off is not lost when the path changes.
   function previousApprovalId(id) {
@@ -269,7 +344,12 @@
   function approvalState(id) {
     const rec = state.approvals[id];
     if (rec) {
-      if (rec === true || rec.fp == null) return "approved";
+      if (rec === true) return "approved";
+      if (rec.rev != null)
+        return rec.rev === revisionFor(id) ? "approved" : "stale";
+      if (rec.fp == null) return "approved";
+      const entry = fileById.get(id);
+      if (entry && !Array.isArray(entry.file.lines)) return "approved";
       return rec.fp === fingerprintFor(id) ? "approved" : "stale";
     }
     // An approval inherited from before a rename can never still match the file
@@ -620,6 +700,8 @@
       if (!entry) return null;
       // A later stage head can remove or move the saved line. Only offer an
       // exact jump while that side and line still exist in the rendered diff.
+      if (entry.file.path === tgt.path && !Array.isArray(entry.file.lines))
+        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
       if (entry.file.path === tgt.path && fileHasLine(entry.file, tgt.side, tgt.line))
         return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
       return { kind: "file", id: entry.id };
@@ -1066,8 +1148,12 @@
     return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} ⋯</code></div>`;
   }
   function diffBody(file, mode, hideDel, ctx) {
+    if (file._diffError)
+      return `<div class="diff-empty">Could not load diff: ${esc(file._diffError)}</div>`;
+    if (!Array.isArray(file.lines))
+      return `<div class="diff-empty">Loading diff…</div>`;
     if (file.binary) return `<div class="diff-empty">Binary file — not shown.</div>`;
-    const lines = file.lines || [];
+    const lines = file.lines;
     if (!lines.length) return `<div class="diff-empty">No line changes recorded for this file.</div>`;
     const lang = langFor(file.path);
     const out = [];
@@ -1688,7 +1774,7 @@
       if (prevId) delete state.approvals[prevId];
       if (st === "approved") delete state.approvals[id];
       else {
-        state.approvals[id] = { fp: fingerprintFor(id), at: Date.now() };
+        state.approvals[id] = { rev: revisionFor(id), at: Date.now() };
         // Approving a file means you're done with it — close its open diff.
         if (state.activeFiles[id]) delete state.activeFiles[id];
       }
@@ -1793,12 +1879,14 @@
   // panel, and scroll its conversation into view (targeting the comments so a
   // tall file body cannot push them off-screen).
   function jumpToElement(kind, id) {
+    pendingLazyJump = null;
     state.notesOpen = false;
     state.coverageOpen = false;
     if (kind === "line") state.openLineThreads[id] = true;
     else state.openThreads[id] = true;
     let lineFileId = null;
     let lineMembership = null;
+    let lineEntry = null;
     if (kind === "file") {
       const entry = fileById.get(id);
       if (entry) {
@@ -1809,6 +1897,7 @@
       const p = parseLineId(id);
       const entry = p && fileById.get(fileKey(p.stageId, p.path));
       if (entry) {
+        lineEntry = entry;
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
@@ -1829,7 +1918,13 @@
       if (ref?.stageId) state.openStages[ref.stageId] = true;
     }
     persist();
+    const waitForLazyLine =
+      kind === "line" && lineEntry && !Array.isArray(lineEntry.file.lines);
+    if (waitForLazyLine) {
+      pendingLazyJump = { id, fileId: lineEntry.id, membership: lineMembership };
+    }
     render();
+    if (waitForLazyLine) return;
     // Expand the owning node <details> for file/line targets, then scroll.
     requestAnimationFrame(() => {
       if (kind === "file") {
@@ -2267,6 +2362,8 @@
     if (state.activeFiles[id]) { closeCinema(id); return; }
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
+    const entry = fileById.get(id);
+    if (entry) delete entry.file._diffError;
     state.activeFiles[id] = true; persist(); pendingHighlight = id; render();
   }
   function cinemaHolder(id) {
@@ -2501,6 +2598,7 @@
     // adding a line note (or any re-render) never resets where the reviewer is
     // looking within the diff.
     const diffScrolls = {};
+    const pendingDiffs = [];
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!state.activeFiles[fid]) return;
       const holder = app.querySelector(`.frow[data-file="${cssEsc(fid)}"]`)?.nextElementSibling;
@@ -2522,6 +2620,8 @@
         const focusNodeId = row.closest("[data-node]")?.getAttribute("data-node") || null;
         holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId }) + fileNotesBlock(fid);
         row.after(holder);
+        if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
+          pendingDiffs.push(entry);
         const saved = diffScrolls[fid];
         if (saved) {
           const scroller = holder.querySelector(".diff-scroll");
@@ -2534,6 +2634,8 @@
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
+    pendingDiffs.forEach(ensureFileDiff);
+    resumePendingLazyJump();
   };
 
   render();
