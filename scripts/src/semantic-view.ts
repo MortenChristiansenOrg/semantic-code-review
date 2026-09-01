@@ -228,29 +228,32 @@ function projectFor(projects, p) {
 
 function parseDiff(repoRoot, base, head, filePath, previousPath) {
   const renamed = Boolean(previousPath) && previousPath !== filePath;
-  let raw;
-  try {
-    // For a renamed/moved file, diff the recorded pre-rename blob directly
-    // against the new blob so only real content edits show. Diffing just the
-    // new path would make Git see it as absent at base and mark every line as
-    // an addition (a pure move would then look like a whole new file).
-    const args = renamed
+  const diffArgs = (unified) =>
+    renamed
       ? [
           "--no-pager",
           "diff",
-          "-U100000",
+          `-U${unified}`,
           `${base}:${previousPath}`,
           `${head}:${filePath}`,
         ]
       : [
           "--no-pager",
           "diff",
-          "-U100000",
+          `-U${unified}`,
           `${base}..${head}`,
           "--",
           filePath,
         ];
-    raw = gitCapture(repoRoot, args);
+  let raw;
+  let selectorRaw;
+  try {
+    // For a renamed/moved file, diff the recorded pre-rename blob directly
+    // against the new blob so only real content edits show. Diffing just the
+    // new path would make Git see it as absent at base and mark every line as
+    // an addition (a pure move would then look like a whole new file).
+    raw = gitCapture(repoRoot, diffArgs(100000));
+    selectorRaw = gitCapture(repoRoot, diffArgs(0));
   } catch {
     return null;
   }
@@ -267,6 +270,34 @@ function parseDiff(repoRoot, base, head, filePath, previousPath) {
   let truncated = false;
   let started = false;
   let rowCount = 0;
+  const hunkByLine = new Map();
+  let selectorHunk = 0;
+  let selectorOldNo = 0;
+  let selectorNewNo = 0;
+  let selectorStarted = false;
+  for (const line of selectorRaw.split("\n")) {
+    if (line.startsWith("@@")) {
+      const match = /@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (match) {
+        selectorHunk += 1;
+        selectorOldNo = parseInt(match[1], 10);
+        selectorNewNo = parseInt(match[2], 10);
+        selectorStarted = true;
+      }
+      continue;
+    }
+    if (!selectorStarted || line === "" || line.startsWith("\\")) continue;
+    if (line[0] === "+") {
+      hunkByLine.set(`new:${selectorNewNo}`, selectorHunk);
+      selectorNewNo += 1;
+    } else if (line[0] === "-") {
+      hunkByLine.set(`old:${selectorOldNo}`, selectorHunk);
+      selectorOldNo += 1;
+    } else if (line[0] === " ") {
+      selectorOldNo += 1;
+      selectorNewNo += 1;
+    }
+  }
 
   for (const line of src) {
     if (
@@ -305,11 +336,21 @@ function parseDiff(repoRoot, base, head, filePath, previousPath) {
     const tag = line[0];
     const text = line.slice(1);
     if (tag === "+") {
-      lines.push({ t: "add", n: newNo, s: text });
+      lines.push({
+        t: "add",
+        n: newNo,
+        s: text,
+        h: hunkByLine.get(`new:${newNo}`),
+      });
       newNo += 1;
       additions += 1;
     } else if (tag === "-") {
-      lines.push({ t: "del", o: oldNo, s: text });
+      lines.push({
+        t: "del",
+        o: oldNo,
+        s: text,
+        h: hunkByLine.get(`old:${oldNo}`),
+      });
       oldNo += 1;
       deletions += 1;
     } else {
@@ -327,6 +368,7 @@ function buildInsights(stage) {
   (stage.decisions || []).forEach((d) =>
     insights.push({
       type: "decision",
+      collection: "decisions",
       id: d.id,
       title: d.summary,
       body: d.rationale,
@@ -337,6 +379,7 @@ function buildInsights(stage) {
   (stage.assumptions || []).forEach((a) =>
     insights.push({
       type: "assumption",
+      collection: "assumptions",
       id: a.id,
       title: a.statement,
       body: a.riskIfWrong ? `If wrong: ${a.riskIfWrong}` : "",
@@ -346,6 +389,7 @@ function buildInsights(stage) {
   (stage.alternatives || []).forEach((a) =>
     insights.push({
       type: "alternative",
+      collection: "alternatives",
       id: a.id,
       title: a.approach || a.summary || a.id,
       body: a.reasonRejected || a.rationale || "",
@@ -355,6 +399,7 @@ function buildInsights(stage) {
   (stage.failedAttempts || []).forEach((f) =>
     insights.push({
       type: "lesson",
+      collection: "failedAttempts",
       id: f.id,
       title: f.approach,
       body: `Outcome: ${f.outcome} — Lesson: ${f.lesson}`,
@@ -364,6 +409,7 @@ function buildInsights(stage) {
   (stage.risks || []).forEach((r) =>
     insights.push({
       type: "risk",
+      collection: "risks",
       id: r.id,
       title: r.summary,
       body: r.mitigation ? `Mitigation: ${r.mitigation}` : "",
@@ -373,16 +419,19 @@ function buildInsights(stage) {
   (stage.validation || []).forEach((v) =>
     insights.push({
       type: "validation",
+      collection: "validation",
       id: v.id,
       title: v.summary,
       body: v.command || "",
       meta: v.status,
+      validationType: v.type,
       nodeRefs: v.nodeRefs || [],
     }),
   );
   (stage.openQuestions || []).forEach((q) =>
     insights.push({
       type: "question",
+      collection: "openQuestions",
       id: q.id || "q",
       title: q.question || q.summary || String(q),
       body: q.context || "",
@@ -418,6 +467,8 @@ function buildImplementationData(repoRoot) {
       changes: node.changes.map((c) => ({
         path: c.path,
         classification: c.classification,
+        ...(c.hunks ? { hunks: c.hunks } : {}),
+        ...(c.lineRanges ? { lineRanges: c.lineRanges } : {}),
       })),
     }));
 
@@ -425,9 +476,12 @@ function buildImplementationData(repoRoot) {
     nodes.forEach((node) => {
       node.changes.forEach((c) => {
         if (!membershipByPath.has(c.path)) membershipByPath.set(c.path, []);
-        membershipByPath
-          .get(c.path)
-          .push({ nodeId: node.id, classification: c.classification });
+        membershipByPath.get(c.path).push({
+          nodeId: node.id,
+          classification: c.classification,
+          ...(c.hunks ? { hunks: c.hunks } : {}),
+          ...(c.lineRanges ? { lineRanges: c.lineRanges } : {}),
+        });
       });
     });
 

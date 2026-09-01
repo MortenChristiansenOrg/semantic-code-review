@@ -215,6 +215,17 @@ button { font-family: inherit; cursor: pointer; }
 }
 .req-body { padding: 0 22px 22px 52px; }
 .req-body > p { color: var(--muted); margin: 0 0 16px; max-width: 72ch; }
+.req-source {
+  display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 16px; font-family: var(--mono); font-size: 11.5px;
+}
+.req-src-kind {
+  color: var(--faint); text-transform: uppercase; letter-spacing: .06em; font-size: 10px;
+  border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 6px;
+}
+.req-src-ref { color: var(--muted); max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+a.req-src-ref { color: var(--signal); text-decoration: none; }
+a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .ac-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .ac-list li {
   display: grid;
@@ -315,6 +326,13 @@ button { font-family: inherit; cursor: pointer; }
   letter-spacing: .03em;
 }
 .sm-ac { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sm-deps { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sm-deps-label { color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.dep-chip {
+  display: inline-flex; align-items: center;
+  font-family: var(--mono); font-size: 11px; letter-spacing: .03em;
+  color: var(--muted); border: 1px solid var(--line-soft); border-radius: 6px; padding: 1px 6px;
+}
 .sm-ac-label { color: var(--signal); font-size: 13px; line-height: 1; }
 .sm-ac .ac-chip {
   display: inline-flex;
@@ -671,6 +689,11 @@ button { font-family: inherit; cursor: pointer; }
 .tico { display: block; }
 .tthread-type { display: inline-flex; flex: none; color: var(--muted); }
 .tthread-title { flex: 1 1 auto; min-width: 0; color: var(--text); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tthread-stage {
+  flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+  color: var(--muted); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 5px;
+}
 .tthread-status-ic { display: inline-flex; flex: none; color: var(--muted); }
 .tthread-status-ic.s-open { color: var(--t-assumption); }
 .tthread-status-ic.s-resolved { color: var(--t-decision); }
@@ -927,6 +950,7 @@ button { font-family: inherit; cursor: pointer; }
 .cls-generated { color: var(--c-generated); }
 .cls-dependency { color: var(--c-dependency); }
 .cls-chore { color: var(--c-chore); }
+.cls-shared { color: var(--muted); opacity: .75; }
 .metrics { flex: none; font-family: var(--mono); font-size: 11px; display: inline-flex; gap: 7px; }
 .metrics .add { color: var(--add); }
 .metrics .del { color: var(--del); }
@@ -1150,6 +1174,14 @@ button { font-family: inherit; cursor: pointer; }
 /* A resolved-only line keeps a muted accent so a settled conversation stays
    locatable without competing with open threads. */
 .drow.has-line-note-resolved { box-shadow: inset 2px 0 0 var(--line); }
+
+/* When a file is split across steps, dim the lines owned by other steps so the
+   opened step reads as its own slice of the shared diff. Only the code text and
+   its sign fade — gutters and note affordances stay fully interactive. When no
+   step is in focus, a faint accent still marks which lines carry ownership. */
+.drow.own-other code { opacity: .42; }
+.drow.own-other .lact-sign { opacity: .42; }
+.drow.own-mark { box-shadow: inset 2px 0 0 var(--line); }
 
 /* The thread row spans the diff width but pins its panel to the left so the
    conversation stays readable however far the code scrolls sideways. */

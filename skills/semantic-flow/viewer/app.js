@@ -61,6 +61,8 @@
 
   /* ---- ids & lookups ---------------------------------------------------- */
   const fileKey = (stageId, path) => `f:${stageId}:${path}`;
+  const insightKey = (stageId, collection, itemId) =>
+    `i:${stageId}:${collection}:${itemId}`;
   // A line thread's element id carries everything needed to resolve a feedback
   // target: the stage, which diff side the line lives on, its line number, and
   // the file path (kept last so paths with no colons parse unambiguously).
@@ -73,6 +75,7 @@
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(n.id, n.title)));
   const stageById = new Map(data.stages.map((stage) => [stage.id, stage]));
+  const stageNumberById = new Map(data.stages.map((stage, i) => [stage.id, i + 1]));
 
   const requirements = Array.isArray(data.requirements) ? data.requirements : [];
   // Criterion ids are only unique within a specification, so every acceptance
@@ -113,6 +116,59 @@
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
     return m ? m.classification : "behavior";
+  }
+  // When a file is split across nodes, resolve which node owns each changed
+  // line (keyed "old:<n>"/"new:<n>") from the membership hunk or line-range
+  // selectors. Whole-file members carry no selector and are ignored; returns
+  // null unless the file is genuinely shared and split.
+  function membershipOwnership(file) {
+    if (file._ownership !== undefined) return file._ownership;
+    const all = file.memberships || [];
+    const split = all.filter(
+      (m) => (m.hunks && m.hunks.length) || (m.lineRanges && m.lineRanges.length),
+    );
+    if (all.length < 2 || split.length === 0) { file._ownership = null; return null; }
+    const lines = file.lines || [];
+    const map = new Map();
+    split.forEach((m) => {
+      if (m.hunks && m.hunks.length) {
+        const set = new Set(m.hunks);
+        lines.forEach((r) => {
+          if ((r.t === "add" || r.t === "del") && set.has(r.h)) {
+            const side = r.t === "del" ? "old" : "new";
+            map.set(`${side}:${r.t === "del" ? r.o : r.n}`, m.nodeId);
+          }
+        });
+      } else {
+        m.lineRanges.forEach((rg) => {
+          ["old", "new"].forEach((side) => {
+            const span = rg[side];
+            if (!span) return;
+            for (let ln = span.start; ln <= span.end; ln += 1) map.set(`${side}:${ln}`, m.nodeId);
+          });
+        });
+      }
+    });
+    file._ownership = map.size ? map : null;
+    return file._ownership;
+  }
+  // A short description of the current node's slice of a shared file, shown on
+  // the file row's "shared" chip: hunk numbers or old/new line ranges.
+  function ownershipHint(file, nodeId) {
+    const m = (file.memberships || []).find((x) => x.nodeId === nodeId);
+    if (!m) return "";
+    if (m.hunks && m.hunks.length) return `hunk${m.hunks.length === 1 ? "" : "s"} ${m.hunks.join(", ")}`;
+    if (m.lineRanges && m.lineRanges.length) {
+      return m.lineRanges
+        .map((rg) => {
+          const parts = [];
+          if (rg.new) parts.push(`new ${rg.new.start}–${rg.new.end}`);
+          if (rg.old) parts.push(`old ${rg.old.start}–${rg.old.end}`);
+          return parts.join(" · ");
+        })
+        .join(", ");
+    }
+    return "";
   }
 
   /* ---- state ------------------------------------------------------------ */
@@ -364,13 +420,26 @@
   }
   // Icon + tooltip text for the kind of element a feedback thread targets.
   function threadTypeLabel(kind) {
-    return kind === "file" ? "File" : kind === "line" ? "Line" : kind === "stage" ? "Stage" : kind === "node" ? "Step" : "Thread";
+    return kind === "file" ? "File"
+      : kind === "line" ? "Line"
+      : kind === "stage" ? "Stage"
+      : kind === "node" ? "Step"
+      : kind === "specification" ? "Specification"
+      : kind === "criterion" ? "Criterion"
+      : kind === "insight" ? "Insight"
+      : "Thread";
   }
   function threadTypeIcon(kind) {
     if (kind === "stage")
       return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M12 3.5l8 4-8 4-8-4 8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
     if (kind === "node")
       return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="3" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.8" fill="currentColor"/></svg>`;
+    if (kind === "specification")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M12 3.2l2.3 5 5.5.5-4.1 3.6 1.2 5.3L12 20.4 6.8 22.6 8 17.3 3.9 13.7l5.5-.5 2.3-5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+    if (kind === "criterion")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 12.4l2.4 2.4 4.6-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    if (kind === "insight")
+      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M9 18h6M10 21h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12 3a6 6 0 0 0-3.4 10.9c.6.4.9 1 .9 1.6v.5h5v-.5c0-.6.3-1.2.9-1.6A6 6 0 0 0 12 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
   }
   function threadStatusIcon(status) {
@@ -438,18 +507,30 @@
   function insightSort(list) {
     return list.slice().sort((a, b) => INSIGHT_ORDER.indexOf(a.type) - INSIGHT_ORDER.indexOf(b.type));
   }
-  function reasoningChip(ins) {
+  function validationTypeLabel(type) {
+    return type === "automated" ? "Automated"
+      : type === "manual" ? "Manual"
+      : type === "analysis" ? "Analysis"
+      : "";
+  }
+  function reasoningChip(stage, ins) {
     const info = INSIGHT[ins.type] || INSIGHT.decision;
     const vs = vstatus(ins);
     const glyph = vs ? vs.glyph : info.glyph;
     const label = vs ? vs.label : info.label;
-    return `<span class="tag type-${ins.type} ${vs ? `vstat-${vs.key}` : ""}">
+    // For validation, the status is already carried by the glyph, so the free
+    // meta slot instead surfaces the evidence type (automated/manual/analysis)
+    // without displacing the pass/fail signal.
+    const vtype = ins.type === "validation" ? validationTypeLabel(ins.validationType) : "";
+    const meta = vs ? vtype : (ins.meta || "");
+    const kindText = vtype ? `${info.label} · ${vtype}` : info.label;
+    return `<span class="tag type-${ins.type} ${vs ? `vstat-${vs.key}` : ""}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       <button class="tag-face" type="button" data-tagpop="1"
         data-type="${ins.type}" data-vstat="${vs ? vs.key : ""}"
-        data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(vs ? "" : (ins.meta || ""))}"
+        data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}"
         data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
         aria-haspopup="true">
-        <b>${glyph}</b><span class="tag-kind">${esc(info.label)}</span><span class="tag-gist">${esc(ins.title)}</span>
+        <b>${glyph}</b><span class="tag-kind">${esc(kindText)}</span><span class="tag-gist">${esc(ins.title)}</span>
       </button>
     </span>`;
   }
@@ -469,7 +550,7 @@
     if (!list.length) return "";
     return `<div class="node-reasoning">
       <span class="eyebrow">Reasoning</span>
-      <div class="tag-row">${list.map(reasoningChip).join("")}</div>
+      <div class="tag-row">${list.map((ins) => reasoningChip(stage, ins)).join("")}</div>
     </div>`;
   }
 
@@ -539,6 +620,30 @@
     }
     if (tgt.kind === "stage" && tgt.stageId)
       return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
+    if (tgt.kind === "specification" && tgt.specificationId)
+      return requirements.some((r) => r.id === tgt.specificationId)
+        ? { kind: "specification", id: tgt.specificationId }
+        : null;
+    if (tgt.kind === "criterion" && tgt.specificationId && tgt.criterionId) {
+      const req = requirements.find((r) => r.id === tgt.specificationId);
+      if (!req) return null;
+      return (req.acceptance || []).some((a) => a.id === tgt.criterionId)
+        ? { kind: "criterion", id: `${tgt.specificationId}#${tgt.criterionId}` }
+        : { kind: "specification", id: tgt.specificationId };
+    }
+    if (tgt.kind === "insight" && tgt.stageId && tgt.collection && tgt.itemId) {
+      const stage = stageById.get(tgt.stageId);
+      const insight = stage?.insights.find(
+        (item) => item.collection === tgt.collection && item.id === tgt.itemId,
+      );
+      return insight
+        ? {
+            kind: "insight",
+            id: insightKey(tgt.stageId, tgt.collection, tgt.itemId),
+            stageId: tgt.stageId,
+          }
+        : { kind: "stage", id: tgt.stageId };
+    }
     return null;
   }
   // Classify what became of a file/line thread's target. The current stage diff
@@ -579,6 +684,19 @@
     const ref = threadElementRef(t);
     const kind = (t.target && t.target.kind) || "thread";
     const tstate = threadTargetState(t);
+    // The stage the review conversation is anchored to. Shown only when it adds
+    // information: a target in a different stage, or a spec/criterion/insight
+    // thread that has no stage of its own. Same-stage threads stay unlabelled.
+    const assignedStage = t.assignedStageId ? stageById.get(t.assignedStageId) : null;
+    const tgtStageId = t.target && t.target.stageId;
+    const showAssigned = Boolean(
+      assignedStage &&
+        (["specification", "criterion", "insight"].includes(kind) ||
+          (tgtStageId && tgtStageId !== t.assignedStageId)),
+    );
+    const assignedTag = showAssigned
+      ? `<span class="tthread-stage" title="Assigned to stage: ${esc(assignedStage.title)}">${esc(assignedStage.title)}</span>`
+      : "";
     const jump = !withLabel
       ? ""
       : ref
@@ -641,6 +759,7 @@
         <span class="tthread-caret">${caret()}</span>
         <span class="tthread-type" title="${esc(threadTypeLabel(kind))}" aria-label="${esc(threadTypeLabel(kind))}">${threadTypeIcon(kind)}</span>
         ${title}
+        ${assignedTag}
         <span class="tthread-status-ic s-${t.status}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
         ${jump}
       </div>
@@ -720,6 +839,11 @@
     const cls = classificationFor(file, node.id);
     const { name } = splitPath(file.path);
     const dir = dirShort(splitPath(file.path).dir);
+    const shared = (file.memberships || []).length > 1;
+    const hint = shared ? ownershipHint(file, node.id) : "";
+    const sharedChip = hint
+      ? `<span class="cls cls-shared" title="Split across steps — this step owns ${esc(hint)}.">shared</span>`
+      : "";
     const st = approvalState(id);
     const isOn = st === "approved";
     const isStale = st === "stale";
@@ -740,7 +864,7 @@
         <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
           <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
-          ${classBadge(cls)}
+          ${classBadge(cls)}${sharedChip}
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
@@ -903,7 +1027,20 @@
       !has &&
       artifactThreadsForElement("line", lineId).some((t) => t.status === "resolved");
     const act = lineActionCell(lineId, count, sign, resolved);
-    const row = `<div class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
+    // For a file split across steps, dim the lines owned by other steps so the
+    // step currently in focus reads as this node's slice of the shared diff.
+    let ownClass = "";
+    let ownAttr = "";
+    if (ctx.ownership && (side === "old" || side === "new")) {
+      const owner = ctx.ownership.get(`${side}:${lineNo}`);
+      if (owner) {
+        ownClass = ctx.focusNodeId
+          ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
+          : " own-mark";
+        ownAttr = ` title="Part of step: ${esc(nodeTitleById.get(owner) || owner)}"`;
+      }
+    }
+    const row = `<div class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"${ownAttr}><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
     return row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
@@ -1002,7 +1139,12 @@
   }
   function diffPanel(entry, opts = {}) {
     if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
-    const ctx = { stageId: entry.stage.id, path: entry.file.path };
+    const ctx = {
+      stageId: entry.stage.id,
+      path: entry.file.path,
+      ownership: membershipOwnership(entry.file),
+      focusNodeId: opts.focusNodeId || null,
+    };
     return `<section class="diff-panel ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
       ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
@@ -1052,6 +1194,29 @@
   function specificationPanel() {
     return requirements.map(renderSpecification).join("");
   }
+  const SOURCE_LABEL = {
+    "azure-devops": "Azure DevOps", github: "GitHub", url: "Link", local: "Local",
+  };
+  // Only http(s) links are made clickable; anything else is shown as plain text
+  // so a spec source can never smuggle a javascript: or data: URL into an href.
+  function safeHref(url) {
+    if (typeof url !== "string") return "";
+    try {
+      const u = new URL(url);
+      return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
+    } catch { return ""; }
+  }
+  function renderSource(source) {
+    if (!source || !source.kind) return "";
+    const label = SOURCE_LABEL[source.kind] || source.kind;
+    const ref = source.reference || "";
+    const href = safeHref(source.url);
+    const text = ref || label;
+    const inner = href
+      ? `<a class="req-src-ref" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(href)}">${esc(text)}</a>`
+      : `<span class="req-src-ref" title="${esc(text)}">${esc(text)}</span>`;
+    return `<p class="req-source"><span class="req-src-kind">${esc(label)}</span>${inner}</p>`;
+  }
   function renderSpecification(req) {
     const open = Boolean(state.specificationOpen && state.specificationOpen[req.id]);
     return `<details class="specification" ${open ? "open" : ""} data-req data-req-id="${esc(req.id)}">
@@ -1062,11 +1227,12 @@
       </summary>
       <div class="req-body">
         <p>${esc(req.summary)}</p>
+        ${renderSource(req.source)}
         <ol class="ac-list">${req.acceptance.map((a) => {
       const st = acceptanceStatus(`${req.id}#${a.id}`);
       const label = st.key === "approved" ? "Approved" : st.key === "uncovered" ? "Not covered" : "In review";
       const meta = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
-      return `<li class="ac-item ac-${st.key}"><span class="ac-id">${esc(a.id)}</span><span class="ac-text">${esc(a.text)}</span><span class="ac-status" title="${esc(meta)}">${label}</span></li>`;
+      return `<li class="ac-item ac-${st.key}" data-ac="${esc(`${req.id}#${a.id}`)}"><span class="ac-id">${esc(a.id)}</span><span class="ac-text">${esc(a.text)}</span><span class="ac-status" title="${esc(meta)}">${label}</span></li>`;
     }).join("")}</ol>
       </div>
     </details>`;
@@ -1101,6 +1267,17 @@
     const nodesDone = stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length;
     const done = stageApproved(stage);
     const acIds = stageAcceptanceRefs(stage);
+    const deps = (stage.dependsOn || []).map((depId) => {
+      const s = stageById.get(depId);
+      return {
+        id: depId,
+        number: stageNumberById.get(depId),
+        title: s ? s.title : depId,
+      };
+    });
+    const depsMeta = deps.length
+      ? `<span class="sm-deps" title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
+      : "";
     return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}">
       <div class="stage-bar">
         <button class="stop ${done ? "is-approved" : ""}" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
@@ -1115,6 +1292,7 @@
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
             <span>${filesDone}/${stage.files.length} files</span>
+            ${depsMeta}
             ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
         </div>
@@ -1632,6 +1810,17 @@
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
+    } else if (kind === "specification") {
+      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
+      state.specificationOpen[id] = true;
+    } else if (kind === "criterion") {
+      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
+      state.specificationOpen[String(id).split("#")[0]] = true;
+    } else if (kind === "insight") {
+      const ref = artifactThreads
+        .map(threadElementRef)
+        .find((item) => item?.kind === "insight" && item.id === id);
+      if (ref?.stageId) state.openStages[ref.stageId] = true;
     }
     persist();
     render();
@@ -1652,8 +1841,15 @@
         const thread = app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.frow[data-file="${cssEsc(id)}"]`)
-          || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`);
-        if (thread) thread.scrollIntoView({ behavior: "smooth", block: "center" });
+          || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`)
+          || app.querySelector(`.ac-item[data-ac="${cssEsc(id)}"]`)
+          || app.querySelector(`.specification[data-req-id="${cssEsc(id)}"]`)
+          || app.querySelector(`[data-insight="${cssEsc(id)}"]`);
+        if (thread) {
+          const node = kind === "insight" ? thread.closest("details.node") : null;
+          if (node) node.open = true;
+          thread.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
         if (kind === "file") fadeFileHighlight(id, "in");
         else if (kind === "line" && lineFileId) fadeFileHighlight(lineFileId, "in");
       });
@@ -2317,7 +2513,8 @@
         row.classList.add("is-open");
         const holder = document.createElement("div");
         holder.className = "cinema-diff";
-        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close" }) + fileNotesBlock(fid);
+        const focusNodeId = row.closest("[data-node]")?.getAttribute("data-node") || null;
+        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId }) + fileNotesBlock(fid);
         row.after(holder);
         const saved = diffScrolls[fid];
         if (saved) {

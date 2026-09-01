@@ -4,8 +4,12 @@ import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import {
+  beginStage,
   createImplementationWithStages,
+  createRepository,
   feedbackCli,
+  initializeImplementation,
+  organizeStage,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
 
@@ -167,6 +171,70 @@ test("feedback export target data omits diff reconstruction", (t) => {
     [{ id: "implementation", nodes: ["implementation-change"] }],
   );
   assert.equal("files" in targetData.stages[0], false);
+});
+
+test("viewer data preserves zero-context hunk ownership", (t) => {
+  const repository = createRepository(t);
+  repository.write(
+    "service.txt",
+    "imports\nstable-a\nstable-b\nstable-c\nbehavior\n",
+  );
+  repository.git("add", "service.txt");
+  repository.git("commit", "-m", "Add service fixture");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.write(
+    "service.txt",
+    "updated imports\nstable-a\nstable-b\nstable-c\nupdated behavior\n",
+  );
+  repository.git("add", "service.txt");
+  repository.git("commit", "-m", "Update service fixture");
+  organizeStage(repository, {
+    nodes: [
+      {
+        id: "refresh-imports",
+        description: "Update imports.",
+        changes: [
+          {
+            path: "service.txt",
+            classification: "trivial",
+            hunks: [1],
+          },
+        ],
+      },
+      {
+        id: "change-behavior",
+        description: "Update behavior.",
+        changes: [
+          {
+            path: "service.txt",
+            classification: "behavior",
+            hunks: [2],
+          },
+        ],
+      },
+    ],
+    itemLinks: [],
+  });
+  repository.semantic("stage", "finish");
+
+  const script = createImplementationDataScript(repository.root);
+  const data = JSON.parse(
+    script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
+  );
+  const file = data.stages[0].files[0];
+
+  assert.deepEqual(
+    [...new Set(file.lines.filter((line) => line.t !== "ctx").map((line) => line.h))],
+    [1, 2],
+  );
+  assert.deepEqual(
+    file.memberships.map(({ nodeId, hunks }) => ({ nodeId, hunks })),
+    [
+      { nodeId: "refresh-imports", hunks: [1] },
+      { nodeId: "change-behavior", hunks: [2] },
+    ],
+  );
 });
 
 test("feedback export falls back per note when one batch item is stale", (t) => {
