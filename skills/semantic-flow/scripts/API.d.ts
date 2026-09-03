@@ -485,8 +485,10 @@ export interface SemanticFlowFeedbackOptions {
     json?: true;
 }
 /**
- * Resolves one active artifact, validates it, and lists feedback awaiting an
- * agent reply. The result also reports the artifact worktree and local changes.
+ * Resolves one active artifact, automatically restacks a clean finalized stack
+ * after its target branch advances, validates it, and lists feedback awaiting
+ * an agent reply. The result also reports the artifact worktree and local
+ * changes.
  * @cli semantic-flow.mjs
  * @command feedback
  */

@@ -28,13 +28,22 @@ This resolves the artifact worktree, validates the implementation and feedback,
 reports local changes, and returns only threads awaiting an agent reply. Do not
 run `inspect`, `validate`, or `review-feedback next` first.
 
+When the target branch has advanced by fast-forward, preflight automatically
+restacks a clean finalized stage stack onto its current head. It temporarily
+detaches a checked-out stage branch when needed and restores that checkout
+afterward. The returned `targetRestack` describes rewritten stage heads. This
+is routine synchronization. Never ask the user to approve it.
+
 Use the returned `worktree` as the working directory for every remaining Git,
 implementation, and feedback command.
 
 If `stages` is empty, report that no feedback awaits a reply and stop. Read the
-whole conversation in every returned thread. Stop and ask the user when a
-thread has `stale: true`, feedback is unclear or contradictory, or no
-responsible stage is clear. Do not guess.
+whole conversation in every returned thread. A thread marked `restacked: true`
+was current before this preflight restacked its stage. Inspect its recorded
+target against the rewritten diff and continue when the target remains clear;
+do not ask merely because its immutable commit anchor is now stale. For other
+threads, stop and ask the user when `stale: true`, feedback is unclear or
+contradictory, or no responsible stage is clear. Do not guess.
 
 ## Address feedback
 
@@ -68,17 +77,20 @@ the earliest stage changed after that point.
 After restacking, reorganize only descendants whose node coverage no longer
 matches their rewritten diff.
 
-If restacking reports a stage conflict, the command has already discarded its
+## Restack conflicts
+
+If any restack in this workflow reports a stage conflict, including automatic
+target restacking during preflight, the command has already discarded its
 temporary index and left every stage ref and artifact unchanged. This is not an
-interrupted artifact write. Do not run `repair`, look for a rebase state, merge
-lower-stage commits into the conflicting stage, or ask the user merely because
-Git found conflicts.
+interrupted artifact write. Do not run `repair`, look for a rebase state,
+merge lower-stage commits into the conflicting stage, or ask the user merely
+because Git found conflicts.
 
 Use the reported stage base, stage head, and new parent to resolve the stage's
 net patch:
 
-1. Record the original earliest changed stage and the complete conflict
-   context. Confirm the stage and target branches have not moved.
+1. Record the original restack invocation and the complete conflict context.
+   Confirm the stage and target branches have not moved.
 2. Create a uniquely named recovery branch outside `branchPrefix` at the
    reported stage head. Keep it until the revised stack validates.
 3. Create and check out a second temporary branch, also outside
@@ -96,9 +108,10 @@ net patch:
    git update-ref refs/heads/<stage-branch> <resolution-head> <reported-stage-head>
    ```
 
-7. Check out the original earliest changed branch, delete the temporary
-   resolution branch and patch file, then rerun the original restack command.
-   If another descendant conflicts, repeat from its newly reported context.
+7. Delete the temporary resolution branch and patch file. For `--from`, check
+   out its requested stage branch. For `--base`, ensure no rewritten stage
+   branch is checked out. Then rerun the original restack command. If another
+   descendant conflicts, repeat from its newly reported context.
 
 Stop and ask the user only when resolving the net patch requires a product
 decision, stage ownership is unclear, a guarded ref update fails, or a branch

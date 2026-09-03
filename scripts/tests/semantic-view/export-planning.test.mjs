@@ -624,7 +624,7 @@ test("viewer client polls for completed feedback and reloads", () => {
   );
 });
 
-test("viewer client renders lazy metadata without runtime errors", () => {
+test("viewer client propagates legacy stale approvals before loading diffs", () => {
   const source = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
     "utf8",
@@ -652,8 +652,24 @@ test("viewer client renders lazy metadata without runtime errors", () => {
         specificationRefs: [],
         baseRevision: "base",
         headRevision: "head",
-        nodes: [],
-        files: [],
+        nodes: [{
+          id: "configure-settings",
+          title: "Configure settings",
+          description: "Update application settings.",
+        }],
+        files: [{
+          path: "appsettings.json",
+          kind: "modified",
+          project: "Client",
+          memberships: [{
+            nodeId: "configure-settings",
+            classification: "configuration",
+          }],
+          additions: 1,
+          deletions: 0,
+          binary: false,
+          revision: "current-file-revision",
+        }],
         insights: [],
       }],
       feedback: [{
@@ -689,6 +705,13 @@ test("viewer client renders lazy metadata without runtime errors", () => {
   const storage = {
     getItem: () => JSON.stringify({
       openThreads: { implementation: true },
+      approvals: {
+        implementation: true,
+        "f:implementation:appsettings.json": {
+          fp: "legacy-diff-fingerprint",
+          at: 1,
+        },
+      },
     }),
     setItem() {},
   };
@@ -711,6 +734,18 @@ test("viewer client renders lazy metadata without runtime errors", () => {
   );
 
   assert.match(app.innerHTML, /Client test/);
+  assert.match(
+    app.innerHTML,
+    /class="node\s+is-stale" data-node="configure-settings"/,
+  );
+  assert.match(
+    app.innerHTML,
+    /class="frow\s+is-stale\s*" data-file="f:implementation:appsettings\.json"/,
+  );
+  assert.match(
+    app.innerHTML,
+    /class="stage(?![^"]*is-approved)[^"]*" data-stage="implementation"/,
+  );
   assert.match(
     app.innerHTML,
     /class="notes-toggle is-open all-resolved"[^>]*data-id="implementation"[^>]*title="1 thread, all resolved"/,

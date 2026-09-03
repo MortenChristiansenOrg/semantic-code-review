@@ -81,6 +81,107 @@ test("feedback reports an implementation with no feedback state", (t) => {
   assert.deepEqual(result.stages, []);
 });
 
+test("feedback automatically restacks after the target branch advances", (t) => {
+  const { repository } = createImplementationWithStages(t, [
+    "foundation",
+    "behavior",
+  ]);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "pending-review",
+    "--comment-id",
+    "pending-review-note",
+    "--body",
+    "Tighten the behavior.",
+    "--label",
+    "Behavior",
+    "--target-kind",
+    "stage",
+    "--stage",
+    "behavior",
+  );
+
+  const before = repository.readJson(".semantic-review/manifest.json");
+  const behaviorBefore = repository.readJson(
+    ".semantic-review/stages/behavior.json",
+  );
+  repository.git("switch", "main");
+  const targetHead = repository.commitFile(
+    "trunk.txt",
+    "advanced\n",
+    "Advance trunk",
+  );
+  repository.git("switch", behaviorBefore.change.branch);
+
+  const result = JSON.parse(repository.flow("feedback", "--json"));
+  const after = repository.readJson(".semantic-review/manifest.json");
+  const foundation = repository.readJson(
+    ".semantic-review/stages/foundation.json",
+  );
+  const behavior = repository.readJson(
+    ".semantic-review/stages/behavior.json",
+  );
+
+  assert.notEqual(before.baseRevision, targetHead);
+  assert.equal(after.baseRevision, targetHead);
+  assert.equal(foundation.change.baseRevision, targetHead);
+  assert.equal(behavior.change.baseRevision, foundation.change.headRevision);
+  assert.notEqual(behavior.change.headRevision, behaviorBefore.change.headRevision);
+  assert.equal(repository.git("branch", "--show-current"), behavior.change.branch);
+  assert.equal(result.currentBranch, behavior.change.branch);
+  assert.equal(result.targetRestack.previousBaseRevision, before.baseRevision);
+  assert.equal(result.targetRestack.baseRevision, targetHead);
+  assert.equal(result.targetRestack.rewrittenBranches, 2);
+  assert.equal(result.stages[0].stageId, "behavior");
+  assert.equal(result.stages[0].threads[0].stale, true);
+  assert.equal(result.stages[0].threads[0].restacked, true);
+  repository.semantic("validate");
+});
+
+test("feedback advances a detached stage checkout during target restacking", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const stageBefore = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+  repository.git("switch", "main");
+  repository.commitFile("trunk.txt", "advanced\n", "Advance trunk");
+  repository.git("switch", "--detach", stageBefore.change.headRevision);
+
+  const result = JSON.parse(repository.flow("feedback", "--json"));
+  const stageAfter = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+
+  assert.equal(repository.git("branch", "--show-current"), "");
+  assert.equal(repository.git("rev-parse", "HEAD"), stageAfter.change.headRevision);
+  assert.notEqual(stageAfter.change.headRevision, stageBefore.change.headRevision);
+  assert.equal(result.currentBranch, null);
+});
+
+test("feedback does not restack an implementation already landed on target", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const stage = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+  repository.git("switch", "main");
+  repository.git("merge", "--ff-only", stage.change.branch);
+
+  const result = repository.result(process.execPath, [
+    flowCli,
+    "feedback",
+    "--json",
+  ]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /already contains the final semantic stage/,
+  );
+});
+
 test("feedback rejects incomplete feedback state", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.write(".semantic-review-feedback/orphan.json", "{}\n");

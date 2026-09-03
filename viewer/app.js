@@ -310,26 +310,9 @@
   function formatCommentBody(v) {
     return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
   }
-  /* File approvals carry a fingerprint of the diff at approval time so we can
-     tell when a file has changed since it was approved (stale). Stage approvals
-     have no fingerprint and are always current once approved. Legacy boolean
-     approvals (older stored state) are trusted as approved. */
-  function hashStr(s) {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
-    return (h >>> 0).toString(16);
-  }
-  function fileFingerprint(entry) {
-    const f = entry.file;
-    return hashStr(JSON.stringify({
-      k: f.kind, b: !!f.binary, t: !!f.truncated,
-      lines: (f.lines || []).map((r) => [r.t, r.o, r.n, r.s])
-    }));
-  }
-  function fingerprintFor(id) {
-    const entry = fileById.get(id);
-    return entry ? fileFingerprint(entry) : null;
-  }
+  /* File approvals carry an eager revision so staleness is known before their
+     diffs load. Stage approvals have no revision. Legacy boolean approvals are
+     trusted; old diff-fingerprint approvals require re-approval. */
   function revisionFor(id) {
     return fileById.get(id)?.file.revision || null;
   }
@@ -347,10 +330,8 @@
       if (rec === true) return "approved";
       if (rec.rev != null)
         return rec.rev === revisionFor(id) ? "approved" : "stale";
-      if (rec.fp == null) return "approved";
-      const entry = fileById.get(id);
-      if (entry && !Array.isArray(entry.file.lines)) return "approved";
-      return rec.fp === fingerprintFor(id) ? "approved" : "stale";
+      if (rec.fp != null) return "stale";
+      return "approved";
     }
     // An approval inherited from before a rename can never still match the file
     // as it stands now, so surface it as stale to prompt a fresh look.

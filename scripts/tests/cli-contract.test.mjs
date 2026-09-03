@@ -194,6 +194,11 @@ test("skill indexes command-specific workflows", () => {
   assert.match(runtime, /otherwise the only\s+matching artifact/);
   assert.match(commandText.get("implement"), /<semantic-implementation> stage begin/);
   assert.match(commandText.get("feedback"), /<semantic-flow> feedback --json/);
+  assert.match(
+    commandText.get("feedback"),
+    /automatically\s+restacks[\s\S]*Never ask the user to approve it/,
+  );
+  assert.match(commandText.get("feedback"), /thread marked `restacked: true`/);
   assert.match(commandText.get("feedback"), /thread reply-batch --input -/);
   assert.match(
     commandText.get("feedback"),

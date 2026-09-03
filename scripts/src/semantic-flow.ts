@@ -60,9 +60,26 @@ interface PendingFeedbackStage {
   threads: Array<{
     id: string;
     stale: boolean;
+    restacked?: boolean;
     comments: Array<{ author: string; body: string }>;
     target: { label: string };
   }>;
+}
+
+interface TargetRestack {
+  previousBaseRevision: string;
+  targetBranch: string;
+  baseRevision: string;
+  refreshedStages: number;
+  rewrittenBranches: number;
+  stages: Array<{
+    id: string;
+    branch: string;
+    previousHead: string;
+    nextHead: string;
+    rewritten: boolean;
+  }>;
+  replayedThreadIds: string[];
 }
 
 function normalizedPath(value: string): string {
@@ -466,8 +483,190 @@ function review(options: Options): void {
   }
 }
 
+function refreshAdvancedTarget(candidate: ArtifactCandidate): {
+  candidate: ArtifactCandidate;
+  targetRestack: TargetRestack | null;
+} {
+  const targetHead = git(
+    ["rev-parse", "--verify", `refs/heads/${candidate.targetBranch}^{commit}`],
+    { cwd: candidate.worktree },
+  );
+  if (targetHead === candidate.baseRevision) {
+    return { candidate, targetRestack: null };
+  }
+
+  const mergeBase = git(
+    ["merge-base", candidate.baseRevision, targetHead],
+    { cwd: candidate.worktree, allowFailure: true },
+  );
+  if (mergeBase !== candidate.baseRevision) {
+    return { candidate, targetRestack: null };
+  }
+  if (candidate.workingStageIds.length > 0) {
+    fail(
+      `Target branch ${candidate.targetBranch} advanced, but automatic restacking requires every stage to be finalized.`,
+    );
+  }
+
+  const manifest = readJson(
+    path.join(candidate.worktree, ".semantic-review", "manifest.json"),
+  );
+  const stageBranches = new Set<string>();
+  const stageHeads = new Map<string, string>();
+  for (const id of manifest.stages ?? []) {
+    const stage = readJson(
+      path.join(candidate.worktree, ".semantic-review", "stages", `${id}.json`),
+    );
+    stageBranches.add(stage.change.branch);
+    stageHeads.set(id, stage.change.headRevision);
+    const branchHead = git(
+      ["rev-parse", "--verify", `refs/heads/${stage.change.branch}^{commit}`],
+      { cwd: candidate.worktree },
+    );
+    if (branchHead !== stage.change.headRevision) {
+      fail(
+        `Target branch ${candidate.targetBranch} advanced, but stage ${id} also moved from ${stage.change.headRevision} to ${branchHead}. Automatic target restacking only handles an otherwise unchanged stage stack.`,
+      );
+    }
+  }
+  const finalStageHead = stageHeads.get((manifest.stages ?? []).at(-1));
+  if (
+    finalStageHead &&
+    git(["merge-base", finalStageHead, targetHead], {
+      cwd: candidate.worktree,
+      allowFailure: true,
+    }) === finalStageHead
+  ) {
+    fail(
+      `Target branch ${candidate.targetBranch} already contains the final semantic stage. Archive the landed implementation instead of restacking it.`,
+    );
+  }
+
+  const changes =
+    git(
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      { cwd: candidate.worktree },
+    ) ?? "";
+  if (changes) {
+    fail(
+      `Target branch ${candidate.targetBranch} advanced, but automatic restacking requires a clean worktree:\n${changes}`,
+    );
+  }
+
+  const replayedThreadIds: string[] = [];
+  if (candidate.feedbackExists) {
+    const feedbackRoot = path.join(
+      candidate.worktree,
+      ".semantic-review-feedback",
+    );
+    const feedbackManifest = readJson(path.join(feedbackRoot, "manifest.json"));
+    for (const id of feedbackManifest.threads ?? []) {
+      const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
+      const assignedHead = stageHeads.get(thread.assignedStageId);
+      const targetStageId = thread.target?.stageId;
+      const targetHeadBefore = targetStageId
+        ? stageHeads.get(targetStageId)
+        : null;
+      if (
+        assignedHead === thread.stageHead &&
+        (!targetStageId || targetHeadBefore === thread.target.stageHead)
+      ) {
+        replayedThreadIds.push(id);
+      }
+    }
+  }
+
+  const originalBranch =
+    git(["symbolic-ref", "--quiet", "--short", "HEAD"], {
+      cwd: candidate.worktree,
+      allowFailure: true,
+    }) ?? null;
+  const originalHead = git(["rev-parse", "HEAD"], { cwd: candidate.worktree });
+  const detachedStageId =
+    originalBranch === null
+      ? [...stageHeads].find(([, head]) => head === originalHead)?.[0] ?? null
+      : null;
+  const detachedAtBase =
+    originalBranch === null && originalHead === candidate.baseRevision;
+  if (originalBranch === null && !detachedStageId && !detachedAtBase) {
+    fail(
+      `Target branch ${candidate.targetBranch} advanced, but automatic restacking cannot preserve detached HEAD ${originalHead}. Check out a semantic stage or the target branch first.`,
+    );
+  }
+  const detachedStage = originalBranch !== null && stageBranches.has(originalBranch);
+  if (detachedStage) {
+    git(["switch", "--detach"], { cwd: candidate.worktree });
+  }
+
+  let restack;
+  try {
+    restack = executeCaptureStreams(
+      process.execPath,
+      [
+        semanticImplementationScript,
+        "restack",
+        "--base",
+        candidate.targetBranch,
+        "--json",
+      ],
+      candidate.worktree,
+    );
+  } finally {
+    if (detachedStage) {
+      git(["switch", originalBranch], { cwd: candidate.worktree });
+    }
+  }
+  if (!restack.passed) {
+    const output = [restack.stdout, restack.stderr].filter(Boolean).join("\n");
+    if (output) console.error(output);
+    fail(
+      `Could not automatically restack onto advanced target branch ${candidate.targetBranch}.`,
+    );
+  }
+
+  if (detachedStageId) {
+    const refreshedStage = readJson(
+      path.join(
+        candidate.worktree,
+        ".semantic-review",
+        "stages",
+        `${detachedStageId}.json`,
+      ),
+    );
+    git(["switch", "--detach", refreshedStage.change.headRevision], {
+      cwd: candidate.worktree,
+    });
+  } else if (detachedAtBase) {
+    git(["switch", "--detach", targetHead], { cwd: candidate.worktree });
+  }
+
+  let restackSummary;
+  try {
+    restackSummary = JSON.parse(restack.stdout);
+  } catch {
+    fail("Automatic target restack returned invalid JSON.");
+  }
+  const refreshed = artifactCandidate(candidate.worktree);
+  if (!refreshed) {
+    fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
+  }
+  return {
+    candidate: refreshed,
+    targetRestack: {
+      previousBaseRevision: candidate.baseRevision,
+      targetBranch: restackSummary.targetBranch,
+      baseRevision: restackSummary.baseRevision,
+      refreshedStages: restackSummary.refreshedStages,
+      rewrittenBranches: restackSummary.rewrittenBranches,
+      stages: restackSummary.stages,
+      replayedThreadIds,
+    },
+  };
+}
+
 function feedback(options: Options): void {
-  const candidate = resolveSingle(options, "feedback");
+  const refresh = refreshAdvancedTarget(resolveSingle(options, "feedback"));
+  const { candidate, targetRestack } = refresh;
   const json = flag(options, "json");
   const artifactValidation = executeCapture(
     process.execPath,
@@ -518,11 +717,22 @@ function feedback(options: Options): void {
       fail("Feedback command returned invalid JSON.");
     }
   }
+  if (targetRestack) {
+    const replayed = new Set(targetRestack.replayedThreadIds);
+    stages = stages.map((stage) => ({
+      ...stage,
+      threads: stage.threads.map((thread) => ({
+        ...thread,
+        ...(replayed.has(thread.id) ? { restacked: true } : {}),
+      })),
+    }));
+  }
 
   const result = {
     worktree: candidate.worktree,
     currentBranch: candidate.currentBranch,
     worktreeChanges,
+    targetRestack,
     feedbackExists: candidate.feedbackExists,
     stages,
   };
@@ -532,6 +742,11 @@ function feedback(options: Options): void {
   }
 
   console.log(`Artifact: ${candidate.worktree}`);
+  if (targetRestack) {
+    console.log(
+      `Target restacked: ${targetRestack.targetBranch} ${targetRestack.previousBaseRevision} -> ${targetRestack.baseRevision}`,
+    );
+  }
   if (worktreeChanges.length) {
     console.log(`Worktree changes:\n${worktreeChanges.join("\n")}`);
   }
