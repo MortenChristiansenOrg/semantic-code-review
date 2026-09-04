@@ -1568,6 +1568,17 @@ function implementationSummary(repoRoot) {
   };
 }
 
+function notifyLauncher(message) {
+  if (typeof process.send !== "function") return;
+  try {
+    process.send(message, () => {
+      if (process.connected) process.disconnect();
+    });
+  } catch {
+    if (process.connected) process.disconnect();
+  }
+}
+
 async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
@@ -1629,6 +1640,14 @@ async function main() {
     );
   }
   console.log("Press Ctrl+C to stop.");
+  notifyLauncher({
+    type: "ready",
+    url,
+    repositoryRoot: repoRoot,
+    processId: process.pid,
+    implementation,
+    feedbackEnabled: Boolean(feedbackCli),
+  });
   openBrowser(url);
 }
 
@@ -1637,6 +1656,7 @@ const isDirectRun =
 
 if (isDirectRun) {
   main().catch((error) => {
+    notifyLauncher({ type: "error", message: error.message });
     if (process.exitCode === undefined || process.exitCode === 0) {
       console.error(`semantic-view: ${error.message}`);
       process.exitCode = 1;

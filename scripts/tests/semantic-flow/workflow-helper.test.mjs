@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -12,6 +13,32 @@ import {
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
+
+function reserveViewerPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve(address.port);
+      });
+    });
+  });
+}
+
+async function stopViewer(port) {
+  try {
+    await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+  } catch {
+    // The assertion or viewer startup may have failed before a server existed.
+  }
+}
 
 test("inspect reports repositories with and without active artifacts", (t) => {
   const repository = createRepository(t, "semantic-flow-inspect-");
@@ -39,6 +66,39 @@ test("validate resolves the artifact and runs both validators", (t) => {
 
   const output = repository.flow("validate");
   assert.match(output, /Artifact:/);
+});
+
+test("review leaves a detached viewer running after the command exits", async (t) => {
+  const repository = createRepository(t, "semantic-flow-review-");
+  initializeImplementation(repository, {
+    implementationId: "persistent-review",
+    title: "Persistent review",
+  });
+  const port = await reserveViewerPort();
+  t.after(() => stopViewer(port));
+
+  const launch = spawnSync(process.execPath, [flowCli, "review"], {
+    cwd: repository.root,
+    encoding: "utf8",
+    timeout: 10_000,
+    env: {
+      ...process.env,
+      SEMANTIC_VIEW_NO_OPEN: "1",
+      SEMANTIC_VIEW_PORT: String(port),
+    },
+  });
+
+  assert.equal(launch.status, 0, launch.stderr);
+  assert.match(launch.stdout, /Semantic review viewer: http:\/\/127\.0\.0\.1:/);
+  assert.match(launch.stdout, /running persistently in the background \(PID \d+\)/);
+
+  const response = await fetch(`http://127.0.0.1:${port}/api/whoami`);
+  assert.equal(response.status, 200);
+  const identity = await response.json();
+  assert.equal(identity.app, "semantic-flow-review-viewer");
+  assert.equal(identity.implementationId, "persistent-review");
+  assert.equal(identity.repositoryRoot, repository.root);
+  assert.notEqual(identity.processId, launch.pid);
 });
 
 test("feedback resolves, validates, and returns compact pending work", (t) => {
