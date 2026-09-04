@@ -138,7 +138,7 @@ beginning the next stage. Repeat for each planned stage.
 
 After all stages:
 
-1. Confirm every acceptance criterion is covered.
+1. Confirm every criterion included in the review is referenced by a stage.
 2. Exercise the complete acceptance path.
 3. Put any discovered omission into the earliest responsible stage, then
    restack later stages.

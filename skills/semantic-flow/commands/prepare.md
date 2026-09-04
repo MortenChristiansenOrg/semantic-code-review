@@ -11,9 +11,12 @@ and require it to be clean.
 Require:
 
 - Every stage finalized.
-- Complete criterion coverage.
 - Publication validation passing.
 - All feedback threads resolved.
+
+Publication readiness only considers criteria referenced by the finalized
+stages. Criteria in the requirement documents but outside those stage
+references are outside the review and must not block preparation.
 
 Run:
 

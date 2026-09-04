@@ -175,8 +175,10 @@ Validation layers:
 6. Verify linear ancestry, no merges, unique branches/heads, exact file
    inventories, and exclusion of semantic metadata from stage diffs.
 
-Publication validation also requires at least one finalized stage, no working
-stage, and coverage of every acceptance criterion indexed by the implementation.
+Publication validation also requires at least one finalized stage and no
+working stage. Stage specification references define the criteria included in
+the review. Other criteria in the indexed requirements do not block
+publication or preparation.
 
 ## Publication and archive
 

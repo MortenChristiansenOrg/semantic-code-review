@@ -878,21 +878,6 @@ function validateArtifact(
         `Publication validation found unfinished stages: ${[...artifact.workStages.keys()].join(", ")}.`,
       );
     }
-    const covered = new Set(
-      [...artifact.stages.values()].flatMap((stage) => stage.specificationRefs),
-    );
-    const missing = [];
-    for (const [specificationId, specification] of artifact.requirements) {
-      for (const criterion of specification.acceptanceCriteria) {
-        const reference = `${specificationId}#${criterion.id}`;
-        if (!covered.has(reference)) missing.push(reference);
-      }
-    }
-    if (missing.length > 0) {
-      fail(
-        `Publication validation found uncovered acceptance criteria: ${missing.join(", ")}.`,
-      );
-    }
   }
 
   if (!quiet) {

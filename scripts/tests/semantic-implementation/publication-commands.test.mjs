@@ -154,21 +154,25 @@ test("publication rejects target drift until the stack is restacked", (t) => {
   repository.semantic("validate", "--publish");
 });
 
-test("publication requires every acceptance criterion to be covered", (t) => {
+test("preparation ignores acceptance criteria outside the review", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository, {
     criteria: [
-      ["covered", "Covered by the implementation."],
-      ["missing", "Must not be omitted."],
+      ["reviewed", "Covered by the reviewed implementation."],
+      ["not-reviewed", "Outside this review."],
     ],
   });
-  beginStage(repository, { specificationRefs: ["story#covered"] });
-  finalizeStage(repository);
+  beginStage(repository, { specificationRefs: ["story#reviewed"] });
+  const stageTip = finalizeStage(repository);
 
   repository.semantic("validate");
-  repository.expectSemanticFailure(
-    "uncovered acceptance criteria: story#missing",
-    "validate",
-    "--publish",
+  repository.semantic("validate", "--publish");
+  const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
+  assert.equal(stack.finalHeadRevision, stageTip);
+  repository.semantic(
+    "prepare-branch",
+    "--branch",
+    "review/reviewed-criteria-only",
   );
+  assert.equal(repository.git("rev-parse", "review/reviewed-criteria-only"), stageTip);
 });
