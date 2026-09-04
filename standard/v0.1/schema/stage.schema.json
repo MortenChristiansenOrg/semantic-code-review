@@ -203,9 +203,6 @@
           }
         ]
       }
-    },
-    "extensions": {
-      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/extensions"
     }
   }
 }
