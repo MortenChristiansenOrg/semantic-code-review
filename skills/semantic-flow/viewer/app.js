@@ -150,6 +150,27 @@
   function nodeFileList(stage, node) {
     return stage.files.filter((file) => file.memberships.some((m) => m.nodeId === node.id));
   }
+  function selectedNodeForFile(activeValue, file) {
+    if (typeof activeValue === "string") return activeValue;
+    if (!activeValue) return null;
+    return (file.memberships || [])[0]?.nodeId || null;
+  }
+  function activeFileNodeId(id) {
+    const entry = fileById.get(id);
+    return entry ? selectedNodeForFile(state.activeFiles[id], entry.file) : null;
+  }
+  function fileRowElement(id, nodeId = activeFileNodeId(id)) {
+    const entry = fileById.get(id);
+    if (entry && nodeId) {
+      const selector =
+        `.stage[data-stage="${cssEsc(entry.stage.id)}"] ` +
+        `details.node[data-node="${cssEsc(nodeId)}"] ` +
+        `.frow[data-file="${cssEsc(id)}"]`;
+      const row = app.querySelector(selector);
+      if (row) return row;
+    }
+    return app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+  }
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
     return m ? m.classification : "behavior";
@@ -243,10 +264,10 @@
       requestAnimationFrame(() => {
         const target = exact
           ? app.querySelector(`.line-thread[data-thread="${cssEsc(pending.id)}"]`)
-          : app.querySelector(`.frow[data-file="${cssEsc(pending.fileId)}"]`);
+          : fileRowElement(pending.fileId, pending.membership?.nodeId);
         if (target)
           target.scrollIntoView({ behavior: "smooth", block: "center" });
-        if (entry) fadeFileHighlight(entry.id, "in");
+        if (entry) fadeFileHighlight(entry.id, "in", pending.membership?.nodeId);
       });
     });
   }
@@ -929,10 +950,10 @@
     const st = approvalState(id);
     const isOn = st === "approved";
     const isStale = st === "stale";
-    const isActive = Boolean(state.activeFiles[id]);
+    const isActive = activeFileNodeId(id) === node.id;
     const threadN = unresolvedThreadCount("file", id);
     const noteN = personalNoteCount(id);
-    const openAttrs = `data-action="open-file" data-id="${id}" type="button" aria-expanded="${isActive}"`;
+    const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
     const threadBadge = threadN
       ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} unresolved thread${threadN === 1 ? "" : "s"}" aria-label="${threadN} unresolved thread${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
       : "";
@@ -943,7 +964,7 @@
     // thread badge opens the file just like the filename does.
     return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
-        <div class="frow-open" data-action="open-file" data-id="${id}" role="button" tabindex="0" title="${esc(file.path)}">
+        <div class="frow-open" data-action="open-file" data-id="${id}" data-node-id="${node.id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
           <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}${sharedChip}
@@ -1619,9 +1640,9 @@
   function enhance() {
     animateDetails();
     if (pendingHighlight) {
-      const id = pendingHighlight;
+      const { id, nodeId } = pendingHighlight;
       pendingHighlight = null;
-      requestAnimationFrame(() => fadeFileHighlight(id, "in"));
+      requestAnimationFrame(() => fadeFileHighlight(id, "in", nodeId));
     }
   }
 
@@ -1822,7 +1843,7 @@
       // a click that completes a selection over the name is not a toggle.
       const sel = window.getSelection && window.getSelection();
       if (sel && !sel.isCollapsed && e.target.closest && e.target.closest(".fp-name")) return;
-      toggleCinema(btn.dataset.id);
+      toggleCinema(btn.dataset.id, btn.dataset.nodeId);
     } else if (a === "cinema-close") {
       const holder = btn.closest(".cinema-diff");
       const row = holder && holder.previousElementSibling;
@@ -1885,8 +1906,9 @@
     if (kind === "file") {
       const entry = fileById.get(id);
       if (entry) {
+        const membership = (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[id] = true;
+        state.activeFiles[id] = membership?.nodeId || true;
       }
     } else if (kind === "line") {
       const p = parseLineId(id);
@@ -1896,7 +1918,7 @@
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[entry.id] = true;
+        state.activeFiles[entry.id] = lineMembership?.nodeId || true;
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
@@ -1948,7 +1970,7 @@
           || nodeTarget
           || app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)
-          || app.querySelector(`.frow[data-file="${cssEsc(id)}"]`)
+          || fileRowElement(id)
           || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`)
           || app.querySelector(`details.node[data-node="${cssEsc(id)}"]`)
           || app.querySelector(`.ac-item[data-ac="${cssEsc(id)}"]`)
@@ -1960,7 +1982,8 @@
           thread.scrollIntoView({ behavior: "smooth", block: "center" });
         }
         if (kind === "file") fadeFileHighlight(id, "in");
-        else if (kind === "line" && lineFileId) fadeFileHighlight(lineFileId, "in");
+        else if (kind === "line" && lineFileId)
+          fadeFileHighlight(lineFileId, "in", lineMembership?.nodeId);
       });
     });
   }
@@ -2278,16 +2301,16 @@
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
   const motionReduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  // A file id whose row should fade its orange highlight in on the next render.
-  // Set when a file is opened/jumped to; consumed once in enhance().
+  // The file row that should fade its orange highlight in on the next render.
+  // Shared files need the node id too because they appear more than once.
   let pendingHighlight = null;
 
   // Fade the file-row highlight (orange background + inset border) in or out.
   // The app re-renders wholesale, so a freshly rendered .is-active row starts
   // already-orange and a CSS transition never fires — animate it explicitly.
-  function fadeFileHighlight(id, dir) {
+  function fadeFileHighlight(id, dir, nodeId) {
     if (id == null || motionReduced()) return;
-    const row = app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+    const row = fileRowElement(id, nodeId);
     if (!row) return;
     const on = { background: "rgba(255, 106, 69, .13)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, .35)" };
     const off = { background: "rgba(255, 106, 69, 0)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, 0)" };
@@ -2378,26 +2401,32 @@
     afterAnim(anim, dur || 200, () => render());
   }
 
-  function toggleCinema(id) {
-    if (state.activeFiles[id]) { closeCinema(id); return; }
+  function toggleCinema(id, nodeId) {
+    const entry = fileById.get(id);
+    const targetNodeId =
+      nodeId || (entry && (entry.file.memberships || [])[0]?.nodeId) || null;
+    if (activeFileNodeId(id) === targetNodeId) { closeCinema(id); return; }
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
-    const entry = fileById.get(id);
     if (entry) delete entry.file._diffError;
-    state.activeFiles[id] = true; persist(); pendingHighlight = id; render();
+    state.activeFiles[id] = targetNodeId || true;
+    persist();
+    pendingHighlight = { id, nodeId: targetNodeId };
+    render();
   }
-  function cinemaHolder(id) {
-    const row = app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+  function cinemaHolder(id, nodeId = activeFileNodeId(id)) {
+    const row = fileRowElement(id, nodeId);
     const next = row && row.nextElementSibling;
     return next && next.classList.contains("cinema-diff") ? next : null;
   }
   function closeCinema(id) {
     // No id → close every open file (used by the Escape shortcut).
     if (id == null) { state.activeFiles = {}; persist(); render(); return; }
-    const holder = cinemaHolder(id);
+    const nodeId = activeFileNodeId(id);
+    const holder = cinemaHolder(id, nodeId);
     delete state.activeFiles[id]; persist();
     if (!holder || motionReduced()) { render(); return; }
-    fadeFileHighlight(id, "out");
+    fadeFileHighlight(id, "out", nodeId);
     const start = holder.getBoundingClientRect().height;
     holder.style.overflow = "hidden";
     const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
@@ -2419,7 +2448,12 @@
     if (kind === "line") state.openLineThreads[id] = true;
     else state.openThreads[id] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
-    if (kind === "file") { state.activeFiles[id] = true; pendingHighlight = id; }
+    if (kind === "file") {
+      const entry = fileById.get(id);
+      if (!state.activeFiles[id])
+        state.activeFiles[id] = (entry?.file.memberships || [])[0]?.nodeId || true;
+      pendingHighlight = { id, nodeId: activeFileNodeId(id) };
+    }
     persist();
     render();
     focusComposer();
@@ -2441,7 +2475,12 @@
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
     else state.openThreads[c.id] = true;
-    if (c.kind === "file") { state.activeFiles[c.id] = true; pendingHighlight = c.id; }
+    if (c.kind === "file") {
+      const entry = fileById.get(c.id);
+      if (!state.activeFiles[c.id])
+        state.activeFiles[c.id] = (entry?.file.memberships || [])[0]?.nodeId || true;
+      pendingHighlight = { id: c.id, nodeId: activeFileNodeId(c.id) };
+    }
     persist();
     render();
     focusComposer();
@@ -2504,7 +2543,7 @@
 
   document.addEventListener("keydown", (e) => {
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
-      e.preventDefault(); toggleCinema(e.target.dataset.id); return;
+      e.preventDefault(); toggleCinema(e.target.dataset.id, e.target.dataset.nodeId); return;
     }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element) {
       const h = e.target.closest('[data-action="toggle-thread-collapse"]');
@@ -2621,7 +2660,7 @@
     const pendingDiffs = [];
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!state.activeFiles[fid]) return;
-      const holder = app.querySelector(`.frow[data-file="${cssEsc(fid)}"]`)?.nextElementSibling;
+      const holder = fileRowElement(fid)?.nextElementSibling;
       const scroller = holder && holder.classList.contains("cinema-diff")
         ? holder.querySelector(".diff-scroll")
         : null;
@@ -2631,13 +2670,13 @@
     restoreOpen(open);
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!state.activeFiles[fid]) return;
-      const row = app.querySelector(`.frow[data-file="${cssEsc(fid)}"]`);
+      const row = fileRowElement(fid);
       const entry = fileById.get(fid);
       if (row && entry) {
         row.classList.add("is-open");
         const holder = document.createElement("div");
         holder.className = "cinema-diff";
-        const focusNodeId = row.closest("[data-node]")?.getAttribute("data-node") || null;
+        const focusNodeId = activeFileNodeId(fid);
         holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId }) + fileNotesBlock(fid);
         row.after(holder);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
