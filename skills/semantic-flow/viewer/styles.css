@@ -934,7 +934,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .k-added { color: var(--add); background: var(--add-bg); border: 1px solid var(--add-ln); }
 .k-modified { color: var(--t-assumption); background: rgba(224, 176, 84, .1); border: 1px solid rgba(224, 176, 84, .4); }
 .k-deleted { color: var(--del); background: var(--del-bg); border: 1px solid var(--del-ln); }
-.k-renamed { color: var(--signal); background: rgba(90, 156, 248, .1); border: 1px solid rgba(90, 156, 248, .4); }
+.k-renamed { color: var(--t-decision); background: rgba(90, 156, 248, .1); border: 1px solid rgba(90, 156, 248, .4); }
 .fp { min-width: 0; display: flex; align-items: baseline; overflow: hidden; }
 .fp small { color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fp strong { color: var(--text); font-weight: 500; font-size: 12.5px; white-space: nowrap; flex: none; user-select: text; cursor: text; }
@@ -1113,28 +1113,28 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border-right: 1px solid var(--line-soft);
 }
 .drow i { text-align: center; font-style: normal; color: var(--faint); user-select: none; }
-.drow code { white-space: pre; padding-right: 24px; color: var(--text); }
+.drow > code { white-space: pre; padding-right: 24px; color: var(--text); }
 .d-add { background: var(--add-bg); }
 .d-add i { color: var(--add); }
 .d-del { background: var(--del-bg); }
 .d-del i { color: var(--del); }
 .d-gap { background: rgba(110, 168, 255, .045); }
-.d-gap code { color: var(--faint); font-style: italic; }
+.d-gap > code { color: var(--faint); font-style: italic; }
 .d-gap .ln { border-right-color: transparent; }
-.d-cut code { color: var(--faint); font-style: italic; }
+.d-cut > code { color: var(--faint); font-style: italic; }
 /* added file: full contents shown once, neutral rows + a clear banner */
 .d-newfile { background: var(--add-bg); }
 .d-newfile i { color: var(--add); }
-.d-newfile code { color: var(--add); font-style: italic; }
+.d-newfile > code { color: var(--add); font-style: italic; }
 /* deleted file: previous contents shown once, neutral rows + a clear banner */
 .d-oldfile { background: var(--del-bg); }
 .d-oldfile i { color: var(--del); }
-.d-oldfile code { color: var(--del); font-style: italic; }
+.d-oldfile > code { color: var(--del); font-style: italic; }
 /* per-line syntax highlighting tokens */
-.drow code .tok-key { color: #7aa2f7; }
-.drow code .tok-str { color: #9ece6a; }
-.drow code .tok-num { color: #e0af68; }
-.drow code .tok-com { color: var(--faint); font-style: italic; }
+.drow > code .tok-key { color: #7aa2f7; }
+.drow > code .tok-str { color: #9ece6a; }
+.drow > code .tok-num { color: #e0af68; }
+.drow > code .tok-com { color: var(--faint); font-style: italic; }
 /* ---- per-line note affordance & threads -------------------------------- */
 /* The sign column doubles as an interactive gutter button: the diff sign at
    rest, a faint "+" on row hover to start a note, and a comment bubble once a
@@ -1189,7 +1189,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
    opened step reads as its own slice of the shared diff. Only the code text and
    its sign fade — gutters and note affordances stay fully interactive. When no
    step is in focus, a faint accent still marks which lines carry ownership. */
-.drow.own-other code { opacity: .42; }
+.drow.own-other > code { opacity: .42; }
 .drow.own-other .lact-sign { opacity: .42; }
 .drow.own-mark { box-shadow: inset 2px 0 0 var(--line); }
 

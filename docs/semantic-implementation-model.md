@@ -40,7 +40,8 @@ cumulative branch at the final stage head.
 3. The agent implements, commits, groups the diff into change nodes, performs
    final validation, and finalizes the branch.
 4. The reviewer walks the stack bottom-to-top.
-5. Feedback threads are anchored to immutable stage head snapshots.
+5. Feedback threads capture stage snapshots; pending non-line targets may move
+   to a newer snapshot when the target still exists.
 6. A change is committed directly on the affected branch.
 7. `restack` cascades it through every branch above and refreshes snapshots.
 8. Approval publishes metadata on a sibling metadata branch.

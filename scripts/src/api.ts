@@ -28,6 +28,7 @@ export type FeedbackTargetKind =
   | "specification"
   | "criterion"
   | "stage"
+  | "node"
   | "insight"
   | "file"
   | "line";
@@ -382,8 +383,10 @@ export interface AddFeedbackThreadOptions {
   specification?: string;
   /** Criterion identifier for criterion targets. */
   criterion?: string;
-  /** Stage identifier for stage, insight, file, and line targets. */
+  /** Stage identifier for stage, node, insight, file, and line targets. */
   stage?: string;
+  /** Change node identifier for a node target. */
+  node?: string;
   /** Insight collection name for an insight target. */
   collection?: string;
   /** Insight identifier for an insight target. */
@@ -426,7 +429,7 @@ export declare function addFeedbackThreads(
 export interface NextFeedbackOptions {
   /** Emits machine-readable JSON instead of text. */
   json?: true;
-  /** Omits comment metadata and repeated revision data, reports staleness as a boolean, and emits minified JSON. Requires `json`. */
+  /** Omits repeated metadata and reports stale and automatic re-anchoring status. Requires `json`. */
   compact?: true;
 }
 

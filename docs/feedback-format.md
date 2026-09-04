@@ -3,8 +3,8 @@
 **Status:** Proposal 0.1
 
 Feedback is mutable local workflow state under `.semantic-review-feedback/`.
-It connects reviewer comments to semantic targets and the exact stage snapshot
-that was reviewed.
+It connects reviewer comments to semantic targets and the stage snapshot used
+to process them.
 
 ```text
 .semantic-review-feedback/
@@ -26,19 +26,22 @@ of the persisted feedback format.
 
 ## Targets
 
-Specification, criterion, stage, insight, file, and line targets use stable
-semantic IDs. Stage-backed targets also store:
+Specification, criterion, stage, change node, insight, file, and line targets
+use stable semantic IDs. Stage-backed targets also store:
 
 - `stageId`
 - `stageBranch`
 - `stageHead`
 
-Insight targets add collection and item IDs. File targets add a path. Line
-targets add a diff side and line number.
+Node targets add a node ID. Insight targets add collection and item IDs. File
+targets add a path. Line targets add a diff side and line number.
 
 The thread's `assignedStageId` identifies where the agent should make a change.
-Its `stageHead` records the assigned stage snapshot when the reviewer sent the
-feedback. The viewer marks the thread stale when the current stage head differs.
+Its `stageHead` records the assigned stage snapshot. Before returning pending
+feedback, the CLI refreshes non-line anchors when the exact target still exists.
+Line anchors remain fixed because the referenced content may have moved. A
+thread remains stale when a line's stage changed or a non-line target
+disappeared.
 
 ## Agent processing
 
@@ -48,8 +51,7 @@ feedback. The viewer marks the thread stale when the current stage head differs.
 4. Run `restack --from <stage>` after a code change.
 5. Add an agent reply explaining the answer or change.
 
-The agent does not resolve threads. Later restacks do not require feedback
-metadata updates because the original review snapshot remains historical.
+The agent does not resolve threads.
 
 Every feedback mutation holds a repository-scoped lock. Publication-readiness
 validation requires every thread to be resolved. Metadata publication and

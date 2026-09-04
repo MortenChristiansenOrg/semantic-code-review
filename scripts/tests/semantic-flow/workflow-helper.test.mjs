@@ -136,7 +136,8 @@ test("feedback automatically restacks after the target branch advances", (t) => 
   assert.equal(result.targetRestack.baseRevision, targetHead);
   assert.equal(result.targetRestack.rewrittenBranches, 2);
   assert.equal(result.stages[0].stageId, "behavior");
-  assert.equal(result.stages[0].threads[0].stale, true);
+  assert.equal(result.stages[0].threads[0].stale, false);
+  assert.equal(result.stages[0].threads[0].reanchored, true);
   assert.equal(result.stages[0].threads[0].restacked, true);
   repository.semantic("validate");
 });

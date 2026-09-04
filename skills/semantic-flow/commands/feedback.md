@@ -41,9 +41,13 @@ If `stages` is empty, report that no feedback awaits a reply and stop. Read the
 whole conversation in every returned thread. A thread marked `restacked: true`
 was current before this preflight restacked its stage. Inspect its recorded
 target against the rewritten diff and continue when the target remains clear;
-do not ask merely because its immutable commit anchor is now stale. For other
-threads, stop and ask the user when `stale: true`, feedback is unclear or
-contradictory, or no responsible stage is clear. Do not guess.
+do not ask merely because its recorded commit anchor moved. Preflight
+automatically refreshes pending non-line anchors when their exact target still
+exists; these threads are marked `reanchored: true`. Continue without asking
+when their feedback remains clear. A remaining `stale: true` means a line
+anchor moved or a non-line target could not be found. Inspect the current target
+and ask only when applying the feedback is ambiguous. Also stop for unclear or
+contradictory feedback, or when no responsible stage is clear. Do not guess.
 
 ## Address feedback
 

@@ -198,6 +198,36 @@ function collectionExists(stage, collection, itemId) {
     stage[collection].some((item) => item.id === itemId);
 }
 
+function renamedPathBetween(root, fromRevision, toRevision, repositoryPath) {
+  const raw = git([
+    "--no-pager",
+    "diff",
+    "--name-status",
+    "-z",
+    "--find-renames=50%",
+    fromRevision,
+    toRevision,
+  ], {
+    cwd: root,
+    allowFailure: true,
+  });
+  if (raw === null) return null;
+  const fields = raw.split("\0");
+  for (let index = 0; index < fields.length && fields[index];) {
+    const status = fields[index++];
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const previousPath = fields[index++];
+      const currentPath = fields[index++];
+      if (status.startsWith("R") && previousPath === repositoryPath) {
+        return currentPath;
+      }
+    } else {
+      index += 1;
+    }
+  }
+  return null;
+}
+
 function lineCountAtRevision(root, revision, repositoryPath) {
   const contents = gitRaw(["show", `${revision}:${repositoryPath}`], {
     cwd: root,
@@ -265,13 +295,19 @@ function validateTarget(target, semantic, root) {
     );
   }
 
-  if (["stage", "insight", "file", "line"].includes(target.kind)) {
+  if (["stage", "node", "insight", "file", "line"].includes(target.kind)) {
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Feedback target stage ${target.stageId} does not exist.`);
     if (
       target.stageBranch === stage.change.branch &&
       target.stageHead === stage.change.headRevision
     ) {
+      if (
+        target.kind === "node" &&
+        !stage.nodes.some((node) => node.id === target.nodeId)
+      ) {
+        fail(`Feedback node ${target.stageId}/${target.nodeId} does not exist.`);
+      }
       if (
         target.kind === "insight" &&
         !collectionExists(stage, target.collection, target.itemId)
@@ -404,12 +440,15 @@ function buildTarget(options, semantic, root) {
   if (kind === "criterion") {
     target.criterionId = option(options, "criterion", { required: true });
   }
-  if (["stage", "insight", "file", "line"].includes(kind)) {
+  if (["stage", "node", "insight", "file", "line"].includes(kind)) {
     target.stageId = option(options, "stage", { required: true });
     const stage = semantic.stages.get(target.stageId);
     if (!stage) fail(`Stage ${target.stageId} does not exist.`);
     target.stageBranch = stage.change.branch;
     target.stageHead = stage.change.headRevision;
+  }
+  if (kind === "node") {
+    target.nodeId = option(options, "node", { required: true });
   }
   if (kind === "insight") {
     target.collection = option(options, "collection", { required: true });
@@ -545,6 +584,81 @@ function addThreadBatch(paths, options) {
   console.log(`Added ${threads.length} feedback thread(s).`);
 }
 
+function refreshableTarget(target, semantic, root) {
+  if (target.kind === "line") return null;
+  if (target.kind === "specification") {
+    return semantic.requirements.has(target.specificationId) ? target : null;
+  }
+  if (target.kind === "criterion") {
+    const specification = semantic.requirements.get(target.specificationId);
+    return specification?.acceptanceCriteria.some(
+      (criterion) => criterion.id === target.criterionId,
+    )
+      ? target
+      : null;
+  }
+
+  const stage = semantic.stages.get(target.stageId);
+  if (!stage) return null;
+  if (target.kind === "node") {
+    if (!stage.nodes.some((node) => node.id === target.nodeId)) return null;
+  } else if (target.kind === "insight") {
+    if (!collectionExists(stage, target.collection, target.itemId)) return null;
+  } else if (target.kind === "file") {
+    let changedFile = stage.change.files.find(
+      (file) =>
+        file.path === target.path || file.previousPath === target.path,
+    );
+    if (!changedFile) {
+      const renamedPath = renamedPathBetween(
+        root,
+        target.stageHead,
+        stage.change.headRevision,
+        target.path,
+      );
+      changedFile = renamedPath
+        ? stage.change.files.find(
+            (file) =>
+              file.path === renamedPath || file.previousPath === renamedPath,
+          )
+        : null;
+    }
+    if (!changedFile) return null;
+    if (
+      changedFile.path !== target.path &&
+      target.stageHead !== stage.change.headRevision
+    ) {
+      const previousPath = target.path;
+      target.path = changedFile.path;
+      if (target.label === previousPath) target.label = changedFile.path;
+    }
+  }
+
+  target.stageBranch = stage.change.branch;
+  target.stageHead = stage.change.headRevision;
+  return target;
+}
+
+function refreshPendingAnchor(paths, semantic, thread) {
+  const before = JSON.stringify({
+    stageHead: thread.stageHead,
+    target: thread.target,
+  });
+  const target = refreshableTarget({ ...thread.target }, semantic, paths.root);
+  if (!target) return false;
+  const assignedStage = semantic.stages.get(thread.assignedStageId);
+  if (!assignedStage) return false;
+  thread.stageHead = assignedStage.change.headRevision;
+  thread.target = target;
+  if (before === JSON.stringify({
+    stageHead: thread.stageHead,
+    target: thread.target,
+  })) {
+    return false;
+  }
+  return true;
+}
+
 function nextFeedback(paths, options) {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "next"));
   const json = flag(options, "json");
@@ -556,6 +670,35 @@ function nextFeedback(paths, options) {
       thread.status === "open" &&
       thread.comments[thread.comments.length - 1]?.author !== "agent",
   );
+  const reanchored = new Set();
+  const originals = new Map();
+  for (const thread of awaiting) {
+    originals.set(thread.id, structuredClone(thread));
+    if (refreshPendingAnchor(paths, semantic, thread)) reanchored.add(thread.id);
+  }
+  if (reanchored.size) {
+    const ajv = schemaValidator();
+    for (const thread of awaiting) {
+      if (!reanchored.has(thread.id)) continue;
+      validateDocument(
+        ajv,
+        thread,
+        path.join(paths.threads, `${thread.id}.json`),
+      );
+      validateTarget(thread.target, semantic, paths.root);
+    }
+    try {
+      for (const thread of awaiting) {
+        if (reanchored.has(thread.id)) writeThread(paths, thread);
+      }
+      validateFeedback(paths, { quiet: true });
+    } catch (error) {
+      for (const [id, thread] of originals) {
+        if (reanchored.has(id)) writeThread(paths, thread);
+      }
+      throw error;
+    }
+  }
   const groups = [];
   for (const stageId of semantic.manifest.stages) {
     const threads = awaiting.filter(
@@ -586,6 +729,7 @@ function nextFeedback(paths, options) {
                         targetStage &&
                         targetHead !== targetStage.change.headRevision,
                     ),
+                  ...(reanchored.has(thread.id) ? { reanchored: true } : {}),
                   comments: thread.comments.map(({ author, body }) => ({
                     author,
                     body,
@@ -840,7 +984,6 @@ try {
     positionals.length === 0 ||
     positionals[0] === "help" ||
     options.has("help") ||
-    positionals[0] === "next" ||
     positionals[0] === "validate";
   if (readOnly) {
     dispatch(paths, positionals, options);

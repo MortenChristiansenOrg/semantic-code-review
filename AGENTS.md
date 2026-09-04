@@ -95,8 +95,10 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   branches.
 - **Artifact worktree**: The repository worktree that contains the active
   artifact and from which artifact and feedback commands operate.
-- **Anchor**: An immutable stage head snapshot a feedback thread is attached to;
-  it is **stale** when the stage's current head has since changed.
+- **Anchor**: A stage head snapshot a feedback thread is attached to. Pending
+  non-line anchors may refresh when the exact target still exists; line anchors
+  remain immutable. An anchor is **stale** when it no longer matches and cannot
+  be refreshed safely.
 - **Working branch**: The branch checked out in the repository checkout or
   linked worktree where the LLM is currently making implementation changes.
   When no changes are in progress, it is the branch currently checked out

@@ -387,10 +387,12 @@
   function artifactThreadById(tid) {
     return tid ? artifactThreads.find((t) => t.id === tid) : undefined;
   }
-  function artifactThreadsForElement(kind, id) {
+  function artifactThreadsForElement(kind, id, stageId) {
     return artifactThreads.filter((t) => {
       const tk = t.target && t.target.kind;
       if (kind === "stage") return tk === "stage" && t.target.stageId === id;
+      if (kind === "node")
+        return tk === "node" && t.target.nodeId === id && t.target.stageId === stageId;
       if (kind === "file")
         return tk === "file" && fileElementId(t.target.stageId, t.target.path) === id;
       if (kind === "line")
@@ -409,8 +411,8 @@
       ({ c }) => !c.exported || !artifactThreadById(c.threadId),
     );
   }
-  function threadToggleCounts(kind, id) {
-    const threads = artifactThreadsForElement(kind, id);
+  function threadToggleCounts(kind, id, stageId) {
+    const threads = artifactThreadsForElement(kind, id, stageId);
     const locals = localVisibleForElement(id);
     return {
       total: threads.length + locals.length,
@@ -646,15 +648,15 @@
   function commentBtn(kind, id, stageId) {
     return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
   }
-  function notesToggle(kind, id) {
-    const { total, open: openCount } = threadToggleCounts(kind, id);
+  function notesToggle(kind, id, stageId) {
+    const { total, open: openCount } = threadToggleCounts(kind, id, stageId);
     if (!total) return "";
     const open = Boolean(state.openThreads[id]);
-    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-id="${id}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
+    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
       ${bubble()}<b>${total}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
   }
   function noteCluster(kind, id, stageId) {
-    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id)}</div>`;
+    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id, stageId)}</div>`;
   }
   function stageNoteCluster(id) {
     return `<div class="note-cluster">${notesToggle("stage", id)}${commentBtn("stage", id)}</div>`;
@@ -671,7 +673,7 @@
     return { text: l, title: l };
   }
   // Which reviewable element (if any) an artifact thread points at, so the
-  // notes list can offer a "show" jump. Only file and stage targets map cleanly.
+  // notes list can offer a "show" jump.
   // File and line targets resolve against the file that currently holds the
   // path (following a rename); a target whose file no longer exists yields no
   // ref so the jump control can be withheld.
@@ -694,6 +696,12 @@
     }
     if (tgt.kind === "stage" && tgt.stageId)
       return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
+    if (tgt.kind === "node" && tgt.stageId && tgt.nodeId) {
+      const stage = stageById.get(tgt.stageId);
+      return stage?.nodes.some((node) => node.id === tgt.nodeId)
+        ? { kind: "node", id: tgt.nodeId, stageId: tgt.stageId }
+        : stage ? { kind: "stage", id: tgt.stageId } : null;
+    }
     if (tgt.kind === "specification" && tgt.specificationId)
       return requirements.some((r) => r.id === tgt.specificationId)
         ? { kind: "specification", id: tgt.specificationId }
@@ -774,7 +782,7 @@
     const jump = !withLabel
       ? ""
       : ref
-        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
+        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
         : tstate.state === "deleted"
           ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
           : "";
@@ -885,9 +893,9 @@
       </div>
     </form>`;
   }
-  function threadInline(id, kind) {
+  function threadInline(id, kind, stageId) {
     const composingNew = compose && compose.id === id && compose.editIndex == null;
-    const arts = artifactThreadsForElement(kind, id);
+    const arts = artifactThreadsForElement(kind, id, stageId);
     const locals = localVisibleForElement(id);
     const hasContent = arts.length || locals.length;
     if (!state.openThreads[id] && !composingNew) return "";
@@ -897,7 +905,7 @@
       locals.map((ln) => renderLocalNote(ln)).join("");
     const footer = composingNew
       ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="${kind}" data-id="${id}" type="button">＋ Add note</button>`;
+      : `<button class="thread-add" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
     return `<div class="thread" data-thread="${id}">${rows}${footer}</div>`;
   }
 
@@ -1334,7 +1342,7 @@
         ${nodeReasoning(stage, node)}
         ${nodeFilesPanel(stage, node)}
         <div class="node-foot">${noteCluster("node", node.id, stage.id)}</div>
-        ${threadInline(node.id, "node")}
+        ${threadInline(node.id, "node", stage.id)}
       </div>
     </details>`;
   }
@@ -1826,7 +1834,7 @@
     } else if (a === "compose-cancel") {
       compose = null; render();
     } else if (a === "jump-to") {
-      jumpToElement(btn.dataset.kind, btn.dataset.id);
+      jumpToElement(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
     } else if (a === "thread-reply") {
       compose = null;
       replyTo = btn.dataset.id;
@@ -1865,7 +1873,7 @@
   // Open the reviewable element an artifact thread points at, close the notes
   // panel, and scroll its conversation into view (targeting the comments so a
   // tall file body cannot push them off-screen).
-  function jumpToElement(kind, id) {
+  function jumpToElement(kind, id, stageId) {
     pendingLazyJump = null;
     state.notesOpen = false;
     state.coverageOpen = false;
@@ -1892,6 +1900,8 @@
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
+    } else if (kind === "node") {
+      if (stageId) state.openStages[stageId] = true;
     } else if (kind === "specification") {
       if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
       state.specificationOpen[id] = true;
@@ -1924,12 +1934,23 @@
       } else if (kind === "line" && lineMembership && lineMembership.nodeId) {
         const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(lineMembership.nodeId)}"]`);
         if (nodeEl) nodeEl.open = true;
+      } else if (kind === "node") {
+        const nodeEl = stageId
+          ? app.querySelector(`.stage[data-stage="${cssEsc(stageId)}"] details.node[data-node="${cssEsc(id)}"]`)
+          : app.querySelector(`details.node[data-node="${cssEsc(id)}"]`);
+        if (nodeEl) nodeEl.open = true;
       }
       requestAnimationFrame(() => {
-        const thread = app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
+        const nodeTarget = kind === "node" && stageId
+          ? app.querySelector(`.stage[data-stage="${cssEsc(stageId)}"] details.node[data-node="${cssEsc(id)}"]`)
+          : null;
+        const thread = nodeTarget?.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
+          || nodeTarget
+          || app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.frow[data-file="${cssEsc(id)}"]`)
           || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`)
+          || app.querySelector(`details.node[data-node="${cssEsc(id)}"]`)
           || app.querySelector(`.ac-item[data-ac="${cssEsc(id)}"]`)
           || app.querySelector(`.specification[data-req-id="${cssEsc(id)}"]`)
           || app.querySelector(`[data-insight="${cssEsc(id)}"]`);
@@ -2147,8 +2168,8 @@
   function refreshThreadCounts() {
     app.querySelectorAll(".notes-toggle[data-id]").forEach((btn) => {
       const id = btn.dataset.id;
-      const kind = id.startsWith("f:") ? "file" : "stage";
-      const { total, open: openCount } = threadToggleCounts(kind, id);
+      const kind = btn.dataset.kind || (id.startsWith("f:") ? "file" : "stage");
+      const { total, open: openCount } = threadToggleCounts(kind, id, btn.dataset.stage);
       if (!total) { btn.remove(); return; }
       const b = btn.querySelector("b");
       if (b) b.textContent = String(total);

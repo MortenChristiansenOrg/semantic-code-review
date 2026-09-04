@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  beginStage,
+  createRepository,
   createImplementationWithStages,
   flowCli,
+  initializeImplementation,
+  organizeStage,
 } from "../helpers/repository.mjs";
 
 function addThread(repository, id, body = `Resolve ${id}.`) {
@@ -281,6 +285,28 @@ test("next lists only open threads awaiting an agent reply", (t) => {
     "--compact",
   );
 
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "line-anchor",
+    "--comment-id",
+    "line-anchor-note",
+    "--body",
+    "Keep this line-specific.",
+    "--label",
+    "Implementation line",
+    "--target-kind",
+    "line",
+    "--stage",
+    "implementation",
+    "--path",
+    "implementation.txt",
+    "--side",
+    "new",
+    "--line",
+    "1",
+  );
   repository.commitFile(
     "implementation.txt",
     "implementation changed after feedback\n",
@@ -290,7 +316,27 @@ test("next lists only open threads awaiting an agent reply", (t) => {
   const stale = JSON.parse(
     repository.feedback("next", "--json", "--compact"),
   );
-  assert.equal(stale[0].threads[0].stale, true);
+  const stageThread = stale[0].threads.find(
+    (thread) => thread.id === "already-answered",
+  );
+  const lineThread = stale[0].threads.find(
+    (thread) => thread.id === "line-anchor",
+  );
+  assert.equal(stageThread.stale, false);
+  assert.equal(stageThread.reanchored, true);
+  assert.equal(lineThread.stale, true);
+  assert.equal("reanchored" in lineThread, false);
+  const storedStageThread = repository.readJson(
+    ".semantic-review-feedback/threads/already-answered.json",
+  );
+  const currentStage = repository.readJson(
+    ".semantic-review/stages/implementation.json",
+  );
+  assert.equal(storedStageThread.stageHead, currentStage.change.headRevision);
+  assert.equal(
+    storedStageThread.target.stageHead,
+    currentStage.change.headRevision,
+  );
 });
 
 test("reviewers reopen and continue resolved threads", (t) => {
@@ -342,4 +388,193 @@ test("reviewers reopen and continue resolved threads", (t) => {
     "--id",
     "chat",
   );
+});
+
+test("pending node anchors refresh only while the node exists", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "node-anchor",
+    "--comment-id",
+    "node-anchor-note",
+    "--body",
+    "Keep this step focused.",
+    "--label",
+    "Implementation change",
+    "--target-kind",
+    "node",
+    "--stage",
+    "implementation",
+    "--node",
+    "implementation-change",
+  );
+
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.headRevision = repository.commitFile(
+    "implementation.txt",
+    "implementation changed\n",
+    "Change node implementation",
+  );
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  let pending = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  )[0].threads[0];
+  assert.equal(pending.stale, false);
+  assert.equal(pending.reanchored, true);
+  assert.equal(pending.target.kind, "node");
+  assert.equal(pending.target.nodeId, "implementation-change");
+
+  const refreshedStage = repository.readJson(stagePath);
+  refreshedStage.change.headRevision = repository.commitFile(
+    "implementation.txt",
+    "replacement implementation\n",
+    "Replace node implementation",
+  );
+  refreshedStage.nodes = refreshedStage.nodes.map((node) => ({
+    ...node,
+    id: "replacement-change",
+  }));
+  repository.write(stagePath, `${JSON.stringify(refreshedStage, null, 2)}\n`);
+
+  pending = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  )[0].threads[0];
+  assert.equal(pending.stale, true);
+  assert.equal("reanchored" in pending, false);
+  assert.equal(pending.target.nodeId, "implementation-change");
+});
+
+test("pending file anchors follow renames", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "file-anchor",
+    "--comment-id",
+    "file-anchor-note",
+    "--body",
+    "Keep the file-level behavior.",
+    "--label",
+    "implementation.txt",
+    "--target-kind",
+    "file",
+    "--stage",
+    "implementation",
+    "--path",
+    "implementation.txt",
+  );
+
+  repository.git("mv", "implementation.txt", "renamed.txt");
+  repository.git("commit", "-m", "Rename implementation file");
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.headRevision = repository.git("rev-parse", "HEAD");
+  stage.change.files = [{
+    path: "renamed.txt",
+    kind: "renamed",
+    previousPath: "implementation.txt",
+  }];
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  const pending = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  )[0].threads[0];
+  assert.equal(pending.stale, false);
+  assert.equal(pending.reanchored, true);
+  assert.equal(pending.target.path, "renamed.txt");
+  assert.equal(pending.target.label, "renamed.txt");
+});
+
+test("file anchors stay stale when the file leaves the stage", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "moved-file",
+    "--comment-id",
+    "moved-file-note",
+    "--body",
+    "Move this work elsewhere.",
+    "--label",
+    "implementation.txt",
+    "--target-kind",
+    "file",
+    "--stage",
+    "implementation",
+    "--path",
+    "implementation.txt",
+  );
+
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.headRevision = repository.commitFile(
+    "other.txt",
+    "other change\n",
+    "Move work out of stage",
+  );
+  stage.change.files = [{ path: "other.txt", kind: "added" }];
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  const pending = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  )[0].threads[0];
+  assert.equal(pending.stale, true);
+  assert.equal("reanchored" in pending, false);
+  repository.feedback("validate");
+});
+
+test("deleted file anchors refresh while the deletion remains in the stage", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("removed.txt", "remove me\n", "Add removable file");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("rm", "removed.txt");
+  repository.git("commit", "-m", "Delete file");
+  organizeStage(repository);
+  repository.semantic("stage", "finish", "--id", "implementation");
+  repository.feedback("init");
+  repository.feedback(
+    "thread",
+    "add",
+    "--id",
+    "deleted-file",
+    "--comment-id",
+    "deleted-file-note",
+    "--body",
+    "Keep this deletion intentional.",
+    "--label",
+    "removed.txt",
+    "--target-kind",
+    "file",
+    "--stage",
+    "implementation",
+    "--path",
+    "removed.txt",
+  );
+
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  stage.change.headRevision = repository.commitFile(
+    "other.txt",
+    "other change\n",
+    "Extend deletion stage",
+  );
+  stage.change.files.push({ path: "other.txt", kind: "added" });
+  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+
+  const pending = JSON.parse(
+    repository.feedback("next", "--json", "--compact"),
+  )[0].threads[0];
+  assert.equal(pending.stale, false);
+  assert.equal(pending.reanchored, true);
+  assert.equal(pending.target.path, "removed.txt");
 });

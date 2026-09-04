@@ -223,6 +223,14 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     ],
     ["stage-target", "stage", "--stage", "implementation"],
     [
+      "node-target",
+      "node",
+      "--stage",
+      "implementation",
+      "--node",
+      "implementation-change",
+    ],
+    [
       "insight-target",
       "insight",
       "--stage",
@@ -271,6 +279,25 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     );
   }
 
+  repository.expectFeedbackFailure(
+    "Feedback node implementation/missing-node does not exist.",
+    "thread",
+    "add",
+    "--id",
+    "missing-node",
+    "--comment-id",
+    "missing-node-note",
+    "--body",
+    "Invalid.",
+    "--label",
+    "Missing node",
+    "--target-kind",
+    "node",
+    "--stage",
+    "implementation",
+    "--node",
+    "missing-node",
+  );
   repository.expectFeedbackFailure(
     "--line must be a positive integer",
     "thread",

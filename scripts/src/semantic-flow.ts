@@ -60,6 +60,7 @@ interface PendingFeedbackStage {
   threads: Array<{
     id: string;
     stale: boolean;
+    reanchored?: boolean;
     restacked?: boolean;
     comments: Array<{ author: string; body: string }>;
     target: { label: string };

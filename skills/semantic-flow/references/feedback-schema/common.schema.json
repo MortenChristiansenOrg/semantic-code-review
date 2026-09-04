@@ -69,6 +69,7 @@
             "specification",
             "criterion",
             "stage",
+            "node",
             "insight",
             "file",
             "line"
@@ -84,6 +85,9 @@
           "$ref": "#/$defs/id"
         },
         "stageId": {
+          "$ref": "#/$defs/id"
+        },
+        "nodeId": {
           "$ref": "#/$defs/id"
         },
         "stageBranch": {
@@ -172,6 +176,26 @@
               "stageId",
               "stageBranch",
               "stageHead"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "node"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "stageId",
+              "stageBranch",
+              "stageHead",
+              "nodeId"
             ]
           }
         },

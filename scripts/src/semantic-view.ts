@@ -758,7 +758,7 @@ export function createImplementationDataScript(repoRoot) {
 }
 
 // Load open and resolved feedback threads from the local feedback store. A
-// thread is stale when its assigned stage has moved since the note was sent.
+// thread anchor is stale when its assigned or target stage has moved.
 function buildFeedbackThreads(repoRoot, stages) {
   const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
   const manifestPath = path.join(feedbackRoot, "manifest.json");
@@ -820,7 +820,11 @@ function buildFeedbackThreads(repoRoot, stages) {
       createdAt: thread.createdAt,
       resolvedAt: thread.resolvedAt || null,
       anchorStale:
-        currentHeads.get(thread.assignedStageId) !== thread.stageHead,
+        currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
+        Boolean(
+          thread.target?.stageId &&
+            currentHeads.get(thread.target.stageId) !== thread.target.stageHead,
+        ),
     });
   }
   return threads;
@@ -868,9 +872,8 @@ function sendJson(response, status, payload) {
 }
 
 // Map a browser-local note (kind: stage | node | file | line) onto
-// review-feedback target options. Nodes have no first-class feedback target, so
-// they are assigned to their owning stage with the node title carried in the
-// label. Line notes encode the diff side and line number in their id.
+// review-feedback target options. Line notes encode the diff side and line
+// number in their id.
 export function mapNoteTarget(note, implementation) {
   if (note.kind === "stage") {
     const stage = implementation.stages.find((s) => s.id === note.id);
@@ -887,7 +890,12 @@ export function mapNoteTarget(note, implementation) {
     for (const stage of stages) {
       const node = stage.nodes.find((n) => n.id === note.id);
       if (node) {
-        return { "target-kind": "stage", stage: stage.id, label: node.title };
+        return {
+          "target-kind": "node",
+          stage: stage.id,
+          node: node.id,
+          label: node.title,
+        };
       }
     }
     throw new Error(

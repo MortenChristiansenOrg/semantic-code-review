@@ -52,10 +52,15 @@ test("mapNoteTarget maps a stage note to a stage target", () => {
   });
 });
 
-test("mapNoteTarget maps a node note to its stage with the node title", () => {
+test("mapNoteTarget maps a node note to a first-class node target", () => {
   assert.deepEqual(
     mapNoteTarget({ kind: "node", id: "impl-change", stageId: "implementation" }, implementation),
-    { "target-kind": "stage", stage: "implementation", label: "Implementation change" },
+    {
+      "target-kind": "node",
+      stage: "implementation",
+      node: "impl-change",
+      label: "Implementation change",
+    },
   );
 });
 
@@ -597,6 +602,10 @@ test("viewer client polls for completed feedback and reloads", () => {
     path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
     "utf8",
   );
+  const styles = fs.readFileSync(
+    path.resolve(scriptsDirectory, "..", "viewer", "styles.css"),
+    "utf8",
+  );
   assert.match(app, /fetch\("\/api\/revision"/);
   assert.match(app, /fetch\(`\/api\/diff\?\$\{query\}`/);
   assert.match(app, /Loading diff…/);
@@ -622,6 +631,20 @@ test("viewer client polls for completed feedback and reloads", () => {
     app,
     /<div class="note-cluster">\$\{notesToggle\("stage", id\)\}\$\{commentBtn\("stage", id\)\}<\/div>/,
   );
+  assert.match(
+    app,
+    /t\.target\.nodeId === id && t\.target\.stageId === stageId/,
+  );
+  assert.match(
+    app,
+    /data-kind="\$\{kind\}" data-id="\$\{id\}" data-stage="\$\{stageId \|\| ""\}"/,
+  );
+  assert.match(
+    app,
+    /data-action="jump-to"[^>]*data-stage="\$\{esc\(ref\.stageId \|\| ""\)\}"/,
+  );
+  assert.match(styles, /\.drow > code \{/);
+  assert.doesNotMatch(styles, /\.drow code \{/);
 });
 
 test("viewer client propagates legacy stale approvals before loading diffs", () => {
@@ -685,6 +708,20 @@ test("viewer client propagates legacy stale approvals before loading diffs", () 
           author: "user",
           body: "Resolved feedback.",
         }],
+      }, {
+        id: "resolved-node-thread",
+        status: "resolved",
+        target: {
+          kind: "node",
+          stageId: "implementation",
+          nodeId: "configure-settings",
+          label: "Configure settings",
+        },
+        comments: [{
+          id: "resolved-node-comment",
+          author: "user",
+          body: "Resolved node feedback.",
+        }],
       }],
       awaitingAgentReplies: 0,
     },
@@ -704,7 +741,7 @@ test("viewer client propagates legacy stale approvals before loading diffs", () 
   };
   const storage = {
     getItem: () => JSON.stringify({
-      openThreads: { implementation: true },
+      openThreads: { implementation: true, "configure-settings": true },
       approvals: {
         implementation: true,
         "f:implementation:appsettings.json": {
@@ -734,6 +771,7 @@ test("viewer client propagates legacy stale approvals before loading diffs", () 
   );
 
   assert.match(app.innerHTML, /Client test/);
+  assert.match(app.innerHTML, /data-thread-id="resolved-node-thread"/);
   assert.match(
     app.innerHTML,
     /class="node\s+is-stale" data-node="configure-settings"/,
