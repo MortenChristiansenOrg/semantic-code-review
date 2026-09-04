@@ -11,6 +11,17 @@ specific platforms, harnesses, etc.
 
 Do not use the semantic-flow skill on this repo, it is a skill that other projects will install and use.
 
+### Updating an installed skill from this repository
+
+When `/semantic-flow update` is requested while working in this repository,
+treat this checkout as the update source and update an installed copy in a
+different destination. First check whether `semantic-flow` is installed at the
+user level. If it is, ask the user whether to update that user-level skill or a
+repository-level installation, for which the user must provide the target
+repository path. If no user-level installation exists, ask only for the target
+repository path. Do not treat this repository's source skill as the update
+destination.
+
 ## Schema stability
 
 Version 0.1 is experimental. Breaking schema and CLI changes may be made in
