@@ -3,8 +3,11 @@
 Use for read-only diagnosis of semantic artifact, feedback, and Git
 consistency.
 
-Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
-operating-system guide.
+`<semantic-flow>` means `node` followed by the quoted absolute path to
+`<installed-skill-root>/scripts/semantic-flow.mjs`. This command is self-contained;
+read `../scripts/api/workflow.d.ts` only when options or an unexplained error
+require it. Reuse known runtime details; do not run separate discovery or
+validation before the helper.
 
 Run:
 

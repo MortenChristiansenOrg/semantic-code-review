@@ -9,13 +9,16 @@
  * The optional leading `review` token is accepted and ignored so the launch
  * reads naturally ("semantic-view review").
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createInterface } from "node:readline";
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import {
   probeViewer,
   requestViewerShutdown,
@@ -24,7 +27,7 @@ import {
   viewerPort,
 } from "./shared/viewer-lifecycle.js";
 
-const MAX_ROWS = 900; // per-file diff row cap to keep the payload sane
+const MAX_ROWS = 900; // rows per page; all later rows remain available
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +79,10 @@ function gitCapture(cwd, args) {
 }
 
 function gitPathExists(repoRoot, revision, filePath) {
+  return immutableFact(JSON.stringify(["viewer-path", repoRoot, revision, filePath]), () => checkGitPathExists(repoRoot, revision, filePath));
+}
+
+function checkGitPathExists(repoRoot, revision, filePath) {
   try {
     gitCapture(repoRoot, ["cat-file", "-e", `${revision}:${filePath}`]);
     return true;
@@ -87,7 +94,7 @@ function gitPathExists(repoRoot, revision, filePath) {
 function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
   let raw;
   try {
-    raw = gitCapture(repoRoot, [
+    raw = immutableFact(JSON.stringify(["viewer-renames", repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
       "--no-pager",
       "diff",
       "--name-status",
@@ -95,7 +102,7 @@ function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
       "--find-renames=50%",
       fromRevision,
       toRevision,
-    ]);
+    ]));
   } catch {
     return null;
   }
@@ -160,6 +167,52 @@ export function viewerSnapshot(repoRoot) {
   return {
     revision: hash.digest("hex"),
     awaitingAgentReplies,
+  };
+}
+
+/** Stat-based invalidation plus a periodic content scan for missed/coarse timestamp changes. */
+export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (file) => fs.readFileSync(file, "utf8") } = {}) {
+  let documents = new Map();
+  let previous = null;
+  let lastScan = -Infinity;
+  return (force = false) => {
+    const nextDocuments = new Map(documents);
+    const scan = force || now() - lastScan >= 10_000;
+    const seen = new Set<string>();
+    let changed = !previous;
+    const read = (file) => {
+      const stat = fs.statSync(file, { bigint: true });
+      const stamp = `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      const cached = documents.get(file);
+      seen.add(file);
+      if (scan || !cached || cached.stamp !== stamp) {
+        const text = readFile(file);
+        if (!cached || cached.text !== text) changed = true;
+        nextDocuments.set(file, { stamp, text, value: JSON.parse(text) });
+      }
+      return nextDocuments.get(file).value;
+    };
+    const semantic = path.join(repoRoot, ".semantic-review");
+    const feedback = path.join(repoRoot, ".semantic-review-feedback");
+    read(path.join(semantic, "manifest.json"));
+    for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
+    let awaitingAgentReplies = 0;
+    if (fs.existsSync(path.join(feedback, "manifest.json"))) {
+      const manifest = read(path.join(feedback, "manifest.json"));
+      for (const id of manifest.threads || []) {
+        const thread = read(path.join(feedback, "threads", `${id}.json`));
+        if (thread.status === "open" && thread.comments?.at(-1)?.author !== "agent") awaitingAgentReplies++;
+      }
+    }
+    for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
+    if (changed) {
+      const hash = createHash("sha256");
+      for (const file of [...seen].sort()) hash.update(path.relative(repoRoot, file)).update("\0").update(nextDocuments.get(file).text).update("\0");
+      previous = { revision: hash.digest("hex"), awaitingAgentReplies };
+    }
+    documents = nextDocuments;
+    if (scan) lastScan = now();
+    return previous;
   };
 }
 
@@ -459,7 +512,7 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
     stage.change.baseRevision,
     stage.change.headRevision,
   ];
-  const full = captureGit(repoRoot, args(100000));
+  const full = captureGit(repoRoot, args(3));
   const selector = captureGit(repoRoot, args(0));
   const expectedPaths = stage.change.files.map((file) => file.path);
   const fullByPath = indexPatchSections(full, expectedPaths);
@@ -474,6 +527,87 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
       ),
     ]),
   );
+}
+
+async function* gitLines(repoRoot, args) {
+  const child = spawn("git", args, { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-8192); });
+  const completion = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  // Observe startup errors even while readline is waiting for stdout.
+  completion.catch(() => {});
+  const reader = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  let completed = false;
+  try {
+    for await (const line of reader) yield line;
+    const code = await completion;
+    completed = true;
+    if (code !== 0) throw new Error(`Git diff failed: ${stderr.trim()}`);
+  } finally {
+    reader.close();
+    if (!completed) child.kill();
+    await completion.catch(() => {});
+  }
+}
+
+// Stream one page rather than buffering unrelated files or a full large patch.
+async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetSide = null, targetLine = null) {
+  const paths = [...new Set([file.previousPath, file.path].filter(Boolean))];
+  const args = (context) => ["-c", "core.quotePath=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames=50%", `-U${context}`,
+    stage.change.baseRevision, stage.change.headRevision, "--", ...paths];
+  const shapes = [];
+  const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+  let selected = false, previousPath = "";
+  const selectSection = (line) => {
+    if (line.startsWith("diff --git ")) { selected = false; previousPath = ""; }
+    else if (line.startsWith("--- ")) previousPath = decodePatchPath(line.slice(4));
+    else if (line.startsWith("+++ ")) selected = (decodePatchPath(line.slice(4)) || previousPath) === file.path;
+  };
+  let selectingHeader = true;
+  for await (const line of gitLines(repoRoot, args(0))) {
+    if (line.startsWith("diff --git ")) selectingHeader = true;
+    if (selectingHeader) selectSection(line);
+    if (line.startsWith("@@")) selectingHeader = false;
+    if (!selected) continue;
+    const match = header.exec(line);
+    if (match) shapes.push({ old: +match[1], oldCount: +(match[2] ?? 1), new: +match[3], newCount: +(match[4] ?? 1) });
+  }
+  const lines = [];
+  let foundTarget = !targetSide;
+  let oldNo = 0, newNo = 0, row = 0, started = false, more = false;
+  let binary = Boolean(stats?.binary);
+  for await (const line of gitLines(repoRoot, args(mode === "full" ? 2147483647 : 3))) {
+    if (line.startsWith("diff --git ")) started = false;
+    // Once inside a hunk, +++/--- can be actual source lines.
+    if (!started) selectSection(line);
+    if (!selected) continue;
+    const match = header.exec(line);
+    if (match) { oldNo = +match[1]; newNo = +match[3]; started = true; continue; }
+    if (line.startsWith("Binary files")) binary = true;
+    if (!started || !["+", "-", " "].includes(line[0])) continue;
+    if (targetSide && !foundTarget && row > 0 && row % MAX_ROWS === 0) { lines.length = 0; offset = row; }
+    if (targetSide && !foundTarget) {
+      foundTarget = targetSide === "new" ? line[0] !== "-" && newNo === targetLine : line[0] !== "+" && oldNo === targetLine;
+    }
+    if (row++ < offset) {
+      if (line[0] !== "+") oldNo++;
+      if (line[0] !== "-") newNo++;
+      continue;
+    }
+    if (lines.length === MAX_ROWS) { more = true; break; }
+    const text = line.slice(1);
+    if (line[0] === "+" || line[0] === "-") {
+      const side = line[0] === "+" ? "new" : "old";
+      const number = side === "new" ? newNo++ : oldNo++;
+      const hunk = shapes.findIndex((shape) => number >= shape[side] && number < shape[side] + shape[`${side}Count`]);
+      lines.push(side === "new" ? { t: "add", n: number, s: text, h: hunk + 1 } : { t: "del", o: number, s: text, h: hunk + 1 });
+    } else lines.push({ t: "ctx", o: oldNo++, n: newNo++, s: text });
+  }
+  return { lines, additions: stats?.additions ?? 0, deletions: stats?.deletions ?? 0, binary,
+    truncated: false, nextOffset: more ? offset + lines.length : null, offset, mode };
 }
 
 function buildInsights(stage) {
@@ -656,7 +790,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     })),
   }));
 
-  const feedback = buildFeedbackThreads(repoRoot, stages);
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages));
   return {
     implementationId: manifest.implementationId,
     title: manifest.title,
@@ -679,6 +813,7 @@ export function createViewerDataSource(
   const stageCache = new Map();
   let cachedRevision = "";
   let cachedScript = "";
+  const snapshotReader = createSnapshotReader(repoRoot);
 
   const stageRecord = (stage) => {
     const key = stageDiffKey(stage);
@@ -688,8 +823,10 @@ export function createViewerDataSource(
         stats: buildStageStats(repoRoot, stage, captureGit),
         diffs: null,
         stage,
+        pages: new Map(),
       };
       stageCache.set(key, record);
+      while (stageCache.size > 24) stageCache.delete(stageCache.keys().next().value);
     }
     return record;
   };
@@ -705,7 +842,7 @@ export function createViewerDataSource(
 
   return {
     implementationDataScript() {
-      const snapshot = viewerSnapshot(repoRoot);
+      const snapshot = snapshotReader();
       if (snapshot.revision !== cachedRevision) {
         const data = buildImplementationData(
           repoRoot,
@@ -718,7 +855,10 @@ export function createViewerDataSource(
       }
       return cachedScript;
     },
-    fileDiff(stageId, filePath, baseRevision, headRevision) {
+    snapshot: snapshotReader,
+    async fileDiff(stageId, filePath, baseRevision, headRevision, mode = "changes", offset = 0, targetSide = null, targetLine = null) {
+      if (!["changes", "full"].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
+      if (targetSide && (!["old", "new"].includes(targetSide) || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
       let record = stageCache.get(
         `${stageId}\0${baseRevision}\0${headRevision}`,
       );
@@ -736,19 +876,24 @@ export function createViewerDataSource(
       if (!stage.change.files.some((file) => file.path === filePath)) {
         throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
       }
-      if (!record.diffs) {
-        record.diffs = buildStageDiffs(
-          repoRoot,
-          stage,
-          record.stats,
-          captureGit,
-        );
+      const file = stage.change.files.find((file) => file.path === filePath);
+      const small = stage.change.files.length <= 40 && [...record.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
+      if (small && mode === "changes" && offset === 0 && !targetSide) {
+        try {
+          if (!record.diffs) record.diffs = buildStageDiffs(repoRoot, stage, record.stats, captureGit);
+          const diff = record.diffs.get(filePath);
+          if (diff) return { ...diff, truncated: false, nextOffset: diff.truncated ? diff.lines.length : null, mode };
+        } catch { /* An unusually wide patch uses the bounded streaming path. */ }
       }
-      const diff = record.diffs.get(filePath);
-      if (!diff) {
-        throw new Error(`diff for "${filePath}" was not generated`);
+      record.pages ??= new Map();
+      const key = JSON.stringify([filePath, mode, offset, targetSide, targetLine]);
+      if (!record.pages.has(key)) {
+        record.pages.set(key, pagedFileDiff(repoRoot, stage, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
+          .catch((error) => { record.pages.delete(key); throw error; }));
+        // Bound retained pages; in-flight consumers retain their own Promise.
+        while (record.pages.size > 32) record.pages.delete(record.pages.keys().next().value);
       }
-      return diff;
+      return record.pages.get(key);
     },
   };
 }
@@ -940,6 +1085,8 @@ export function buildFeedbackTargetData(repoRoot) {
       return {
         id: stage.id,
         title: stage.title,
+        baseRevision: stage.change.baseRevision,
+        headRevision: stage.change.headRevision,
         nodes: (stage.nodes || []).map((node) => ({
           id: node.id,
           title: humanizeId(node.id),
@@ -972,7 +1119,7 @@ function cliErrorMessage(error) {
 // partial or orphaned draft batch behind.
 export function planFeedbackThreads(notes, implementation) {
   const skipped: Array<{ ref: number; reason: string }> = [];
-  const planned: Array<{ ref: number; body: string; target: Record<string, any> }> =
+  const planned: Array<{ ref: number; body: string; target: Record<string, any>; clientId?: string }> =
     [];
   if (!Array.isArray(notes)) return { planned, skipped };
   notes.forEach((note, index) => {
@@ -989,11 +1136,17 @@ export function planFeedbackThreads(notes, implementation) {
     let target;
     try {
       target = mapNoteTarget(note, implementation);
+      if (note.kind === "line" && note.snapshot) {
+        const stage = implementation.stages.find((stage) => stage.id === target.stage);
+        if (!stage || stage.baseRevision !== note.snapshot.base || stage.headRevision !== note.snapshot.head) {
+          throw new Error("The stage changed since this line draft was written. Copy its text into a new note on the current diff before sending.");
+        }
+      }
     } catch (error) {
       skipped.push({ ref, reason: error.message });
       return;
     }
-    planned.push({ ref, body, target });
+    planned.push({ ref, body, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
   });
   return { planned, skipped };
 }
@@ -1016,7 +1169,9 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
   const batch = planned.map((thread, index) => {
-    const threadId = `${exportId}-t${String(index).padStart(3, "0")}`;
+    const threadId = thread.clientId
+      ? `viewer-${createHash("sha256").update(JSON.stringify([implementation.implementationId, thread.clientId, thread.target, thread.body])).digest("hex").slice(0, 32)}`
+      : `${exportId}-t${String(index).padStart(3, "0")}`;
     const commentId = `${threadId}-c000`;
     return {
       ref: thread.ref,
@@ -1029,41 +1184,14 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
       },
     };
   });
-  try {
-    runFeedbackCli(
-      feedbackCli,
-      repoRoot,
-      ["thread", "add-batch", "--input", "-"],
-      JSON.stringify({ threads: batch.map((entry) => entry.input) }),
-    );
-  } catch (error) {
-    const exported: Array<{ ref: number; threadId: string }> = [];
-    for (const entry of batch) {
-      try {
-        runFeedbackCli(
-          feedbackCli,
-          repoRoot,
-          ["thread", "add", "--input", "-"],
-          JSON.stringify(entry.input),
-        );
-        exported.push({ ref: entry.ref, threadId: entry.threadId });
-      } catch (threadError) {
-        skipped.push({
-          ref: entry.ref,
-          reason: cliErrorMessage(threadError),
-        });
-      }
-    }
-    if (exported.length === 0) {
-      return { ok: false, error: cliErrorMessage(error), skipped };
-    }
-    return { ok: true, exported, skipped };
-  }
-  return {
-    ok: true,
-    exported: batch.map(({ ref, threadId }) => ({ ref, threadId })),
-    skipped,
-  };
+  const result = JSON.parse(runFeedbackCli(
+    feedbackCli, repoRoot, ["thread", "add-batch", "--partial", "--input", "-"],
+    JSON.stringify({ threads: batch.map((entry) => entry.input) }),
+  ));
+  const exported = result.accepted.map(({ index }) => ({ ref: batch[index].ref, threadId: batch[index].threadId }));
+  for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
+  return { ok: exported.length > 0, exported, skipped, ...(exported.length ? {} : { error: "No notes could be exported." }) };
+
 }
 
 export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
@@ -1074,7 +1202,6 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
     return { ok: false, error: "No feedback replies to export." };
   }
   const skipped: Array<{ ref: string; reason: string }> = [];
-  const prefix = `reply-${Date.now().toString(36)}`;
   const batch = [];
   drafts.forEach((draft, index) => {
     const ref =
@@ -1090,13 +1217,14 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
+    const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body])).digest("hex").slice(0, 32)}`;
     batch.push({
       ref,
       threadId,
-      commentId: `${prefix}-${String(index).padStart(3, "0")}`,
+      commentId,
       input: {
         id: threadId,
-        "comment-id": `${prefix}-${String(index).padStart(3, "0")}`,
+        "comment-id": commentId,
         author: "user",
         body,
       },
@@ -1117,41 +1245,14 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
     };
   };
 
-  try {
-    runFeedbackCli(
-      feedbackCli,
-      repoRoot,
-      ["thread", "reply-batch", "--input", "-"],
-      JSON.stringify({ replies: batch.map((entry) => entry.input) }),
-    );
-    return {
-      ok: true,
-      replied: batch.map(resultFor),
-      skipped,
-    };
-  } catch (error) {
-    const replied = [];
-    for (const entry of batch) {
-      try {
-        runFeedbackCli(
-          feedbackCli,
-          repoRoot,
-          ["thread", "reply", "--input", "-"],
-          JSON.stringify(entry.input),
-        );
-        replied.push(resultFor(entry));
-      } catch (replyError) {
-        skipped.push({
-          ref: entry.ref,
-          reason: cliErrorMessage(replyError),
-        });
-      }
-    }
-    if (replied.length === 0) {
-      return { ok: false, error: cliErrorMessage(error), skipped };
-    }
-    return { ok: true, replied, skipped };
-  }
+  const result = JSON.parse(runFeedbackCli(
+    feedbackCli, repoRoot, ["thread", "reply-batch", "--partial", "--input", "-"],
+    JSON.stringify({ replies: batch.map((entry) => entry.input) }),
+  ));
+  const replied = result.accepted.map(({ index }) => resultFor(batch[index]));
+  for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
+  return { ok: replied.length > 0, replied, skipped, ...(replied.length ? {} : { error: "No replies could be exported." }) };
+
 }
 
 // Reject cross-origin drivers. A local page served by this server has no
@@ -1200,10 +1301,10 @@ async function handleFeedbackExport(request, response, context) {
       });
       return;
     }
-    const result = exportFeedback({ ...context, implementation }, payload.notes);
+    const result = await context.jobs.call("exportFeedback", [payload.implementationId, payload.notes]);
     sendJson(response, result.ok ? 200 : 422, {
       ...result,
-      ...viewerSnapshot(context.repoRoot),
+      ...await context.jobs.call("snapshot", [true]),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
@@ -1246,10 +1347,10 @@ async function handleFeedbackReplyBatch(request, response, context) {
       });
       return;
     }
-    const result = exportFeedbackReplies(context, payload.replies);
+    const result = await context.jobs.call("exportFeedbackReplies", [payload.implementationId, payload.replies]);
     sendJson(response, result.ok ? 200 : 422, {
       ...result,
-      ...viewerSnapshot(context.repoRoot),
+      ...await context.jobs.call("snapshot", [true]),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
@@ -1326,17 +1427,17 @@ async function handleThreadAction(request, response, context, action) {
           return;
         }
         const commentId = `reply-${Date.now().toString(36)}`;
-        runFeedbackCli(context.feedbackCli, context.repoRoot, [
+        await context.jobs.call("feedbackCli", [context.implementationId, [
           "thread", "reply",
           "--id", threadId,
           "--comment-id", commentId,
           "--author", "user",
           "--body", body,
-        ]);
+        ]]);
       } else if (action === "resolve") {
-        runFeedbackCli(context.feedbackCli, context.repoRoot, ["thread", "resolve", "--id", threadId]);
+        await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "resolve", "--id", threadId]]);
       } else if (action === "reopen") {
-        runFeedbackCli(context.feedbackCli, context.repoRoot, ["thread", "reopen", "--id", threadId]);
+        await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "reopen", "--id", threadId]]);
       }
     } catch (error) {
       sendJson(response, 422, { ok: false, error: cliErrorMessage(error) });
@@ -1353,7 +1454,7 @@ async function handleThreadAction(request, response, context, action) {
       status: thread.status,
       resolvedAt: thread.resolvedAt || null,
       comment: action === "reply" ? last : undefined,
-      ...viewerSnapshot(context.repoRoot),
+      ...await context.jobs.call("snapshot", [true]),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
@@ -1367,9 +1468,10 @@ function serveViewer({
   feedbackCli,
   implementationId,
   dataSource,
+  viewerVersion,
 }) {
   let server = null;
-  const requestHandler = (request, response) => {
+  const requestHandler = async (request, response) => {
     const url = new URL(request.url, `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
 
@@ -1380,6 +1482,8 @@ function serveViewer({
         implementationId,
         repositoryRoot: repoRoot,
         processId: process.pid,
+        viewerVersion,
+        healthy: dataSource.healthy,
       });
       return;
     }
@@ -1388,7 +1492,7 @@ function serveViewer({
       try {
         sendJson(response, 200, {
           ok: true,
-          ...viewerSnapshot(repoRoot),
+          ...await dataSource.call("snapshot", []),
         });
       } catch (error) {
         sendJson(response, 500, {
@@ -1414,12 +1518,9 @@ function serveViewer({
       try {
         sendJson(response, 200, {
           ok: true,
-          ...dataSource.fileDiff(
-            stageId,
-            filePath,
-            baseRevision,
-            headRevision,
-          ),
+          ...await dataSource.call("fileDiff", [stageId, filePath, baseRevision, headRevision,
+            url.searchParams.get("mode") || "changes", Number(url.searchParams.get("offset") || 0),
+            url.searchParams.get("side"), url.searchParams.has("line") ? Number(url.searchParams.get("line")) : null]),
         });
       } catch (error) {
         sendJson(response, 422, {
@@ -1454,6 +1555,7 @@ function serveViewer({
       handleFeedbackExport(request, response, {
         repoRoot,
         feedbackCli,
+        jobs: dataSource,
         port,
       });
       return;
@@ -1463,6 +1565,7 @@ function serveViewer({
       handleFeedbackReplyBatch(request, response, {
         repoRoot,
         feedbackCli,
+        jobs: dataSource,
         port,
         implementationId,
       });
@@ -1477,15 +1580,24 @@ function serveViewer({
       handleThreadAction(
         request,
         response,
-        { repoRoot, feedbackCli, port, implementationId },
+        { repoRoot, feedbackCli, port, implementationId, jobs: dataSource },
         action,
       );
       return;
     }
 
+    if (request.method === "GET" && pathname === "/api/implementation") {
+      try {
+        const script = await dataSource.call("implementationDataScript", []);
+        const payload = JSON.parse(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
+        sendJson(response, 200, { ok: true, implementation: payload });
+      } catch (error) { sendJson(response, 500, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (pathname === "/implementation-data.js") {
       try {
-        const body = Buffer.from(dataSource.implementationDataScript(), "utf8");
+        const body = Buffer.from(await dataSource.call("implementationDataScript", []), "utf8");
         response.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
           "content-length": body.length,
@@ -1534,6 +1646,67 @@ function serveViewer({
   });
 }
 
+function createViewerWorker(repoRoot) {
+  const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot } });
+  const pending = new Map();
+  const reads = new Map();
+  let sequence = 0;
+  let stopped = false;
+  const rejectAll = (error) => {
+    stopped = true;
+    for (const { reject } of pending.values()) reject(error);
+    pending.clear(); reads.clear();
+  };
+  worker.on("error", rejectAll);
+  worker.on("exit", () => rejectAll(new Error("Viewer worker stopped; reopen the viewer.")));
+  worker.on("message", ({ id, result, error }) => {
+    const request = pending.get(id);
+    if (!request) return;
+    pending.delete(id);
+    if (error) request.reject(new Error(error)); else request.resolve(result);
+  });
+  return {
+    get healthy() { return !stopped; },
+    call(method, args) {
+      if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
+      const key = ["snapshot", "fileDiff", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
+      if (key && reads.has(key)) return reads.get(key);
+      if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
+      const id = ++sequence;
+      const promise = new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        worker.postMessage({ id, method, args });
+      });
+      if (key) {
+        reads.set(key, promise);
+        promise.finally(() => reads.delete(key)).catch(() => {});
+      }
+      return promise;
+    },
+    close() { return worker.terminate(); },
+  };
+}
+
+if (!isMainThread && workerData?.repoRoot) {
+  const root = workerData.repoRoot;
+  const source = createViewerDataSource(root);
+  const feedbackCli = locateFeedbackCli();
+  parentPort.on("message", async ({ id, method, args }) => {
+    try {
+      let result;
+      if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      else {
+        if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
+        if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root) }, args[1]);
+        else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli }, args[1]);
+        else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, root, args[1]);
+        else throw new Error("Unknown viewer operation.");
+      }
+      parentPort.postMessage({ id, result });
+    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error) }); }
+  });
+}
+
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function openBrowser(url) {
@@ -1579,12 +1752,20 @@ function notifyLauncher(message) {
   }
 }
 
+let startupWorker: ReturnType<typeof createViewerWorker> | undefined;
+
 async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
   const implementation = implementationSummary(repoRoot);
-  const dataSource = createViewerDataSource(repoRoot);
+  const dataSource = createViewerWorker(repoRoot);
+  startupWorker = dataSource;
   const feedbackCli = locateFeedbackCli();
+  const fingerprint = createHash("sha256");
+  for (const file of [fileURLToPath(import.meta.url), feedbackCli, ...["app.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))].filter(Boolean)) {
+    fingerprint.update(fs.readFileSync(file));
+  }
+  const viewerVersion = fingerprint.digest("hex");
 
   const port = viewerPort();
   let server = null;
@@ -1596,16 +1777,28 @@ async function main() {
       feedbackCli,
       implementationId: implementation.implementationId,
       dataSource,
+      viewerVersion,
     });
   } catch (error) {
-    if (!error || error.code !== "EADDRINUSE") throw error;
+    if (!error || error.code !== "EADDRINUSE") { await dataSource.close(); throw error; }
     // The port is taken. Reclaim it only if our own viewer is holding it;
     // never kill an unrelated app that happens to use this port.
     const occupant = await probeViewer(port);
     if (!occupant) {
+      await dataSource.close();
       fail(
         `Port ${port} is in use by another application. Stop it (or free the port) and try again.`,
       );
+    }
+    if (occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.implementationId === implementation.implementationId &&
+      occupant.repositoryRoot && fs.realpathSync(occupant.repositoryRoot) === fs.realpathSync(repoRoot)) {
+      await dataSource.close();
+      const url = `http://${VIEWER_HOST}:${port}/`;
+      notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, processId: occupant.processId,
+        implementation, feedbackEnabled: Boolean(feedbackCli) });
+      console.log(`Reusing semantic review viewer: ${url}`);
+      openBrowser(url);
+      return;
     }
     console.log(`A semantic review viewer is already running on port ${port}; restarting it…`);
     await requestViewerShutdown(port);
@@ -1619,12 +1812,14 @@ async function main() {
           feedbackCli,
           implementationId: implementation.implementationId,
           dataSource,
+          viewerVersion,
         });
       } catch (retryError) {
         if (!retryError || retryError.code !== "EADDRINUSE") throw retryError;
       }
     }
     if (!server) {
+      await dataSource.close();
       fail(`Port ${port} is still busy after asking the existing viewer to stop.`);
     }
   }
@@ -1654,8 +1849,9 @@ async function main() {
 const isDirectRun =
   path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
 
-if (isDirectRun) {
-  main().catch((error) => {
+if (isDirectRun && isMainThread) {
+  main().catch(async (error) => {
+    await startupWorker?.close();
     notifyLauncher({ type: "error", message: error.message });
     if (process.exitCode === undefined || process.exitCode === 0) {
       console.error(`semantic-view: ${error.message}`);

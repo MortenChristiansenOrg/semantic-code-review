@@ -22,6 +22,9 @@ import {
 import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { readJson } from "./shared/json.js";
+import { withValidationContext } from "./shared/validation-context.js";
+import { withCheckedFeedback } from "./review-feedback.js";
+import { implementationWorkflow } from "./semantic-implementation.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -212,8 +215,9 @@ function resolveSingle(
   options: Options,
   command: string,
 ): ArtifactCandidate {
-  const selectionOptions: Options = new Map(options);
-  selectionOptions.delete("publish");
+  const selectionOptions: Options = new Map(
+    [...options].filter(([name]) => ["project", "implementation-id", "json"].includes(name)),
+  );
   assertKnownOptions(
     options,
     commandOptionNames(semanticFlowApi, command),
@@ -294,37 +298,24 @@ function executeCaptureStreams(
 }
 
 function validate(options: Options): void {
-  const candidate = resolveSingle(options, "validate");
-  const publish = flag(options, "publish");
-  let failed = false;
+  runWorkflow(options, "validate");
+}
 
-  console.log(`Artifact: ${candidate.worktree}`);
-  failed =
-    execute(
-      process.execPath,
-      [
-        semanticImplementationScript,
-        "validate",
-        ...(publish ? ["--publish"] : []),
-      ],
-      candidate.worktree,
-    ) !== 0;
-
-  if (candidate.feedbackExists) {
-    failed =
-      execute(
-        process.execPath,
-        [
-          reviewFeedbackScript,
-          "validate",
-          ...(publish ? ["--require-resolved"] : []),
-        ],
-        candidate.worktree,
-      ) !== 0 || failed;
-  }
-
-  if (failed) {
-    fail("Semantic flow validation failed.");
+function runWorkflow(options: Options, mode: "validate" | "prepare" | "archive"): void {
+  const candidate = resolveSingle(options, mode);
+  const result = withValidationContext(() => withCheckedFeedback(
+    candidate.worktree,
+    mode !== "validate" || flag(options, "publish"),
+    () => implementationWorkflow(candidate.worktree, mode, options),
+  ));
+  if (flag(options, "json")) console.log(JSON.stringify(result));
+  else {
+    console.log(`Artifact: ${candidate.worktree}`);
+    console.log(`Semantic flow ${mode} passed: ${result.stages.length} finalized stage(s), ${result.workingStages.length} working stage(s).`);
+    if (mode === "prepare" || flag(options, "stack")) {
+      for (const stage of result.stages) console.log(`  ${stage.branch} -> ${stage.baseBranch} (${stage.headRevision})`);
+      console.log(`Final cumulative head: ${result.finalHeadRevision}`);
+    }
   }
 }
 
@@ -947,6 +938,8 @@ function requiredSkillFiles(root: string): string[] {
     "SKILL.md",
     "VERSION",
     path.join("scripts", "API.d.ts"),
+    path.join("scripts", "API.full.d.ts"),
+    ...["shared", "implementation", "stages", "history", "feedback", "workflow"].map((name) => path.join("scripts", "api", `${name}.d.ts`)),
     path.join("scripts", "semantic-implementation.mjs"),
     path.join("scripts", "review-feedback.mjs"),
     path.join("scripts", "semantic-view.mjs"),
@@ -1151,6 +1144,10 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
   }
   if (command === "validate") {
     validate(options);
+    return;
+  }
+  if (command === "prepare" || command === "archive") {
+    runWorkflow(options, command);
     return;
   }
   if (command === "status") {

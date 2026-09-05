@@ -180,7 +180,7 @@ test("feedback export target data omits diff reconstruction", (t) => {
   assert.equal("files" in targetData.stages[0], false);
 });
 
-test("viewer data preserves zero-context hunk ownership", (t) => {
+test("viewer data preserves zero-context hunk ownership", async (t) => {
   const repository = createRepository(t);
   repository.write(
     "service.txt",
@@ -232,7 +232,7 @@ test("viewer data preserves zero-context hunk ownership", (t) => {
   );
   const stage = data.stages[0];
   const file = data.stages[0].files[0];
-  const diff = dataSource.fileDiff(
+  const diff = await dataSource.fileDiff(
     "implementation",
     "service.txt",
     stage.baseRevision,
@@ -255,7 +255,7 @@ test("viewer data preserves zero-context hunk ownership", (t) => {
   );
 });
 
-test("viewer data caches metadata and batches lazy diffs by stage", (t) => {
+test("viewer data caches metadata and batches lazy diffs by stage", async (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository);
@@ -288,28 +288,28 @@ test("viewer data caches metadata and batches lazy diffs by stage", (t) => {
   assert.equal(calls.filter((args) => args.includes("diff")).length, 1);
 
   assert.equal(
-    dataSource.fileDiff(
+    (await dataSource.fileDiff(
       "implementation",
       "first.txt",
       stage.baseRevision,
       stage.headRevision,
-    ).additions,
+    )).additions,
     1,
   );
   assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
   assert.equal(
-    dataSource.fileDiff(
+    (await dataSource.fileDiff(
       "implementation",
       "second.txt",
       stage.baseRevision,
       stage.headRevision,
-    ).additions,
+    )).additions,
     1,
   );
   assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
 });
 
-test("lazy stage diff preserves renamed file content changes", (t) => {
+test("lazy stage diff preserves renamed file content changes", async (t) => {
   const repository = createRepository(t);
   repository.write("old name.txt", "stable\nbefore\n");
   repository.git("add", ".");
@@ -342,7 +342,7 @@ test("lazy stage diff preserves renamed file content changes", (t) => {
   );
 
   const stage = data.stages[0];
-  const diff = dataSource.fileDiff(
+  const diff = await dataSource.fileDiff(
     "implementation",
     "new name.txt",
     stage.baseRevision,
@@ -399,7 +399,7 @@ test("file revisions ignore unrelated changes in the same stage", (t) => {
   );
 });
 
-test("lazy diff stays bound to the metadata stage revision", (t) => {
+test("lazy diff stays bound to the metadata stage revision", async (t) => {
   const { repository } = createImplementationWithStages(t);
   const dataSource = createViewerDataSource(repository.root);
   const initial = JSON.parse(
@@ -416,7 +416,7 @@ test("lazy diff stays bound to the metadata stage revision", (t) => {
   currentStage.change.headRevision = repository.git("rev-parse", "HEAD");
   repository.write(stagePath, `${JSON.stringify(currentStage, null, 2)}\n`);
 
-  const diff = dataSource.fileDiff(
+  const diff = await dataSource.fileDiff(
     "implementation",
     "implementation.txt",
     initialStage.baseRevision,
@@ -428,7 +428,7 @@ test("lazy diff stays bound to the metadata stage revision", (t) => {
   );
 });
 
-test("feedback export falls back per note when one batch item is stale", (t) => {
+test("feedback export commits the valid subset when one batch item is stale", (t) => {
   const { repository } = createImplementationWithStages(t);
   const result = exportFeedback(
     {
@@ -597,7 +597,7 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
   );
 });
 
-test("viewer client polls for completed feedback and reloads", () => {
+test("viewer client refreshes data without reloading the page", () => {
   const app = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
     "utf8",
@@ -609,13 +609,14 @@ test("viewer client polls for completed feedback and reloads", () => {
   assert.match(app, /fetch\("\/api\/revision"/);
   assert.match(app, /fetch\(`\/api\/diff\?\$\{query\}`/);
   assert.match(app, /Loading diff…/);
-  assert.match(app, /pendingDiffs\.forEach\(ensureFileDiff\)/);
+  assert.match(app, /pendingDiffs\.forEach/);
   assert.match(app, /fetch\("\/api\/feedback\/reply-batch"/);
-  assert.match(app, /observedAwaitingAgentReplies > 0 && awaiting === 0/);
-  assert.match(app, /Boolean\(compose && compose\.dirty\)/);
-  assert.match(app, /window\.confirm\(/);
-  assert.doesNotMatch(app, /stableSince/);
-  assert.match(app, /window\.location\.reload\(\)/);
+
+
+
+  assert.match(app, /fetch\("\/api\/implementation"/);
+  assert.doesNotMatch(app, /window\.location\.reload/);
+
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
   assert.match(app, /Notes <b>\$\{activeNoteCount\(\)\}<\/b>/);
   assert.match(app, /base: entry\.stage\.baseRevision/);

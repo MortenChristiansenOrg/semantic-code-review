@@ -5,7 +5,7 @@ edited the final stage worktree and wants those edits placed in the responsible
 stages.
 
 Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
-`../scripts/API.d.ts`, and the selected operating-system guide before mutation.
+`../scripts/api/stages.d.ts`, and the selected operating-system guide before mutation.
 
 ## Locate and assess
 
@@ -117,8 +117,7 @@ stop and ask the user. Leave the recovery branch intact.
 3. Run:
 
    ```text
-   <semantic-flow> validate --publish --project <artifact-worktree-path>
-   <semantic-implementation> validate-stack
+   <semantic-flow> validate --publish --stack --project <artifact-worktree-path>
    ```
 
 4. Check out the final stage branch at its refreshed recorded head.

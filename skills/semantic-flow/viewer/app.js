@@ -14,33 +14,72 @@
     observedAwaitingAgentReplies = Number(snapshot.awaitingAgentReplies) || 0;
   }
 
+  let polling = false;
+  let refreshNotice = "";
+  const draftSnapshots = new WeakMap();
+
   async function pollViewerRevision() {
+    if (polling || document.hidden) return;
+    polling = true;
     try {
       const response = await fetch("/api/revision", { cache: "no-store" });
       if (!response.ok) return;
       const snapshot = await response.json();
-      if (!snapshot.ok || typeof snapshot.revision !== "string") return;
-      const awaiting = Number(snapshot.awaitingAgentReplies) || 0;
-      const feedbackCompleted =
-        observedAwaitingAgentReplies > 0 && awaiting === 0;
-      if (feedbackCompleted) {
-        const hasUnsavedNote =
-          Boolean(compose && compose.dirty) ||
-          Boolean(replyTo && replyDirty);
-        if (
-          !hasUnsavedNote ||
-          window.confirm(
-            "Feedback is ready. Reload now and lose your unsaved note? Select Cancel to keep editing and reload manually.",
-          )
-        ) {
-          window.location.reload();
-          return;
-        }
-      }
-      observedAwaitingAgentReplies = awaiting;
+      if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
+      // Keep selected review text stable and let an in-flight send finish first.
+      const editing = document.activeElement?.matches("input, textarea");
+      if ((!editing && window.getSelection()?.toString()) || exportState.phase === "working") return;
+      const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
+      if (!nextResponse.ok) return;
+      const payload = await nextResponse.json();
+      if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
+      adoptImplementation(payload.implementation);
+      refreshNotice = "Review updated";
+      render();
     } catch {
-      // The viewer may be restarting. The next poll will retry.
-    }
+      // External artifact writes can be transient; retry without replacing good data.
+    } finally { polling = false; }
+  }
+
+  function noteStage(note) {
+    if (!note) return null;
+    if (note.kind === "stage") return stageById.get(note.id);
+    if (note.kind === "node") return stageById.get(note.stageId);
+    if (note.kind === "file") return fileById.get(note.id)?.stage;
+    if (note.kind === "line") return stageById.get(parseLineId(note.id)?.stageId);
+    return null;
+  }
+
+  function rememberDraftSnapshot(note) {
+    const stage = noteStage(note);
+    if (stage && !draftSnapshots.has(note)) draftSnapshots.set(note, { base: stage.baseRevision, head: stage.headRevision });
+  }
+
+  function adoptImplementation(next) {
+    state.comments.filter((note) => !note.exported).forEach(rememberDraftSnapshot);
+    if (compose) rememberDraftSnapshot(compose);
+    const previousFiles = new Map(fileById);
+    Object.assign(data, next);
+    nodeTitleById.clear(); stageById.clear(); stageNumberById.clear();
+    fileById.clear(); fileByPreviousId.clear(); flatFiles.length = 0;
+    data.stages.forEach((stage, index) => {
+      stageById.set(stage.id, stage); stageNumberById.set(stage.id, index + 1);
+      stage.nodes.forEach((node) => nodeTitleById.set(node.id, node.title));
+      stage.files.forEach((file) => {
+        const id = fileKey(stage.id, file.path);
+        const previous = previousFiles.get(id);
+        if (previous && previous.stage.baseRevision === stage.baseRevision && previous.stage.headRevision === stage.headRevision && Array.isArray(previous.file.lines)) {
+          for (const key of ["lines", "_diffMode", "nextOffset", "_pageOffset"]) file[key] = previous.file[key];
+        }
+        const entry = { id, stage, file };
+        flatFiles.push(entry); fileById.set(id, entry);
+        if (file.previousPath) fileByPreviousId.set(fileKey(stage.id, file.previousPath), entry);
+      });
+    });
+    requirements.splice(0, requirements.length, ...(data.requirements || []));
+    allAcceptance.splice(0, allAcceptance.length, ...requirements.flatMap((r) => (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` }))));
+    artifactThreads.splice(0, artifactThreads.length, ...(data.feedback || []));
+    observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
   }
 
   const INSIGHT = {
@@ -89,8 +128,14 @@
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
   const diffRequests = new Map();
-  async function ensureFileDiff(entry) {
-    if (!entry || Array.isArray(entry.file.lines) || diffRequests.has(entry.id)) return;
+  async function ensureFileDiff(entry, offset = 0, force = false, target = null) {
+    if (!entry) return;
+    if (diffRequests.has(entry.id)) {
+      if (target || force) entry.file._queuedDiff = { offset, force, target };
+      return;
+    }
+    const mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
+    if (!force && !offset && Array.isArray(entry.file.lines) && entry.file._diffMode === mode) return;
     entry.file._diffLoading = true;
     delete entry.file._diffError;
     const query = new URLSearchParams({
@@ -98,7 +143,9 @@
       path: entry.file.path,
       base: entry.stage.baseRevision,
       head: entry.stage.headRevision,
+      mode, offset: String(offset),
     });
+    if (target) { query.set("side", target.side); query.set("line", String(target.line)); }
     const request = fetch(`/api/diff?${query}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
@@ -108,7 +155,11 @@
         if (!Array.isArray(payload.lines)) {
           throw new Error("Diff response did not include lines.");
         }
+        if ((fileViewMode(entry.id) === "full" ? "full" : "changes") !== mode) return;
         entry.file.lines = payload.lines;
+        entry.file._diffMode = mode;
+        entry.file._pageOffset = payload.offset ?? offset;
+        entry.file.nextOffset = payload.nextOffset;
         entry.file.additions = Number(payload.additions) || 0;
         entry.file.deletions = Number(payload.deletions) || 0;
         entry.file.binary = Boolean(payload.binary);
@@ -121,6 +172,9 @@
       .finally(() => {
         entry.file._diffLoading = false;
         diffRequests.delete(entry.id);
+        const queued = entry.file._queuedDiff;
+        delete entry.file._queuedDiff;
+        if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target);
         render();
       });
     diffRequests.set(entry.id, request);
@@ -242,6 +296,7 @@
     if (!pendingLazyJump) return;
     const pending = pendingLazyJump;
     const entry = fileById.get(pending.fileId);
+    if (entry?.file._diffLoading) return;
     if (
       entry &&
       !Array.isArray(entry.file.lines) &&
@@ -709,7 +764,7 @@
       if (!entry) return null;
       // A later stage head can remove or move the saved line. Only offer an
       // exact jump while that side and line still exist in the rendered diff.
-      if (entry.file.path === tgt.path && !Array.isArray(entry.file.lines))
+      if (entry.file.path === tgt.path && !t.anchorStale)
         return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
       if (entry.file.path === tgt.path && fileHasLine(entry.file, tgt.side, tgt.line))
         return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
@@ -1041,7 +1096,18 @@
   function langFor(path) {
     return String(path || "").split(".").pop().toLowerCase();
   }
+  const highlightedLines = new Map();
   function highlightCode(src, lang) {
+    const key = `${lang}\0${src}`;
+    if (highlightedLines.has(key)) return highlightedLines.get(key);
+    const result = renderHighlightedCode(src, lang);
+    if (key.length < 20000) {
+      highlightedLines.set(key, result);
+      while (highlightedLines.size > 2000) highlightedLines.delete(highlightedLines.keys().next().value);
+    }
+    return result;
+  }
+  function renderHighlightedCode(src, lang) {
     const s = String(src);
     const n = s.length;
     const hash = HL_HASH.has(lang);
@@ -1183,7 +1249,7 @@
       out.push(`<div class="drow d-oldfile"><span class="ln"></span><span class="ln"></span><i>－</i><code>Deleted file — previous contents</code></div>`);
       lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "old")));
     } else if (mode === "full") {
-      lines.forEach((r) => { if (!(hideDel && r.t === "del")) out.push(drowHtml(r, lang, ctx)); });
+      lines.forEach((r) => out.push(drowHtml(r, lang, ctx)));
     } else {
       const CTX = 3;
       const n = lines.length;
@@ -1195,12 +1261,16 @@
       }
       let i = 0;
       while (i < n) {
-        if (keep[i]) { if (!(hideDel && lines[i].t === "del")) out.push(drowHtml(lines[i], lang, ctx)); i++; }
+        if (keep[i]) { out.push(drowHtml(lines[i], lang, ctx)); i++; }
         else { let j = i; while (j < n && !keep[j]) j++; out.push(gapHtml(j - i)); i = j; }
       }
     }
-    if (file.truncated) out.push(`<div class="drow d-cut"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ diff truncated for this large generated file ⋯</code></div>`);
-    return `<div class="diff-scroll"><div class="diff-grid">${out.join("")}</div></div>`;
+    if (file.nextOffset != null || file._pageOffset > 0) out.push(`<div class="diff-pages">
+      <button type="button" data-action="diff-page" data-id="${esc(fileKey(ctx.stageId, file.path))}" data-offset="${Math.max(0, (file._pageOffset || 0) - 900)}" ${file._pageOffset > 0 ? "" : "disabled"}>Previous page</button>
+      <span>Rows ${(file._pageOffset || 0) + 1}–${(file._pageOffset || 0) + lines.length}</span>
+      <button type="button" data-action="diff-page" data-id="${esc(fileKey(ctx.stageId, file.path))}" data-offset="${file.nextOffset || 0}" ${file.nextOffset == null ? "disabled" : ""}>Next page</button>
+    </div>`);
+    return `<div class="diff-scroll${hideDel ? " hide-removed" : ""}"><div class="diff-grid">${out.join("")}</div></div>`;
   }
   function viewToggle(id) {
     const mode = fileViewMode(id);
@@ -1591,7 +1661,7 @@
           ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
         </button>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies reload this viewer automatically."}</p>`}
+          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically."}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -1628,7 +1698,7 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
-    app.innerHTML = `${topbar()}
+    app.innerHTML = `${topbar()}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
@@ -1829,11 +1899,20 @@
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "set-view") {
       state.fileView[btn.dataset.id] = btn.dataset.mode;
+      const entry = fileById.get(btn.dataset.id);
+      if (entry) { delete entry.file.lines; delete entry.file._diffError; }
       persist(); render();
+    } else if (a === "diff-page") {
+      ensureFileDiff(fileById.get(btn.dataset.id), Number(btn.dataset.offset), true);
     } else if (a === "toggle-hide-removed") {
       const id = btn.dataset.id;
       state.hideDeleted[id] = !state.hideDeleted[id];
-      persist(); render();
+      persist();
+      for (const toggle of app.querySelectorAll(`[data-action="toggle-hide-removed"][data-id="${cssEsc(id)}"]`)) {
+        toggle.classList.toggle("is-on", Boolean(state.hideDeleted[id]));
+        toggle.setAttribute("aria-pressed", String(Boolean(state.hideDeleted[id])));
+        toggle.closest(".diff-panel")?.querySelector(".diff-scroll")?.classList.toggle("hide-removed", Boolean(state.hideDeleted[id]));
+      }
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
@@ -1914,6 +1993,7 @@
       const p = parseLineId(id);
       const entry = p && fileById.get(fileKey(p.stageId, p.path));
       if (entry) {
+        if (p.side === "old") state.hideDeleted[entry.id] = false;
         lineEntry = entry;
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || [])[0];
@@ -1938,9 +2018,12 @@
     }
     persist();
     const waitForLazyLine =
-      kind === "line" && lineEntry && !Array.isArray(lineEntry.file.lines);
+      kind === "line" && lineEntry && !fileHasLine(lineEntry.file, parseLineId(id).side, parseLineId(id).line);
     if (waitForLazyLine) {
       pendingLazyJump = { id, fileId: lineEntry.id, membership: lineMembership };
+      state.fileView[lineEntry.id] = "full";
+      delete lineEntry.file.lines;
+      ensureFileDiff(lineEntry, 0, true, parseLineId(id));
     }
     render();
     if (waitForLazyLine) return;
@@ -2249,7 +2332,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => ({ ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body }))
+            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
           })
         });
         let out = {};
@@ -2445,6 +2528,7 @@
       body: "",
       dirty: false,
     };
+    rememberDraftSnapshot(compose);
     if (kind === "line") state.openLineThreads[id] = true;
     else state.openThreads[id] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
@@ -2524,6 +2608,8 @@
         } else {
           const note = { kind: compose.kind, id: compose.id, body, mode, createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
+          const snapshot = draftSnapshots.get(compose);
+          if (snapshot) draftSnapshots.set(note, snapshot); else rememberDraftSnapshot(note);
           state.comments.push(note);
         }
         state.lastNoteMode = mode;
@@ -2647,6 +2733,15 @@
   const _render = render;
   render = function () {
     forceHidePop();
+    const focused = document.activeElement;
+    const focusName = focused?.getAttribute("name");
+    const focusAction = focused?.getAttribute("data-action");
+    const focusSelector = focusAction
+      ? ["data-action", "data-id", "data-kind", "data-node-id", "data-mode"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
+      : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
+        ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
+        : null;
+    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
     revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.
@@ -2693,10 +2788,15 @@
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
-    pendingDiffs.forEach(ensureFileDiff);
+    if (focusName || focusSelector) {
+      const replacement = app.querySelector(focusName ? `[name="${cssEsc(focusName)}"]` : focusSelector);
+      if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
+    }
+    pendingDiffs.forEach((entry) => ensureFileDiff(entry));
     resumePendingLazyJump();
   };
 
   render();
   window.setInterval(pollViewerRevision, 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
 })();

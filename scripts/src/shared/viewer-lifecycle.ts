@@ -9,6 +9,8 @@ export interface ViewerIdentity {
   implementationId: string;
   repositoryRoot?: string;
   processId?: number;
+  viewerVersion?: string;
+  healthy?: boolean;
 }
 
 export function viewerPort(): number {

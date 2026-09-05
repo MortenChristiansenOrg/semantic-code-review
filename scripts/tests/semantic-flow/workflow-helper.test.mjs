@@ -99,6 +99,18 @@ test("review leaves a detached viewer running after the command exits", async (t
   assert.equal(identity.implementationId, "persistent-review");
   assert.equal(identity.repositoryRoot, repository.root);
   assert.notEqual(identity.processId, launch.pid);
+  const reopened = spawnSync(process.execPath, [flowCli, "review"], {
+    cwd: repository.root, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+  });
+  assert.equal(reopened.status, 0, reopened.stderr);
+  const reused = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(reused.processId, identity.processId);
+  assert.match(reused.viewerVersion, /^[0-9a-f]{64}$/);
+  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation`).then((response) => response.json());
+  assert.equal(payload.ok, true);
+  assert.equal(payload.implementation.implementationId, "persistent-review");
+
 });
 
 test("feedback resolves, validates, and returns compact pending work", (t) => {

@@ -240,9 +240,7 @@ Repeat begin, implement, commit, and finish for each stage.
 ## 6. Validate and review
 
 ```text
-<semantic-implementation> validate
-<semantic-implementation> validate --publish
-<semantic-implementation> validate-stack
+<semantic-flow> validate --publish --stack
 ```
 
 ```text
@@ -253,8 +251,14 @@ The UI leads with each stage's node descriptions, then shows their classified
 file or hunk membership, linked insights, branch snapshots, and
 Git-backed diffs.
 
-`validate-stack --json` emits machine-readable branch, base, and head entries.
+Add `--json` for machine-readable worktree, branch, base, and head entries.
 It neither contacts a remote nor creates hosted reviews.
+
+The viewer refreshes external feedback and metadata in place, keeping drafts and
+unchanged diffs. Changes appear automatically while the tab is visible. Large
+files have paged changes and full-context views; line-thread navigation loads
+the relevant page. Reopening review reuses a healthy viewer for the same worktree,
+implementation, and installed viewer version.
 
 ## 7. Send feedback
 
@@ -330,16 +334,11 @@ rewrites require no feedback metadata updates.
 
 ## 10. Publish and prepare local outputs
 
-Once human review is complete, validate publication readiness:
+Once human review is complete, validate readiness, publish metadata, and report
+the local stack in one operation:
 
 ```text
-<semantic-flow> validate --publish
-```
-
-Then publish `.semantic-review/` to the metadata branch:
-
-```text
-<semantic-implementation> publish
+<semantic-flow> prepare
 ```
 
 The default metadata branch is:
@@ -351,16 +350,10 @@ semantic-flow/customer-order-cancellation/metadata
 The metadata branch is parented by the final stage head but remains separate
 from implementation branches.
 
-The reviewed stack is now ready locally:
-
-```text
-<semantic-implementation> validate-stack
-```
-
 To create a single cumulative branch for a conventional remote review:
 
 ```text
-<semantic-implementation> prepare-branch --branch review/customer-order-cancellation
+<semantic-flow> prepare --branch review/customer-order-cancellation
 ```
 
 This creates the named branch at the final reviewed stage head without
@@ -377,7 +370,7 @@ After the chosen remote workflow has landed the code and the target branch is
 current:
 
 ```text
-<semantic-implementation> archive
+<semantic-flow> archive
 ```
 
 ## Recovery

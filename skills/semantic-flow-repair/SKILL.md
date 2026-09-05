@@ -39,7 +39,7 @@ Capture the smallest reproducible failure before changing source:
    state, and installed `semantic-flow` files or revision.
 2. Read the installed `semantic-flow/SKILL.md`, the command file selected by
    its index, every shared document that command requires, and
-   `scripts/API.d.ts`.
+   `scripts/API.d.ts` and the relevant `scripts/api/*.d.ts` module.
 3. Distinguish an invalid invocation, unsupported workflow, damaged target
    artifact, or interrupted write from a defect in the skill.
 4. Run read-only diagnostics first. Never hand-edit `.semantic-review/` or
@@ -61,7 +61,7 @@ Choose files by responsibility:
 | Semantic implementation CLI | `scripts/src/semantic-implementation.ts` |
 | Review feedback CLI | `scripts/src/review-feedback.ts` |
 | Runtime command and option definitions | `scripts/src/command-api.ts` |
-| Published TypeScript command contract and JSDoc | `scripts/src/api.ts` |
+| Published TypeScript command contract and JSDoc | `scripts/src/api/*.ts` (indexed by `scripts/src/api.ts`) |
 | Contract validation or skill packaging | `scripts/src/api-contract-check.ts`, `scripts/src/build-skill.ts` |
 | Artifact schemas | `standard/v0.1/schema/` |
 | Feedback schemas | `standard/v0.1/feedback-schema/` |
@@ -70,7 +70,7 @@ Choose files by responsibility:
 | User-facing concepts and formats | `docs/` |
 
 When the CLI surface changes, edit `scripts/src/command-api.ts` and
-`scripts/src/api.ts` together. Keep source JSDoc accurate because the generated
+`scripts/src/api/*.ts` (indexed by `scripts/src/api.ts`) together. Keep source JSDoc accurate because the generated
 API declaration is user-facing guidance.
 
 Do not directly edit generated files:

@@ -17,8 +17,9 @@ Before invoking a bundled executable:
    node -p "process.platform"
    ```
 
-2. Read `../scripts/API.d.ts` completely. It is the authoritative command
-   signature.
+2. Use `../scripts/API.d.ts` as an index and read only the needed
+   `scripts/api/*.d.ts` module. Read shared types only when their definitions
+   matter. `API.full.d.ts` remains available for exceptional whole-contract inspection.
 3. Read exactly one operating-system guide completely:
    - `linux`: `os/linux.md`
    - `win32`: `os/windows.md`
@@ -46,7 +47,10 @@ installed skill and its maintained source checkout.
 ## Resolve an active artifact worktree
 
 Commands that need an existing artifact must not assume it lives in the current
-worktree. Run:
+worktree. Workflow helpers (`status`, `validate`, `review`, `feedback`, `prepare`,
+`archive`) already resolve it: call the requested helper directly, without an
+extra inspect. When a workflow needs discovery before individual implementation
+commands, run:
 
 ```text
 <semantic-flow> inspect --json
@@ -113,3 +117,22 @@ stage require its explicit stage ID and the relevant finalized flag.
 Do not inspect generated `.mjs` bundles for routine usage. Read source only as
 a last-resort defect investigation after the API, command guidance, and
 observed error are insufficient.
+
+## Reuse within the session
+
+Reuse already-loaded instructions, platform details, and installed script paths
+while they remain in context and the installation is unchanged. Do not reread
+shared guides or run version/file-existence probes before every command. Reload
+missing guidance after compaction or a skill update. Still check mutable Git and
+artifact state at the operation's required safety boundaries.
+
+Reuse a successful application check for the same application tree, test scope,
+dependencies/configuration, and relevant environment. Semantic metadata edits
+alone do not require rerunning application tests. Rerun after relevant changes,
+restacks, inconclusive results, or when integration/acceptance coverage has not
+yet been exercised. External services and time-sensitive inputs may invalidate
+reuse. Do not persist routine test transcripts in the artifact to track this.
+
+Inspect each relevant complete stage diff once per reviewed revision. After
+editing, inspect the delta since that inspection and reload surrounding or full
+context when needed to understand its effect. Never skip unreviewed changes.

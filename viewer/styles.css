@@ -1795,3 +1795,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   .lb-panel { grid-template-columns: 1fr; }
   .lb-rail { display: none; }
 }
+
+.review-update { position: fixed; bottom: 16px; left: 16px; z-index: 50; padding: 8px 14px; border-radius: 8px; background: #252b35; color: #f1f3f5; pointer-events: none; }
+.diff-pages { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; }
+.diff-pages button { cursor: pointer; padding: 6px 10px; }
+
+.hide-removed .d-del, .hide-removed .d-del + .line-thread { display: none; }
