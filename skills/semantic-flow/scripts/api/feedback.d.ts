@@ -52,7 +52,8 @@ export interface AddFeedbackThreadsOptions {
 }
 /**
  * Adds several feedback threads as one locked and validated mutation.
- * No thread is kept when any input is invalid.
+ * Without `partial`, no thread is kept when any input is invalid.
+ * With `partial`, valid inputs commit together and rejected indexes are returned.
  * @cli review-feedback.mjs
  * @command thread add-batch
  */
@@ -94,7 +95,8 @@ export interface ReplyFeedbackThreadsOptions {
 }
 /**
  * Appends several replies as one locked and validated mutation.
- * No reply is kept when any input is invalid.
+ * Without `partial`, no reply is kept when any input is invalid.
+ * With `partial`, valid replies commit together and rejected indexes are returned.
  * @cli review-feedback.mjs
  * @command thread reply-batch
  */

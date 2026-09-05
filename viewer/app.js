@@ -68,7 +68,7 @@
       stage.files.forEach((file) => {
         const id = fileKey(stage.id, file.path);
         const previous = previousFiles.get(id);
-        if (previous && previous.stage.baseRevision === stage.baseRevision && previous.stage.headRevision === stage.headRevision && Array.isArray(previous.file.lines)) {
+        if (previous && previous.stage.baseRevision === stage.baseRevision && previous.stage.headRevision === stage.headRevision && previous.file.revision === file.revision && previous.file.kind === file.kind && Array.isArray(previous.file.lines)) {
           for (const key of ["lines", "_diffMode", "nextOffset", "_pageOffset"]) file[key] = previous.file[key];
         }
         const entry = { id, stage, file };
@@ -2735,6 +2735,7 @@
     forceHidePop();
     const focused = document.activeElement;
     const focusName = focused?.getAttribute("name");
+    const focusRadioValue = focused?.matches('input[type="radio"]') ? focused.value : null;
     const focusAction = focused?.getAttribute("data-action");
     const focusSelector = focusAction
       ? ["data-action", "data-id", "data-kind", "data-node-id", "data-mode"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
@@ -2789,7 +2790,7 @@
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
     if (focusName || focusSelector) {
-      const replacement = app.querySelector(focusName ? `[name="${cssEsc(focusName)}"]` : focusSelector);
+      const replacement = app.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
     pendingDiffs.forEach((entry) => ensureFileDiff(entry));

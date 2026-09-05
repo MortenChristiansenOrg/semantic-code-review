@@ -827,6 +827,14 @@ export function createViewerDataSource(
       };
       stageCache.set(key, record);
       while (stageCache.size > 24) stageCache.delete(stageCache.keys().next().value);
+    } else {
+      // Inventory repairs can change metadata without changing immutable Git
+      // snapshots. Keep Git statistics, but rebuild inventory-dependent patches.
+      if (JSON.stringify(record.stage.change.files) !== JSON.stringify(stage.change.files)) {
+        record.diffs = null;
+        record.pages.clear();
+      }
+      record.stage = stage;
     }
     return record;
   };

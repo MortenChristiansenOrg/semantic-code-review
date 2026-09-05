@@ -12,15 +12,18 @@ validation before the helper.
 Run:
 
 ```text
-<semantic-flow> validate [--project <repository-or-worktree-path>]
+<semantic-flow> validate [--stack] [--json] [--project <repository-or-worktree-path>]
 ```
 
 The helper resolves the artifact worktree and validates feedback when present.
+It validates the complete recorded stack in the same pass. Add `--stack` to
+include its branch chain and final head in the report, or `--json` for the
+machine-readable worktree and stack summary; neither requires another validation.
 
 If the user explicitly requests publication-readiness validation, run:
 
 ```text
-<semantic-flow> validate --publish [--project <repository-or-worktree-path>]
+<semantic-flow> validate --publish [--stack] [--json] [--project <repository-or-worktree-path>]
 ```
 
 Report failures in actionable groups such as schema, missing references,

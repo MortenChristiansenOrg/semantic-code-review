@@ -309,6 +309,44 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
   assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
 });
 
+test("viewer refreshes repaired inventory without discarding unrelated immutable diffs", async (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.write("first.txt", "first\n");
+  repository.write("second.txt", "second\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Add inventory fixture");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+  const file = ".semantic-review/stages/implementation.json";
+  const complete = repository.readJson(file);
+  const incomplete = structuredClone(complete);
+  incomplete.change.files = incomplete.change.files.filter((entry) => entry.path === "first.txt");
+  repository.write(file, JSON.stringify(incomplete));
+  let gitCalls = 0;
+  const source = createViewerDataSource(repository.root, {
+    gitCapture(cwd, args) {
+      if (args.includes("diff")) gitCalls++;
+      return execFileSync("git", args, { cwd, encoding: "utf8" });
+    },
+  });
+  source.implementationDataScript();
+  const diff = (name) => source.fileDiff(complete.id, name, complete.change.baseRevision, complete.change.headRevision);
+  await diff("first.txt");
+  await assert.rejects(diff("second.txt"), /not changed/);
+
+  repository.write(file, JSON.stringify(complete));
+  source.implementationDataScript();
+  assert.equal((await diff("second.txt")).lines[0].s, "second");
+  const repairedCalls = gitCalls;
+  complete.summary += " Updated review explanation.";
+  repository.write(file, JSON.stringify(complete));
+  source.implementationDataScript();
+  assert.equal((await diff("second.txt")).lines[0].s, "second");
+  assert.equal(gitCalls, repairedCalls, "explanation-only refresh keeps immutable diff caches");
+});
+
 test("lazy stage diff preserves renamed file content changes", async (t) => {
   const repository = createRepository(t);
   repository.write("old name.txt", "stable\nbefore\n");
