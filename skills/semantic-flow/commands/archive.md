@@ -2,8 +2,9 @@
 
 Use after the reviewed implementation has landed on the target branch.
 
-Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
-operating-system guide before mutation. Resolve the active artifact worktree.
+`<semantic-flow>` means `node` followed by the quoted installed script path
+`scripts/semantic-flow.mjs`. Read `../scripts/api/workflow.d.ts` only when
+additional contract detail is needed. The helper resolves the artifact worktree.
 
 ## Preconditions
 
@@ -21,16 +22,11 @@ If another linked worktree already has the target branch checked out, do not
 copy the artifact or force branch movement. Explain the conflict and ask the
 user how to free the target branch for archival.
 
-Run final validation:
+Run one helper, which validates the landed artifact and resolved feedback before
+archiving. Do not run ordinary pre-landing validation first:
 
 ```text
-<semantic-flow> validate --publish --project <artifact-worktree-path>
-```
-
-Then run:
-
-```text
-<semantic-implementation> archive
+<semantic-flow> archive [--project <artifact-worktree-path>]
 ```
 
 The command stores the active artifact under:

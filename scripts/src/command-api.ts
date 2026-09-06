@@ -54,6 +54,7 @@ export const semanticImplementationApi: CliSignature = {
     {
       command: "stage begin",
       options: [
+        option("json"),
         option("id", "<stage-id>", { required: true }),
         option("title", "<title>", { required: true }),
         option("summary", "<summary>", { required: true }),
@@ -65,6 +66,8 @@ export const semanticImplementationApi: CliSignature = {
         }),
       ],
     },
+    { command: "stage record-batch", options: [option("stage", "<stage-id>"), option("finalized"), option("items", "<json-array>", { required: true })] },
+    { command: "stage plan", options: [option("stage", "<stage-id>"), option("finalized"), option("selectors")] },
     {
       command: "stage set",
       options: [
@@ -128,7 +131,7 @@ export const semanticImplementationApi: CliSignature = {
     },
     {
       command: "stage finish",
-      options: [option("id", "<stage-id|current>")],
+      options: [option("json"),option("id", "<stage-id|current>")],
     },
     {
       command: "stage discard",
@@ -198,7 +201,7 @@ export const reviewFeedbackApi: CliSignature = {
     },
     {
       command: "thread add-batch",
-      options: [option("threads", "<json-array>", { required: true })],
+      options: [option("threads", "<json-array>", { required: true }), option("partial")],
     },
     {
       command: "next",
@@ -215,7 +218,7 @@ export const reviewFeedbackApi: CliSignature = {
     },
     {
       command: "thread reply-batch",
-      options: [option("replies", "<json-array>", { required: true })],
+      options: [option("replies", "<json-array>", { required: true }), option("partial")],
     },
     {
       command: "thread resolve",
@@ -252,7 +255,15 @@ export const semanticFlowApi: CliSignature = {
     },
     {
       command: "validate",
-      options: [...projectSelectionOptions, option("publish")],
+      options: [...projectSelectionOptions, option("publish"), option("stack"), option("json")],
+    },
+    {
+      command: "prepare",
+      options: [...projectSelectionOptions, option("branch", "<branch>"), option("json")],
+    },
+    {
+      command: "archive",
+      options: [...projectSelectionOptions, option("json")],
     },
     {
       command: "status",
@@ -319,6 +330,6 @@ export function renderCliHelp(api: CliSignature): string {
       (signature) => `  ${optionUsage(signature)}`,
     ),
     "",
-    "Use scripts/API.d.ts for the complete typed parameter contract.",
+    "Use scripts/API.d.ts to select a focused parameter contract; API.full.d.ts contains every command.",
   ].join("\n");
 }

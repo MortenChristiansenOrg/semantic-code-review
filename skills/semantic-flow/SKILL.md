@@ -6,7 +6,8 @@ description: Use when explicitly requested to implement a substantial feature or
 # Semantic Flow
 
 Route the request through this index. Read the selected command file completely
-before acting, along with every shared file it requires.
+before acting, along with every shared file it requires. Reuse guidance already
+present in the current context while the installed skill is unchanged.
 
 Some harnesses use `$semantic-flow` instead of `/semantic-flow` for skill
 commands. Treat them as equivalent. All examples use `/semantic-flow`.

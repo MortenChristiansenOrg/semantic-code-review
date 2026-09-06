@@ -2,9 +2,10 @@
 
 Use after human review to prepare hosting-neutral local outputs.
 
-Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
-operating-system guide before mutation. Resolve the active artifact worktree
-and require it to be clean.
+`<semantic-flow>` means `node` followed by the quoted installed script path
+`scripts/semantic-flow.mjs`. The helper resolves the artifact worktree and
+checks clean Git state, publication readiness, and resolved feedback. Read
+`../scripts/api/workflow.d.ts` only when additional contract detail is needed.
 
 ## Preconditions
 
@@ -18,37 +19,21 @@ Publication readiness only considers criteria referenced by the finalized
 stages. Criteria in the requirement documents but outside those stage
 references are outside the review and must not block preparation.
 
-Run:
-
-```text
-<semantic-flow> validate --publish --project <artifact-worktree-path>
-```
-
-Publish metadata:
-
-```text
-<semantic-implementation> publish
-```
-
-This creates or updates the sibling metadata branch so its heads match the
-reviewed stage heads. Re-running `prepare` after later changes republishes it.
-
 ## Outputs
 
-For the stage stack, run:
+If stack or cumulative-branch output is not specified and cannot be inferred,
+ask which local output the user wants. Then run exactly one helper:
 
 ```text
-<semantic-implementation> validate-stack
+<semantic-flow> prepare [--project <artifact-worktree-path>]
+<semantic-flow> prepare --branch <name> [--project <artifact-worktree-path>]
 ```
 
-For one cumulative branch, obtain the desired branch name and run:
-
-```text
-<semantic-implementation> prepare-branch --branch <name>
-```
-
-If `/semantic-flow prepare` does not specify stack or branch output and the
-choice is not already clear, ask the user which local output they want.
+Choose the first for the existing stage stack, the second for a named cumulative
+branch. The helper validates artifact and feedback, publishes matching metadata,
+and prepares the selected output. Do not precede or follow it with duplicate
+validate, publish, or validate-stack commands. Feedback stays locked through
+preparation; conflicting refs and unrelated worktree changes are rejected.
 
 Preparation must not switch the worktree, overwrite a branch pointing
 elsewhere, push, create a hosted review, merge, or delete stage branches. Stop

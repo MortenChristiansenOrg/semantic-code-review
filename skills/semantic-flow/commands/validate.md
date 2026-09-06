@@ -3,21 +3,27 @@
 Use for read-only diagnosis of semantic artifact, feedback, and Git
 consistency.
 
-Read `../docs/runtime.md`, `../scripts/API.d.ts`, and the selected
-operating-system guide.
+`<semantic-flow>` means `node` followed by the quoted absolute path to
+`<installed-skill-root>/scripts/semantic-flow.mjs`. This command is self-contained;
+read `../scripts/api/workflow.d.ts` only when options or an unexplained error
+require it. Reuse known runtime details; do not run separate discovery or
+validation before the helper.
 
 Run:
 
 ```text
-<semantic-flow> validate [--project <repository-or-worktree-path>]
+<semantic-flow> validate [--stack] [--json] [--project <repository-or-worktree-path>]
 ```
 
 The helper resolves the artifact worktree and validates feedback when present.
+It validates the complete recorded stack in the same pass. Add `--stack` to
+include its branch chain and final head in the report, or `--json` for the
+machine-readable worktree and stack summary; neither requires another validation.
 
 If the user explicitly requests publication-readiness validation, run:
 
 ```text
-<semantic-flow> validate --publish [--project <repository-or-worktree-path>]
+<semantic-flow> validate --publish [--stack] [--json] [--project <repository-or-worktree-path>]
 ```
 
 Report failures in actionable groups such as schema, missing references,

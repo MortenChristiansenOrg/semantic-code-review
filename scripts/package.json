@@ -8,8 +8,9 @@
   },
   "scripts": {
     "build": "tsx src/build-skill.ts",
+    "benchmark": "npm run build && node benchmarks/operations.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-flow/workflow-helper.test.mjs tests/semantic-implementation/artifact-commands.test.mjs tests/semantic-implementation/history-commands.test.mjs tests/semantic-implementation/publication-commands.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs tests/semantic-view/export-planning.test.mjs",
+    "test": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/performance-regressions.test.mjs tests/semantic-flow/workflow-helper.test.mjs tests/semantic-implementation/artifact-commands.test.mjs tests/semantic-implementation/history-commands.test.mjs tests/semantic-implementation/publication-commands.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs tests/semantic-view/export-planning.test.mjs",
     "test:flow": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-flow/workflow-helper.test.mjs",
     "test:implementation": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-implementation/artifact-commands.test.mjs tests/semantic-implementation/history-commands.test.mjs tests/semantic-implementation/publication-commands.test.mjs",
     "test:feedback": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs",

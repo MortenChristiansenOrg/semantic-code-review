@@ -20,6 +20,8 @@ const commands = new Map([
       "stage begin",
       "stage set",
       "stage record",
+      "stage record-batch",
+      "stage plan",
       "stage organize",
       "stage validation",
       "stage finish",
@@ -49,12 +51,12 @@ const commands = new Map([
   ],
   [
     flowCli,
-    ["inspect", "validate", "status", "review", "feedback", "version", "update"],
+    ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "version", "update"],
   ],
 ]);
 
 test("production build exposes every documented command", () => {
-  const api = fs.readFileSync(path.join(scriptsDirectory, "API.d.ts"), "utf8");
+  const api = fs.readFileSync(path.join(scriptsDirectory, "API.full.d.ts"), "utf8");
 
   for (const [cli, expectedCommands] of commands) {
     assert.ok(fs.statSync(cli).size > 0);
@@ -209,7 +211,7 @@ test("skill indexes command-specific workflows", () => {
     /This is not an\s+interrupted artifact write[\s\S]*Do not run `repair`/,
   );
   assert.match(
-    commandText.get("feedback"),
+    fs.readFileSync(path.join(skillRoot, "docs", "restack-conflicts.md"), "utf8"),
     /git update-ref refs\/heads\/<stage-branch> <resolution-head> <reported-stage-head>/,
   );
   assert.doesNotMatch(commandText.get("feedback"), /Read `\.\.\/docs\/runtime\.md`/);

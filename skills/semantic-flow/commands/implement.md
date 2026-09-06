@@ -4,7 +4,7 @@ Use for `/semantic-flow implement <request>` and natural-language requests such
 as "implement the current user story using semantic flow".
 
 Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
-`../scripts/API.d.ts`, and the selected operating-system guide before changing
+`../scripts/api/stages.d.ts`, and the selected operating-system guide before changing
 application code or invoking the CLI.
 
 ## Enter the flow
@@ -28,7 +28,8 @@ For new work:
    multiple requirements only for independently trackable source obligations.
 4. Plan coherent ordered stages. Keep future stages in the agent's task plan
    and register only the next stage.
-5. Initialize from the isolated worktree:
+5. Read `../scripts/api/implementation.d.ts` for initialization and
+   specification options, then initialize from the isolated worktree:
 
    ```text
    <semantic-implementation> init <options>
@@ -60,10 +61,9 @@ the stage's planned position. Treat the branch reported by the command as the
 only branch for that ordinal. `depends-on` records direct semantic
 prerequisites.
 
-Before running the command, list local refs below the manifest's
-`branchPrefix`. Compute the next ordinal as the finalized stage count plus one,
-padded to at least two digits. If any existing branch already starts with that
-ordinal, stop instead of creating a second branch for it.
+`stage begin` checks all branches sharing the next ordinal and refuses a
+collision. Do not repeat that ref enumeration in a separate Git command. Use
+`--json` when the next action needs the returned branch and revisions.
 
 Before editing or committing, verify that the reported branch remains checked
 out. Keep every commit for the active stage on that branch until `stage
@@ -86,6 +86,12 @@ arise:
 <semantic-implementation> stage record --input -
 ```
 
+Use `stage record-batch --input -` for multiple already-observed insights or
+review-relevant validation results at a natural checkpoint. Each item uses the
+individual command options; validation items add `kind: "validation"`. Keep the
+stage and finalized flag outside the items array. Do not delay important
+observations or create filler to make a batch.
+
 Run focused checks while implementing. Do not record routine execution of
 existing test suites. Preserve only review-relevant validation, such as
 temporary tests or probes that are later removed, manual checks, and noteworthy
@@ -95,6 +101,10 @@ failures or skipped checks.
 
 Commit the stage implementation. Multiple linear commits are allowed. Exclude
 `.semantic-review/` and `.semantic-review-feedback/`.
+
+Use `stage plan` to obtain the committed file inventory and unlinked insight
+IDs; add `--selectors` only for shared-file hunk/range ownership. The CLI
+provides mechanical fields; choose node ownership by semantic cause.
 
 Create an organization document conforming to
 `../references/stage-organization.schema.json`, then run:
@@ -110,7 +120,8 @@ insight and validation evidence.
 
 ### Validate and finish
 
-Run the smallest existing checks that cover the organized stage. Run them from
+Run the smallest existing checks that cover the organized stage, reusing
+successful checks on unchanged application inputs under the runtime rules. Run them from
 the artifact/implementation worktree, and confirm the working directory and
 repository root are that worktree before running so checks never execute against
 the source checkout. Routine test-suite execution is implied and must not be
@@ -131,8 +142,10 @@ Finalize:
 <semantic-implementation> stage finish
 ```
 
-Run `<semantic-flow> validate --project <artifact-worktree-path>` before
-beginning the next stage. Repeat for each planned stage.
+Successful `stage finish` already validates the finalized artifact and Git
+stack; do not immediately repeat that validation. The next `stage begin` checks
+the current state again. Validate feedback as part of the final workflow gate,
+or earlier when diagnosing changed feedback. Repeat for each planned stage.
 
 ## Complete implementation
 
@@ -141,15 +154,14 @@ After all stages:
 1. Confirm every criterion included in the review is referenced by a stage.
 2. Exercise the complete acceptance path.
 3. Put any discovered omission into the earliest responsible stage, then
-   restack later stages.
+   restack later stages. Load `../scripts/api/history.d.ts` when restacking.
 4. Run whole-stack checks from the artifact worktree. Attach evidence to
    relevant finalized stages only when it meets the review-relevance rules in
    `../docs/artifact-quality.md`.
 5. Run:
 
    ```text
-   <semantic-flow> validate --publish --project <artifact-worktree-path>
-   <semantic-implementation> validate-stack
+   <semantic-flow> validate --publish --stack --project <artifact-worktree-path>
    ```
 
 Stop with the local stack ready for human review. Do not approve, publish
