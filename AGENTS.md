@@ -89,6 +89,8 @@ version solely to preserve v0.1 behavior until versioning is declared active.
   cumulative branch (`prepare-branch`).
 - **Cumulative branch**: A single named branch at the final stage head,
   representing the whole reviewed change for a conventional remote review.
+  Preparation binds the name locally and safely moves the same branch after
+  later reviewed changes.
 - **Archive**: Storing a landed implementation's artifact under
   `.semantic-review-history/<implementation-id>/` so its provenance remains
   available if stage branches are later deleted. Archiving does not delete

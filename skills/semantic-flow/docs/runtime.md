@@ -81,6 +81,9 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   with raw Git ref-management commands. `stage begin` creates stage refs and
   `restack` rewrites them. Ordinary implementation and feedback commits may
   advance only the recorded branch while it is checked out.
+- Treat refs below `refs/semantic-review/prepared/` as CLI-owned local
+  preparation state. `prepare-branch` uses them to guard updates to a stable
+  cumulative branch.
 - A branch ref does not define a stage boundary. The manifest order and each
   stage's recorded base and head revisions do. An extra numbered branch can
   point inside another stage's range and make its commits appear in that

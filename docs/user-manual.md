@@ -336,10 +336,12 @@ Once human review is complete, validate publication readiness:
 <semantic-flow> validate --publish
 ```
 
-Then publish `.semantic-review/` to the metadata branch:
+For a stage-stack handoff, publish `.semantic-review/` to the metadata branch
+and report the stack:
 
 ```text
 <semantic-implementation> publish
+<semantic-implementation> validate-stack
 ```
 
 The default metadata branch is:
@@ -351,21 +353,30 @@ semantic-flow/customer-order-cancellation/metadata
 The metadata branch is parented by the final stage head but remains separate
 from implementation branches.
 
-The reviewed stack is now ready locally:
-
-```text
-<semantic-implementation> validate-stack
-```
-
-To create a single cumulative branch for a conventional remote review:
+For a single cumulative branch, the first preparation chooses its durable
+name:
 
 ```text
 <semantic-implementation> prepare-branch --branch review/customer-order-cancellation
 ```
 
-This creates the named branch at the final reviewed stage head without
-switching the worktree. It refuses to overwrite an existing branch that points
-elsewhere.
+This publishes metadata, creates the branch at the final reviewed stage head,
+and records a private local binding. After feedback changes and restacking,
+prepare again without a branch name:
+
+```text
+<semantic-implementation> prepare-branch
+```
+
+The command republishes metadata and moves the same cumulative branch with a
+compare-and-swap guard. It reports an exact force-with-lease command for
+updating the same remote source branch, so an existing pull request remains
+attached to it.
+
+Use `--adopt` only to take ownership of an existing branch and replace its tip.
+This is also the migration path for cumulative branches created by older
+versions. Use `--branch <name> --rebind` to choose a different output branch;
+the previous branch remains unchanged.
 
 The flow stops here. A user may later push only the cumulative branch, or push
 the stage branches and let a compatible remote represent them as a stack. The

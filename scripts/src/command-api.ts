@@ -150,7 +150,11 @@ export const semanticImplementationApi: CliSignature = {
     },
     {
       command: "prepare-branch",
-      options: [option("branch", "<branch-name>", { required: true })],
+      options: [
+        option("branch", "<branch-name>"),
+        option("adopt"),
+        option("rebind"),
+      ],
     },
     {
       command: "archive",

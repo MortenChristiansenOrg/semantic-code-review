@@ -45,6 +45,7 @@ const INSIGHT_COLLECTIONS = [
   "openQuestions",
 ];
 const STAGE_ITEM_COLLECTIONS = [...INSIGHT_COLLECTIONS, "validation"];
+const ZERO_OID = "0000000000000000000000000000000000000000";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -1805,19 +1806,32 @@ function replayRange(root, indexFile, oldBase, oldHead, newBase, label) {
   });
 }
 
-function updateRefsAtomically(root, updates) {
+function updateGitRefsAtomically(root, updates) {
   if (updates.length === 0) return;
   const commands = [
     "start",
     ...updates.map(
-      ({ branch, next, previous }) =>
-        `update refs/heads/${branch} ${next} ${previous}`,
+      ({ ref, next, previous }) =>
+        next === ZERO_OID
+          ? `delete ${ref} ${previous}`
+          : `update ${ref} ${next} ${previous}`,
     ),
     "prepare",
     "commit",
     "",
   ].join("\n");
   gitRaw(["update-ref", "--stdin"], { cwd: root, input: commands });
+}
+
+function updateRefsAtomically(root, updates) {
+  updateGitRefsAtomically(
+    root,
+    updates.map(({ branch, next, previous }) => ({
+      ref: `refs/heads/${branch}`,
+      next,
+      previous,
+    })),
+  );
 }
 
 function restack(paths, options) {
@@ -2125,6 +2139,54 @@ function metadataBranch(artifact) {
   return `${artifact.manifest.branchPrefix}/metadata`;
 }
 
+function preparedBranchRefPrefix(artifact) {
+  return `refs/semantic-review/prepared/${artifact.manifest.implementationId}/`;
+}
+
+function preparedBranchRef(artifact, branch) {
+  const encodedBranch = Buffer.from(branch, "utf8").toString("base64url");
+  return `${preparedBranchRefPrefix(artifact)}${encodedBranch}`;
+}
+
+function preparedBranchBinding(root, artifact) {
+  const prefix = preparedBranchRefPrefix(artifact);
+  const output = git(
+    ["for-each-ref", "--format=%(refname) %(objectname)", prefix],
+    { cwd: root },
+  );
+  if (!output) return undefined;
+  const bindings = output.split(/\r?\n/).map((line) => {
+    const separator = line.indexOf(" ");
+    if (separator < 0) {
+      fail(`Prepared branch state contains malformed ref output: ${line}.`);
+    }
+    const ref = line.slice(0, separator);
+    const encodedBranch = ref.slice(prefix.length);
+    const branch = Buffer.from(encodedBranch, "base64url").toString("utf8");
+    if (
+      !branch ||
+      Buffer.from(branch, "utf8").toString("base64url") !== encodedBranch
+    ) {
+      fail(`Prepared branch state contains invalid ref ${ref}.`);
+    }
+    const object = line.slice(separator + 1);
+    if (!/^[0-9a-f]{40}$/.test(object)) {
+      fail(`Prepared branch state ${ref} does not point to a commit.`);
+    }
+    const head = commitObject(root, ref);
+    if (head !== object) {
+      fail(`Prepared branch state ${ref} must point directly to a commit.`);
+    }
+    return { branch, head, ref };
+  });
+  if (bindings.length > 1) {
+    fail(
+      `Implementation ${artifact.manifest.implementationId} has multiple cumulative branch bindings: ${bindings.map(({ branch }) => branch).join(", ")}.`,
+    );
+  }
+  return bindings[0];
+}
+
 function buildMetadataTree(paths, parent) {
   const indexFile = path.join(
     os.tmpdir(),
@@ -2152,20 +2214,10 @@ function buildMetadataCommit(paths, parent, message) {
   return { commit, tree };
 }
 
-function publishArtifact(paths, options) {
-  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "publish"));
-  const artifact = validateArtifact(paths, {
-    publish: true,
-    quiet: true,
-    allowLandedTarget: true,
-  });
-  assertCleanWorkingTree(paths.root, "Artifact publication");
+function metadataPublicationPlan(paths, artifact, message) {
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
-  const message = option(options, "message", {
-    defaultValue: `Publish ${artifact.manifest.implementationId} semantic implementation`,
-  });
   const publication = buildMetadataCommit(paths, stageTip, message);
   const existing = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: paths.root,
@@ -2177,8 +2229,7 @@ function publishArtifact(paths, options) {
     });
     const parents = commitParents(paths.root, existing);
     if (parents.length === 1 && parents[0] === stageTip && existingTree === publication.tree) {
-      console.log(`Semantic implementation metadata is already published on ${branch}.`);
-      return;
+      return { branch, commit: existing, update: undefined };
     }
     const pathsChanged = parents.length === 1
       ? changedPathNames(paths.root, parents[0], existing)
@@ -2199,17 +2250,38 @@ function publishArtifact(paths, options) {
       fail(`Cannot update metadata branch ${branch} while it is checked out.`);
     }
   }
-  git(
-    [
-      "update-ref",
-      `refs/heads/${branch}`,
-      publication.commit,
-      existing ?? "0000000000000000000000000000000000000000",
-    ],
-    { cwd: paths.root },
-  );
+  return {
+    branch,
+    commit: publication.commit,
+    update: {
+      ref: `refs/heads/${branch}`,
+      next: publication.commit,
+      previous: existing ?? ZERO_OID,
+    },
+  };
+}
+
+function publishArtifact(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "publish"));
+  const artifact = validateArtifact(paths, {
+    publish: true,
+    quiet: true,
+    allowLandedTarget: true,
+  });
+  assertCleanWorkingTree(paths.root, "Artifact publication");
+  const message = option(options, "message", {
+    defaultValue: `Publish ${artifact.manifest.implementationId} semantic implementation`,
+  });
+  const publication = metadataPublicationPlan(paths, artifact, message);
+  if (!publication.update) {
+    console.log(
+      `Semantic implementation metadata is already published on ${publication.branch}.`,
+    );
+    return;
+  }
+  updateGitRefsAtomically(paths.root, [publication.update]);
   console.log(
-    `Published semantic implementation metadata on ${branch} at ${publication.commit}.`,
+    `Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`,
   );
 }
 
@@ -2220,6 +2292,7 @@ function validateStack(paths, options) {
   );
   const json = flag(options, "json");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const binding = preparedBranchBinding(paths.root, artifact);
   const entries = artifact.manifest.stages.map((id, index) => {
     const stage = artifact.stages.get(id);
     return {
@@ -2234,6 +2307,8 @@ function validateStack(paths, options) {
     targetBranch: artifact.manifest.targetBranch,
     branchPrefix: artifact.manifest.branchPrefix,
     metadataBranch: metadataBranch(artifact),
+    cumulativeBranch: binding?.branch ?? null,
+    preparedHeadRevision: binding?.head ?? null,
     finalHeadRevision: lastStageHead(artifact),
     stages: entries,
   };
@@ -2248,6 +2323,11 @@ function validateStack(paths, options) {
     );
   }
   console.log(`Final cumulative head: ${result.finalHeadRevision}`);
+  if (binding) {
+    console.log(
+      `Bound cumulative branch: ${binding.branch} (${binding.head})`,
+    );
+  }
 }
 
 function prepareBranch(paths, options) {
@@ -2255,26 +2335,135 @@ function prepareBranch(paths, options) {
     options,
     commandOptionNames(semanticImplementationApi, "prepare-branch"),
   );
-  const branch = option(options, "branch", { required: true });
+  const requestedBranch = option(options, "branch");
+  const adopt = flag(options, "adopt");
+  const rebind = flag(options, "rebind");
   const artifact = validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Single-branch preparation");
+  const binding = preparedBranchBinding(paths.root, artifact);
+  if (rebind && !requestedBranch) {
+    fail("--rebind requires --branch <branch-name>.");
+  }
+  if (rebind && !binding) {
+    fail("--rebind requires an existing cumulative branch binding.");
+  }
+  if (!binding && !requestedBranch) {
+    fail(
+      `No cumulative branch is bound for ${artifact.manifest.implementationId}; specify --branch <branch-name> for the first preparation.`,
+    );
+  }
+  const branch = requestedBranch ?? binding.branch;
+  if (binding && branch !== binding.branch && !rebind) {
+    fail(
+      `Implementation ${artifact.manifest.implementationId} is bound to cumulative branch ${binding.branch}; omit --branch to reuse it or pass --rebind with --branch ${branch}.`,
+    );
+  }
+  if (binding && branch === binding.branch && rebind) {
+    fail(`Cumulative branch ${branch} is already bound; omit --rebind.`);
+  }
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
   const head = lastStageHead(artifact);
   const existing = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: paths.root,
     allowFailure: true,
   });
-  if (existing && existing !== head) {
+  const reusingBinding = binding?.branch === branch;
+  if (
+    reusingBinding &&
+    existing &&
+    existing !== binding.head &&
+    existing !== head &&
+    !adopt
+  ) {
     fail(
-      `Branch ${branch} already points to ${existing}; refusing to move it to ${head}.`,
+      `Bound cumulative branch ${branch} moved from prepared head ${binding.head} to ${existing} outside preparation; refusing to overwrite it. Use --adopt to accept and replace its current tip.`,
     );
   }
-  if (!existing) {
-    git(["branch", branch, head], { cwd: paths.root });
+  if (!reusingBinding && existing && !adopt) {
+    const action = existing === head
+      ? "bind it to this implementation"
+      : `bind and replace it with reviewed head ${head}`;
+    fail(`Branch ${branch} already points to ${existing}; use --adopt to ${action}.`);
   }
-  console.log(
-    `Prepared local cumulative branch ${branch} at ${head}; base is ${artifact.manifest.targetBranch}.`,
+  if (adopt && !existing) {
+    fail(`--adopt requires existing branch ${branch}.`);
+  }
+  if (existing !== head && checkedOutBranches(paths.root).has(branch)) {
+    fail(`Cannot update cumulative branch ${branch} while it is checked out.`);
+  }
+
+  const publication = metadataPublicationPlan(
+    paths,
+    artifact,
+    `Publish ${artifact.manifest.implementationId} semantic implementation`,
   );
+  const bindingRef = preparedBranchRef(artifact, branch);
+  git(["check-ref-format", bindingRef], { cwd: paths.root });
+  const updates = [];
+  if (publication.update) updates.push(publication.update);
+  if (existing !== head) {
+    updates.push({
+      ref: `refs/heads/${branch}`,
+      next: head,
+      previous: existing ?? ZERO_OID,
+    });
+  }
+  if (!reusingBinding || binding.head !== head) {
+    updates.push({
+      ref: bindingRef,
+      next: head,
+      previous: reusingBinding ? binding.head : ZERO_OID,
+    });
+  }
+  if (binding && rebind) {
+    updates.push({
+      ref: binding.ref,
+      next: ZERO_OID,
+      previous: binding.head,
+    });
+  }
+  updateGitRefsAtomically(paths.root, updates);
+
+  if (publication.update) {
+    console.log(
+      `Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`,
+    );
+  } else {
+    console.log(
+      `Semantic implementation metadata is already published on ${publication.branch}.`,
+    );
+  }
+  if (binding && rebind) {
+    console.log(
+      `Rebound cumulative output from ${binding.branch} to ${branch} at ${head}; the old branch was left unchanged.`,
+    );
+  } else if (!reusingBinding && existing === head) {
+    console.log(
+      `Adopted and bound existing cumulative branch ${branch} at ${head}; base is ${artifact.manifest.targetBranch}.`,
+    );
+  } else if (existing && existing !== head) {
+    console.log(
+      `${adopt ? "Adopted and updated" : "Updated"} bound cumulative branch ${branch} from ${existing} to ${head}; base is ${artifact.manifest.targetBranch}.`,
+    );
+    console.log(
+      `Remote update: git push --force-with-lease=refs/heads/${branch}:${existing} <remote> refs/heads/${branch}:refs/heads/${branch}`,
+    );
+  } else if (!existing && reusingBinding) {
+    console.log(
+      `Recreated bound local cumulative branch ${branch} at ${head}; previous prepared head was ${binding.head}.`,
+    );
+    console.log(
+      `Remote update: git push --force-with-lease=refs/heads/${branch}:${binding.head} <remote> refs/heads/${branch}:refs/heads/${branch}`,
+    );
+  } else if (!existing) {
+    console.log(
+      `Prepared and bound local cumulative branch ${branch} at ${head}; base is ${artifact.manifest.targetBranch}.`,
+    );
+  } else {
+    console.log(
+      `Local cumulative branch ${branch} is already prepared at ${head}; base is ${artifact.manifest.targetBranch}.`,
+    );
+  }
 }
 
 function archiveImplementation(paths, options) {

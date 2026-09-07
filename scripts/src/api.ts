@@ -317,12 +317,17 @@ export interface ValidateStackOptions {
 export declare function validateStack(options?: ValidateStackOptions): void;
 
 export interface PrepareBranchOptions {
-  /** Local cumulative branch to create at the final reviewed stage head. */
-  branch: string;
+  /** Local cumulative branch. Required for the first preparation and when rebinding. */
+  branch?: string;
+  /** Takes ownership of an existing branch and replaces its current tip with the reviewed head. */
+  adopt?: true;
+  /** Replaces the implementation's existing cumulative branch binding. Requires `branch`. */
+  rebind?: true;
 }
 
 /**
- * Creates a local cumulative implementation branch without changing the worktree.
+ * Creates or updates the bound cumulative implementation branch and publishes
+ * matching metadata without changing the worktree.
  * @cli semantic-implementation.mjs
  * @command prepare-branch
  */
