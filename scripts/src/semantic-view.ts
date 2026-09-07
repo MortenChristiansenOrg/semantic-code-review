@@ -74,6 +74,7 @@ function gitCapture(cwd, args) {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
+    windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
   });
 }
@@ -530,7 +531,11 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
 }
 
 async function* gitLines(repoRoot, args) {
-  const child = spawn("git", args, { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("git", args, {
+    cwd: repoRoot,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-8192); });
   const completion = new Promise<number | null>((resolve, reject) => {
@@ -1721,11 +1726,11 @@ function openBrowser(url) {
   if (process.env.SEMANTIC_VIEW_NO_OPEN) return;
   try {
     if (process.platform === "win32") {
-      execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore" });
+      execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore", windowsHide: true });
     } else if (process.platform === "darwin") {
-      execFileSync("open", [url], { stdio: "ignore" });
+      execFileSync("open", [url], { stdio: "ignore", windowsHide: true });
     } else {
-      execFileSync("xdg-open", [url], { stdio: "ignore" });
+      execFileSync("xdg-open", [url], { stdio: "ignore", windowsHide: true });
     }
   } catch {
     // Non-fatal: the URL is printed for manual use.

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import {
   feedbackCli,
   flowCli,
@@ -116,6 +117,52 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
     topLevelValuedHelp.stderr,
     /--help is a flag and does not take a value/,
   );
+});
+
+test("CLI subprocess launches hide Windows console windows", () => {
+  const sourceRoot = path.resolve(scriptsDirectory, "..", "..", "..", "scripts", "src");
+  const failures = [];
+  let launches = 0;
+  for (const file of ts.sys.readDirectory(sourceRoot, [".ts"])) {
+    const source = ts.createSourceFile(
+      file,
+      fs.readFileSync(file, "utf8"),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const processCalls = new Set();
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) ||
+          statement.moduleSpecifier.text !== "node:child_process") continue;
+      const bindings = statement.importClause?.namedBindings;
+      if (!bindings || !ts.isNamedImports(bindings)) continue;
+      for (const binding of bindings.elements) {
+        const name = (binding.propertyName ?? binding.name).text;
+        if (["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync"].includes(name)) {
+          processCalls.add(binding.name.text);
+        }
+      }
+    }
+    const visit = (node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+          processCalls.has(node.expression.text)) {
+        launches += 1;
+        const options = node.arguments.find(ts.isObjectLiteralExpression);
+        const hidesWindow = options?.properties.some((property) =>
+          ts.isPropertyAssignment(property) &&
+          property.name.getText(source) === "windowsHide" &&
+          property.initializer.kind === ts.SyntaxKind.TrueKeyword);
+        if (!hidesWindow) {
+          const { line } = source.getLineAndCharacterOfPosition(node.getStart());
+          failures.push(`${path.relative(sourceRoot, file)}:${line + 1}`);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  assert.ok(launches > 0, "No subprocess launches found");
+  assert.deepEqual(failures, [], "Subprocess launches must set windowsHide: true");
 });
 
 test("the bundled example conforms to the published schemas", (t) => {

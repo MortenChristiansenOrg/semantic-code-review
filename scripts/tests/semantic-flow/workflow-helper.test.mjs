@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   beginStage,
   createImplementationWithStages,
@@ -28,7 +29,7 @@ function reserveViewerPort() {
   });
 }
 
-async function stopViewer(port) {
+async function stopViewer(port, pid) {
   try {
     await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
       method: "POST",
@@ -37,6 +38,18 @@ async function stopViewer(port) {
     });
   } catch {
     // The assertion or viewer startup may have failed before a server existed.
+  }
+  if (pid !== undefined) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if (error.code === "ESRCH") return;
+        throw error;
+      }
+      await delay(50);
+    }
+    assert.fail(`Viewer process ${pid} did not exit after shutdown`);
   }
 }
 
@@ -69,14 +82,14 @@ test("validate resolves the artifact and runs both validators", (t) => {
 });
 
 test("review leaves a detached viewer running after the command exits", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
   const repository = createRepository(t, "semantic-flow-review-");
   initializeImplementation(repository, {
     implementationId: "persistent-review",
     title: "Persistent review",
   });
-  const port = await reserveViewerPort();
-  t.after(() => stopViewer(port));
-
   const launch = spawnSync(process.execPath, [flowCli, "review"], {
     cwd: repository.root,
     encoding: "utf8",
@@ -90,7 +103,9 @@ test("review leaves a detached viewer running after the command exits", async (t
 
   assert.equal(launch.status, 0, launch.stderr);
   assert.match(launch.stdout, /Semantic review viewer: http:\/\/127\.0\.0\.1:/);
-  assert.match(launch.stdout, /running persistently in the background \(PID \d+\)/);
+  const started = /running persistently in the background \(PID (\d+)\)/.exec(launch.stdout);
+  assert.ok(started, launch.stdout);
+  viewerPid = Number(started[1]);
 
   const response = await fetch(`http://127.0.0.1:${port}/api/whoami`);
   assert.equal(response.status, 200);

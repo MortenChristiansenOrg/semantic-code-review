@@ -255,6 +255,7 @@ function execute(
   const result = spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
+    windowsHide: true,
     stdio: inherit ? "inherit" : ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
@@ -285,6 +286,7 @@ function executeCaptureStreams(
   const result = spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
+    windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) {

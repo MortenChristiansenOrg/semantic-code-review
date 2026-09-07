@@ -320,6 +320,7 @@ function readChangedFiles(root, parent, commit) {
     {
       cwd: root,
       encoding: "buffer",
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );

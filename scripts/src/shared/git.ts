@@ -25,6 +25,7 @@ export function git(
     const output = execFileSync("git", args, {
       cwd,
       encoding,
+      windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return typeof output === "string" ? output.trim() : output;
@@ -53,6 +54,7 @@ export function gitRaw(
     cwd,
     input,
     encoding,
+    windowsHide: true,
     env: {
       ...process.env,
       ...env,
