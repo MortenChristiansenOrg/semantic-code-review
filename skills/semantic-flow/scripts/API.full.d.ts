@@ -548,6 +548,25 @@ export interface SemanticFlowFeedbackOptions {
  * @command feedback
  */
 export declare function semanticFlowFeedback(options?: SemanticFlowFeedbackOptions): void;
+export interface SyncSemanticFlowOptions {
+    /** Repository or worktree used to discover linked semantic implementation artifacts. */
+    project?: string;
+    /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
+    "implementation-id"?: string;
+    /** Uses the current local target head without fetching or requiring an upstream. */
+    local?: true;
+    /** Emits target revisions, restacked stages, checkout, and pending feedback anchors as JSON. */
+    json?: true;
+}
+/**
+ * Fetches the recorded target branch's configured upstream, fast-forwards the
+ * local target, and restacks a clean finalized implementation. Preserves a
+ * locally ahead target, rejects divergence, and refreshes pending feedback
+ * anchors without replying. Application tests remain the agent's responsibility.
+ * @cli semantic-flow.mjs
+ * @command sync
+ */
+export declare function syncSemanticFlow(options?: SyncSemanticFlowOptions): void;
 export interface SemanticFlowVersionOptions {
     /** Emits machine-readable installed skill and format versions. */
     json?: true;

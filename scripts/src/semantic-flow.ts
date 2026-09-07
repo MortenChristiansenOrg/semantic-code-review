@@ -24,7 +24,7 @@ import { git } from "./shared/git.js";
 import { readJson } from "./shared/json.js";
 import { withValidationContext } from "./shared/validation-context.js";
 import { withCheckedFeedback } from "./review-feedback.js";
-import { implementationWorkflow } from "./semantic-implementation.js";
+import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -741,10 +741,7 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
   };
 }
 
-function feedback(options: Options): void {
-  const refresh = refreshAdvancedTarget(resolveSingle(options, "feedback"));
-  const { candidate, targetRestack } = refresh;
-  const json = flag(options, "json");
+function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null) {
   const artifactValidation = executeCapture(
     process.execPath,
     [semanticImplementationScript, "validate"],
@@ -805,7 +802,7 @@ function feedback(options: Options): void {
     }));
   }
 
-  const result = {
+  return {
     worktree: candidate.worktree,
     currentBranch: candidate.currentBranch,
     worktreeChanges,
@@ -813,7 +810,13 @@ function feedback(options: Options): void {
     feedbackExists: candidate.feedbackExists,
     stages,
   };
-  if (json) {
+}
+
+function feedback(options: Options): void {
+  const { candidate, targetRestack } = refreshAdvancedTarget(resolveSingle(options, "feedback"));
+  const result = feedbackSnapshot(candidate, targetRestack);
+  const { worktreeChanges, stages } = result;
+  if (flag(options, "json")) {
     console.log(JSON.stringify(result));
     return;
   }
@@ -845,6 +848,146 @@ function feedback(options: Options): void {
         console.log(`    ${comment.author}: ${comment.body}`);
       }
     }
+  }
+}
+
+function requireCleanSyncWorktree(root: string): void {
+  const changes = git(["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root });
+  if (changes) fail(`Synchronization requires a clean worktree at ${root}:\n${changes}`);
+  for (const state of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"]) {
+    const statePath = git(["rev-parse", "--git-path", state], { cwd: root });
+    if (fs.existsSync(path.resolve(root, statePath))) {
+      fail(`Finish the Git operation at ${root} before synchronizing (${state}).`);
+    }
+  }
+}
+
+function sync(options: Options): void {
+  const candidate = resolveSingle(options, "sync");
+  const local = flag(options, "local");
+  const json = flag(options, "json");
+  const root = candidate.worktree;
+  const targetRef = `refs/heads/${candidate.targetBranch}`;
+  const revision = (ref: string): string => git(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: root });
+  const isAncestor = (base: string, head: string): boolean =>
+    git(["merge-base", "--is-ancestor", base, head], { cwd: root, allowFailure: true }) !== null;
+
+  requireCleanSyncWorktree(root);
+  withCheckedFeedback(root, false, () => validateSyncStack(root));
+  if (candidate.workingStageIds.length || !candidate.finalizedStageIds.length) {
+    fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
+  }
+  const stageHeads = new Map<string, string>();
+  for (const id of candidate.finalizedStageIds) {
+    const stage = readJson(path.join(root, ".semantic-review", "stages", `${id}.json`));
+    if (revision(`refs/heads/${stage.change.branch}`) !== stage.change.headRevision) {
+      fail(`Stage ${id} moved from its recorded head. Reconcile or restack the edited stages before synchronizing the target.`);
+    }
+    stageHeads.set(stage.change.branch, stage.change.headRevision);
+  }
+  const previousTargetRevision = revision(targetRef);
+  if (!isAncestor(candidate.baseRevision, previousTargetRevision)) {
+    fail(`Target branch ${candidate.targetBranch} diverged from the recorded implementation base. Resolve its history before synchronizing.`);
+  }
+  const originalHead = revision("HEAD");
+  if (!candidate.currentBranch && originalHead !== candidate.baseRevision && ![...stageHeads.values()].includes(originalHead)) {
+    fail(`Cannot preserve detached HEAD ${originalHead}. Check out a semantic stage or the target branch before synchronizing.`);
+  }
+
+  let remote: string | null = null;
+  let remoteBranch: string | null = null;
+  if (!local) {
+    remote = git(["config", "--get", `branch.${candidate.targetBranch}.remote`], { cwd: root, allowFailure: true });
+    remoteBranch = git(["config", "--get-all", `branch.${candidate.targetBranch}.merge`], { cwd: root, allowFailure: true });
+    if (!remote || !remoteBranch || remoteBranch.includes("\n") || !remoteBranch.startsWith("refs/heads/")) {
+      fail(`Target branch ${candidate.targetBranch} needs one configured upstream. Configure its intended upstream, or use sync --local to use only its current local head.`);
+    }
+  }
+
+  // A target checkout may live in the operational worktree while the artifact
+  // lives in a linked worktree. Never move its ref behind its index and files.
+  const targetWorktrees: string[] = [];
+  for (const worktree of worktreeRoots(root)) {
+    const branch = git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true });
+    if (branch === targetRef) {
+      requireCleanSyncWorktree(worktree);
+      targetWorktrees.push(worktree);
+    }
+    if (!samePath(worktree, root) && branch && stageHeads.has(branch.slice("refs/heads/".length))) {
+      fail(`Stage branch ${branch} is checked out in ${worktree}. Free that checkout before synchronizing.`);
+    }
+  }
+  if (targetWorktrees.length > 1) {
+    fail(`Target branch ${candidate.targetBranch} is checked out in multiple worktrees. Free the extra checkouts before synchronizing.`);
+  }
+
+  let upstreamRevision: string | null = null;
+  let targetRevision = previousTargetRevision;
+  if (remote && remoteBranch) {
+    git(["fetch", "--no-tags", "--", remote, remoteBranch], { cwd: root });
+    upstreamRevision = revision("FETCH_HEAD");
+    if (isAncestor(previousTargetRevision, upstreamRevision)) {
+      targetRevision = upstreamRevision;
+    } else if (!isAncestor(upstreamRevision, previousTargetRevision)) {
+      fail(`Target branch ${candidate.targetBranch} and its upstream ${remote} ${remoteBranch} diverged. No target or stage refs were changed; resolve the divergence before retrying.`);
+    }
+  }
+  const finalStageHead = [...stageHeads.values()].at(-1)!;
+  if (isAncestor(finalStageHead, targetRevision)) {
+    fail(`Target branch ${candidate.targetBranch} already contains the final semantic stage. Archive the landed implementation instead of synchronizing it.`);
+  }
+
+  // Fetch may take time. Check the affected checkouts and refs again before
+  // advancing the target; update-ref additionally guards an unchecked-out ref.
+  requireCleanSyncWorktree(root);
+  const currentBranch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: root, allowFailure: true }) ?? null;
+  if (revision(targetRef) !== previousTargetRevision || revision("HEAD") !== originalHead || currentBranch !== candidate.currentBranch) {
+    fail("Target or artifact checkout moved during synchronization; inspect the current state before retrying.");
+  }
+  for (const [branch, head] of stageHeads) {
+    if (revision(`refs/heads/${branch}`) !== head) fail(`Stage branch ${branch} moved during synchronization; retry after inspecting it.`);
+  }
+  const currentTargetWorktrees = worktreeRoots(root).filter((worktree) =>
+    git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === targetRef,
+  );
+  if (JSON.stringify(currentTargetWorktrees) !== JSON.stringify(targetWorktrees)) {
+    fail("Target checkouts changed during synchronization; inspect the worktrees before retrying.");
+  }
+  if (targetRevision !== previousTargetRevision) {
+    if (targetWorktrees.length) {
+      const targetWorktree = targetWorktrees[0];
+      requireCleanSyncWorktree(targetWorktree);
+      git(["merge", "--ff-only", "--no-edit", targetRevision], { cwd: targetWorktree });
+    } else {
+      git(["update-ref", targetRef, targetRevision, previousTargetRevision], { cwd: root });
+    }
+  }
+
+  try {
+    if (revision(targetRef) !== targetRevision) fail("Target branch moved before restacking; retry from its current head.");
+    const { candidate: refreshed, targetRestack } = refreshAdvancedTarget(candidate);
+    const snapshot = feedbackSnapshot(refreshed, targetRestack);
+    const result = {
+      ...snapshot,
+      targetBranch: candidate.targetBranch,
+      previousTargetRevision,
+      targetRevision,
+      upstream: remote ? { remote, branch: remoteBranch, revision: upstreamRevision } : null,
+    };
+    if (json) console.log(JSON.stringify(result));
+    else {
+      console.log(`Artifact: ${root}`);
+      console.log(`Synchronized ${candidate.targetBranch}: ${previousTargetRevision} -> ${targetRevision}`);
+      console.log(`Restacked ${targetRestack?.refreshedStages ?? 0} stage(s); rewrote ${targetRestack?.rewrittenBranches ?? 0} branch(es).`);
+      console.log(`Checkout: ${snapshot.currentBranch ?? "(detached)"}`);
+      const stale = snapshot.stages.flatMap((stage) => stage.threads).filter((thread) => thread.stale);
+      if (stale.length) console.log(`Pending feedback with stale anchors: ${stale.map((thread) => thread.id).join(", ")}`);
+      if (upstreamRevision && upstreamRevision !== targetRevision) console.log("The local target is ahead of its upstream; its commits were preserved.");
+    }
+  } catch (error) {
+    console.error(`Synchronization stopped in ${root}. Target ${candidate.targetBranch} is at ${revision(targetRef)}; the target update is retained.`);
+    console.error(`For a reported patch conflict, follow docs/restack-conflicts.md and resume semantic-implementation.mjs restack --base ${candidate.targetBranch} directly. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
+    throw error;
   }
 }
 
@@ -1160,6 +1303,10 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
   }
   if (command === "feedback") {
     feedback(options);
+    return;
+  }
+  if (command === "sync") {
+    sync(options);
     return;
   }
   if (command === "version") {

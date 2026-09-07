@@ -282,6 +282,10 @@ export const semanticFlowApi: CliSignature = {
       options: [...projectSelectionOptions, option("json")],
     },
     {
+      command: "sync",
+      options: [...projectSelectionOptions, option("local"), option("json")],
+    },
+    {
       command: "version",
       options: [option("json")],
     },
