@@ -42,6 +42,9 @@ prevent safe continuation, stop and identify them.
 - If the target branch advanced, check out a branch that will not be rewritten,
   then run `<semantic-implementation> restack --base <target-branch>`, only when the
   artifact and Git state make that safe.
+- If the request is specifically to bring the latest target changes into the
+  stack, follow `sync.md` instead. For any restack conflict, follow
+  `../docs/restack-conflicts.md`.
 - Use `repair` only for the unambiguous interrupted artifact writes supported
   by the CLI. Do not use it to conceal missing or inconsistent data.
 

@@ -51,7 +51,7 @@ const commands = new Map([
   ],
   [
     flowCli,
-    ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "version", "update"],
+    ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "sync", "version", "update"],
   ],
 ]);
 
@@ -169,6 +169,7 @@ test("skill indexes command-specific workflows", () => {
     "simulate",
     "status",
     "continue",
+    "sync",
     "validate",
     "prepare",
     "archive",

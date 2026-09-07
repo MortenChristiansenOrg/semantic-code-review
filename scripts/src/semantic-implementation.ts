@@ -639,7 +639,7 @@ function unresolvedRefHint(criterionIds, specificationId) {
 function validateSemantic(
   paths,
   artifact,
-  { validateGit = true, allowLandedTarget = false } = {},
+  { validateGit = true, allowLandedTarget = false, allowTargetDrift = false } = {},
 ) {
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
@@ -813,7 +813,7 @@ function validateSemantic(
     allowLandedTarget &&
     finalStageHead !== undefined &&
     isAncestor(paths.root, finalStageHead, targetHead);
-  if (targetHead !== base && !targetContainsLandedStack) {
+  if (targetHead !== base && !targetContainsLandedStack && !allowTargetDrift) {
     fail(
       `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; check it out, then run restack --base ${manifest.targetBranch}.`,
     );
@@ -871,6 +871,7 @@ function validateArtifact(
     quiet = false,
     validateGit = true,
     allowLandedTarget = false,
+    allowTargetDrift = false,
   } = {},
 ) {
   const ajv = schemaValidator();
@@ -892,7 +893,7 @@ function validateArtifact(
   }
 
   if (!schemaOnly) {
-    validateSemantic(paths, artifact, { validateGit, allowLandedTarget });
+    validateSemantic(paths, artifact, { validateGit, allowLandedTarget, allowTargetDrift });
   }
 
   if (publish) {
@@ -2692,6 +2693,11 @@ function archiveImplementation(paths, options, validatedArtifact = undefined, qu
     }
     throw error;
   }
+}
+
+/** Validates the recorded stack before sync; target ancestry is checked by the caller. */
+export function validateSyncStack(root: string): void {
+  validateArtifact(pathsFor(root), { quiet: true, allowTargetDrift: true });
 }
 
 /** One validation boundary for a workflow; standalone commands keep their own gates. */

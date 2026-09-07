@@ -57,6 +57,7 @@ The installed skill also supports intent-level commands:
 /semantic-flow simulate
 /semantic-flow status
 /semantic-flow continue
+/semantic-flow sync
 /semantic-flow validate
 /semantic-flow prepare
 /semantic-flow archive
@@ -294,11 +295,37 @@ when its rewritten diff no longer matches its node coverage.
 Default output is a one-line summary. Add `--json` when exact old and new
 revisions are needed.
 
-If trunk advanced:
+To bring the latest target changes into the implementation, ask the agent:
+
+```text
+/semantic-flow sync
+```
+
+It fetches the recorded target branch's configured upstream, fast-forwards the
+local target, and restacks the finalized stages. The target may be checked out
+in another clean worktree. Local target commits ahead of upstream are preserved;
+divergence, unfinished stages, dirty affected worktrees, and unrecorded stage
+head changes require attention before synchronization. The agent resolves clear
+conflicts, checks node coverage and feedback anchors, and runs relevant tests.
+It stops after synchronization without processing pending feedback or publishing.
+
+The helper is also available directly:
+
+```text
+<semantic-flow> sync --json
+<semantic-flow> sync --local --json
+```
+
+`--local` uses only the current local target head, without fetching or requiring
+an upstream. `--project` and `--implementation-id` select a linked artifact.
+If replay conflicts, the target fast-forward is retained, while stage refs and
+artifacts remain unchanged. Follow the skill's `docs/restack-conflicts.md`,
+resume the underlying restack directly, then run `sync --local` to validate.
+
+For a direct restack after the local target has already advanced:
 
 ```text
 git switch main
-git pull --ff-only
 <semantic-implementation> restack --base main
 ```
 

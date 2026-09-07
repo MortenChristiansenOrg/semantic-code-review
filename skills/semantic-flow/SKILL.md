@@ -1,6 +1,6 @@
 ---
 name: semantic-flow
-description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, reconstruct an existing implementation, or review, revise, validate, prepare, archive, inspect, or update a semantic-flow implementation. Supports explicit commands and natural-language requests.
+description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, reconstruct an existing implementation, or review, revise, sync, validate, prepare, archive, inspect, or update a semantic-flow implementation. Supports explicit commands and natural-language requests.
 ---
 
 # Semantic Flow
@@ -22,6 +22,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | `/semantic-flow simulate` | `sim` | `commands/simulate.md` |
 | `/semantic-flow status` | | `commands/status.md` |
 | `/semantic-flow continue` | | `commands/continue.md` |
+| `/semantic-flow sync` | | `commands/sync.md` |
 | `/semantic-flow validate` | | `commands/validate.md` |
 | `/semantic-flow prepare` | | `commands/prepare.md` |
 | `/semantic-flow archive` | | `commands/archive.md` |

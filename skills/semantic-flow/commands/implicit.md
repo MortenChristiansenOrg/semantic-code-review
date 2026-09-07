@@ -8,6 +8,8 @@ or mentions semantic flow in a natural-language request.
 - An implementation request such as "implement the current user story using
   semantic flow" routes to `implement.md`.
 - A request to resume interrupted implementation routes to `continue.md`.
+- A request to sync the implementation with its target branch or bring the
+  latest master/main changes into its stack routes to `sync.md`.
 - A request to inspect or open the completed implementation routes to `review.md`.
 - A request to address open reviewer comments routes to `feedback.md`.
 - A request to distribute current manual edits into their responsible stages
