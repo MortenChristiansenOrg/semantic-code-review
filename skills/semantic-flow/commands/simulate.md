@@ -5,7 +5,7 @@ implementation was created outside semantic flow and the user wants it
 reconstructed as a reviewable semantic stage stack.
 
 Read `implement.md`, `../docs/runtime.md`, `../docs/artifact-quality.md`,
-`../scripts/API.d.ts`, and the selected operating-system guide before mutation.
+`../scripts/api/stages.d.ts`, and the selected operating-system guide before mutation.
 
 The source implementation remains untouched. Simulation always creates a
 separate normal semantic-flow stack. The same stack supports either a
@@ -137,8 +137,7 @@ author chose an approach unless the source material says so.
 5. Run:
 
    ```text
-   <semantic-flow> validate --publish --project <artifact-worktree-path>
-   <semantic-implementation> validate-stack
+   <semantic-flow> validate --publish --stack --project <artifact-worktree-path>
    ```
 
 6. Check out the final stage branch at its recorded head.

@@ -20,6 +20,7 @@ import {
   type Options,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
+import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { readJson, writeJson } from "./shared/json.js";
 
@@ -112,6 +113,19 @@ function withFeedbackLock(paths, action) {
   }
 }
 
+/** Keeps the reviewed feedback state stable through a workflow's final mutation. */
+export function withCheckedFeedback<T>(root: string, requireResolved: boolean, action: () => T): T {
+  const paths = pathsFor(root);
+  return withFeedbackLock(paths, () => {
+    if (fs.existsSync(paths.feedbackManifest)) {
+      validateFeedback(paths, { quiet: true, requireResolved });
+    } else if (fs.existsSync(paths.feedback) && fs.readdirSync(paths.feedback).length) {
+      fail(`Incomplete feedback state in ${paths.feedback}: manifest.json is missing.`);
+    }
+    return action();
+  });
+}
+
 function listJsonIds(directory) {
   if (!fs.existsSync(directory)) return [];
   return fs
@@ -142,6 +156,10 @@ function semanticArtifact(paths) {
 }
 
 function schemaValidator() {
+  return immutableFact("review-feedback.ts-schema", compileSchemaValidator);
+}
+
+function compileSchemaValidator() {
   const ajv = new Ajv2020({
     allErrors: true,
     strict: true,
@@ -199,7 +217,11 @@ function collectionExists(stage, collection, itemId) {
 }
 
 function renamedPathBetween(root, fromRevision, toRevision, repositoryPath) {
-  const raw = git([
+  return immutableFact(JSON.stringify(["rename", root, fromRevision, toRevision, repositoryPath]), () => readRenamedPath(root, fromRevision, toRevision, repositoryPath));
+}
+
+function readRenamedPath(root, fromRevision, toRevision, repositoryPath) {
+  const raw = immutableFact(JSON.stringify(["rename-map", root, fromRevision, toRevision]), () => git([
     "--no-pager",
     "diff",
     "--name-status",
@@ -210,7 +232,7 @@ function renamedPathBetween(root, fromRevision, toRevision, repositoryPath) {
   ], {
     cwd: root,
     allowFailure: true,
-  });
+  }));
   if (raw === null) return null;
   const fields = raw.split("\0");
   for (let index = 0; index < fields.length && fields[index];) {
@@ -229,6 +251,10 @@ function renamedPathBetween(root, fromRevision, toRevision, repositoryPath) {
 }
 
 function lineCountAtRevision(root, revision, repositoryPath) {
+  return immutableFact(JSON.stringify(["lines", root, revision, repositoryPath]), () => readLineCount(root, revision, repositoryPath));
+}
+
+function readLineCount(root, revision, repositoryPath) {
   const contents = gitRaw(["show", `${revision}:${repositoryPath}`], {
     cwd: root,
     encoding: "buffer",
@@ -577,6 +603,10 @@ function addThreadBatch(paths, options) {
   if (!Array.isArray(values) || values.length === 0) {
     fail("--threads must contain a non-empty JSON array.");
   }
+  if (flag(options, "partial")) {
+    console.log(JSON.stringify(partialFeedbackBatch(paths, values, "add")));
+    return;
+  }
   const threads = addThreads(
     paths,
     values.map((value, index) => batchThreadOptions(value, index)),
@@ -868,11 +898,84 @@ function replyThreadBatch(paths, options) {
   if (!Array.isArray(values) || values.length === 0) {
     fail("--replies must contain a non-empty JSON array.");
   }
+  if (flag(options, "partial")) {
+    console.log(JSON.stringify(partialFeedbackBatch(paths, values, "reply")));
+    return;
+  }
   const replies = replyThreads(
     paths,
     values.map((value, index) => batchReplyOptions(value, index)),
   );
   console.log(`Added ${replies.length} feedback reply/replies.`);
+}
+
+// Validate item inputs in memory, then write the valid subset in one transaction.
+// Store/lock/artifact errors propagate; only item validation errors are skipped.
+function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
+  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
+  const ajv = schemaValidator();
+  const originalManifest = structuredClone(feedback.manifest);
+  const originals = new Map();
+  const changed = new Set<string>();
+  const knownIds = new Set<string>(feedback.threads.keys());
+  const accepted = [];
+  const rejected = [];
+  for (const [index, value] of values.entries()) {
+    let id;
+    let before;
+    try {
+      const options = mode === "add" ? batchThreadOptions(value, index) : batchReplyOptions(value, index);
+      id = option(options, "id", { required: true });
+      before = feedback.threads.has(id) ? structuredClone(feedback.threads.get(id)) : undefined;
+      if (!originals.has(id)) originals.set(id, before);
+      if (before) {
+        const commentId = option(options, "comment-id", { required: true });
+        const existing = before.comments.find((comment) => comment.id === commentId);
+        if (existing) {
+          const author = mode === "add" ? "user" : option(options, "author") || "user";
+          const body = option(options, "body", { required: true });
+          const target = mode === "add" ? buildTarget(options, semantic, paths.root) : undefined;
+          const sameTarget = !target || JSON.stringify(before.target) === JSON.stringify(target);
+          const sameAssignment = !target || before.assignedStageId === (option(options, "assigned-stage") ?? target.stageId);
+          if (existing.author !== author || existing.body !== body || !sameTarget || !sameAssignment) fail(`Comment ${commentId} already exists with different input.`);
+          accepted.push({ index, id, commentId });
+          continue;
+        }
+      }
+      if (mode === "add") {
+        const thread = createThread(paths, options, semantic, knownIds, ajv);
+        feedback.threads.set(id, thread);
+        feedback.manifest.threads.push(id);
+      } else {
+        const reply = applyReply(options, feedback);
+        validateDocument(ajv, reply.thread, "Feedback reply input");
+      }
+      changed.add(id);
+      accepted.push({ index, id, commentId: option(options, "comment-id") });
+    } catch (error) {
+      if (id !== undefined) {
+        if (before) feedback.threads.set(id, before);
+        else feedback.threads.delete(id);
+      }
+      rejected.push({ index, error: error.message });
+    }
+  }
+  if (changed.size) {
+    try {
+      for (const id of changed) writeThread(paths, feedback.threads.get(id));
+      if (mode === "add") writeJson(paths.feedbackManifest, feedback.manifest);
+      validateFeedback(paths, { quiet: true });
+    } catch (error) {
+      for (const id of changed) {
+        const original = originals.get(id);
+        if (original) writeThread(paths, original);
+        else fs.rmSync(path.join(paths.threads, `${id}.json`), { force: true });
+      }
+      if (mode === "add") writeJson(paths.feedbackManifest, originalManifest);
+      throw error;
+    }
+  }
+  return { accepted, rejected };
 }
 
 function resolveThread(paths, options) {
@@ -974,6 +1077,8 @@ function dispatch(paths, positionals, options) {
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
 }
 
+export function runReviewFeedbackCli() {
+
 try {
   const { positionals, options: parsedOptions } = parseArguments(
     process.argv.slice(2),
@@ -986,11 +1091,13 @@ try {
     options.has("help") ||
     positionals[0] === "validate";
   if (readOnly) {
-    dispatch(paths, positionals, options);
+    withValidationContext(() => dispatch(paths, positionals, options));
   } else {
-    withFeedbackLock(paths, () => dispatch(paths, positionals, options));
+    withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
   }
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);
+}
+
 }

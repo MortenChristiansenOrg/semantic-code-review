@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { compileApiDefinition } from "./api-contract-check.js";
+import { compileApiModules } from "./api-contract-check.js";
 import { cliApis } from "./command-api.js";
 
 const scriptsRoot = path.resolve(
@@ -42,9 +42,9 @@ await build({
     "semantic-implementation": path.join(
       scriptsRoot,
       "src",
-      "semantic-implementation.ts",
+      "semantic-implementation-cli.ts",
     ),
-    "review-feedback": path.join(scriptsRoot, "src", "review-feedback.ts"),
+    "review-feedback": path.join(scriptsRoot, "src", "review-feedback-cli.ts"),
     "semantic-view": path.join(scriptsRoot, "src", "semantic-view.ts"),
     "semantic-flow": path.join(scriptsRoot, "src", "semantic-flow.ts"),
   },
@@ -70,11 +70,11 @@ for (const file of [
   fs.chmodSync(path.join(outputDirectory, file), 0o644);
 }
 
-fs.writeFileSync(
-  path.join(outputDirectory, "API.d.ts"),
-  compileApiDefinition(path.join(scriptsRoot, "src", "api.ts"), cliApis),
-  "utf8",
-);
+for (const [file, declaration] of compileApiModules(path.join(scriptsRoot, "src", "api.ts"), cliApis)) {
+  const destination = path.join(outputDirectory, file);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, declaration, "utf8");
+}
 
 const generatedReferences = [
   {

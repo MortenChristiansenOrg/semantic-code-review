@@ -90,6 +90,35 @@ story using semantic flow") or with explicit commands:
 | `update` or `up` | Update the installed skill from its source. |
 | `help` | Explain the available commands, or one command in detail. |
 
+## Report a Semantic Flow problem
+
+The separate [semantic-flow-report skill](skills/semantic-flow-report/SKILL.md)
+guides you through diagnosis, relevant follow-up questions, version checks, and
+duplicate searches. It can prepare a reproducible bug report and, after confirming
+the exact report and GitHub account with you, submit it to this repository.
+It also helps find usage corrections, existing fixes, and optional temporary
+workarounds. You do not need a developer checkout or the repair skill.
+
+Install the complete `skills/semantic-flow-report/` folder using your host's skill
+installer with this repository and folder path. Alternatively, download this
+repository from GitHub and copy that whole folder (including `references/` and
+`assets/`) into your host's user-level or project-level skills directory. The
+reporting skill is ready to distribute as checked in: no build, Node.js, or Git
+is required for its instructions. It supports an available GitHub connector/API,
+the optional GitHub CLI, or a copyable draft for manual browser submission.
+
+Invoke `/semantic-flow-report <problem>` (or `$semantic-flow-report <problem>`
+where your host uses `$`), or ask your agent to report a Semantic Flow bug.
+For example: “Use semantic-flow-report: the viewer opens the first stage expanded
+on a new review.” Reload your host's skill discovery if the new skill is not listed.
+
+To update the reporting skill, use the same installer or replace its entire folder
+from the chosen upstream revision, preserving any local customizations first.
+Record that revision when installing. `/semantic-flow update` updates Semantic
+Flow itself and does not update this separate reporting skill. For a blocking
+defect, the reporting skill can also guide an optional, explicitly authorized
+local source fix without requiring `semantic-flow-repair` to be installed.
+
 ## Contained in this Repository
 
 The Semantic Code Review package is made up of these components:

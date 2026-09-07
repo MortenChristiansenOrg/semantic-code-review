@@ -23,7 +23,7 @@ function inputOptionName(name: string): string {
 }
 
 function inputOptionValues(name: string, value: unknown): OptionValue[] {
-  const structuredOptions = new Set(["threads", "replies"]);
+  const structuredOptions = new Set(["threads", "replies", "items"]);
   if (value === true) {
     return [true];
   }
@@ -189,4 +189,16 @@ export function splitPair(value: string, label: string): [string, string] {
     fail(`${label} must use <id>=<value>.`);
   }
   return [value.slice(0, separator), value.slice(separator + 1)];
+}
+
+/** Converts a structured batch item using the same names and values as --input. */
+export function objectOptions(value: unknown): Options {
+  if (!value || Array.isArray(value) || typeof value !== "object") fail("Batch items must be objects.");
+  const result: Options = new Map();
+  for (const [rawName, rawValue] of Object.entries(value)) {
+    const name = inputOptionName(rawName);
+    if (result.has(name)) fail(`Duplicate input option ${name}.`);
+    result.set(name, inputOptionValues(name, rawValue));
+  }
+  return result;
 }

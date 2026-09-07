@@ -15,6 +15,15 @@ Include natural-language usage and one example:
 Implement the current user story using semantic flow
 ```
 
+For bugs in the skill, CLI, or viewer, mention the separate `semantic-flow-report`
+skill when relevant. It guides diagnosis and bug reporting to the upstream
+repository; it is not the `feedback` command for an implementation review.
+If installed, invoke `/semantic-flow-report <problem>` (or the host's `$` form).
+Otherwise point to the installation instructions in the
+[upstream README](https://github.com/MortenChristiansenOrg/semantic-code-review#report-a-semantic-flow-problem).
+It does not require a developer checkout or the repair skill. Do not load its
+instructions or start reporting merely to answer a help request.
+
 ## `/semantic-flow help <command>`
 
 1. Resolve `<command>` through the installed `SKILL.md` index.

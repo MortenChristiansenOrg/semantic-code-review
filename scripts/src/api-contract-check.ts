@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import ts from "typescript";
 import type {
   CliSignature,
@@ -245,7 +246,10 @@ export function compileApiDefinition(
   sourcePath: string,
   apis: readonly CliSignature[],
 ): string {
-  const sourceText = fs.readFileSync(sourcePath, "utf8");
+  const sources = readApiSources(sourcePath);
+  const sourceText = [...sources.values()].join("\n")
+    .replace(/^import type .*;\s*$/gm, "")
+    .replace(/^export \* from .*;\s*$/gm, "");
   const result = ts.transpileDeclaration(sourceText, {
     fileName: sourcePath,
     reportDiagnostics: true,
@@ -292,4 +296,34 @@ export function compileApiDefinition(
     fail("declaration emit removed source JSDoc comments");
   }
   return result.outputText;
+}
+
+/** Follows the explicit local index so newly added modules cannot escape checks. */
+export function readApiSources(sourcePath: string, sources = new Map<string, string>()): Map<string, string> {
+  sourcePath = path.resolve(sourcePath);
+  if (sources.has(sourcePath)) return sources;
+  const text = fs.readFileSync(sourcePath, "utf8");
+  sources.set(sourcePath, text);
+  const source = ts.createSourceFile(sourcePath, text, ts.ScriptTarget.Latest, true);
+  for (const statement of source.statements) {
+    if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith("./")) fail(`API index must use local modules: ${specifier}`);
+    readApiSources(path.resolve(path.dirname(sourcePath), specifier.replace(/\.js$/, ".ts")), sources);
+  }
+  return sources;
+}
+
+/** Emits the small index and independently loadable declarations after the full contract check. */
+export function compileApiModules(sourcePath: string, apis: readonly CliSignature[]): Map<string, string> {
+  const complete = compileApiDefinition(sourcePath, apis);
+  const outputs = new Map<string, string>([["API.full.d.ts", complete]]);
+  for (const [file, text] of readApiSources(sourcePath)) {
+    const name = file === path.resolve(sourcePath) ? "API.d.ts" : path.relative(path.dirname(sourcePath), file).replace(/\.ts$/, ".d.ts");
+    outputs.set(name, ts.transpileDeclaration(text, {
+      fileName: file,
+      compilerOptions: { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.ESNext, removeComments: false },
+    }).outputText);
+  }
+  return outputs;
 }

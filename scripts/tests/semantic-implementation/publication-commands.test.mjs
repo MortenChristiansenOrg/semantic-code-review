@@ -183,6 +183,40 @@ test("repeat preparation updates the bound PR branch and metadata atomically", (
   assert.equal(stack.preparedHeadRevision, revisedHead);
 });
 
+test("combined preparation reuses bindings and rejects drift before publication", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "combined-pr" });
+  beginStage(repository);
+  const originalHead = finalizeStage(repository);
+  const branch = "review/combined-pr";
+  const metadataBranch = "semantic-flow/combined-pr/metadata";
+
+  const initial = JSON.parse(repository.flow("prepare", "--branch", branch, "--json"));
+  assert.equal(initial.cumulativeBranch, branch);
+  assert.equal(initial.preparedHeadRevision, originalHead);
+
+  repository.commitFile("implementation.txt", "implementation v2\n", "Revise implementation");
+  repository.semantic("restack", "--from", "implementation");
+  const revised = JSON.parse(repository.flow("prepare", "--branch", branch, "--json"));
+  assert.notEqual(revised.finalHeadRevision, originalHead);
+  assert.equal(revised.preparedHeadRevision, revised.finalHeadRevision);
+  assert.equal(repository.git("rev-parse", branch), revised.finalHeadRevision);
+  assert.equal(repository.git("rev-parse", `${metadataBranch}^`), revised.finalHeadRevision);
+
+  const metadataHead = repository.git("rev-parse", metadataBranch);
+  repository.commitFile("implementation.txt", "implementation v3\n", "Revise again");
+  repository.semantic("restack", "--from", "implementation");
+  repository.git("branch", "-f", branch, "main");
+  assert.throws(
+    () => repository.flow("prepare", "--branch", branch, "--json"),
+    /moved from prepared head/,
+  );
+  assert.equal(repository.git("rev-parse", metadataBranch), metadataHead);
+  assert.equal(repository.git("rev-parse", branch), repository.git("rev-parse", "main"));
+  const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
+  assert.equal(stack.preparedHeadRevision, revised.finalHeadRevision);
+});
+
 test("repeat preparation refuses externally moved bound branches without partial publication", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository, { implementationId: "guarded-pr" });

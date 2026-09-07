@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -22,6 +22,9 @@ import {
 import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { readJson } from "./shared/json.js";
+import { withValidationContext } from "./shared/validation-context.js";
+import { withCheckedFeedback } from "./review-feedback.js";
+import { implementationWorkflow } from "./semantic-implementation.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -212,8 +215,9 @@ function resolveSingle(
   options: Options,
   command: string,
 ): ArtifactCandidate {
-  const selectionOptions: Options = new Map(options);
-  selectionOptions.delete("publish");
+  const selectionOptions: Options = new Map(
+    [...options].filter(([name]) => ["project", "implementation-id", "json"].includes(name)),
+  );
   assertKnownOptions(
     options,
     commandOptionNames(semanticFlowApi, command),
@@ -294,37 +298,24 @@ function executeCaptureStreams(
 }
 
 function validate(options: Options): void {
-  const candidate = resolveSingle(options, "validate");
-  const publish = flag(options, "publish");
-  let failed = false;
+  runWorkflow(options, "validate");
+}
 
-  console.log(`Artifact: ${candidate.worktree}`);
-  failed =
-    execute(
-      process.execPath,
-      [
-        semanticImplementationScript,
-        "validate",
-        ...(publish ? ["--publish"] : []),
-      ],
-      candidate.worktree,
-    ) !== 0;
-
-  if (candidate.feedbackExists) {
-    failed =
-      execute(
-        process.execPath,
-        [
-          reviewFeedbackScript,
-          "validate",
-          ...(publish ? ["--require-resolved"] : []),
-        ],
-        candidate.worktree,
-      ) !== 0 || failed;
-  }
-
-  if (failed) {
-    fail("Semantic flow validation failed.");
+function runWorkflow(options: Options, mode: "validate" | "prepare" | "archive"): void {
+  const candidate = resolveSingle(options, mode);
+  const result = withValidationContext(() => withCheckedFeedback(
+    candidate.worktree,
+    mode !== "validate" || flag(options, "publish"),
+    () => implementationWorkflow(candidate.worktree, mode, options),
+  ));
+  if (flag(options, "json")) console.log(JSON.stringify(result));
+  else {
+    console.log(`Artifact: ${candidate.worktree}`);
+    console.log(`Semantic flow ${mode} passed: ${result.stages.length} finalized stage(s), ${result.workingStages.length} working stage(s).`);
+    if (mode === "prepare" || flag(options, "stack")) {
+      for (const stage of result.stages) console.log(`  ${stage.branch} -> ${stage.baseBranch} (${stage.headRevision})`);
+      console.log(`Final cumulative head: ${result.finalHeadRevision}`);
+    }
   }
 }
 
@@ -472,16 +463,101 @@ function status(options: Options): void {
   }
 }
 
-function review(options: Options): void {
+interface ViewerLaunchMessage {
+  type: "ready" | "error";
+  message?: string;
+  url?: string;
+  repositoryRoot?: string;
+  processId?: number;
+  implementation?: {
+    title: string;
+    stageCount: number;
+    fileCount: number;
+  };
+  feedbackEnabled?: boolean;
+}
+
+function isViewerLaunchMessage(value: unknown): value is ViewerLaunchMessage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    (value.type === "ready" || value.type === "error")
+  );
+}
+
+async function review(options: Options): Promise<void> {
   const candidate = resolveSingle(options, "review");
-  const status = execute(
+  const child = spawn(
     process.execPath,
     [semanticViewScript, "review", candidate.worktree],
-    candidate.worktree,
+    {
+      cwd: candidate.worktree,
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      windowsHide: true,
+    },
   );
-  if (status !== 0) {
-    fail(`Semantic review viewer exited with code ${status}.`);
+
+  const launch = await new Promise<ViewerLaunchMessage>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new Error("Semantic review viewer did not start within 15 seconds."));
+    }, 15_000);
+
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(new Error(`Could not start semantic review viewer: ${error.message}`));
+    });
+    child.once("exit", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(
+        new Error(
+          signal
+            ? `Semantic review viewer exited from signal ${signal}.`
+            : `Semantic review viewer exited with code ${code ?? 1}.`,
+        ),
+      );
+    });
+    child.on("message", (message) => {
+      if (settled || !isViewerLaunchMessage(message)) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(message);
+    });
+  });
+
+  if (launch.type === "error") {
+    fail(launch.message ?? "Semantic review viewer failed to start.");
   }
+  if (
+    !launch.url ||
+    !launch.repositoryRoot ||
+    !launch.processId ||
+    !launch.implementation
+  ) {
+    fail("Semantic review viewer returned an invalid startup response.");
+  }
+
+  child.unref();
+  console.log(`Semantic review viewer: ${launch.url}`);
+  console.log(`Project: ${launch.repositoryRoot}`);
+  console.log(
+    `Implementation: ${launch.implementation.title} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
+  );
+  if (!launch.feedbackEnabled) {
+    console.log(
+      "Note: review-feedback CLI not found; exporting reviewer feedback is disabled.",
+    );
+  }
+  console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
 }
 
 function refreshAdvancedTarget(candidate: ArtifactCandidate): {
@@ -862,6 +938,8 @@ function requiredSkillFiles(root: string): string[] {
     "SKILL.md",
     "VERSION",
     path.join("scripts", "API.d.ts"),
+    path.join("scripts", "API.full.d.ts"),
+    ...["shared", "implementation", "stages", "history", "feedback", "workflow"].map((name) => path.join("scripts", "api", `${name}.d.ts`)),
     path.join("scripts", "semantic-implementation.mjs"),
     path.join("scripts", "review-feedback.mjs"),
     path.join("scripts", "semantic-view.mjs"),
@@ -1050,7 +1128,7 @@ function update(options: Options): void {
   console.log(`Installed at: ${skillDirectory}`);
 }
 
-function dispatch(positionals: string[], options: Options): void {
+async function dispatch(positionals: string[], options: Options): Promise<void> {
   const [command, ...extra] = positionals;
   if (extra.length > 0) {
     fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
@@ -1068,12 +1146,16 @@ function dispatch(positionals: string[], options: Options): void {
     validate(options);
     return;
   }
+  if (command === "prepare" || command === "archive") {
+    runWorkflow(options, command);
+    return;
+  }
   if (command === "status") {
     status(options);
     return;
   }
   if (command === "review") {
-    review(options);
+    await review(options);
     return;
   }
   if (command === "feedback") {
@@ -1099,7 +1181,7 @@ try {
     console.log(HELP);
     process.exit(0);
   }
-  dispatch(
+  await dispatch(
     parsed.positionals,
     expandInputOptions(parsed.options, process.cwd()),
   );

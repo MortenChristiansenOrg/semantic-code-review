@@ -21,8 +21,10 @@ import {
   parseArguments,
   repeatedOption,
   splitPair,
+  objectOptions,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
+import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { listJsonFiles, readJson, writeJson } from "./shared/json.js";
 
@@ -99,6 +101,10 @@ function compareOrdinal(left: string, right: string) {
 }
 
 function schemaValidator() {
+  return immutableFact("semantic-implementation.ts-schema", compileSchemaValidator);
+}
+
+function compileSchemaValidator() {
   const required = [
     "common.schema.json",
     "manifest.schema.json",
@@ -222,6 +228,13 @@ function reachable(dependencies, start, target, visited = new Set()) {
 }
 
 function commitObject(root, revision) {
+  if (/^[0-9a-f]{40}$/.test(revision)) {
+    return immutableFact(JSON.stringify(["commit", root, revision]), () => resolveCommitObject(root, revision));
+  }
+  return resolveCommitObject(root, revision);
+}
+
+function resolveCommitObject(root, revision) {
   const commit = git(["rev-parse", "--verify", `${revision}^{commit}`], {
     cwd: root,
   });
@@ -277,6 +290,10 @@ function isAncestor(root, ancestor, descendant) {
 }
 
 function assertLinearRange(root, base, head, label) {
+  return immutableFact(JSON.stringify(["linear", root, base, head]), () => checkLinearRange(root, base, head, label));
+}
+
+function checkLinearRange(root, base, head, label) {
   if (!isAncestor(root, base, head)) {
     fail(`${label} head ${head} must descend from ${base}.`);
   }
@@ -293,6 +310,10 @@ function stageBranchName(manifest, index, id) {
 }
 
 function changedFiles(root, parent, commit) {
+  return immutableFact(JSON.stringify(["files", root, parent, commit]), () => readChangedFiles(root, parent, commit));
+}
+
+function readChangedFiles(root, parent, commit) {
   const result = spawnSync(
     "git",
     ["diff", "--name-status", "-z", "--find-renames=50%", parent, commit],
@@ -370,6 +391,10 @@ function changedFiles(root, parent, commit) {
 }
 
 function diffChangeShape(root, parent, commit, file) {
+  return immutableFact(JSON.stringify(["shape", root, parent, commit, file]), () => readDiffChangeShape(root, parent, commit, file));
+}
+
+function readDiffChangeShape(root, parent, commit, file) {
   const paths = [...new Set([file.previousPath, file.path].filter(Boolean))];
   const patch = gitRaw(
     [
@@ -1057,6 +1082,11 @@ function beginStage(paths, options) {
   }
 
   const branch = stageBranchName(artifact.manifest, artifact.manifest.stages.length, id);
+  const ordinalPrefix = branch.slice(0, branch.lastIndexOf("/") + 1)
+    + `${String(artifact.manifest.stages.length + 1).padStart(2, "0")}-`;
+  const ordinalRefs = git(["for-each-ref", "--format=%(refname:short)", `refs/heads/${artifact.manifest.branchPrefix}/`], { cwd: paths.root });
+  const collision = ordinalRefs.split(/\r?\n/).find((ref) => ref.startsWith(ordinalPrefix));
+  if (collision) fail(`Stage ordinal already exists on branch ${collision}; resolve it before beginning another stage.`);
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
   const existingBranch = git(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: paths.root,
@@ -1114,7 +1144,8 @@ function beginStage(paths, options) {
     git(["branch", "-D", branch], { cwd: paths.root });
     throw error;
   }
-  console.log(`Began working stage ${id} on ${branch}.`);
+  if (flag(options, "json")) console.log(JSON.stringify({ worktree: paths.root, stageId: id, branch, baseRevision: parent, headRevision: parent, next: "implement" }));
+  else console.log(`Began working stage ${id} on ${branch}.`);
 }
 
 function workingStage(paths, id) {
@@ -1154,7 +1185,12 @@ function updateWorkingStage(paths, id, update) {
   }
 }
 
-function updateStageInsight(paths, id, finalized, update) {
+function updateStageInsight(paths, id, finalized, update, batch = undefined) {
+  if (batch) {
+    if (id !== batch.stage.id || finalized !== batch.finalized) fail("Every batch item must target the selected stage.");
+    update(batch.stage);
+    return;
+  }
   if (!finalized) {
     updateWorkingStage(paths, id, update);
     return;
@@ -1304,7 +1340,7 @@ function validateRecordedNodeRefs(stage, item) {
   }
 }
 
-function recordStageItem(paths, options) {
+function recordStageItem(paths, options, batch = undefined) {
   assertKnownOptions(
     options,
     commandOptionNames(semanticImplementationApi, "stage record"),
@@ -1316,7 +1352,7 @@ function recordStageItem(paths, options) {
   }
   const artifact = finalized
     ? undefined
-    : validateArtifact(paths, { quiet: true, validateGit: false });
+    : batch?.artifact ?? validateArtifact(paths, { quiet: true, validateGit: false });
   const stageId = finalized
     ? requestedStage
     : selectedWorkingStageId(artifact, requestedStage, "stage");
@@ -1363,13 +1399,13 @@ function recordStageItem(paths, options) {
     } else {
       stage[item.collection].push(item.value);
     }
-  });
-  console.log(
+  }, batch);
+  if (!batch) console.log(
     `${replace ? "Replaced" : "Recorded"} ${kind} ${item.value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
   );
 }
 
-function recordValidation(paths, options) {
+function recordValidation(paths, options, batch = undefined) {
   assertKnownOptions(
     options,
     commandOptionNames(semanticImplementationApi, "stage validation"),
@@ -1381,7 +1417,7 @@ function recordValidation(paths, options) {
   }
   const artifact = finalized
     ? undefined
-    : validateArtifact(paths, { quiet: true, validateGit: false });
+    : batch?.artifact ?? validateArtifact(paths, { quiet: true, validateGit: false });
   const stageId = finalized
     ? requestedStage
     : selectedWorkingStageId(artifact, requestedStage, "stage");
@@ -1424,10 +1460,68 @@ function recordValidation(paths, options) {
     } else {
       stage.validation.push(value);
     }
-  });
-  console.log(
+  }, batch);
+  if (!batch) console.log(
     `${replace ? "Replaced" : "Recorded"} validation evidence ${value.id} for ${finalized ? "finalized " : ""}${stageId}.`,
   );
+}
+
+function recordStageBatch(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage record-batch"));
+  const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
+  const finalized = flag(options, "finalized");
+  const requested = option(options, "stage");
+  if (finalized && (!requested || requested === "current")) fail("--finalized requires an explicit --stage <stage-id>.");
+  const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "stage");
+  const stage = (finalized ? artifact.stages : artifact.workStages).get(id);
+  if (!stage) fail(`Stage ${id} does not exist.`);
+  const items = JSON.parse(option(options, "items", { required: true }));
+  if (!Array.isArray(items) || !items.length) fail("--items must be a non-empty JSON array.");
+  const batch = { artifact, finalized, stage: structuredClone(stage) };
+  for (const item of items) {
+    const input = objectOptions(item);
+    if (input.has("stage") || input.has("finalized")) fail("Set the batch stage and finalized flag outside items.");
+    input.set("stage", [id]);
+    if (finalized) input.set("finalized", [true]);
+    if (option(input, "kind") === "validation") {
+      input.delete("kind");
+      recordValidation(paths, input, batch);
+    } else recordStageItem(paths, input, batch);
+  }
+  const file = path.join(finalized ? paths.stages : paths.workStages, `${id}.json`);
+  try {
+    writeJson(file, batch.stage);
+    validateArtifact(paths, { quiet: true, validateGit: false });
+  } catch (error) {
+    writeJson(file, stage);
+    throw error;
+  }
+  console.log(JSON.stringify({ stageId: id, recorded: items.length }));
+}
+
+function organizationPlan(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage plan"));
+  const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
+  const finalized = flag(options, "finalized");
+  const requested = option(options, "stage");
+  if (finalized && (!requested || requested === "current")) fail("--finalized requires an explicit --stage <stage-id>.");
+  const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "stage");
+  const stage = (finalized ? artifact.stages : artifact.workStages).get(id);
+  if (!stage) fail(`Stage ${id} does not exist.`);
+  const branch = finalized ? stage.change.branch : stage.branch;
+  if (currentBranch(paths.root) !== branch) fail(`Planning ${id} requires checked-out stage branch ${branch}.`);
+  const base = finalized ? stage.change.baseRevision : (artifact.manifest.stages.length ? lastStageHead(artifact) : artifact.manifest.baseRevision);
+  const head = branchCommit(paths.root, branch);
+  assertLinearRange(paths.root, base, head, `Stage ${id}`);
+  const selectors = flag(options, "selectors");
+  const files = changedFiles(paths.root, base, head).map((file) => ({
+    ...file,
+    ...(selectors ? { selectors: diffChangeShape(paths.root, base, head, file) } : {}),
+  }));
+  const unlinkedItems = STAGE_ITEM_COLLECTIONS.flatMap((collection) => stage[collection]
+    .filter((item) => !item.nodeRefs?.length)
+    .map((item) => ({ collection, itemId: item.id })));
+  console.log(JSON.stringify({ stageId: id, branch, baseRevision: base, headRevision: head, files, unlinkedItems }));
 }
 
 function applyOrganization(stage, organization) {
@@ -1645,7 +1739,8 @@ function finishStage(paths, options) {
     writeJson(workFile, workStage);
     throw error;
   }
-  console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
+  if (flag(options, "json")) console.log(JSON.stringify({ worktree: paths.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
+  else console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
 }
 
 function discardStage(paths, options) {
@@ -2214,6 +2309,22 @@ function buildMetadataCommit(paths, parent, message) {
   return { commit, tree };
 }
 
+// Reuse expensive immutable validation, but re-read documents and refs before
+// each mutation in a combined workflow. A prior success never validates edits.
+function assertValidatedArtifactCurrent(paths, artifact, allowLandedTarget = false) {
+  const encode = (value) => JSON.stringify(value, (_key, item) => item instanceof Map ? [...item] : item);
+  if (encode(loadArtifact(paths)) !== encode(artifact)) fail("Semantic implementation changed during the workflow; retry after the current edit completes.");
+  const expected = new Map<string, string>([[artifact.manifest.targetBranch, artifact.manifest.baseRevision]]);
+  for (const stage of artifact.stages.values()) expected.set(stage.change.branch, stage.change.headRevision);
+  const refs = git(["for-each-ref", "--format=%(refname:strip=2) %(objectname)", ...[...expected.keys()].map((branch) => `refs/heads/${branch}`)], { cwd: paths.root });
+  const actual = new Map(refs.split("\n").filter(Boolean).map((line) => line.split(" ") as [string, string]));
+  for (const [branch, head] of expected) {
+    if (actual.get(branch) === head) continue;
+    if (allowLandedTarget && branch === artifact.manifest.targetBranch && actual.has(branch) && isAncestor(paths.root, lastStageHead(artifact), actual.get(branch))) continue;
+    fail(`Branch ${branch} changed during the workflow; validate the current stack before retrying.`);
+  }
+}
+
 function metadataPublicationPlan(paths, artifact, message) {
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
@@ -2261,38 +2372,33 @@ function metadataPublicationPlan(paths, artifact, message) {
   };
 }
 
-function publishArtifact(paths, options) {
+function publishArtifact(paths, options, validatedArtifact = undefined, quiet = false) {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "publish"));
-  const artifact = validateArtifact(paths, {
+  const artifact = validatedArtifact ?? validateArtifact(paths, {
     publish: true,
     quiet: true,
     allowLandedTarget: true,
   });
   assertCleanWorkingTree(paths.root, "Artifact publication");
+  if (validatedArtifact) assertValidatedArtifactCurrent(paths, artifact);
   const message = option(options, "message", {
     defaultValue: `Publish ${artifact.manifest.implementationId} semantic implementation`,
   });
   const publication = metadataPublicationPlan(paths, artifact, message);
   if (!publication.update) {
-    console.log(
+    if (!quiet) console.log(
       `Semantic implementation metadata is already published on ${publication.branch}.`,
     );
     return;
   }
   updateGitRefsAtomically(paths.root, [publication.update]);
-  console.log(
+  if (!quiet) console.log(
     `Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`,
   );
 }
 
-function validateStack(paths, options) {
-  assertKnownOptions(
-    options,
-    commandOptionNames(semanticImplementationApi, "validate-stack"),
-  );
-  const json = flag(options, "json");
-  const artifact = validateArtifact(paths, { publish: true, quiet: true });
-  const binding = preparedBranchBinding(paths.root, artifact);
+function stackSummary(artifact, root) {
+  const binding = preparedBranchBinding(root, artifact);
   const entries = artifact.manifest.stages.map((id, index) => {
     const stage = artifact.stages.get(id);
     return {
@@ -2303,34 +2409,44 @@ function validateStack(paths, options) {
       headRevision: stage.change.headRevision,
     };
   });
-  const result = {
+  return {
     targetBranch: artifact.manifest.targetBranch,
     branchPrefix: artifact.manifest.branchPrefix,
     metadataBranch: metadataBranch(artifact),
     cumulativeBranch: binding?.branch ?? null,
     preparedHeadRevision: binding?.head ?? null,
-    finalHeadRevision: lastStageHead(artifact),
+    finalHeadRevision: artifact.manifest.stages.length ? lastStageHead(artifact) : artifact.manifest.baseRevision,
     stages: entries,
   };
+}
+
+function validateStack(paths, options) {
+  assertKnownOptions(
+    options,
+    commandOptionNames(semanticImplementationApi, "validate-stack"),
+  );
+  const json = flag(options, "json");
+  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const result = stackSummary(artifact, paths.root);
   if (json) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  console.log(`Local stage stack valid (${entries.length} stage(s)):`);
-  for (const entry of entries) {
+  console.log(`Local stage stack valid (${result.stages.length} stage(s)):`);
+  for (const entry of result.stages) {
     console.log(
       `  ${entry.position}. ${entry.branch} -> ${entry.baseBranch} (${entry.headRevision})`,
     );
   }
   console.log(`Final cumulative head: ${result.finalHeadRevision}`);
-  if (binding) {
+  if (result.cumulativeBranch) {
     console.log(
-      `Bound cumulative branch: ${binding.branch} (${binding.head})`,
+      `Bound cumulative branch: ${result.cumulativeBranch} (${result.preparedHeadRevision})`,
     );
   }
 }
 
-function prepareBranch(paths, options) {
+function prepareBranch(paths, options, validatedArtifact = undefined, quiet = false) {
   assertKnownOptions(
     options,
     commandOptionNames(semanticImplementationApi, "prepare-branch"),
@@ -2338,8 +2454,9 @@ function prepareBranch(paths, options) {
   const requestedBranch = option(options, "branch");
   const adopt = flag(options, "adopt");
   const rebind = flag(options, "rebind");
-  const artifact = validateArtifact(paths, { publish: true, quiet: true });
+  const artifact = validatedArtifact ?? validateArtifact(paths, { publish: true, quiet: true });
   assertCleanWorkingTree(paths.root, "Single-branch preparation");
+  if (validatedArtifact) assertValidatedArtifactCurrent(paths, artifact);
   const binding = preparedBranchBinding(paths.root, artifact);
   if (rebind && !requestedBranch) {
     fail("--rebind requires --branch <branch-name>.");
@@ -2424,6 +2541,7 @@ function prepareBranch(paths, options) {
   }
   updateGitRefsAtomically(paths.root, updates);
 
+  if (quiet) return;
   if (publication.update) {
     console.log(
       `Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`,
@@ -2466,14 +2584,15 @@ function prepareBranch(paths, options) {
   }
 }
 
-function archiveImplementation(paths, options) {
+function archiveImplementation(paths, options, validatedArtifact = undefined, quiet = false) {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive"));
-  const artifact = validateArtifact(paths, {
+  const artifact = validatedArtifact ?? validateArtifact(paths, {
     publish: true,
     quiet: true,
     allowLandedTarget: true,
   });
   assertCleanWorkingTree(paths.root, "Implementation archival");
+  if (validatedArtifact) assertValidatedArtifactCurrent(paths, artifact, true);
   const current = currentBranch(paths.root);
   if (current !== artifact.manifest.targetBranch) {
     fail(
@@ -2560,7 +2679,7 @@ function archiveImplementation(paths, options) {
       ["commit", "-m", message],
       { cwd: paths.root },
     );
-    console.log(
+    if (!quiet) console.log(
       `Archived ${artifact.manifest.implementationId} at ${relativeDestination}.`,
     );
   } catch (error) {
@@ -2573,6 +2692,31 @@ function archiveImplementation(paths, options) {
     }
     throw error;
   }
+}
+
+/** One validation boundary for a workflow; standalone commands keep their own gates. */
+export function implementationWorkflow(root: string, mode: "validate" | "prepare" | "archive", options) {
+  const paths = pathsFor(root);
+  const publish = mode !== "validate" || flag(options, "publish");
+  const artifact = validateArtifact(paths, { quiet: true, publish, allowLandedTarget: mode === "archive" });
+  const summary = {
+    worktree: root,
+    implementationId: artifact.manifest.implementationId,
+    ...stackSummary(artifact, root),
+    workingStages: [...artifact.workStages.keys()],
+  };
+  if (mode === "prepare") {
+    const branch = option(options, "branch");
+    if (branch) {
+      prepareBranch(paths, new Map([["branch", [branch]]]), artifact, flag(options, "json"));
+      Object.assign(summary, stackSummary(artifact, root));
+    } else {
+      publishArtifact(paths, new Map(), artifact, flag(options, "json"));
+    }
+  } else if (mode === "archive") {
+    archiveImplementation(paths, new Map(), artifact, flag(options, "json"));
+  }
+  return summary;
 }
 
 function dispatch(paths, positionals, options) {
@@ -2601,6 +2745,8 @@ function dispatch(paths, positionals, options) {
     setStage(paths, options);
     return;
   }
+  if (command === "stage" && subcommand === "record-batch") return recordStageBatch(paths, options);
+  if (command === "stage" && subcommand === "plan") return organizationPlan(paths, options);
   if (command === "stage" && subcommand === "record") {
     recordStageItem(paths, options);
     return;
@@ -2662,6 +2808,8 @@ function dispatch(paths, positionals, options) {
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
 }
 
+export function runImplementationCli() {
+
 try {
   const parsed = parseArguments(process.argv.slice(2));
   if (parsed.options.has("help") && parsed.positionals.length === 0) {
@@ -2671,12 +2819,14 @@ try {
     process.exit(0);
   }
   const root = repositoryRoot();
-  dispatch(
+  withValidationContext(() => dispatch(
     pathsFor(root),
     parsed.positionals,
     expandInputOptions(parsed.options, process.cwd()),
-  );
+  ));
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);
+}
+
 }

@@ -240,9 +240,7 @@ Repeat begin, implement, commit, and finish for each stage.
 ## 6. Validate and review
 
 ```text
-<semantic-implementation> validate
-<semantic-implementation> validate --publish
-<semantic-implementation> validate-stack
+<semantic-flow> validate --publish --stack
 ```
 
 ```text
@@ -253,8 +251,14 @@ The UI leads with each stage's node descriptions, then shows their classified
 file or hunk membership, linked insights, branch snapshots, and
 Git-backed diffs.
 
-`validate-stack --json` emits machine-readable branch, base, and head entries.
+Add `--json` for machine-readable worktree, branch, base, and head entries.
 It neither contacts a remote nor creates hosted reviews.
+
+The viewer refreshes external feedback and metadata in place, keeping drafts and
+unchanged diffs. Changes appear automatically while the tab is visible. Large
+files have paged changes and full-context views; line-thread navigation loads
+the relevant page. Reopening review reuses a healthy viewer for the same worktree,
+implementation, and installed viewer version.
 
 ## 7. Send feedback
 
@@ -330,18 +334,11 @@ rewrites require no feedback metadata updates.
 
 ## 10. Publish and prepare local outputs
 
-Once human review is complete, validate publication readiness:
+Once human review is complete, validate readiness, publish metadata, and report
+the local stack in one operation:
 
 ```text
-<semantic-flow> validate --publish
-```
-
-For a stage-stack handoff, publish `.semantic-review/` to the metadata branch
-and report the stack:
-
-```text
-<semantic-implementation> publish
-<semantic-implementation> validate-stack
+<semantic-flow> prepare
 ```
 
 The default metadata branch is:
@@ -357,15 +354,15 @@ For a single cumulative branch, the first preparation chooses its durable
 name:
 
 ```text
-<semantic-implementation> prepare-branch --branch review/customer-order-cancellation
+<semantic-flow> prepare --branch review/customer-order-cancellation
 ```
 
 This publishes metadata, creates the branch at the final reviewed stage head,
 and records a private local binding. After feedback changes and restacking,
-prepare again without a branch name:
+prepare again with the same branch name:
 
 ```text
-<semantic-implementation> prepare-branch
+<semantic-flow> prepare --branch review/customer-order-cancellation
 ```
 
 The command republishes metadata and moves the same cumulative branch with a
@@ -388,10 +385,16 @@ After the chosen remote workflow has landed the code and the target branch is
 current:
 
 ```text
-<semantic-implementation> archive
+<semantic-flow> archive
 ```
 
 ## Recovery
+
+For a suspected defect in the skill, CLI, or viewer, use the separate
+`/semantic-flow-report <problem>` skill to diagnose it and prepare an upstream bug
+report. It supports external users and manual submission without a source checkout.
+See [installation and usage](../README.md#report-a-semantic-flow-problem). Ordinary
+comments about the implementation being reviewed still use Semantic Flow feedback.
 
 - `restack --from <stage>`: lower stage branch changed.
 - `restack --base <target>`: trunk changed.

@@ -3,7 +3,7 @@
 Use to resume interrupted semantic-flow implementation.
 
 Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
-`../scripts/API.d.ts`, and the selected operating-system guide before mutation.
+`../scripts/api/stages.d.ts`, and the selected operating-system guide before mutation.
 
 ## Locate and assess
 
@@ -30,9 +30,7 @@ prevent safe continuation, stop and identify them.
   the recorded branch through implementation, insight capture, organization,
   validation, and finalization.
 - If no working stage exists and acceptance criteria remain uncovered, require
-  `HEAD` at the last finalized stage head. Before beginning, list local refs
-  below the manifest's branch prefix and require that none already uses the
-  next ordinal. Then plan the next coherent stage and let `stage begin` create
+  `HEAD` at the last finalized stage head. `stage begin` rejects any branch already using the next ordinal. Then plan the next coherent stage and let `stage begin` create
   its branch before editing.
 - If a numbered branch below the implementation's branch prefix is not recorded as the
   active or finalized branch for its ordinal, stop and report the inconsistent
