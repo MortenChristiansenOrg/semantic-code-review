@@ -17,7 +17,7 @@ installed skill root:
 Run:
 
 ```text
-<semantic-flow> sync --json [--project <repository-or-worktree-path>] [--implementation-id <id>]
+<semantic-flow> sync --json [--local] [--project <repository-or-worktree-path>] [--implementation-id <id>]
 ```
 
 The helper discovers the artifact worktree, checks metadata and feedback,
