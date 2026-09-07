@@ -279,6 +279,45 @@ test("skill indexes command-specific workflows", () => {
   }
 });
 
+test("finalized reorganization guidance supplies the complete CLI input", () => {
+  const skillRoot = path.resolve(scriptsDirectory, "..");
+  const guidePath = "../docs/finalized-stage-organization.md";
+  for (const command of ["feedback", "reconcile"]) {
+    const commandFile = path.join(skillRoot, "commands", `${command}.md`);
+    const text = fs.readFileSync(commandFile, "utf8");
+    assert.ok(text.includes(guidePath));
+    assert.doesNotMatch(text, /`stage organize --finalized`/);
+    assert.ok(fs.existsSync(path.resolve(path.dirname(commandFile), guidePath)));
+  }
+
+  const guide = fs.readFileSync(
+    path.join(skillRoot, "docs", "finalized-stage-organization.md"),
+    "utf8",
+  );
+  assert.match(guide, /stage plan --finalized --stage <stage-id>/);
+  assert.match(
+    guide,
+    /stage organize --finalized --stage <stage-id> --file <organization-json>/,
+  );
+  assert.match(guide, /\.\.\/references\/stage-organization\.schema\.json/);
+  assert.match(guide, /`os\/windows\.md`[\s\S]*`os\/linux\.md`/);
+  assert.match(guide, /complete stage diff, not just the latest correction commit/);
+  assert.match(guide, /`nodes`: the complete replacement node list/);
+  assert.match(guide, /`itemLinks`: one entry for every recorded insight and validation item/);
+  assert.match(guide, /not the manifest or an existing stage artifact/);
+  assert.match(guide, /`--input` does not replace `--file`/);
+  assert.match(guide, /deletion relative to the\s+stage base is still a change/);
+  assert.match(guide, /do not restack after\s+each organization/);
+
+  const feedback = fs.readFileSync(
+    path.join(skillRoot, "commands", "feedback.md"),
+    "utf8",
+  );
+  assert.match(feedback, /read the relevant installed API module and command\s+help/);
+  assert.match(feedback, /No\s+extra user approval is needed/);
+  assert.match(feedback, /missing argument is not evidence of an artifact migration problem/);
+});
+
 test("repository metadata and maintainer guidance preserve portability", () => {
   const skillRoot = path.resolve(scriptsDirectory, "..");
   const repositoryRoot = path.resolve(skillRoot, "..", "..");

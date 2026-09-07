@@ -3,9 +3,16 @@
 Use after a reviewer has sent feedback for the implementation agent to
 address.
 
-The command is self-contained. Do not read the shared runtime guide, platform
-guide, artifact-quality guide, or full API declaration unless a listed command
-fails with an error that this file does not explain.
+Follow this file and the task-specific guides it explicitly requires. Do not
+read the shared runtime guide, artifact-quality guide, or full API declaration
+unless a listed command fails with an error that this file does not explain.
+
+For an unexplained CLI error, read the relevant installed API module and command
+help, correct the invocation, and continue within the requested workflow. No
+extra user approval is needed for that inspection or a missing required argument.
+Ask only when the correction requires a user decision or crosses a safety
+boundary. A missing argument is not evidence of an artifact migration problem;
+do not update the skill, run `repair`, or hand-edit artifacts to address it.
 
 These placeholders mean `node` followed by the quoted script path under the
 installed skill root:
@@ -62,8 +69,9 @@ together:
    stage as one coherent edit, then run relevant tests and commit.
 4. Update finalized insights only when the recorded reasoning changed. Do not
    record normal test runs as validation evidence.
-5. Run `stage organize --finalized` only when the corrected diff changes node
-   ownership, hunks, line ranges, or links.
+5. Reorganize only when the corrected diff changes files, node ownership, hunks,
+   line ranges, or links. Read `../docs/finalized-stage-organization.md` and
+   follow it completely, including the explicit stage ID and organization JSON.
 
 Do not restack after each stage. Track the earliest stage with a code change.
 After all affected branches are committed and organized, check out that
@@ -78,8 +86,8 @@ later correction cannot be implemented coherently until it includes an earlier
 correction, restack before that stage, then continue and restack once more from
 the earliest stage changed after that point.
 
-After restacking, reorganize only descendants whose node coverage no longer
-matches their rewritten diff.
+After restacking, use the same organization guide only for descendants whose
+node coverage no longer matches their rewritten diff.
 
 ## Restack conflicts
 

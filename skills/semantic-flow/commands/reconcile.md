@@ -85,8 +85,9 @@ Process affected stages from earliest to latest:
 5. Update finalized insights and validation evidence only when the
    reconciliation produced a new review-relevant observation. Never invent the
    user's reasoning or reconstruct history.
-6. Rerun `stage organize --finalized` when causes, files, hunks, line ranges,
-   or item links changed.
+6. When causes, files, hunks, line ranges, or item links changed, read
+   `../docs/finalized-stage-organization.md` and follow it completely, including
+   the explicit stage ID and organization JSON.
 
 Do not restack after each stage. Keep the earliest changed stage ID. After all
 assigned corrections are committed and organized, check out that earliest
@@ -101,8 +102,8 @@ earlier correction before it can be recreated coherently, restack before that
 stage, then continue and run one final restack from the earliest stage changed
 afterward.
 
-Reinspect the rewritten stack once. Reorganize only descendants whose existing
-node coverage no longer matches their diff.
+Reinspect the rewritten stack once. Use the same organization guide only for
+descendants whose existing node coverage no longer matches their diff.
 
 Resolve replay conflicts according to the captured final tree and the recorded
 stage intents. If that cannot be done without choosing new product behavior,
