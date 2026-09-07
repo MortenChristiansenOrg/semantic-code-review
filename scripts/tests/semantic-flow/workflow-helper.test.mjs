@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
@@ -325,7 +327,7 @@ test("version reports installed and schema versions", () => {
   );
 });
 
-test("update rebuilds and replaces a copied installation", (t) => {
+function createUpdateFixture(t) {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), "semantic-flow-update-test-"),
   );
@@ -395,21 +397,257 @@ test("update rebuilds and replaces a copied installation", (t) => {
     "scripts",
     "semantic-flow.mjs",
   );
-  const result = spawnSync(
-    process.execPath,
-    [
-      copiedCli,
-      "update",
-      "--source",
-      source,
-      "--use-current-source",
-    ],
-    { cwd: target, encoding: "utf8" },
-  );
+  function run(args, env = {}, cwd = target) {
+    return spawnSync(process.execPath, [copiedCli, ...args], {
+      cwd, encoding: "utf8", env: { ...process.env, ...env },
+    });
+  }
+  function initialize() {
+    initializeImplementation({
+      semantic: (...args) => {
+        const result = spawnSync(process.execPath, [
+          path.join(installedSkill, "scripts", "semantic-implementation.mjs"), ...args,
+        ], { cwd: target, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        return result.stdout;
+      },
+    });
+  }
+  return {
+    root, source, target, installedSkill, run, initialize,
+    update: async (env) => {
+      const child = spawn(process.execPath, [
+        copiedCli, "update", "--source", source, "--use-current-source",
+      ], {
+        cwd: target, env: { ...process.env, ...env },
+        stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const [status] = await once(child, "close");
+      return { status, stdout, stderr };
+    },
+  };
+}
+
+test("update rebuilds and replaces a copied installation", async (t) => {
+  const fixture = createUpdateFixture(t);
+  const port = await reserveViewerPort();
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(
-    fs.readFileSync(path.join(installedSkill, "VERSION"), "utf8"),
+    fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"),
     "9.9.9\n",
   );
   assert.match(result.stdout, /0\.1\.0 -> 9\.9\.9/);
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
+});
+
+test("update restarts a matching linked-worktree viewer without changing artifacts", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const original = fs.readFileSync(path.join(fixture.target, ".semantic-review", "manifest.json"), "utf8");
+  const linked = path.join(fixture.root, "linked");
+  const worktree = spawnSync("git", ["worktree", "add", "-b", "review-work", linked], {
+    cwd: fixture.target, encoding: "utf8",
+  });
+  assert.equal(worktree.status, 0, worktree.stderr);
+  fs.renameSync(path.join(fixture.target, ".semantic-review"), path.join(linked, ".semantic-review"));
+  fs.appendFileSync(path.join(fixture.source, "skills", "semantic-flow", "viewer", "styles.css"), "\n/* updated */\n");
+  const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
+  const launch = fixture.run(["review", "--project", linked], env);
+  assert.equal(launch.status, 0, launch.stderr);
+  const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = before.processId;
+  assert.equal(before.skillDirectory, fixture.installedSkill);
+  const result = await fixture.update(env);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = after.processId;
+  assert.notEqual(after.processId, before.processId);
+  assert.throws(() => process.kill(before.processId, 0), { code: "ESRCH" });
+  assert.notEqual(after.viewerVersion, before.viewerVersion);
+  assert.equal(after.repositoryRoot, linked);
+  assert.equal(after.implementationId, before.implementationId);
+  assert.equal(fs.readFileSync(path.join(linked, ".semantic-review", "manifest.json"), "utf8"), original);
+  assert.match(result.stdout, /Updated semantic-flow 0\.1\.0 -> 9\.9\.9/);
+});
+
+async function startUpdateViewerFixture(t, fixture, port, overrides = {}) {
+  const script = path.join(fixture.root, "viewer-fixture.mjs");
+  fs.writeFileSync(script, `
+import http from "node:http";
+const options = JSON.parse(process.argv[2]);
+const identity = { app: "semantic-flow-review-viewer", implementationId: "test-implementation",
+  repositoryRoot: options.repositoryRoot, processId: process.pid, ...options.identity };
+let probes = 0;
+const server = http.createServer((request, response) => {
+  response.setHeader("content-type", "application/json");
+  if (request.url === "/api/whoami") {
+    if (options.replaceOnRecheck && ++probes === 2) {
+      server.close();
+      const replacement = http.createServer((nextRequest, nextResponse) => {
+        if (nextRequest.url === "/api/shutdown") process.send({ type: "replacement-shutdown" });
+        nextResponse.setHeader("content-type", "application/json");
+        nextResponse.end(JSON.stringify({ ...identity, implementationId: "replacement" }));
+      });
+      return replacement.listen(options.port, "127.0.0.1", () => {
+        response.setHeader("connection", "close");
+        response.end(JSON.stringify(identity));
+      });
+    }
+    return response.end(JSON.stringify(identity));
+  }
+  if (request.url !== "/api/shutdown") { response.writeHead(404); return response.end("{}"); }
+  if (request.method !== "POST" || request.headers["content-type"] !== "application/json") {
+    response.writeHead(403); return response.end("{}");
+  }
+  process.send({ type: "shutdown" });
+  if (options.refuse) { response.writeHead(403); return response.end("{}"); }
+  response.end("{}");
+  server.close();
+  if (!options.stayAlive) setTimeout(() => process.exit(0), 300);
+});
+setInterval(() => {}, 1000);
+server.listen(options.port, "127.0.0.1", () => process.send({ type: "ready" }));
+`);
+  const child = spawn(process.execPath, [script, JSON.stringify({
+    repositoryRoot: fixture.target, port, ...overrides,
+  })], { stdio: ["ignore", "ignore", "pipe", "ipc"], windowsHide: true });
+  const messages = [];
+  child.on("message", (message) => messages.push(message.type));
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await once(child, "exit");
+    }
+  });
+  await once(child, "message", { signal: AbortSignal.timeout(5000) });
+  return { child, messages };
+}
+
+test("update waits for a legacy viewer process to exit before restarting", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const { child } = await startUpdateViewerFixture(t, fixture, port);
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = identity.processId;
+  assert.notEqual(identity.processId, child.pid);
+  assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
+  assert.equal(identity.skillDirectory, fixture.installedSkill);
+});
+
+for (const scenario of ["another repository", "another installation", "another implementation", "another app"]) {
+  test(`update leaves a viewer for ${scenario} untouched`, async (t) => {
+    const fixture = createUpdateFixture(t);
+    fixture.initialize();
+    const port = await reserveViewerPort();
+    const identity = scenario === "another repository" ? { repositoryRoot: fixture.source } :
+      scenario === "another installation" ? { skillDirectory: path.join(fixture.root, "other-skill") } :
+      scenario === "another implementation" ? { implementationId: "other-implementation" } :
+      { app: "another-app" };
+    const { child, messages } = await startUpdateViewerFixture(t, fixture, port, { identity });
+    const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+    assert.equal(after.processId, child.pid);
+    assert.deepEqual(messages, ["ready"]);
+  });
+}
+
+for (const scenario of ["refused shutdown", "acknowledged shutdown without exit", "failed build"]) {
+  test(`update preserves the installed skill and viewer after ${scenario}`, async (t) => {
+    const fixture = createUpdateFixture(t);
+    fixture.initialize();
+    const port = await reserveViewerPort();
+    if (scenario === "failed build") {
+      const manifest = path.join(fixture.source, "scripts", "package.json");
+      const contents = JSON.parse(fs.readFileSync(manifest, "utf8"));
+      contents.scripts.build = 'node -e "process.exit(99)"';
+      fs.writeFileSync(manifest, JSON.stringify(contents));
+    }
+    const { child } = await startUpdateViewerFixture(t, fixture, port, {
+      refuse: scenario === "refused shutdown",
+      stayAlive: scenario === "acknowledged shutdown without exit",
+    });
+    const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
+    assert.equal(process.kill(child.pid, 0), true);
+    if (scenario === "refused shutdown") assert.match(result.stderr, /Could not request viewer shutdown/);
+    if (scenario === "acknowledged shutdown without exit") assert.match(result.stderr, /did not exit after shutdown/);
+    if (scenario === "failed build") assert.match(result.stderr, /99/);
+  });
+}
+
+test("update restarts the old viewer when installation replacement fails", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
+  const launch = fixture.run(["review"], env);
+  assert.equal(launch.status, 0, launch.stderr);
+  const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = before.processId;
+  const preload = path.join(fixture.root, "fail-replacement.mjs");
+  fs.writeFileSync(preload, `
+import fs from "node:fs";
+const rename = fs.renameSync;
+fs.renameSync = (source, destination) => {
+  if (source === ${JSON.stringify(fixture.installedSkill)}) throw new Error("Injected replacement failure");
+  return rename(source, destination);
+};
+`);
+  const result = await fixture.update({
+    ...env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Injected replacement failure/);
+  const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = after.processId;
+  assert.notEqual(after.processId, before.processId);
+  assert.equal(after.viewerVersion, before.viewerVersion);
+  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
+});
+
+test("updated viewer restart refuses to replace a new port occupant", async (t) => {
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const port = await reserveViewerPort();
+  const { child, messages } = await startUpdateViewerFixture(t, fixture, port, {
+    identity: { implementationId: "another-implementation" },
+  });
+  const result = fixture.run(["review"], {
+    SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_NO_REPLACE: "1",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refusing to replace it/);
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.processId, child.pid);
+  assert.deepEqual(messages, ["ready"]);
+});
+
+test("update never sends shutdown to a replacement on a new connection", async (t) => {
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const port = await reserveViewerPort();
+  const { messages } = await startUpdateViewerFixture(t, fixture, port, { replaceOnRecheck: true });
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Could not request viewer shutdown/);
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.implementationId, "replacement");
+  assert.deepEqual(messages, ["ready"]);
+  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
 });

@@ -586,6 +586,7 @@ export interface UpdateSemanticFlowOptions {
 /**
  * Safely updates source and rebuilds the skill without running the test suite,
  * then replaces the installed skill without changing target repository artifacts.
+ * Restarts a matching running viewer at the same URL without opening another tab.
  * @cli semantic-flow.mjs
  * @command update
  */

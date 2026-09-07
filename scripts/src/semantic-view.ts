@@ -1494,6 +1494,7 @@ function serveViewer({
         app: VIEWER_APP_ID,
         implementationId,
         repositoryRoot: repoRoot,
+        skillDirectory: path.resolve(scriptDir, ".."),
         processId: process.pid,
         viewerVersion,
         healthy: dataSource.healthy,
@@ -1812,6 +1813,10 @@ async function main() {
       console.log(`Reusing semantic review viewer: ${url}`);
       openBrowser(url);
       return;
+    }
+    if (process.env.SEMANTIC_VIEW_NO_REPLACE) {
+      await dataSource.close();
+      fail(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
     }
     console.log(`A semantic review viewer is already running on port ${port}; restarting it…`);
     await requestViewerShutdown(port);

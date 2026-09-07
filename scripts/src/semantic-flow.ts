@@ -23,6 +23,11 @@ import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { readJson } from "./shared/json.js";
 import { withValidationContext } from "./shared/validation-context.js";
+import {
+  probeViewer,
+  stopViewerAndWait,
+  type ViewerIdentity,
+} from "./shared/viewer-lifecycle.js";
 import { withCheckedFeedback } from "./review-feedback.js";
 import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
 
@@ -490,14 +495,26 @@ function isViewerLaunchMessage(value: unknown): value is ViewerLaunchMessage {
 
 async function review(options: Options): Promise<void> {
   const candidate = resolveSingle(options, "review");
+  await launchViewer(candidate.worktree);
+}
+
+async function launchViewer(
+  worktree: string,
+  { openBrowser = true, replaceExisting = true } = {},
+): Promise<void> {
   const child = spawn(
     process.execPath,
-    [semanticViewScript, "review", candidate.worktree],
+    [semanticViewScript, "review", worktree],
     {
-      cwd: candidate.worktree,
+      cwd: worktree,
       detached: true,
       stdio: ["ignore", "ignore", "ignore", "ipc"],
       windowsHide: true,
+      env: {
+        ...process.env,
+        ...(!openBrowser ? { SEMANTIC_VIEW_NO_OPEN: "1" } : {}),
+        ...(!replaceExisting ? { SEMANTIC_VIEW_NO_REPLACE: "1" } : {}),
+      },
     },
   );
 
@@ -1201,7 +1218,26 @@ function replaceInstalledSkill(
   }
 }
 
-function update(options: Options): void {
+async function viewerForUpdate(
+  targetRoot: string,
+): Promise<(ViewerIdentity & { repositoryRoot: string }) | null> {
+  const viewer = await probeViewer();
+  if (!viewer || typeof viewer.repositoryRoot !== "string") return null;
+  const viewerRoot = viewer.repositoryRoot;
+  if (!worktreeRoots(targetRoot).some((root) => samePath(root, viewerRoot))) {
+    return null;
+  }
+  // Older viewers identify their repository but not their skill installation.
+  if (viewer.skillDirectory !== undefined &&
+      (typeof viewer.skillDirectory !== "string" ||
+       !samePath(viewer.skillDirectory, skillDirectory))) return null;
+  const manifest = path.join(viewerRoot, ".semantic-review", "manifest.json");
+  if (!fs.existsSync(manifest) ||
+      readJson(manifest).implementationId !== viewer.implementationId) return null;
+  return { ...viewer, repositoryRoot: viewerRoot };
+}
+
+async function update(options: Options): Promise<void> {
   assertKnownOptions(
     options,
     commandOptionNames(semanticFlowApi, "update"),
@@ -1262,12 +1298,33 @@ function update(options: Options): void {
   const builtSkill = path.join(sourceRoot, "skills", "semantic-flow");
   const requiredFiles = verifySkill(builtSkill);
 
-  if (!samePath(builtSkill, skillDirectory)) {
-    replaceInstalledSkill(builtSkill, skillDirectory, requiredFiles);
+  const viewer = await viewerForUpdate(targetRoot);
+  if (viewer) {
+    await stopViewerAndWait(viewer);
   }
-
-  const installedVersion = readVersion(skillDirectory);
-  compareSkillFiles(builtSkill, skillDirectory, requiredFiles);
+  let installedVersion: string;
+  try {
+    if (!samePath(builtSkill, skillDirectory)) {
+      replaceInstalledSkill(builtSkill, skillDirectory, requiredFiles);
+    }
+    installedVersion = readVersion(skillDirectory);
+    compareSkillFiles(builtSkill, skillDirectory, requiredFiles);
+  } catch (updateError) {
+    if (viewer) {
+      try {
+        await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false });
+      } catch (restartError) {
+        throw new AggregateError(
+          [updateError, restartError],
+          `Skill update failed (${String(updateError)}); viewer restart also failed (${String(restartError)}).`,
+        );
+      }
+    }
+    throw updateError;
+  }
+  if (viewer) {
+    await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false });
+  }
   console.log(`Updated semantic-flow ${previousVersion} -> ${installedVersion}.`);
   console.log(`Source: ${branch ?? "(detached)"} ${sourceCommit}`);
   console.log(`Installed at: ${skillDirectory}`);
@@ -1316,7 +1373,7 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
     return;
   }
   if (command === "update") {
-    update(options);
+    await update(options);
     return;
   }
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);

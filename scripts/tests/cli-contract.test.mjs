@@ -305,6 +305,9 @@ test("skill indexes command-specific workflows", () => {
   assert.match(commandText.get("status"), /<semantic-flow> status/);
   assert.match(commandText.get("version"), /<semantic-flow> version/);
   assert.match(commandText.get("update"), /<semantic-flow> update/);
+  assert.match(commandText.get("update"), /waits for the process to exit/);
+  assert.match(commandText.get("update"), /same URL without\s+opening another browser tab/);
+  assert.match(commandText.get("update"), /Do not stop the launcher shell/);
   assert.match(commandText.get("help"), /installed `SKILL\.md` index/);
   assert.match(commandText.get("help"), /Do not return a\s+prewritten description/);
   assert.match(commandText.get("update"), /beside the target repository/);
