@@ -121,6 +121,35 @@ Do not inspect generated `.mjs` bundles for routine usage. Read source only as
 a last-resort defect investigation after the API, command guidance, and
 observed error are insufficient.
 
+## Recoverable CLI errors
+
+A tool-contract error is not a product decision. During implementation and
+continuation, recover autonomously from unsupported insight kinds or decision
+categories, unknown options, and missing or invalid arguments when the intended
+work remains clear. Read the relevant installed `scripts/api/*.d.ts` declaration
+or command help, correct the invocation, and retry without asking for approval.
+Choose a supported representation that preserves the observed insight; keep
+specific nuance in its title and body instead of inventing an enum value.
+
+For example, if recording an observed architecture decision with category
+`architecture` fails, inspect `scripts/api/stages.d.ts` and its shared types.
+When the installed contract supports `engineering`, use that category and retain
+the architecture rationale in the record. Retry the recording and continue the
+active stage through organization and finalization.
+
+After an uncertain write result, inspect current state before retrying to avoid
+duplicate records. A metadata recording failure must not abandon or pause
+otherwise valid implementation work. Continue independent work while diagnosing
+it, and complete required metadata before the final validation gate. If a
+repeated failure reveals a tooling defect, investigate through the documented
+repair/report path and report the concrete blocker; do not ask the user to
+choose CLI syntax or silently drop the insight.
+
+Ask for user input only for genuine product or design ambiguity, conflicting
+requirements, or a safety boundary such as unrelated changes or inconsistent
+stage refs. Do not bypass those boundaries or rewrite requirements to make a
+command pass.
+
 ## Reuse within the session
 
 Reuse already-loaded instructions, platform details, and installed script paths

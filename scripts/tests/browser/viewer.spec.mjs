@@ -1,0 +1,212 @@
+import { test, expect } from '@playwright/test';
+import fs from 'node:fs';
+
+const viewer = new URL('../../../viewer/', import.meta.url);
+const source = fs.readFileSync(new URL('app.js', viewer), 'utf8');
+const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
+const fileId = 'f:first:shared.js';
+function fixture() {
+  return {
+    implementationId: 'browser-review', title: 'Review fixes', summary: 'Browser fixture',
+    targetBranch: 'master', baseRevision: 'a'.repeat(40), viewerRevision: 'initial', requirements: [], feedback: [],
+    stages: ['first', 'second'].map((id) => ({
+      id, title: `Stage ${id}`, summary: 'Summary', rationale: 'Rationale', baseRevision: 'a'.repeat(40), headRevision: 'b'.repeat(40),
+      insights: [], specificationRefs: [],
+      nodes: ['one', 'two'].map((n) => ({ id: `${id}-${n}`, title: `Step ${n}`, description: 'Node description' })),
+      files: [{ path: 'shared.js', kind: 'modified', revision: 'rev', additions: 2, deletions: 0,
+        memberships: [{ nodeId: `${id}-one`, classification: 'behavior', hunks: [1] }, { nodeId: `${id}-two`, classification: 'behavior', hunks: [2] }],
+        lines: [{ t: 'add', n: 1, s: 'const first = 1;', h: 1 }, { t: 'ctx', o: 2, n: 2, s: '// context' }, { t: 'add', n: 3, s: 'const second = 2;', h: 2 }],
+      }],
+    })),
+  };
+}
+function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first', label: 'Stage first' }) {
+  return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
+}
+async function mount(page, data = fixture(), saved = {}) {
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('http://viewer.test/**', async (route) => {
+    const url = new URL(route.request().url());
+    const json = (body) => route.fulfill({ json: body });
+    if (url.pathname === '/api/revision') return json({ ok: true, revision: data.viewerRevision });
+    if (url.pathname === '/api/implementation') return json({ ok: true, implementation: data });
+    if (url.pathname === '/api/feedback/resolve' || url.pathname === '/api/feedback/reopen') {
+      const target = data.feedback.find((t) => t.id === route.request().postDataJSON().threadId);
+      target.status = url.pathname.endsWith('resolve') ? 'resolved' : 'open';
+      return json({ ok: true, status: target.status });
+    }
+    if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
+    if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
+    if (url.pathname === '/api/diff') return json({ ok: true, lines: data.stages[0].files[0].lines, additions: 2 });
+    return route.fulfill({ contentType: 'text/html', body: `<link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(data)}</script><script src="/app.js"></script>` });
+  });
+  await page.addInitScript(({ id, saved }) => {
+    if (!localStorage.getItem(`semantic-view:${id}`)) localStorage.setItem(`semantic-view:${id}`, JSON.stringify(saved));
+  }, { id: data.implementationId, saved });
+  await page.goto('http://viewer.test/');
+  await expect(page.locator('.stage')).toHaveCount(2);
+  expect(errors).toEqual([]);
+  return errors;
+}
+async function openFile(page, node = 'first-one') {
+  if (!await page.locator('.stage[data-stage="first"]').evaluate((el) => el.classList.contains('is-open')))
+    await page.locator('.stage-title[data-id="first"]').click();
+  const details = page.locator(`details[data-node="${node}"]`);
+  if (!await details.evaluate((el) => el.open)) await details.locator('summary').click();
+  await details.locator('.frow-open').click();
+  await expect(details.locator('.cinema-diff')).toBeVisible();
+}
+async function showNotes(page) { await page.locator('.tb-btn[data-action="toggle-notes"]').click(); }
+
+test('fresh stages collapse; saved choices restore only for their implementation', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await expect(page.locator('.stage.is-open')).toHaveCount(0);
+  await page.locator('.stage-title[data-id="second"]').click();
+  await page.reload();
+  await expect(page.locator('.stage.is-open')).toHaveAttribute('data-stage', 'second');
+  data.implementationId = 'another-review';
+  await page.reload();
+  await expect(page.locator('.stage.is-open')).toHaveCount(0);
+});
+
+for (const count of [0, 1, 40]) {
+  test(`notes controls stay compact and sticky with ${count} resolved threads`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    const data = fixture();
+    data.feedback = Array.from({ length: count }, (_, i) => thread(`resolved-${i}`, 'resolved'));
+    await mount(page, data);
+    await showNotes(page);
+    const active = page.locator('.notes-switch-btn[data-filter="active"]');
+    const resolved = page.locator('.notes-switch-btn[data-filter="resolved"]');
+    const original = await active.boundingBox();
+    expect(original.height).toBeLessThan(45);
+    await resolved.click();
+    expect((await resolved.boundingBox()).height).toBeCloseTo(original.height, 0);
+    const list = page.locator('.notes-list');
+    await list.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    if (count === 40) expect(await list.evaluate((el) => el.scrollTop)).toBeGreaterThan(300);
+    const toggle = await page.locator('.notes-switch').boundingBox();
+    expect(toggle.y).toBeCloseTo((await list.boundingBox()).y, 0);
+    await active.click();
+    await expect(page.locator('.notes-col-active .notes-empty')).toBeVisible();
+    expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
+    expect(await list.evaluate((el) => el.scrollHeight)).toBeLessThanOrEqual(await list.evaluate((el) => el.clientHeight));
+    expect((await active.boundingBox()).height).toBeCloseTo(original.height, 0);
+  });
+}
+
+test('Ctrl+Enter submits notes and replies, keeps blank inputs, and scopes shared-file comments', async ({ page }) => {
+  const errors = await mount(page);
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  const input = page.locator('textarea[name="nc-body"]');
+  await input.fill('   ');
+  await input.press('Control+Enter');
+  await expect(input).toBeVisible();
+  await input.fill('Only step one');
+  await input.press('Enter');
+  await expect(input).toBeVisible();
+  await input.press('Control+Enter');
+  await expect(page.locator('.file-notes')).toContainText('Only step one');
+  await page.locator('.lact[data-id="l:first:new:1:shared.js"]').click();
+  await page.locator('textarea[name="nc-body"]').fill('Line in step one');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await expect(page.locator('details[data-node="first-one"] .mini-lines')).toContainText('1');
+  await page.locator('.ownership-notice button').click();
+  await expect(page.locator('details[data-node="first-two"] .cinema-diff')).toBeVisible();
+  await expect(page.locator('.cinema-diff')).not.toContainText('Only step one');
+  await expect(page.locator('.cinema-diff')).not.toContainText('Line in step one');
+  await expect(page.locator('details[data-node="first-two"] .mini-count')).toHaveCount(0);
+  await showNotes(page);
+  const card = page.locator('.side.notes .tnote').filter({ hasText: 'Only step one' });
+  await expect(card.locator('xpath=ancestor::div[contains(@class,"note-node")]/h4')).toHaveText('Step one');
+  await card.locator('[data-action="jump-to"]').click();
+  await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toContainText('Only step one');
+  expect(errors).toEqual([]);
+});
+
+test('open threads refresh while code remains selected, and edited replies survive refresh', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('live')];
+  const errors = await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await page.locator('.drow code').first().evaluate((el) => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+  data.feedback[0].comments.push({ author: 'agent', body: 'Addressed by the agent', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'changed';
+  await expect(page.locator('.stage .tthread')).toContainText('Addressed by the agent');
+  expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await page.locator('.stage [data-action="thread-reply"]').click();
+  const input = page.locator('.stage textarea[name="reply-body"]');
+  await input.fill('Keep my draft');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Second update', createdAt: '2026-09-08T10:02:00Z' });
+  data.viewerRevision = 'changed-again';
+  await expect(page.locator('.stage .tthread')).toContainText('Second update');
+  await expect(input).toHaveValue('Keep my draft');
+  await input.press('Control+Enter');
+  await expect(page.locator('.stage .tmsg-draft')).toContainText('Keep my draft');
+  expect(errors).toEqual([]);
+});
+
+test('resolve and reopen update global badge, lists, and inline thread immediately', async ({ page }) => {
+  const data = fixture(); data.feedback = [thread('resolve-me')];
+  await mount(page, data, { openThreads: { first: true } });
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 0');
+  await showNotes(page);
+  await expect(page.locator('.notes-col-active .notes-empty')).toBeVisible();
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  await page.locator('.notes-col-resolved [data-action="toggle-thread-collapse"]').click();
+  await page.locator('.notes-col-resolved [data-action="thread-reopen"]').click();
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 1');
+  await page.locator('.notes-switch-btn[data-filter="active"]').click();
+  await expect(page.locator('.notes-col-active .tthread')).toHaveCount(1);
+});
+
+test('exported local provenance scopes comments; unknown shared-file origins stay in the global list', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('known', 'open', { kind: 'file', stageId: 'first', path: 'shared.js', label: 'shared.js' }), thread('unknown', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' })];
+  await mount(page, data, { comments: [{ kind: 'file', id: fileId, nodeId: 'first-two', exported: true, threadId: 'known', body: 'Feedback known' }] });
+  await openFile(page);
+  await expect(page.locator('.cinema-diff .tthread')).toHaveCount(0);
+  await openFile(page, 'first-two');
+  await expect(page.locator('.file-notes .tthread')).toHaveCount(1);
+  await showNotes(page);
+  const unknown = page.locator('.side.notes [data-thread-id="unknown"]');
+  await expect(unknown).toContainText('Original step unknown');
+  await expect(unknown.locator('[data-action="jump-to"]')).toHaveCount(0);
+});
+
+test('custom tooltips work on focus without native duplicates and dismiss with Escape', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  const target = page.locator('.cinema-diff [data-action="toggle-hide-removed"]');
+  await target.focus();
+  await expect(page.locator('[role="tooltip"]')).toContainText('Hide removed lines');
+  await expect(target).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await target.press('Escape');
+  await expect(page.locator('[role="tooltip"]')).not.toHaveClass(/is-shown/);
+});
+
+test('editing a draft from the notes panel focuses its visible form and survives a refresh', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data, { comments: [{ kind: 'file', id: fileId, nodeId: 'first-two', body: 'Edit this note', mode: 'feedback', createdAt: 1 }] });
+  await showNotes(page);
+  await page.locator('.side.notes [data-action="edit-note"]').click();
+  const input = page.locator('.side.notes textarea');
+  await expect(input).toBeFocused();
+  await input.fill('Updated note');
+  data.viewerRevision = 'updated';
+  await expect(page.locator('.review-update')).toBeVisible();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue('Updated note');
+  await input.press('Control+Enter');
+  await expect(page.locator('.side.notes .tnote')).toContainText('Updated note');
+  await expect(page.locator('.side.notes .tnote')).toContainText('Draft');
+});

@@ -470,3 +470,18 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(userManual, /docs\/os\/linux\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);
 });
+
+test("implementation and continuation distinguish recoverable CLI errors from user decisions", () => {
+  const root = path.resolve(scriptsDirectory, "..");
+  const runtime = fs.readFileSync(path.join(root, "docs/runtime.md"), "utf8");
+  for (const command of ["implement", "continue"]) {
+    const guide = fs.readFileSync(path.join(root, `commands/${command}.md`), "utf8");
+    assert.match(guide, /Unsupported insight kinds or decision categories/);
+    assert.match(guide, /without asking for\s+approval/);
+    assert.match(guide, /metadata recording failure does not pause/);
+  }
+  assert.match(runtime, /`architecture` fails/);
+  assert.match(runtime, /`engineering`/);
+  assert.match(runtime, /inspect current state before retrying/);
+  assert.match(runtime, /genuine product or design ambiguity, conflicting/);
+});

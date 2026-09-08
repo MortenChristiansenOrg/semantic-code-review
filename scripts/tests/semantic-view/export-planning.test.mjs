@@ -661,7 +661,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.match(app, /head: entry\.stage\.headRevision/);
   assert.match(app, /pendingLazyJump = null;\s+state\.notesOpen = false/);
   assert.match(app, /function resumePendingLazyJump\(\)/);
-  assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 2);
+  assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 1);
   assert.match(
     app,
     /<div class="stage-approve">\$\{stageNoteCluster\(stage\.id\)\}\$\{approveBtn\("stage", stage\.id, "sm"\)\}<\/div>/,

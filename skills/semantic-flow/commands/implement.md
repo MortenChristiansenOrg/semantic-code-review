@@ -7,6 +7,12 @@ Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
 `../scripts/api/stages.d.ts`, and the selected operating-system guide before changing
 application code or invoking the CLI.
 
+Recover from CLI usage and validation errors under the runtime's
+“Recoverable CLI errors” rules. Unsupported insight kinds or decision categories
+and missing or invalid arguments require inspecting the installed API declaration
+or command help, correcting the invocation, and continuing without asking for
+approval. A metadata recording failure does not pause otherwise valid work.
+
 ## Enter the flow
 
 Use semantic flow for a substantial feature or user story that benefits from

@@ -427,3 +427,15 @@ comments about the implementation being reviewed still use Semantic Flow feedbac
 - `restack --base <target>`: trunk changed.
 - `repair`: interrupted artifact file mutation with an unambiguous recovery.
 - `validate`: explain schema, reference, branch, ancestry, or inventory drift.
+
+File and line notes keep the step in which they were created. For submitted
+feedback, the viewer retains that context through the browser's exported-note
+record; clearing browser storage or opening the review in another browser can
+remove that provenance. A shared-file comment with no known original step stays
+visible in Notes & feedback under “Other targets / original step unknown”, with
+an explanation and no misleading jump. Files belonging to just one step can
+resolve their context unambiguously. This does not change feedback schemas.
+
+Dimmed shared-file sections explain their owning step and provide a jump to that
+step at the same line. File rows show file and line comment counts separately.
+Use Ctrl+Enter in a note or reply input to submit it; ordinary Enter adds a line.

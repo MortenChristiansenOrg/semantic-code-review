@@ -26,16 +26,23 @@
       if (!response.ok) return;
       const snapshot = await response.json();
       if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
-      // Keep selected review text stable and let an in-flight send finish first.
-      const editing = document.activeElement?.matches("input, textarea");
-      if ((!editing && window.getSelection()?.toString()) || exportState.phase === "working") return;
+      // Let local feedback writes finish before adopting a server snapshot.
+      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
       if (!nextResponse.ok) return;
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
-      adoptImplementation(payload.implementation);
+      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      const selection = window.getSelection();
+      const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
       refreshNotice = "Review updated";
-      render();
+      if (selected) {
+        // A code selection must not prevent an open conversation from refreshing.
+        // Keep metadata aligned with the visible diff until the selection clears.
+        // Leave viewerRevision unchanged so the next poll still adopts the full snapshot.
+        artifactThreads.splice(0, artifactThreads.length, ...(payload.implementation.feedback || []));
+        artifactThreads.forEach((thread) => updateThreadEls(thread, threadCollapsed(thread), selection));
+      } else { adoptImplementation(payload.implementation); render(); }
     } catch {
       // External artifact writes can be transient; retry without replacing good data.
     } finally { polling = false; }
@@ -318,7 +325,7 @@
       }
       requestAnimationFrame(() => {
         const target = exact
-          ? app.querySelector(`.line-thread[data-thread="${cssEsc(pending.id)}"]`)
+          ? app.querySelector(`[data-line-id="${cssEsc(pending.id)}"]`)
           : fileRowElement(pending.fileId, pending.membership?.nodeId);
         if (target)
           target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -341,7 +348,7 @@
     return {
       approvals: {},
       comments: [],
-      openStages: { [data.stages[0].id]: true },
+      openStages: {},
       openThreads: {},
       lastNoteMode: "personal",
       specificationOpen: {},
@@ -458,14 +465,48 @@
   }
 
   /* ---- artifact feedback threads (from window.SEMANTIC_IMPLEMENTATION.feedback) -- */
-  const artifactThreads = Array.isArray(data.feedback) ? data.feedback : [];
+  const artifactThreads = Array.isArray(data.feedback) ? [...data.feedback] : [];
   function fileElementId(stageId, p) { return `f:${stageId}:${p}`; }
   function artifactThreadById(tid) {
     return tid ? artifactThreads.find((t) => t.id === tid) : undefined;
   }
-  function artifactThreadsForElement(kind, id, stageId) {
+  function noteFileEntry(kind, id) {
+    const line = kind === "line" ? parseLineId(id) : null;
+    return kind === "file" ? fileById.get(id) || fileByPreviousId.get(id)
+      : line ? currentFileEntry(line.stageId, line.path) : null;
+  }
+  function noteNodeId(note) {
+    const entry = noteFileEntry(note.kind, note.id);
+    if (!entry) return null;
+    const memberships = entry.file.memberships || [];
+    if (note.nodeId) return memberships.some((m) => m.nodeId === note.nodeId) ? note.nodeId : null;
+    return memberships.length === 1 ? memberships[0].nodeId : null;
+  }
+  function threadNote(t) {
+    const target = t.target || {};
+    const local = state.comments.find((c) => c.threadId === t.id);
+    return {
+      kind: target.kind,
+      id: target.kind === "file" ? fileKey(target.stageId, target.path)
+        : target.kind === "line" ? lineKey(target.stageId, target.side, target.line, target.path)
+        : target.kind === "stage" ? target.stageId : target.nodeId,
+      stageId: target.stageId || t.assignedStageId,
+      nodeId: target.nodeId || local?.nodeId,
+      createdAt: t.comments?.[0]?.createdAt,
+    };
+  }
+  function matchesNodeContext(note, nodeId) {
+    if (note.kind !== "file" && note.kind !== "line") return true;
+    return Boolean(nodeId) && noteNodeId(note) === nodeId;
+  }
+  function elementNodeId(kind, id) {
+    const entry = noteFileEntry(kind, id);
+    return entry ? activeFileNodeId(entry.id) : null;
+  }
+  function artifactThreadsForElement(kind, id, stageId, nodeId = elementNodeId(kind, id)) {
     return artifactThreads.filter((t) => {
       const tk = t.target && t.target.kind;
+      if ((kind === "file" || kind === "line") && !matchesNodeContext(threadNote(t), nodeId)) return false;
       if (kind === "stage") return tk === "stage" && t.target.stageId === id;
       if (kind === "node")
         return tk === "node" && t.target.nodeId === id && t.target.stageId === stageId;
@@ -482,9 +523,9 @@
   // Local notes still worth showing: drafts, plus exported notes whose artifact
   // thread has not been reloaded yet. Once the artifact thread is present the
   // local marker is hidden so a sent note is never rendered twice.
-  function localVisibleForElement(id) {
+  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id)) {
     return elementNotes(id).filter(
-      ({ c }) => !c.exported || !artifactThreadById(c.threadId),
+      ({ c }) => (!c.exported || !artifactThreadById(c.threadId)) && matchesNodeContext(c, nodeId),
     );
   }
   function threadToggleCounts(kind, id, stageId) {
@@ -498,16 +539,20 @@
   function visibleThreadCount(kind, id) {
     return threadToggleCounts(kind, id).open;
   }
-  // Files list splits its badge into two: unresolved feedback conversations
-  // (exported threads + local feedback drafts) and browser-local personal notes.
-  function unresolvedThreadCount(kind, id) {
-    return (
-      artifactThreadsForElement(kind, id).filter((t) => t.status !== "resolved").length +
-      localVisibleForElement(id).filter(({ c }) => (c.mode || "personal") === "feedback").length
-    );
-  }
-  function personalNoteCount(id) {
-    return localVisibleForElement(id).filter(({ c }) => (c.mode || "personal") !== "feedback").length;
+  function fileNoteCounts(id, nodeId) {
+    const entry = fileById.get(id);
+    const counts = { file: 0, line: 0, personal: 0 };
+    const belongs = (note) => noteFileEntry(note.kind, note.id)?.id === entry?.id && matchesNodeContext(note, nodeId);
+    artifactThreads.forEach((t) => {
+      const note = threadNote(t);
+      if (t.status !== "resolved" && belongs(note)) counts[note.kind] += 1;
+    });
+    visibleLocalNotes().forEach(({ c }) => {
+      if (!belongs(c)) return;
+      if ((c.mode || "personal") === "personal") counts.personal += 1;
+      counts[c.kind] += 1;
+    });
+    return counts;
   }
   function visibleLocalNotes() {
     return state.comments
@@ -755,9 +800,11 @@
   // ref so the jump control can be withheld.
   function threadElementRef(t) {
     const tgt = (t && t.target) || {};
+    const nodeId = noteNodeId(threadNote(t));
+    if ((tgt.kind === "file" || tgt.kind === "line") && !nodeId) return null;
     if (tgt.kind === "file" && tgt.path && tgt.stageId) {
       const entry = currentFileEntry(tgt.stageId, tgt.path);
-      return entry ? { kind: "file", id: entry.id } : null;
+      return entry ? { kind: "file", id: entry.id, nodeId } : null;
     }
     if (tgt.kind === "line" && tgt.path && tgt.stageId && tgt.line) {
       const entry = currentFileEntry(tgt.stageId, tgt.path);
@@ -765,10 +812,10 @@
       // A later stage head can remove or move the saved line. Only offer an
       // exact jump while that side and line still exist in the rendered diff.
       if (entry.file.path === tgt.path && !t.anchorStale)
-        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
+        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path), nodeId };
       if (entry.file.path === tgt.path && fileHasLine(entry.file, tgt.side, tgt.line))
-        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path) };
-      return { kind: "file", id: entry.id };
+        return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path), nodeId };
+      return { kind: "file", id: entry.id, nodeId };
     }
     if (tgt.kind === "stage" && tgt.stageId)
       return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
@@ -800,7 +847,7 @@
             id: insightKey(tgt.stageId, tgt.collection, tgt.itemId),
             stageId: tgt.stageId,
           }
-        : { kind: "stage", id: tgt.stageId };
+        : stage ? { kind: "stage", id: tgt.stageId } : null;
     }
     return null;
   }
@@ -858,7 +905,7 @@
     const jump = !withLabel
       ? ""
       : ref
-        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
+        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
         : tstate.state === "deleted"
           ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
           : "";
@@ -868,6 +915,8 @@
         : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
     const busy = threadBusy(t.id);
     let staleMsg = "";
+    if ((kind === "file" || kind === "line") && !noteNodeId(threadNote(t)))
+      staleMsg = "Original step unknown or unavailable. This conversation is kept in the global list.";
     if (tstate.state === "deleted")
       staleMsg = `This file was deleted after the feedback was sent.`;
     else if (tstate.state === "renamed")
@@ -876,6 +925,7 @@
       staleMsg = `This file is no longer changed in this stage.`;
     else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
       staleMsg = `Stage changed since this feedback was sent.`;
+    if (withLabel && !ref && !staleMsg) staleMsg = "The original target is no longer available.";
     const stale = staleMsg
       ? `<p class="tthread-stale">${staleMsg}</p>`
       : "";
@@ -906,7 +956,7 @@
         </div>`
       : "";
     const editing = replyTo === t.id && replyEditId != null;
-    const replyForm = replyTo === t.id
+    const replyForm = replyTo === t.id && Boolean(withLabel) === state.notesOpen
       ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
           <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>
           <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit">${editing ? "Update reply" : "Save reply"}</button></div>
@@ -934,8 +984,13 @@
   }
   // A browser-local note. Drafts can be edited/deleted; a sent note awaiting its
   // artifact thread is shown read-only.
-  function renderLocalNote({ c, i }) {
-    if (compose && compose.editIndex === i) return renderComposer(compose);
+  function renderLocalNote({ c, i }, withLabel = false) {
+    if (compose && compose.editIndex === i && withLabel === state.notesOpen) return renderComposer(compose);
+    const label = noteTargetLabel(c);
+    const ref = localNoteRef(c);
+    const jump = withLabel && ref ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" aria-label="Show note target" title="Show note target">${arrowRight()}</button>` : "";
+    const missing = withLabel && !ref ? `<p class="tthread-stale">Original target or step unavailable. This note is kept in the global list.</p>`
+      : withLabel && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
     const sent = Boolean(c.exported);
     const mode = c.mode || "personal";
     const acts = sent
@@ -944,13 +999,15 @@
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
           <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
         </div>`;
-    return `<article class="tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
-        <div class="tnote-h">
+    return `<article class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
+        <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
-          ${acts}
+          ${withLabel ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
         </div>
-        <p class="comment-body">${formatCommentBody(c.body)}</p>
+        ${missing}
+        <div class="tmsg tmsg-user ${mode === "feedback" && !sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${esc(fmtTime(c.createdAt))}</time>${acts}</div>
+        <p class="comment-body">${formatCommentBody(c.body)}</p></div>
       </article>`;
   }
   // Inline note composer, rendered directly in the element's own thread so the
@@ -970,7 +1027,7 @@
     </form>`;
   }
   function threadInline(id, kind, stageId) {
-    const composingNew = compose && compose.id === id && compose.editIndex == null;
+    const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
     const arts = artifactThreadsForElement(kind, id, stageId);
     const locals = localVisibleForElement(id);
     const hasContent = arts.length || locals.length;
@@ -1006,11 +1063,16 @@
     const isOn = st === "approved";
     const isStale = st === "stale";
     const isActive = activeFileNodeId(id) === node.id;
-    const threadN = unresolvedThreadCount("file", id);
-    const noteN = personalNoteCount(id);
+    const counts = fileNoteCounts(id, node.id);
+    const threadN = counts.file;
+    const lineN = counts.line;
+    const noteN = counts.personal;
     const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
     const threadBadge = threadN
-      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} unresolved thread${threadN === 1 ? "" : "s"}" aria-label="${threadN} unresolved thread${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
+      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} file comment${threadN === 1 ? "" : "s"}" aria-label="${threadN} file comment${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
+      : "";
+    const lineBadge = lineN
+      ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
       : "";
     const noteBadge = noteN
       ? `<button class="mini-count mini-notes ${isActive ? "is-open" : ""}" ${openAttrs} title="${noteN} personal note${noteN === 1 ? "" : "s"}" aria-label="${noteN} personal note${noteN === 1 ? "" : "s"}">${noteGlyph()}<b>${noteN}</b></button>`
@@ -1026,7 +1088,7 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${threadBadge}${noteBadge}
+          ${threadBadge}${lineBadge}${noteBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
       </div>
@@ -1035,7 +1097,7 @@
   // The notes block shown inside an open file's diff unit — always present while
   // the file is open so content and notes collapse/expand together.
   function fileNotesBlock(id) {
-    const composingNew = compose && compose.id === id && compose.editIndex == null;
+    const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
     const arts = artifactThreadsForElement("file", id);
     const locals = localVisibleForElement(id);
     const rows =
@@ -1166,7 +1228,7 @@
   // gutter bubble is toggled open, so notes never crowd the surrounding code.
   function lineThreadRow(lineId) {
     const composingNew =
-      compose && compose.kind === "line" && compose.id === lineId && compose.editIndex == null;
+      compose && compose.kind === "line" && compose.id === lineId && matchesNodeContext(compose, elementNodeId("line", lineId)) && compose.editIndex == null;
     const open = Boolean(state.openLineThreads[lineId]);
     const arts = artifactThreadsForElement("line", lineId);
     const locals = localVisibleForElement(lineId);
@@ -1199,20 +1261,25 @@
     // For a file split across steps, dim the lines owned by other steps so the
     // step currently in focus reads as this node's slice of the shared diff.
     let ownClass = "";
-    let ownAttr = "";
+    let ownershipNotice = "";
     if (ctx.ownership && (side === "old" || side === "new")) {
       const owner = ctx.ownership.get(`${side}:${lineNo}`);
       if (owner) {
         ownClass = ctx.focusNodeId
           ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
           : " own-mark";
-        ownAttr = ` title="Part of step: ${esc(nodeTitleById.get(owner) || owner)}"`;
-      }
+        if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner) {
+          ownershipNotice = `<div class="ownership-notice">Dimmed lines belong to ${esc(nodeTitleById.get(owner) || owner)}.
+            <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}">Open this step here ${arrowRight()}</button></div>`;
+        }
+        ctx.previousOwner = owner;
+      } else ctx.previousOwner = null;
     }
-    const row = `<div class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"${ownAttr}><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
-    return row + lineThreadRow(lineId);
+    const row = `<div data-line-id="${esc(lineId)}" class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
+    return ownershipNotice + row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
+    if (ctx && ctx.previousHunk !== r.h) { ctx.previousOwner = null; ctx.previousHunk = r.h; }
     const sign = r.t === "add" ? "+" : r.t === "del" ? "−" : "";
     const code = highlightCode(r.s || " ", lang);
     const side = r.t === "del" ? "old" : "new";
@@ -1519,45 +1586,25 @@
       <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>Files</span></div>
     </aside>`;
   }
+  function localNoteRef(c) {
+    if (c.kind === "stage") return stageById.has(c.id) ? c : null;
+    if (c.kind === "node") return stageById.get(c.stageId)?.nodes.some((n) => n.id === c.id) ? c : null;
+    const entry = noteFileEntry(c.kind, c.id);
+    const nodeId = noteNodeId(c);
+    if (!entry || !nodeId) return null;
+    const snapshot = draftSnapshots.get(c);
+    const stale = snapshot && (snapshot.base !== entry.stage.baseRevision || snapshot.head !== entry.stage.headRevision);
+    return c.kind === "line" && !stale ? { ...c, nodeId } : { kind: "file", id: entry.id, nodeId };
+  }
   function noteGroupKey(c) {
-    if (c.kind === "stage") {
-      const si = data.stages.findIndex((s) => s.id === c.id);
-      const s = data.stages[si];
-      return { si: si < 0 ? 900 : si, stageTitle: s ? s.title : c.id,
-        ni: -1, nodeKey: `${c.id}::__stage__`, nodeTitle: "Stage overview" };
-    }
-    if (c.kind === "node") {
-      for (let si = 0; si < data.stages.length; si++) {
-        const s = data.stages[si];
-        const ni = s.nodes.findIndex((n) => n.id === c.id);
-        if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${c.id}`, nodeTitle: s.nodes[ni].title };
-      }
-      return { si: 900, stageTitle: "Unknown stage", ni: 900, nodeKey: `::${c.id}`, nodeTitle: c.id };
-    }
-    const entry = fileById.get(c.id);
-    if (entry) {
-      const s = entry.stage;
-      const si = data.stages.findIndex((x) => x.id === s.id);
-      const membership = (entry.file.memberships || [])[0];
-      const nodeId = membership && membership.nodeId;
-      const ni = nodeId ? s.nodes.findIndex((n) => n.id === nodeId) : -1;
-      if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${nodeId}`, nodeTitle: s.nodes[ni].title };
-      return { si, stageTitle: s.title, ni: 800, nodeKey: `${s.id}::__files__`, nodeTitle: "Files" };
-    }
-    if (c.kind === "line") {
-      const p = parseLineId(c.id);
-      const lineEntry = p && fileById.get(fileKey(p.stageId, p.path));
-      if (lineEntry) {
-        const s = lineEntry.stage;
-        const si = data.stages.findIndex((x) => x.id === s.id);
-        const membership = (lineEntry.file.memberships || [])[0];
-        const nodeId = membership && membership.nodeId;
-        const ni = nodeId ? s.nodes.findIndex((n) => n.id === nodeId) : -1;
-        if (ni >= 0) return { si, stageTitle: s.title, ni, nodeKey: `${s.id}::${nodeId}`, nodeTitle: s.nodes[ni].title };
-        return { si, stageTitle: s.title, ni: 800, nodeKey: `${s.id}::__files__`, nodeTitle: "Files" };
-      }
-    }
-    return { si: 900, stageTitle: "Unknown stage", ni: 900, nodeKey: "::__other__", nodeTitle: "Other" };
+    const entry = noteFileEntry(c.kind, c.id);
+    const stage = c.kind === "stage" ? stageById.get(c.id) : entry?.stage || stageById.get(c.stageId);
+    const si = stage ? data.stages.indexOf(stage) : 900;
+    const nodeId = c.kind === "node" ? c.id : noteNodeId(c);
+    const ni = nodeId ? stage?.nodes.findIndex((n) => n.id === nodeId) ?? -1 : -1;
+    return { si, stageTitle: stage?.title || "Other targets", ni,
+      nodeKey: `${stage?.id || ""}::${nodeId || c.kind === "stage" && "overview" || "unknown"}`,
+      nodeTitle: ni >= 0 ? stage.nodes[ni].title : c.kind === "stage" ? "Stage overview" : "Other targets / original step unknown" };
   }
   function noteDayKey(c) {
     if (!c.createdAt) return { key: "0000-00-00", label: "Undated" };
@@ -1568,7 +1615,7 @@
   }
   function groupedNotes(entries) {
     const stageMap = new Map();
-    entries.forEach(({ c, i }) => {
+    entries.forEach(({ c, i, thread }) => {
       const g = noteGroupKey(c);
       const d = noteDayKey(c);
       if (!stageMap.has(g.si)) stageMap.set(g.si, { si: g.si, title: g.stageTitle, nodes: new Map() });
@@ -1576,7 +1623,7 @@
       if (!st.nodes.has(g.nodeKey)) st.nodes.set(g.nodeKey, { ni: g.ni, title: g.nodeTitle, days: new Map() });
       const nd = st.nodes.get(g.nodeKey);
       if (!nd.days.has(d.key)) nd.days.set(d.key, { key: d.key, label: d.label, items: [] });
-      nd.days.get(d.key).items.push({ c, i });
+      nd.days.get(d.key).items.push({ c, i, thread });
     });
     const stages = [...stageMap.values()].sort((a, b) => a.si - b.si);
     for (const st of stages) {
@@ -1604,42 +1651,18 @@
     return pendingFeedback().length + pendingReplies().length;
   }
   function notesPanel() {
-    const noteCard = ({ c, i }) => {
-      const sent = Boolean(c.exported);
-      const mode = c.mode || "personal";
-      const lbl = noteTargetLabel(c);
-      if (compose && compose.editIndex === i)
-        return `<article class="note mode-${mode}">${renderComposer(compose)}</article>`;
-      return `<article class="note mode-${mode} ${sent ? "is-sent" : ""}">
-        <header>
-          <span class="note-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          ${mode === "feedback" ? `<span class="note-state">${sent ? "Sent" : "Draft"}</span>` : ""}
-          <span class="note-kind">${esc(c.kind)}</span>
-          ${sent ? "" : `<div class="note-act">
-            <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
-            <button class="note-del" data-action="del-note" data-index="${i}" aria-label="Delete" type="button">×</button>
-          </div>`}
-        </header>
-        <strong title="${esc(lbl.title)}">${esc(lbl.text)}</strong>
-        <p class="comment-body">${formatCommentBody(c.body)}</p>
-      </article>`;
-    };
     const localEntries = visibleLocalNotes();
     const activeThreads = artifactThreads.filter((t) => t.status !== "resolved");
     const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const activeConvos = `<section class="note-convos">${activeThreads.map((t) => renderArtifactThread(t, true)).join("")}</section>`;
-    const resolvedConvos = `<section class="note-convos">${resolvedThreads.map((t) => renderArtifactThread(t, true)).join("")}</section>`;
-    const localBody = localEntries.length
-      ? groupedNotes(localEntries).map((st) => `<section class="note-stage">
-          <h3 class="note-stage-h">${esc(st.title)}</h3>
-          ${st.nodesArr.map((nd) => `<div class="note-node">
-            <h4 class="note-node-h">${esc(nd.title)}</h4>
-            ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div>${day.items.map(noteCard).join("")}`).join("")}
-          </div>`).join("")}
-        </section>`).join("")
-      : (activeThreads.length
-          ? `<div class="notes-empty small"><small>No local drafts. Leave a note on any stage, step, or file.</small></div>`
-          : `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, or file.</small></div>`);
+    const groupedBody = (threads, locals) => groupedNotes([
+      ...threads.map((thread) => ({ c: threadNote(thread), thread })), ...locals,
+    ]).map((st) => `<section class="note-stage">
+      <h3 class="note-stage-h">${esc(st.title)}</h3>
+      ${st.nodesArr.map((nd) => `<div class="note-node"><h4 class="note-node-h">${esc(nd.title)}</h4>
+        ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div><div class="note-convos">${day.items.map((item) => item.thread ? renderArtifactThread(item.thread, true) : renderLocalNote(item, true)).join("")}</div>`).join("")}
+      </div>`).join("")}</section>`).join("");
+    const activeBody = groupedBody(activeThreads, localEntries) || `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, file, or line.</small></div>`;
+    const resolvedBody = groupedBody(resolvedThreads, []);
     const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
     const filter = state.notesFilter === "resolved" ? "resolved" : "active";
     const activeCount = activeNoteCount();
@@ -1649,8 +1672,8 @@
       <button class="notes-switch-btn ${filter === "resolved" ? "is-on" : ""}" data-action="notes-filter" data-filter="resolved" type="button" role="tab" aria-selected="${filter === "resolved"}">Resolved${resolvedCount ? `<b>${resolvedCount}</b>` : ""}</button>
     </div>`;
     const track = `<div class="notes-track is-${filter}">
-      <div class="notes-col notes-col-active">${activeConvos}${localBody}</div>
-      <div class="notes-col notes-col-resolved">${resolvedConvos}${resolvedThreads.length ? "" : resolvedEmpty}</div>
+      <div class="notes-col notes-col-active" ${filter === "active" ? "" : "hidden inert"}>${activeBody}</div>
+      <div class="notes-col notes-col-resolved" ${filter === "resolved" ? "" : "hidden inert"}>${resolvedBody}${resolvedThreads.length ? "" : resolvedEmpty}</div>
     </div>`;
     const body = `${toggle}${track}`;
     const pending = pendingFeedbackCount();
@@ -1755,10 +1778,26 @@
 
   /* ---- reasoning popover (portal, escapes clipped containers) ----------- */
   let popEl = null, popSticky = false, popOwner = null, popTimer = null;
+  function enhanceTooltips(root = app) {
+    root.querySelectorAll("[title]").forEach((el) => {
+      const title = el.getAttribute("title");
+      el.removeAttribute("title");
+      if (!title) return;
+      el.dataset.tooltip = title;
+      if (!el.matches("button, a, input, textarea, summary, [tabindex]")) el.tabIndex = 0;
+    });
+  }
+  function clearPopDescription() {
+    if (!popOwner) return;
+    const ids = (popOwner.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== "review-tooltip");
+    if (ids.length) popOwner.setAttribute("aria-describedby", ids.join(" "));
+    else popOwner.removeAttribute("aria-describedby");
+  }
   function ensurePop() {
     if (popEl) return popEl;
     popEl = document.createElement("div");
     popEl.className = "tag-pop-float";
+    popEl.id = "review-tooltip";
     popEl.setAttribute("role", "tooltip");
     document.body.appendChild(popEl);
     popEl.addEventListener("pointerenter", () => clearTimeout(popTimer));
@@ -1767,6 +1806,12 @@
   }
   function fillPop(btn) {
     const d = btn.dataset;
+    if (d.tooltip) {
+      const el = ensurePop();
+      el.className = "tag-pop-float";
+      el.innerHTML = `<strong>${esc(d.tooltip)}</strong>`;
+      return;
+    }
     const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}`;
     const el = ensurePop();
     el.className = `tag-pop-float type-${d.type}${d.vstat ? ` vstat-${d.vstat}` : ""}`;
@@ -1788,7 +1833,11 @@
   }
   function showPop(btn) {
     clearTimeout(popTimer);
+    clearPopDescription();
     popOwner = btn;
+    const ids = new Set((btn.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
+    ids.add("review-tooltip");
+    btn.setAttribute("aria-describedby", [...ids].join(" "));
     fillPop(btn);
     popEl.style.visibility = "hidden";
     popEl.classList.add("is-shown");
@@ -1802,29 +1851,31 @@
   function hidePop() {
     if (popSticky) return;
     if (popEl) popEl.classList.remove("is-shown", "is-above");
+    clearPopDescription();
     popOwner = null;
   }
   function forceHidePop() {
     popSticky = false;
     if (popEl) popEl.classList.remove("is-shown", "is-above");
+    clearPopDescription();
     popOwner = null;
   }
   document.addEventListener("pointerover", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop]");
+    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
     if (!b) return;
     if (popSticky && popOwner !== b) return;
     showPop(b);
   });
   document.addEventListener("pointerout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop]");
+    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
     if (b && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop]");
+    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
     if (b) showPop(b);
   });
   document.addEventListener("focusout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop]");
+    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
     if (b && !popSticky) scheduleHide();
   });
   document.addEventListener("click", (e) => {
@@ -1934,7 +1985,7 @@
     } else if (a === "compose-cancel") {
       compose = null; render();
     } else if (a === "jump-to") {
-      jumpToElement(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
+      jumpToElement(btn.dataset.kind, btn.dataset.id, btn.dataset.stage, btn.dataset.nodeId);
     } else if (a === "thread-reply") {
       compose = null;
       replyTo = btn.dataset.id;
@@ -1973,7 +2024,7 @@
   // Open the reviewable element an artifact thread points at, close the notes
   // panel, and scroll its conversation into view (targeting the comments so a
   // tall file body cannot push them off-screen).
-  function jumpToElement(kind, id, stageId) {
+  function jumpToElement(kind, id, stageId, nodeId) {
     pendingLazyJump = null;
     state.notesOpen = false;
     state.coverageOpen = false;
@@ -1985,7 +2036,7 @@
     if (kind === "file") {
       const entry = fileById.get(id);
       if (entry) {
-        const membership = (entry.file.memberships || [])[0];
+        const membership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
         state.activeFiles[id] = membership?.nodeId || true;
       }
@@ -1996,7 +2047,7 @@
         if (p.side === "old") state.hideDeleted[entry.id] = false;
         lineEntry = entry;
         lineFileId = entry.id;
-        lineMembership = (entry.file.memberships || [])[0];
+        lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
         state.activeFiles[entry.id] = lineMembership?.nodeId || true;
       }
@@ -2031,7 +2082,7 @@
     requestAnimationFrame(() => {
       if (kind === "file") {
         const entry = fileById.get(id);
-        const membership = entry && (entry.file.memberships || [])[0];
+        const membership = entry && ((entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0]);
         if (membership && membership.nodeId) {
           const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(membership.nodeId)}"]`);
           if (nodeEl) nodeEl.open = true;
@@ -2053,6 +2104,7 @@
           || nodeTarget
           || app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)
           || app.querySelector(`.line-thread[data-thread="${cssEsc(id)}"]`)
+          || app.querySelector(`[data-line-id="${cssEsc(id)}"]`)
           || fileRowElement(id)
           || app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`)
           || app.querySelector(`details.node[data-node="${cssEsc(id)}"]`)
@@ -2140,9 +2192,8 @@
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
-  // Updates happen in place — never a full re-render — so the reviewer's scroll
-  // position is untouched; the thread's own UI is the only thing that moves,
-  // animating collapsed on resolve (or open again on reopen).
+  // The render wrapper preserves scroll and drafts while refreshing every count
+  // and grouped list after a successful mutation.
   async function threadAction(threadId, kind) {
     const thread = artifactThreadById(threadId);
     if (!thread) return;
@@ -2185,72 +2236,23 @@
           return;
         }
       }
-      // Move the thread between the notes-list Active/Resolved columns: fade the
-      // old copy out, drop a fresh copy into the destination column. Inline file
-      // copies are updated in place (they always show, resolved or not).
-      relocateThreadInNotes(thread, kind);
-      refreshThreadCounts();
-      refreshNotesFilterCounts();
+      render();
     } catch (err) {
       threadOps[threadId] = { busy: false, error: err.message || "Action failed." };
       updateThreadEls(thread, threadCollapsed(thread));
     }
   }
 
-  // Animate a thread between the Active/Resolved columns of the notes list.
-  function relocateThreadInNotes(thread, kind) {
-    const collapsed = threadCollapsed(thread);
-    const freshFor = (withLabel) => {
-      const tmp = document.createElement("div");
-      tmp.innerHTML = renderArtifactThread(thread, withLabel, collapsed);
-      return tmp.firstElementChild;
-    };
-    const destSel = kind === "resolve" ? ".notes-col-resolved" : ".notes-col-active";
-    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(thread.id)}"]`).forEach((el) => {
-      if (!el.closest(".notes-col")) { el.replaceWith(freshFor(false)); return; }
-      const dest = app.querySelector(`${destSel} .note-convos`);
-      el.classList.add("is-leaving");
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        if (dest) {
-          const destCol = dest.closest(".notes-col");
-          const empty = destCol && destCol.querySelector(".notes-empty");
-          if (empty) empty.remove();
-          dest.appendChild(freshFor(true));
-        }
-        el.remove();
-      };
-      el.addEventListener("transitionend", (e) => { if (e.target === el) finish(); });
-      setTimeout(finish, 380);
-    });
-  }
-
-  // Keep the Active/Resolved toggle counts in sync after an in-place move.
-  function refreshNotesFilterCounts() {
-    const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const activeCount = activeNoteCount();
-    const set = (filter, n) => {
-      const btn = app.querySelector(`.notes-switch-btn[data-filter="${filter}"]`);
-      if (!btn) return;
-      let b = btn.querySelector("b");
-      if (n) { if (!b) { b = document.createElement("b"); btn.appendChild(b); } b.textContent = String(n); }
-      else if (b) b.remove();
-    };
-    set("active", activeCount);
-    set("resolved", resolvedThreads.length);
-  }
-
   // Replace every rendered instance of a thread in place (notes panel + any
   // inline copy) without touching the rest of the DOM.
-  function updateThreadEls(t, collapsed) {
+  function updateThreadEls(t, collapsed, selection = null) {
     document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(t.id)}"]`).forEach((el) => {
+      if (selection?.rangeCount && selection.getRangeAt(0).intersectsNode(el)) return;
       const withLabel = Boolean(el.closest(".note-convos"));
       const tmp = document.createElement("div");
       tmp.innerHTML = renderArtifactThread(t, withLabel, collapsed);
       const fresh = tmp.firstElementChild;
-      if (fresh) el.replaceWith(fresh);
+      if (fresh) { el.replaceWith(fresh); enhanceTooltips(fresh); }
     });
   }
   function setThreadCollapsed(id, collapsed) {
@@ -2269,53 +2271,6 @@
     persist();
     setThreadCollapsed(id, collapsed);
   }
-  // Keep the file/stage thread-count badges in sync after an in-place resolve
-  // without disturbing scroll position.
-  function refreshThreadCounts() {
-    app.querySelectorAll(".notes-toggle[data-id]").forEach((btn) => {
-      const id = btn.dataset.id;
-      const kind = btn.dataset.kind || (id.startsWith("f:") ? "file" : "stage");
-      const { total, open: openCount } = threadToggleCounts(kind, id, btn.dataset.stage);
-      if (!total) { btn.remove(); return; }
-      const b = btn.querySelector("b");
-      if (b) b.textContent = String(total);
-      btn.classList.toggle("all-resolved", !openCount);
-      let dot = btn.querySelector(".nt-dot");
-      if (openCount && !dot) {
-        dot = document.createElement("i");
-        dot.className = "nt-dot";
-        btn.appendChild(dot);
-      } else if (!openCount && dot) {
-        dot.remove();
-      }
-      btn.setAttribute(
-        "title",
-        `${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}`,
-      );
-    });
-    app.querySelectorAll(".mini-threads[data-id]").forEach((btn) => {
-      const id = btn.dataset.id;
-      const kind = id.startsWith("f:") ? "file" : "stage";
-      const count = unresolvedThreadCount(kind, id);
-      if (!count) { btn.remove(); return; }
-      const b = btn.querySelector("b");
-      if (b) b.textContent = String(count);
-      const lbl = `${count} unresolved thread${count === 1 ? "" : "s"}`;
-      btn.setAttribute("title", lbl);
-      btn.setAttribute("aria-label", lbl);
-    });
-    app.querySelectorAll(".mini-notes[data-id]").forEach((btn) => {
-      const id = btn.dataset.id;
-      const count = personalNoteCount(id);
-      if (!count) { btn.remove(); return; }
-      const b = btn.querySelector("b");
-      if (b) b.textContent = String(count);
-      const lbl = `${count} personal note${count === 1 ? "" : "s"}`;
-      btn.setAttribute("title", lbl);
-      btn.setAttribute("aria-label", lbl);
-    });
-  }
-
   async function exportFeedback() {
     if (exportState.phase === "working") return;
     const pending = pendingFeedback();
@@ -2438,20 +2393,11 @@
     if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
   }
 
-  // Slide the notes list between its Active and Resolved columns without a full
-  // re-render, so the persistent track transitions instead of snapping.
   function applyNotesFilter() {
-    const filter = state.notesFilter === "resolved" ? "resolved" : "active";
-    const track = app.querySelector(".notes-track");
-    if (track) {
-      track.classList.toggle("is-resolved", filter === "resolved");
-      track.classList.toggle("is-active", filter === "active");
-    }
-    app.querySelectorAll(".notes-switch-btn").forEach((b) => {
-      const on = b.dataset.filter === filter;
-      b.classList.toggle("is-on", on);
-      b.setAttribute("aria-selected", String(on));
-    });
+    // Each filter starts at its own content; the hidden list contributes no height.
+    const list = app.querySelector(".notes-list");
+    if (list) list.scrollTop = 0;
+    render();
   }
 
   // Animate a stage body open/closed in place so both directions transition.
@@ -2519,6 +2465,7 @@
 
   function openComment(kind, id, stageId) {
     const target = { kind, id };
+    if (kind === "file" || kind === "line") target.nodeId = elementNodeId(kind, id);
     if (kind === "node" && stageId) target.stageId = stageId;
     replyTo = null;
     compose = {
@@ -2552,6 +2499,7 @@
       kind: c.kind,
       id: c.id,
       stageId: c.stageId,
+      nodeId: noteNodeId(c),
       editIndex: index,
       mode: c.mode || "personal",
       body: c.body,
@@ -2559,11 +2507,10 @@
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
     else state.openThreads[c.id] = true;
-    if (c.kind === "file") {
-      const entry = fileById.get(c.id);
-      if (!state.activeFiles[c.id])
-        state.activeFiles[c.id] = (entry?.file.memberships || [])[0]?.nodeId || true;
-      pendingHighlight = { id: c.id, nodeId: activeFileNodeId(c.id) };
+    if (c.kind === "file" || c.kind === "line") {
+      const entry = noteFileEntry(c.kind, c.id);
+      if (entry && noteNodeId(c)) state.activeFiles[entry.id] = noteNodeId(c);
+      if (entry) pendingHighlight = { id: entry.id, nodeId: activeFileNodeId(entry.id) };
     }
     persist();
     render();
@@ -2572,7 +2519,8 @@
 
   function focusComposer() {
     requestAnimationFrame(() => {
-      const ta = app.querySelector(".note-compose textarea, .tthread-reply textarea");
+      const root = state.notesOpen ? app.querySelector(".side.notes") : app.querySelector(".shell");
+      const ta = root?.querySelector(".note-compose textarea, .tthread-reply textarea");
       if (ta) { ta.focus(); ta.scrollIntoView({ behavior: "smooth", block: "center" }); }
     });
   }
@@ -2608,6 +2556,7 @@
         } else {
           const note = { kind: compose.kind, id: compose.id, body, mode, createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
+          if (compose.nodeId) note.nodeId = compose.nodeId;
           const snapshot = draftSnapshots.get(compose);
           if (snapshot) draftSnapshots.set(note, snapshot); else rememberDraftSnapshot(note);
           state.comments.push(note);
@@ -2628,6 +2577,12 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.ctrlKey && !e.isComposing && !e.repeat && e.target instanceof Element && e.target.matches('textarea[name="nc-body"], textarea[name="reply-body"]')) {
+      e.preventDefault();
+      if (e.target.value.trim()) e.target.form?.requestSubmit();
+      return;
+    }
+    if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
       e.preventDefault(); toggleCinema(e.target.dataset.id, e.target.dataset.nodeId); return;
     }
@@ -2738,7 +2693,7 @@
     const focusRadioValue = focused?.matches('input[type="radio"]') ? focused.value : null;
     const focusAction = focused?.getAttribute("data-action");
     const focusSelector = focusAction
-      ? ["data-action", "data-id", "data-kind", "data-node-id", "data-mode"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
+      ? ["data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
@@ -2790,10 +2745,12 @@
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
     if (focusName || focusSelector) {
-      const replacement = app.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
+      const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
+      const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
     pendingDiffs.forEach((entry) => ensureFileDiff(entry));
+    enhanceTooltips();
     resumePendingLazyJump();
   };
 

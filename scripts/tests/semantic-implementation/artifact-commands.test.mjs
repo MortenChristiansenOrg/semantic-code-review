@@ -795,3 +795,24 @@ test("unresolved specification ref reports valid normalized criteria", (t) => {
   );
   assert.match(failure.stderr + failure.stdout, /unresolved specification ref/);
 });
+
+test("implementation simulation recovers from an unsupported decision category and finishes", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.write("implementation.txt", "Valid implementation remains in progress.\n");
+  const args = ["stage", "record", "--kind", "decision", "--item-id", "architecture-choice",
+    "--summary", "Keep the boundary in one module.", "--rationale", "The implementation has one caller."];
+  repository.expectSemanticFailure(/category|engineering|specification/, ...args, "--category", "architecture");
+  assert.equal(repository.readJson(".semantic-review/.work/stages/implementation.json").decisions.length, 0);
+  assert.equal(repository.read("implementation.txt"), "Valid implementation remains in progress.\n");
+  repository.semantic(...args, "--category", "engineering");
+  repository.git("add", "implementation.txt");
+  repository.git("commit", "-m", "Complete implementation after metadata recovery");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+  const stage = repository.readJson(".semantic-review/stages/implementation.json");
+  assert.equal(stage.decisions.length, 1);
+  assert.equal(stage.decisions[0].category, "engineering");
+  assert.equal(stage.decisions[0].rationale, "The implementation has one caller.");
+});

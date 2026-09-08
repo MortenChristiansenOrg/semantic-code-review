@@ -14,7 +14,8 @@
     "test:flow": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-flow/workflow-helper.test.mjs tests/semantic-flow/sync.test.mjs",
     "test:implementation": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-implementation/artifact-commands.test.mjs tests/semantic-implementation/history-commands.test.mjs tests/semantic-implementation/publication-commands.test.mjs",
     "test:feedback": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/review-feedback/draft-commands.test.mjs tests/review-feedback/resolution-commands.test.mjs",
-    "test:view": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-view/export-planning.test.mjs"
+    "test:view": "npm run typecheck && npm run build && node --test tests/cli-contract.test.mjs tests/semantic-view/export-planning.test.mjs",
+    "test:browser": "npm run build && playwright test"
   },
   "dependencies": {
     "ajv": "8.20.0",
@@ -22,6 +23,7 @@
     "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.0.0",
     "esbuild": "^0.25.0",
     "tsx": "^4.20.0",

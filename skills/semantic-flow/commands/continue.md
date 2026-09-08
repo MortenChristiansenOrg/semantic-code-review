@@ -5,6 +5,12 @@ Use to resume interrupted semantic-flow implementation.
 Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
 `../scripts/api/stages.d.ts`, and the selected operating-system guide before mutation.
 
+Recover from CLI usage and validation errors under the runtime's
+“Recoverable CLI errors” rules. Unsupported insight kinds or decision categories
+and missing or invalid arguments require inspecting the installed API declaration
+or command help, correcting the invocation, and continuing without asking for
+approval. A metadata recording failure does not pause otherwise valid work.
+
 ## Locate and assess
 
 1. Resolve the active artifact worktree using the shared runtime rules.
