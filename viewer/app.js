@@ -461,12 +461,14 @@
     if (changed) persist();
   }
   function elementNotes(id) {
-    return state.comments.map((c, i) => ({ c, i })).filter((x) => x.c.id === id);
+    return state.comments.map((c, i) => ({ c, i })).filter(({ c }) => {
+      if (c.id === id) return true;
+      return id.startsWith("f:") && (c.kind === "file" || renamedLineNote(c)) && noteFileEntry(c.kind, c.id)?.id === id;
+    });
   }
 
   /* ---- artifact feedback threads (from window.SEMANTIC_IMPLEMENTATION.feedback) -- */
   const artifactThreads = Array.isArray(data.feedback) ? [...data.feedback] : [];
-  function fileElementId(stageId, p) { return `f:${stageId}:${p}`; }
   function artifactThreadById(tid) {
     return tid ? artifactThreads.find((t) => t.id === tid) : undefined;
   }
@@ -474,6 +476,11 @@
     const line = kind === "line" ? parseLineId(id) : null;
     return kind === "file" ? fileById.get(id) || fileByPreviousId.get(id)
       : line ? currentFileEntry(line.stageId, line.path) : null;
+  }
+  function renamedLineNote(note) {
+    const line = note.kind === "line" ? parseLineId(note.id) : null;
+    const entry = line && currentFileEntry(line.stageId, line.path);
+    return Boolean(entry && entry.file.path !== line.path);
   }
   function noteNodeId(note) {
     const entry = noteFileEntry(note.kind, note.id);
@@ -510,13 +517,14 @@
       if (kind === "stage") return tk === "stage" && t.target.stageId === id;
       if (kind === "node")
         return tk === "node" && t.target.nodeId === id && t.target.stageId === stageId;
-      if (kind === "file")
-        return tk === "file" && fileElementId(t.target.stageId, t.target.path) === id;
+      const entry = (tk === "file" || tk === "line") && currentFileEntry(t.target.stageId, t.target.path);
+      const renamedLine = tk === "line" && entry && entry.file.path !== t.target.path;
+      // A rename identifies the file, not the old line's new position. Keep
+      // immutable line anchors at file level until their location is reviewed.
+      if (kind === "file") return (tk === "file" || renamedLine) && entry?.id === id;
       if (kind === "line")
-        return (
-          tk === "line" &&
-          lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path) === id
-        );
+        return tk === "line" && !renamedLine &&
+          lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path) === id;
       return false;
     });
   }
@@ -910,7 +918,7 @@
           ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
           : "";
     const title =
-      withLabel && t.target && t.target.label
+      (withLabel || kind === "line" && tstate.state === "renamed") && t.target && t.target.label
         ? `<strong class="tthread-title" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
         : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
     const busy = threadBusy(t.id);
@@ -920,7 +928,7 @@
     if (tstate.state === "deleted")
       staleMsg = `This file was deleted after the feedback was sent.`;
     else if (tstate.state === "renamed")
-      staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.`;
+      staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.${kind === "line" ? " The original line is shown here at file level; its current position is unverified." : ""}`;
     else if (tstate.state === "not-in-stage")
       staleMsg = `This file is no longer changed in this stage.`;
     else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
@@ -990,7 +998,7 @@
     const ref = localNoteRef(c);
     const jump = withLabel && ref ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" aria-label="Show note target" title="Show note target">${arrowRight()}</button>` : "";
     const missing = withLabel && !ref ? `<p class="tthread-stale">Original target or step unavailable. This note is kept in the global list.</p>`
-      : withLabel && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
+      : ref && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
     const sent = Boolean(c.exported);
     const mode = c.mode || "personal";
     const acts = sent
@@ -1003,7 +1011,7 @@
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
-          ${withLabel ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
+          ${withLabel || renamedLineNote(c) ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
         </div>
         ${missing}
         <div class="tmsg tmsg-user ${mode === "feedback" && !sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${esc(fmtTime(c.createdAt))}</time>${acts}</div>
@@ -1594,7 +1602,7 @@
     if (!entry || !nodeId) return null;
     const snapshot = draftSnapshots.get(c);
     const stale = snapshot && (snapshot.base !== entry.stage.baseRevision || snapshot.head !== entry.stage.headRevision);
-    return c.kind === "line" && !stale ? { ...c, nodeId } : { kind: "file", id: entry.id, nodeId };
+    return c.kind === "line" && !stale && !renamedLineNote(c) ? { ...c, nodeId } : { kind: "file", id: entry.id, nodeId };
   }
   function noteGroupKey(c) {
     const entry = noteFileEntry(c.kind, c.id);

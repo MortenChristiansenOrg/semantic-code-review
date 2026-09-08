@@ -217,3 +217,34 @@ test('editing a draft from the notes panel focuses its visible form and survives
   await expect(page.locator('.side.notes .tnote')).toContainText('Updated note');
   await expect(page.locator('.side.notes .tnote')).toContainText('Draft');
 });
+
+test('renamed file comments render under their original node and line anchors fall back to file level', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].path = 'renamed.js';
+  data.stages[0].files[0].previousPath = 'shared.js';
+  data.stages[0].files[0].kind = 'renamed';
+  data.feedback = [
+    thread('renamed-file', 'open', { kind: 'file', stageId: 'first', path: 'shared.js', label: 'shared.js' }),
+    thread('renamed-line', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' }),
+  ];
+  const errors = await mount(page, data, { comments: [
+    { kind: 'file', id: fileId, nodeId: 'first-two', exported: true, threadId: 'renamed-file' },
+    { kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-two', exported: true, threadId: 'renamed-line' },
+    { kind: 'file', id: fileId, nodeId: 'first-two', body: 'Local renamed file', mode: 'feedback' },
+    { kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-two', body: 'Local renamed line', mode: 'personal' },
+  ] });
+  await openFile(page, 'first-two');
+  await expect(page.locator('.file-notes .tthread')).toHaveCount(4);
+  await expect(page.locator('.file-notes [data-thread-id="renamed-line"]')).toContainText('shared.js:1');
+  await expect(page.locator('.file-notes [data-thread-id="renamed-line"]')).toContainText('current position is unverified');
+  await expect(page.locator('.line-thread .tthread')).toHaveCount(0);
+  await expect(page.locator('details[data-node="first-two"] .mini-threads')).toContainText('2');
+  await expect(page.locator('details[data-node="first-two"] .mini-lines')).toContainText('1');
+  await expect(page.locator('details[data-node="first-two"] .mini-notes')).toContainText('1');
+  await openFile(page, 'first-one');
+  await expect(page.locator('.file-notes .tthread')).toHaveCount(0);
+  await showNotes(page);
+  await page.locator('.side.notes [data-thread-id="renamed-line"] [data-action="jump-to"]').click();
+  await expect(page.locator('details[data-node="first-two"] .file-notes')).toContainText('Feedback renamed-line');
+  expect(errors).toEqual([]);
+});
