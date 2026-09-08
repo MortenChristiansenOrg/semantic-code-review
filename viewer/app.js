@@ -71,7 +71,7 @@
     fileById.clear(); fileByPreviousId.clear(); flatFiles.length = 0;
     data.stages.forEach((stage, index) => {
       stageById.set(stage.id, stage); stageNumberById.set(stage.id, index + 1);
-      stage.nodes.forEach((node) => nodeTitleById.set(node.id, node.title));
+      stage.nodes.forEach((node) => nodeTitleById.set(`${stage.id}:${node.id}`, node.title));
       stage.files.forEach((file) => {
         const id = fileKey(stage.id, file.path);
         const previous = previousFiles.get(id);
@@ -119,7 +119,7 @@
     return { stageId: m[1], side: m[2], line: Number(m[3]), path: m[4] };
   }
   const nodeTitleById = new Map();
-  data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(n.id, n.title)));
+  data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(`${s.id}:${n.id}`, n.title)));
   const stageById = new Map(data.stages.map((stage) => [stage.id, stage]));
   const stageNumberById = new Map(data.stages.map((stage, i) => [stage.id, i + 1]));
 
@@ -318,8 +318,8 @@
       fileHasLine(entry.file, parsed.side, parsed.line);
     requestAnimationFrame(() => {
       if (pending.membership?.nodeId) {
-        const node = app.querySelector(
-          `details.node[data-node="${cssEsc(pending.membership.nodeId)}"]`,
+        const node = entry && app.querySelector(
+          `.stage[data-stage="${cssEsc(entry.stage.id)}"] details.node[data-node="${cssEsc(pending.membership.nodeId)}"]`,
         );
         if (node) node.open = true;
       }
@@ -531,14 +531,15 @@
   // Local notes still worth showing: drafts, plus exported notes whose artifact
   // thread has not been reloaded yet. Once the artifact thread is present the
   // local marker is hidden so a sent note is never rendered twice.
-  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id)) {
+  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId) {
     return elementNotes(id).filter(
-      ({ c }) => (!c.exported || !artifactThreadById(c.threadId)) && matchesNodeContext(c, nodeId),
+      ({ c }) => (!c.exported || !artifactThreadById(c.threadId)) && matchesNodeContext(c, nodeId) &&
+        (!kind || c.kind === kind) && (kind !== "node" || c.stageId === stageId),
     );
   }
   function threadToggleCounts(kind, id, stageId) {
     const threads = artifactThreadsForElement(kind, id, stageId);
-    const locals = localVisibleForElement(id);
+    const locals = localVisibleForElement(id, elementNodeId(kind, id), kind, stageId);
     return {
       total: threads.length + locals.length,
       open: threads.filter((t) => t.status !== "resolved").length + locals.length,
@@ -1035,9 +1036,11 @@
     </form>`;
   }
   function threadInline(id, kind, stageId) {
-    const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
+    const composingNew = compose && compose.kind === kind && compose.id === id &&
+      (kind !== "node" || compose.stageId === stageId) &&
+      matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
     const arts = artifactThreadsForElement(kind, id, stageId);
-    const locals = localVisibleForElement(id);
+    const locals = localVisibleForElement(id, elementNodeId(kind, id), kind, stageId);
     const hasContent = arts.length || locals.length;
     if (!state.openThreads[id] && !composingNew) return "";
     if (!hasContent && !composingNew) return "";
@@ -1277,7 +1280,7 @@
           ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
           : " own-mark";
         if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner) {
-          ownershipNotice = `<div class="ownership-notice">Dimmed lines belong to ${esc(nodeTitleById.get(owner) || owner)}.
+          ownershipNotice = `<div class="ownership-notice">Dimmed lines belong to ${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)}.
             <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}">Open this step here ${arrowRight()}</button></div>`;
         }
         ctx.previousOwner = owner;
@@ -1701,7 +1704,8 @@
       ${foot}
     </aside>`;
   }
-  function labelFor(kind, id) {
+  function labelFor(kind, id, stageId) {
+    if (kind === "node" && stageId) return stageById.get(stageId)?.nodes.find((node) => node.id === id)?.title || id;
     if (kind === "file") return fileById.get(id)?.file.path || id;
     if (kind === "line") {
       const p = parseLineId(id);
@@ -1724,7 +1728,7 @@
       const p = parseLineId(c.id);
       if (p) return { text: `${splitPath(p.path).name}:${p.line}`, title: `${p.path}:${p.line}` };
     }
-    const t = labelFor(c.kind, c.id);
+    const t = labelFor(c.kind, c.id, c.stageId);
     return { text: t, title: t };
   }
   /* ---- render ----------------------------------------------------------- */
@@ -2096,11 +2100,11 @@
         const entry = fileById.get(id);
         const membership = entry && ((entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0]);
         if (membership && membership.nodeId) {
-          const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(membership.nodeId)}"]`);
+          const nodeEl = app.querySelector(`.stage[data-stage="${cssEsc(entry.stage.id)}"] details.node[data-node="${cssEsc(membership.nodeId)}"]`);
           if (nodeEl) nodeEl.open = true;
         }
       } else if (kind === "line" && lineMembership && lineMembership.nodeId) {
-        const nodeEl = app.querySelector(`details.node[data-node="${cssEsc(lineMembership.nodeId)}"]`);
+        const nodeEl = app.querySelector(`.stage[data-stage="${cssEsc(lineEntry.stage.id)}"] details.node[data-node="${cssEsc(lineMembership.nodeId)}"]`);
         if (nodeEl) nodeEl.open = true;
       } else if (kind === "node") {
         const nodeEl = stageId
@@ -2318,7 +2322,7 @@
         notesSent = (out.exported || []).length;
         (out.skipped || []).forEach((s) => {
           const c = state.comments[s.ref];
-          const label = c ? labelFor(c.kind, c.id) : `note ${s.ref}`;
+          const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
           skips.push(`${label} — ${s.reason}`);
         });
       } catch (err) {
@@ -2682,12 +2686,12 @@
   // cinema inline diff injection + open-disclosure preservation across renders.
   function captureOpen() {
     const keys = new Set();
-    app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.dataset.node}`));
+    app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`));
     return keys;
   }
   function restoreOpen(keys) {
     if (!keys || !keys.size) return;
-    app.querySelectorAll("details.node").forEach((d) => { if (keys.has(`node:${d.dataset.node}`)) d.open = true; });
+    app.querySelectorAll("details.node").forEach((d) => { if (keys.has(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`)) d.open = true; });
   }
   function restoreWindowScroll(left, top) {
     const root = document.documentElement;

@@ -248,3 +248,28 @@ test('renamed file comments render under their original node and line anchors fa
   await expect(page.locator('details[data-node="first-two"] .file-notes')).toContainText('Feedback renamed-line');
   expect(errors).toEqual([]);
 });
+
+test('shared-file jumps stay in their stage when node IDs repeat across stages', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) {
+    stage.nodes.forEach((node, index) => { node.id = ['one', 'two'][index]; node.title = `${stage.id} ${node.id}`; });
+    stage.files[0].memberships.forEach((membership, index) => { membership.nodeId = ['one', 'two'][index]; });
+  }
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="second"]').click();
+  const stage = page.locator('.stage[data-stage="second"]');
+  await stage.locator('details[data-node="one"] summary').click();
+  await stage.locator('details[data-node="one"] .frow-open').click();
+  await expect(stage.locator('.ownership-notice')).toContainText('second two');
+  await stage.locator('.ownership-notice button').click();
+  await expect(stage.locator('details[data-node="two"] .cinema-diff')).toBeVisible();
+  await expect(page.locator('.stage[data-stage="first"] details[open]')).toHaveCount(0);
+  await stage.locator('[data-action="comment"][data-kind="node"][data-id="one"]').click();
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveCount(1);
+  await page.locator('textarea[name="nc-body"]').fill('Only the second stage node');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await expect(page.locator('.stage[data-stage="first"] .tnote')).toHaveCount(0);
+  await expect(stage.locator('details[data-node="one"] .tnote')).toContainText('Only the second stage node');
+  await showNotes(page);
+  await expect(page.locator('.side.notes .tnote .tthread-title')).toHaveText('second one');
+});
