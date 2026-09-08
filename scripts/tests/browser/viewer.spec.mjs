@@ -110,7 +110,11 @@ test('Ctrl+Enter submits notes and replies, keeps blank inputs, and scopes share
   await expect(input).toBeVisible();
   await input.press('Control+Enter');
   await expect(page.locator('.file-notes')).toContainText('Only step one');
+  await expect(page.locator('details[data-node="first-one"] .mini-threads')).toHaveCount(0);
+  await expect(page.locator('details[data-node="first-one"] .mini-notes')).toContainText('1');
   await page.locator('.lact[data-id="l:first:new:1:shared.js"]').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
   await page.locator('textarea[name="nc-body"]').fill('Line in step one');
   await page.locator('textarea[name="nc-body"]').press('Control+Enter');
   await expect(page.locator('details[data-node="first-one"] .mini-lines')).toContainText('1');
@@ -186,6 +190,9 @@ test('custom tooltips work on focus without native duplicates and dismiss with E
   await mount(page);
   await openFile(page);
   await expect(page.locator('#app [title]')).toHaveCount(0);
+  await expect(page.locator('.frow .kind[tabindex], .frow .cls[tabindex], .frow .fp-from[tabindex]')).toHaveCount(0);
+  await page.locator('details[data-node="first-one"] .frow-open').focus();
+  await expect(page.locator('[role="tooltip"]')).toContainText('this step owns hunk 1');
   const target = page.locator('.cinema-diff [data-action="toggle-hide-removed"]');
   await target.focus();
   await expect(page.locator('[role="tooltip"]')).toContainText('Hide removed lines');

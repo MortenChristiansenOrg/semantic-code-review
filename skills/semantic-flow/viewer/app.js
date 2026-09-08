@@ -550,7 +550,7 @@
     visibleLocalNotes().forEach(({ c }) => {
       if (!belongs(c)) return;
       if ((c.mode || "personal") === "personal") counts.personal += 1;
-      counts[c.kind] += 1;
+      else counts[c.kind] += 1;
     });
     return counts;
   }
@@ -684,7 +684,7 @@
   // full pre-rename path stays in the tooltip when the shown one is shortened.
   function renameFrom(file) {
     if (file.kind !== "renamed" || !file.previousPath) return "";
-    return `<span class="fp-from" title="Renamed from ${esc(file.previousPath)}">← ${esc(shortPath(file.previousPath))}</span>`;
+    return `<span class="fp-from" data-tooltip-focus title="Renamed from ${esc(file.previousPath)}">← ${esc(shortPath(file.previousPath))}</span>`;
   }
   function caret() {
     return `<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -737,7 +737,7 @@
       .filter((x) => x.c);
     const legend = counts.map((x) => `<span class="rk type-${x.t}"><b>${INSIGHT[x.t].glyph}</b>${x.c}</span>`).join("");
     const failed = insights.filter((i) => { const v = vstatus(i); return v && v.key !== "passed"; }).length;
-    const alert = failed ? `<span class="rk rk-alert" title="${failed} check${failed === 1 ? "" : "s"} not passed"><b>✕</b>${failed}</span>` : "";
+    const alert = failed ? `<span class="rk rk-alert" data-tooltip-focus title="${failed} check${failed === 1 ? "" : "s"} not passed"><b>✕</b>${failed}</span>` : "";
     return `<div class="reasoning-summary"><span class="eyebrow">Reasoning</span><div class="reasoning-key">${legend}${alert}</div></div>`;
   }
   function nodeReasoning(stage, node) {
@@ -1458,7 +1458,7 @@
     const text = ref || label;
     const inner = href
       ? `<a class="req-src-ref" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(href)}">${esc(text)}</a>`
-      : `<span class="req-src-ref" title="${esc(text)}">${esc(text)}</span>`;
+      : `<span class="req-src-ref" data-tooltip-focus title="${esc(text)}">${esc(text)}</span>`;
     return `<p class="req-source"><span class="req-src-kind">${esc(label)}</span>${inner}</p>`;
   }
   function renderSpecification(req) {
@@ -1476,7 +1476,7 @@
       const st = acceptanceStatus(`${req.id}#${a.id}`);
       const label = st.key === "approved" ? "Approved" : st.key === "uncovered" ? "Not covered" : "In review";
       const meta = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
-      return `<li class="ac-item ac-${st.key}" data-ac="${esc(`${req.id}#${a.id}`)}"><span class="ac-id">${esc(a.id)}</span><span class="ac-text">${esc(a.text)}</span><span class="ac-status" title="${esc(meta)}">${label}</span></li>`;
+      return `<li class="ac-item ac-${st.key}" data-ac="${esc(`${req.id}#${a.id}`)}"><span class="ac-id">${esc(a.id)}</span><span class="ac-text">${esc(a.text)}</span><span class="ac-status" data-tooltip-focus title="${esc(meta)}">${label}</span></li>`;
     }).join("")}</ol>
       </div>
     </details>`;
@@ -1520,7 +1520,7 @@
       };
     });
     const depsMeta = deps.length
-      ? `<span class="sm-deps" title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
+      ? `<span class="sm-deps" data-tooltip-focus title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
       : "";
     return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}">
       <div class="stage-bar">
@@ -1784,7 +1784,11 @@
       el.removeAttribute("title");
       if (!title) return;
       el.dataset.tooltip = title;
-      if (!el.matches("button, a, input, textarea, summary, [tabindex]")) el.tabIndex = 0;
+      const owner = el.parentElement?.closest('button, a, summary, [role="button"], [data-tooltip-focus]');
+      if (owner) {
+        // Decorative hints share their existing control's keyboard stop.
+        owner.dataset.tooltip = [...new Set([owner.dataset.tooltip, title].filter(Boolean))].join(" · ");
+      } else if (el.hasAttribute("data-tooltip-focus")) el.tabIndex = 0;
     });
   }
   function clearPopDescription() {

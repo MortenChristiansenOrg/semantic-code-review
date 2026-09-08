@@ -437,5 +437,6 @@ an explanation and no misleading jump. Files belonging to just one step can
 resolve their context unambiguously. This does not change feedback schemas.
 
 Dimmed shared-file sections explain their owning step and provide a jump to that
-step at the same line. File rows show file and line comment counts separately.
+step at the same line. File rows show file and line feedback counts separately,
+with personal notes in their own badge.
 Use Ctrl+Enter in a note or reply input to submit it; ordinary Enter adds a line.
