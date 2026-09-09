@@ -308,3 +308,19 @@ test('equal node IDs in two stages keep independent note-panel visibility across
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
   expect(errors).toEqual([]);
 });
+
+test('unsupported experimental UI records reset while current approvals and drafts survive', async ({ page }) => {
+  const saved = {
+    specificationOpen: true, active: fileId, activeFiles: {},
+    approvals: { [fileId]: true, 'f:second:shared.js': { rev: 'rev', at: 1 } },
+    comments: [{ id: fileId, kind: 'file', body: 'Keep my note', at: 1 }],
+    replyDrafts: [],
+  };
+  const errors = await mount(page, fixture(), saved);
+  await openFile(page);
+  expect(errors).toEqual([]);
+  await expect(page.locator('.stage[data-stage="second"] .frow.is-approved')).toHaveCount(2);
+  await expect(page.locator('.stage[data-stage="first"] .frow.is-approved')).toHaveCount(0);
+  await showNotes(page);
+  await expect(page.getByText('Keep my note', { exact: true }).first()).toBeVisible();
+});

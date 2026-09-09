@@ -43,3 +43,12 @@ The artifact command suite also scripts recovery from an unsupported decision
 category: the rejected write preserves application work, a supported retry keeps
 the observed rationale, and the stage finishes. This verifies the recovery path;
 it is not an evaluation of a particular model's compliance with the skill.
+
+### Releases
+
+See [the release workflow](../docs/releases.md). `npm run release -- next breaking`
+previews the next version; `bump breaking` applies it. After checks and a commit,
+`npm run release -- package` builds and smoke-tests the distribution archive.
+Release assets contain dependency license texts collected during the build.
+The repository has no project license file; packaging does not introduce new
+license terms. If a project `LICENSE` is added, it is included automatically.

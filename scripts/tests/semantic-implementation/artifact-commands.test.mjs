@@ -816,3 +816,23 @@ test("implementation simulation recovers from an unsupported decision category a
   assert.equal(stage.decisions[0].category, "engineering");
   assert.equal(stage.decisions[0].rationale, "The implementation has one caller.");
 });
+
+test("specification sources accept arbitrary providers while retaining reference and URI validation", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { sourceKind: "internal-tracker", sourceReference: "TEAM-42", sourceUrl: "https://work.example.com/TEAM-42" });
+  const file = ".semantic-review/requirements/story.json";
+  const specification = repository.readJson(file);
+  assert.equal(specification.source.kind, "internal-tracker");
+  repository.semantic("validate", "--schema-only");
+  for (const source of [
+    { kind: "", reference: "TEAM-42" },
+    { kind: "   ", reference: "TEAM-42" },
+    { kind: "internal-tracker", reference: "" },
+    { kind: "internal-tracker" },
+    { kind: "internal-tracker", reference: "TEAM-42", url: "not a URI" },
+    { kind: "url", reference: "TEAM-42" },
+  ]) {
+    repository.write(file, JSON.stringify({ ...specification, source }));
+    repository.expectSemanticFailure(/validation|must|source/i, "validate", "--schema-only");
+  }
+});

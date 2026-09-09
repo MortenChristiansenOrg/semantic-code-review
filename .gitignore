@@ -5,3 +5,5 @@ Thumbs.db
 
 scripts/test-results/
 scripts/playwright-report/
+
+dist/

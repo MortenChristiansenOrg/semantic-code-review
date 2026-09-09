@@ -34,12 +34,10 @@
       ],
       "properties": {
         "kind": {
-          "enum": [
-            "azure-devops",
-            "github",
-            "url",
-            "local"
-          ]
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "An extensible origin identifier, such as local, url, or a provider name."
         },
         "reference": {
           "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"

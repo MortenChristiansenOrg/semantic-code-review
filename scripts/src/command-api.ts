@@ -292,6 +292,8 @@ export const semanticFlowApi: CliSignature = {
     {
       command: "update",
       options: [
+        option("version", "<version>"),
+        option("allow-downgrade"),
         option("source", "<repository-path>"),
         option("use-current-source"),
       ],

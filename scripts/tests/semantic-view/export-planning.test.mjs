@@ -686,7 +686,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.doesNotMatch(styles, /\.drow code \{/);
 });
 
-test("viewer client propagates legacy stale approvals before loading diffs", () => {
+test("viewer client ignores obsolete approvals without hiding current feedback", () => {
   const source = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
     "utf8",
@@ -813,11 +813,11 @@ test("viewer client propagates legacy stale approvals before loading diffs", () 
   assert.match(app.innerHTML, /data-thread-id="resolved-node-thread"/);
   assert.match(
     app.innerHTML,
-    /class="node\s+is-stale" data-node="configure-settings"/,
+    /class="node(?![^"]*is-approved|[^"]*is-stale)[^"]*" data-node="configure-settings"/,
   );
   assert.match(
     app.innerHTML,
-    /class="frow\s+is-stale\s*" data-file="f:implementation:appsettings\.json"/,
+    /class="frow(?![^"]*is-approved|[^"]*is-stale)[^"]*" data-file="f:implementation:appsettings\.json"/,
   );
   assert.match(
     app.innerHTML,

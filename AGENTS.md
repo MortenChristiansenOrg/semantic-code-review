@@ -11,22 +11,30 @@ specific platforms, harnesses, etc.
 
 Do not use the semantic-flow skill on this repo, it is a skill that other projects will install and use.
 
+### Releases
+
+When asked to bump the version or create a release, follow [docs/releases.md](docs/releases.md).
+Classify actual changes, use the release helper, write notes from the template,
+and validate the built archive. Follow the requested PR/publication scope.
+
 ### Updating an installed skill from this repository
 
-When `/semantic-flow update` is requested while working in this repository,
-treat this checkout as the update source and update an installed copy in a
-different destination. First check whether `semantic-flow` is installed at the
-user level. If it is, ask the user whether to update that user-level skill or a
-repository-level installation, for which the user must provide the target
-repository path. If no user-level installation exists, ask only for the target
-repository path. Do not treat this repository's source skill as the update
-destination.
+`/semantic-flow update` installs the latest published release by default. When
+working here, first identify the installed copy outside this source directory.
+If a user-level installation exists and the destination is not already specified,
+ask whether to update it or a repository-level installation (request that target
+repository path). If no user-level installation exists, request the target path.
+Never use this repository's source skill as the release update destination.
+Use this checkout as `--source` only when a source build is explicitly requested.
 
 ## Schema stability
 
-Version 0.1 is experimental. Breaking schema and CLI changes may be made in
-place without migration or backward compatibility. Do not create a new schema
-version solely to preserve v0.1 behavior until versioning is declared active.
+Product releases use `0.x` versions and any release may contain breaking changes.
+The implementation and feedback formats remain experimental `0.1`, independently
+of product versions. Breaking format changes may be made in place without
+migration or backward compatibility during `0.x`; do not add a new schema version
+merely for a product release. See [docs/releases.md](docs/releases.md) for the
+compatibility contract and the explicit transition to semantic versioning at 1.0.
 
 ## Project Glossary
 
