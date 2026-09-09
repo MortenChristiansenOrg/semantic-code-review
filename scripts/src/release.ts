@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
@@ -45,7 +45,7 @@ export async function packageRelease(output: string): Promise<{ archive: string;
   const checksum = `${archive}.sha256`;
   const zip = new ZipFile();
   // Fixed timestamps and sorted files make retries produce the same archive.
-  const options = { mtime: new Date("2000-01-01T00:00:00Z"), mode: 0o100644, forceDosTimestamp: true };
+  const options = { mtime: new Date(2000, 0, 1, 0, 0, 0), mode: 0o100644, forceDosTimestamp: true };
   const writing = pipeline(zip.outputStream, fs.createWriteStream(archive));
   for (const name of files) zip.addBuffer(fs.readFileSync(path.join(skill, name)), `semantic-flow/${name}`, options);
   zip.addBuffer(Buffer.from(`${JSON.stringify(metadata, null, 2)}\n`), "semantic-flow/RELEASE.json", options);
@@ -61,7 +61,12 @@ export async function packageRelease(output: string): Promise<{ archive: string;
     execFileSync("git", ["init", "-b", "main"], { cwd: temporary, windowsHide: true, stdio: "ignore" });
     const installed = JSON.parse(run("semantic-flow", "version", "--json"));
     if (installed.skillVersion !== version || installed.sourceCommit !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
-    for (const name of ["semantic-flow", "semantic-implementation", "review-feedback", "semantic-view"]) run(name, "--help");
+    for (const name of ["semantic-flow", "semantic-implementation", "review-feedback"]) run(name, "--help");
+    // The viewer is a server entrypoint, not a help-style CLI. Load its module
+    // without starting a background process; release tests cover serving it.
+    execFileSync(process.execPath, ["--input-type=module", "--eval",
+      `import(${JSON.stringify(pathToFileURL(path.join(extracted, "scripts/semantic-view.mjs")).href)})`],
+      { cwd: temporary, windowsHide: true, stdio: "pipe" });
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   return { archive, checksum, version, sourceCommit };
 }
