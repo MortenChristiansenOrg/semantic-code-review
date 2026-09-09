@@ -368,16 +368,10 @@
   function load() {
     try {
       const merged = { ...defaults(), ...JSON.parse(localStorage.getItem(storeKey) || "{}") };
-      // Legacy state stored a single boolean; map it onto the first specification.
-      if (typeof merged.specificationOpen !== "object" || merged.specificationOpen === null) {
-        merged.specificationOpen = merged.specificationOpen && requirements[0]
-          ? { [requirements[0].id]: true }
-          : {};
+      // Invalid experimental UI preferences reset; old formats are not migrated.
+      for (const key of ["specificationOpen", "activeFiles", "approvals"]) {
+        if (!merged[key] || typeof merged[key] !== "object" || Array.isArray(merged[key])) merged[key] = {};
       }
-      // Legacy state stored a single open file in `active`; migrate to the map.
-      if (typeof merged.activeFiles !== "object" || merged.activeFiles === null) merged.activeFiles = {};
-      if (merged.active) { merged.activeFiles[merged.active] = true; }
-      delete merged.active;
       return merged;
     }
     catch { return defaults(); }
@@ -394,8 +388,7 @@
     return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
   }
   /* File approvals carry an eager revision so staleness is known before their
-     diffs load. Stage approvals have no revision. Legacy boolean approvals are
-     trusted; old diff-fingerprint approvals require re-approval. */
+     diffs load. Stage approvals have no revision. Unsupported approval records are ignored. */
   function revisionFor(id) {
     return fileById.get(id)?.file.revision || null;
   }
@@ -407,19 +400,22 @@
       return fileKey(entry.stage.id, entry.file.previousPath);
     return null;
   }
-  function approvalState(id) {
+  function approvalRecord(id) {
     const rec = state.approvals[id];
+    if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
+    if (id.startsWith("f:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
+    return stageById.has(id) && rec.rev === null ? rec : null;
+  }
+  function approvalState(id) {
+    const rec = approvalRecord(id);
     if (rec) {
-      if (rec === true) return "approved";
-      if (rec.rev != null)
-        return rec.rev === revisionFor(id) ? "approved" : "stale";
-      if (rec.fp != null) return "stale";
+      if (id.startsWith("f:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
     // as it stands now, so surface it as stale to prompt a fresh look.
     const prevId = previousApprovalId(id);
-    if (prevId && state.approvals[prevId]) return "stale";
+    if (prevId && approvalRecord(prevId)) return "stale";
     return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
@@ -449,14 +445,7 @@
         delete state.approvals[stage.id];
         changed = true;
       }
-      // Node approvals are derived from their files now; drop any legacy
-      // node-keyed entries left behind by older stored state.
-      stage.nodes.forEach((node) => {
-        if (node.id in state.approvals) {
-          delete state.approvals[node.id];
-          changed = true;
-        }
-      });
+
     });
     if (changed) persist();
   }

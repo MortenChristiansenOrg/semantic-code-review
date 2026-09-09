@@ -78,8 +78,7 @@ test("production build exposes every documented command", () => {
   }
 
   assert.equal(fs.existsSync(path.join(scriptsDirectory, "API.md")), false);
-  assert.match(api, /"azure-devops"\s*\|\s*"github"\s*\|\s*"url"\s*\|\s*"local"/);
-  assert.doesNotMatch(api, /SpecificationSourceKind[^;]*\|\s*string/);
+  assert.match(api, /SpecificationSourceKind = string/);
 });
 
 test("command parsing rejects unknown commands, options, and malformed flags", () => {
@@ -310,7 +309,7 @@ test("skill indexes command-specific workflows", () => {
   assert.match(commandText.get("update"), /Do not stop the launcher shell/);
   assert.match(commandText.get("help"), /installed `SKILL\.md` index/);
   assert.match(commandText.get("help"), /Do not return a\s+prewritten description/);
-  assert.match(commandText.get("update"), /beside the target repository/);
+  assert.match(commandText.get("update"), /latest published release/);
   const sourceScriptsRoot = path.resolve(skillRoot, "..", "..", "scripts");
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(sourceScriptsRoot, "package.json"), "utf8"),

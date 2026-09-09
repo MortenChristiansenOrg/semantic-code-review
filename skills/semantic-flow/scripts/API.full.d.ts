@@ -6,7 +6,8 @@
  * feedback: review thread operations
  * workflow: worktree selection and workflow helpers
  */
-export type SpecificationSourceKind = "azure-devops" | "github" | "url" | "local";
+/** Non-empty origin identifier; provider names are not restricted. */
+export type SpecificationSourceKind = string;
 export type InsightKind = "decision" | "assumption" | "alternative" | "failed-attempt" | "risk" | "question";
 export type DecisionCategory = "specification" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";
@@ -39,7 +40,7 @@ export interface InitializeImplementationOptions {
     "specification-title": string;
     /** Concise description of the required behavior. */
     "specification-summary": string;
-    /** Origin type for the specification, such as local or azure-devops. */
+    /** Non-empty origin identifier, such as local, url, or a provider name. */
     "source-kind": SpecificationSourceKind;
     /** Identifier at the specification source, such as a story number. */
     "source-reference": string;
@@ -61,7 +62,7 @@ export interface AddSpecificationOptions {
     "specification-title": string;
     /** Concise description of the required behavior. */
     "specification-summary": string;
-    /** Origin type for the specification, such as local or azure-devops. */
+    /** Non-empty origin identifier, such as local, url, or a provider name. */
     "source-kind": SpecificationSourceKind;
     /** Identifier at the specification source, such as a story number. */
     "source-reference": string;
@@ -578,14 +579,18 @@ export interface SemanticFlowVersionOptions {
  */
 export declare function semanticFlowVersion(options?: SemanticFlowVersionOptions): void;
 export interface UpdateSemanticFlowOptions {
-    /** Maintained semantic-code-review source repository. */
+    /** Installs a particular published version instead of the latest release. */
+    version?: string;
+    /** Allows an explicit --version to replace a newer installation for recovery. */
+    "allow-downgrade"?: true;
+    /** Explicit contributor mode: maintained semantic-code-review source repository. */
     source?: string;
     /** Builds the current source checkout without pulling; requires explicit approval for questionable source state. */
     "use-current-source"?: true;
 }
 /**
- * Safely updates source and rebuilds the skill without running the test suite,
- * then replaces the installed skill without changing target repository artifacts.
+ * Installs a verified GitHub release, or builds an explicitly selected contributor source.
+ * Replaces the installed skill without changing target repository artifacts.
  * Restarts a matching running viewer at the same URL without opening another tab.
  * @cli semantic-flow.mjs
  * @command update

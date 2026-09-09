@@ -105,14 +105,18 @@ export interface SemanticFlowVersionOptions {
  */
 export declare function semanticFlowVersion(options?: SemanticFlowVersionOptions): void;
 export interface UpdateSemanticFlowOptions {
-    /** Maintained semantic-code-review source repository. */
+    /** Installs a particular published version instead of the latest release. */
+    version?: string;
+    /** Allows an explicit --version to replace a newer installation for recovery. */
+    "allow-downgrade"?: true;
+    /** Explicit contributor mode: maintained semantic-code-review source repository. */
     source?: string;
     /** Builds the current source checkout without pulling; requires explicit approval for questionable source state. */
     "use-current-source"?: true;
 }
 /**
- * Safely updates source and rebuilds the skill without running the test suite,
- * then replaces the installed skill without changing target repository artifacts.
+ * Installs a verified GitHub release, or builds an explicitly selected contributor source.
+ * Replaces the installed skill without changing target repository artifacts.
  * Restarts a matching running viewer at the same URL without opening another tab.
  * @cli semantic-flow.mjs
  * @command update

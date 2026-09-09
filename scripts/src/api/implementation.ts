@@ -19,7 +19,7 @@ export interface InitializeImplementationOptions {
   "specification-title": string;
   /** Concise description of the required behavior. */
   "specification-summary": string;
-  /** Origin type for the specification, such as local or azure-devops. */
+  /** Non-empty origin identifier, such as local, url, or a provider name. */
   "source-kind": SpecificationSourceKind;
   /** Identifier at the specification source, such as a story number. */
   "source-reference": string;
@@ -45,7 +45,7 @@ export interface AddSpecificationOptions {
   "specification-title": string;
   /** Concise description of the required behavior. */
   "specification-summary": string;
-  /** Origin type for the specification, such as local or azure-devops. */
+  /** Non-empty origin identifier, such as local, url, or a provider name. */
   "source-kind": SpecificationSourceKind;
   /** Identifier at the specification source, such as a story number. */
   "source-reference": string;

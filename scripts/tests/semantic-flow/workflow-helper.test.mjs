@@ -17,6 +17,8 @@ import {
   scriptsDirectory,
 } from "../helpers/repository.mjs";
 
+const builtSkillVersion = fs.readFileSync(path.join(scriptsDirectory, "../VERSION"), "utf8").trim();
+
 function reserveViewerPort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -329,7 +331,7 @@ test("version reports installed and schema versions", () => {
 
 function createUpdateFixture(t) {
   const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), "semantic-flow-update-test-"),
+    path.join(fs.realpathSync.native(os.tmpdir()), "semantic-flow-update-test-"),
   );
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -440,7 +442,7 @@ test("update rebuilds and replaces a copied installation", async (t) => {
     fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"),
     "9.9.9\n",
   );
-  assert.match(result.stdout, /0\.1\.0 -> 9\.9\.9/);
+  assert.ok(result.stdout.includes(`${builtSkillVersion} -> 9.9.9`));
   await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
 });
 
@@ -474,7 +476,7 @@ test("update restarts a matching linked-worktree viewer without changing artifac
   assert.equal(after.repositoryRoot, linked);
   assert.equal(after.implementationId, before.implementationId);
   assert.equal(fs.readFileSync(path.join(linked, ".semantic-review", "manifest.json"), "utf8"), original);
-  assert.match(result.stdout, /Updated semantic-flow 0\.1\.0 -> 9\.9\.9/);
+  assert.ok(result.stdout.includes(`Updated semantic-flow ${builtSkillVersion} -> 9.9.9`));
 });
 
 async function startUpdateViewerFixture(t, fixture, port, overrides = {}) {
@@ -581,7 +583,7 @@ for (const scenario of ["refused shutdown", "acknowledged shutdown without exit"
     });
     const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
     assert.notEqual(result.status, 0);
-    assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
+    assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), `${builtSkillVersion}\n`);
     assert.equal(process.kill(child.pid, 0), true);
     if (scenario === "refused shutdown") assert.match(result.stderr, /Could not request viewer shutdown/);
     if (scenario === "acknowledged shutdown without exit") assert.match(result.stderr, /did not exit after shutdown/);
@@ -618,7 +620,7 @@ fs.renameSync = (source, destination) => {
   viewerPid = after.processId;
   assert.notEqual(after.processId, before.processId);
   assert.equal(after.viewerVersion, before.viewerVersion);
-  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
+  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), `${builtSkillVersion}\n`);
 });
 
 test("updated viewer restart refuses to replace a new port occupant", async (t) => {
@@ -649,5 +651,23 @@ test("update never sends shutdown to a replacement on a new connection", async (
   const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(identity.implementationId, "replacement");
   assert.deepEqual(messages, ["ready"]);
-  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "0.1.0\n");
+  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), `${builtSkillVersion}\n`);
+});
+
+test("update recognizes a matching viewer through a filesystem alias", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const alias = path.join(fixture.root, "skill-alias");
+  fs.symlinkSync(fixture.installedSkill, alias, process.platform === "win32" ? "junction" : "dir");
+  const previous = await startUpdateViewerFixture(t, fixture, port, { identity: { skillDirectory: alias } });
+  viewerPid = previous.child.pid;
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const current = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = current.processId;
+  assert.ok(previous.messages.includes("shutdown"));
+  assert.equal(current.skillDirectory, fs.realpathSync.native(fixture.installedSkill));
 });

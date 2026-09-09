@@ -191,6 +191,8 @@ test('custom tooltips work on focus without native duplicates and dismiss with E
   await openFile(page);
   await expect(page.locator('#app [title]')).toHaveCount(0);
   await expect(page.locator('.frow .kind[tabindex], .frow .cls[tabindex], .frow .fp-from[tabindex]')).toHaveCount(0);
+  // Keep prior click/hover state separate from the keyboard dismissal check.
+  await page.mouse.move(0, 0);
   await page.locator('details[data-node="first-one"] .frow-open').focus();
   await expect(page.locator('[role="tooltip"]')).toContainText('this step owns hunk 1');
   const target = page.locator('.cinema-diff [data-action="toggle-hide-removed"]');
@@ -307,4 +309,44 @@ test('equal node IDs in two stages keep independent note-panel visibility across
   await expect(first.locator('.thread .tthread')).toHaveCount(0);
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
   expect(errors).toEqual([]);
+});
+
+test('unsupported experimental UI records reset while current approvals and drafts survive', async ({ page }) => {
+  const saved = {
+    specificationOpen: true, active: fileId, activeFiles: {},
+    approvals: { [fileId]: true, 'f:second:shared.js': { rev: 'rev', at: 1 } },
+    comments: [{ id: fileId, kind: 'file', body: 'Keep my note', at: 1 }],
+    replyDrafts: [],
+  };
+  const errors = await mount(page, fixture(), saved);
+  await openFile(page);
+  expect(errors).toEqual([]);
+  await expect(page.locator('.stage[data-stage="second"] .frow.is-approved')).toHaveCount(2);
+  await expect(page.locator('.stage[data-stage="first"] .frow.is-approved')).toHaveCount(0);
+  await showNotes(page);
+  await expect(page.getByText('Keep my note', { exact: true }).first()).toBeVisible();
+});
+
+test('file approvals require revisions and unsupported renamed-file records are ignored', async ({ page }) => {
+  const data = fixture();
+  data.stages[1].files[0].kind = 'renamed';
+  data.stages[1].files[0].previousPath = 'old.js';
+  await mount(page, data, { approvals: {
+    [fileId]: { rev: null, at: 1 },
+    first: { rev: null, at: 1 },
+    'f:second:old.js': true,
+  } });
+  await expect(page.locator('.frow.is-approved, .frow.is-stale, .stage.is-approved')).toHaveCount(0);
+});
+
+test('valid changed and renamed file approvals remain stale', async ({ page }) => {
+  const data = fixture();
+  data.stages[1].files[0].kind = 'renamed';
+  data.stages[1].files[0].previousPath = 'old.js';
+  await mount(page, data, { approvals: {
+    [fileId]: { rev: 'previous', at: 1 },
+    'f:second:old.js': { rev: 'previous', at: 1 },
+  } });
+  await expect(page.locator('.frow.is-stale')).toHaveCount(4);
+  await expect(page.locator('.frow.is-approved')).toHaveCount(0);
 });

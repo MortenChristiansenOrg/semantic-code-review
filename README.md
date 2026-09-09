@@ -26,8 +26,12 @@ You need three things:
 - An AI coding agent whose harness supports skills.
 - Node.js, which runs the bundled command-line tool and the local review viewer.
 
-To get started, install the Semantic Flow skill into your project and then work
-through a typical cycle:
+Download the built `semantic-flow-X.Y.Z.zip` and checksum from the
+[latest release](https://github.com/MortenChristiansenOrg/semantic-code-review/releases/latest).
+Follow the [installation and update guide](docs/releases.md#installing-and-updating)
+to verify and install the complete skill folder. Node.js 20 or newer is required.
+
+Then work through a typical cycle:
 
 1. **Ask for the work.** Tell your agent to implement a feature or user story
    using semantic flow. It confirms the requirements, its goal, and the criteria
@@ -88,7 +92,7 @@ story using semantic flow") or with explicit commands:
 | `prepare` | After review, prepare a validated branch stack or cumulative branch for handoff. |
 | `archive` | Store the captured reasoning once the change has landed. |
 | `version` | Report the installed skill version. |
-| `update` or `up` | Update the installed skill from its source. |
+| `update` or `up` | Install the latest published skill release. |
 | `help` | Explain the available commands, or one command in detail. |
 
 ## Report a Semantic Flow problem
@@ -159,3 +163,7 @@ implementation.
 
 > **Schema stability:** Version 0.1 is experimental and may receive breaking
 > changes in place. It does not provide backward-compatibility guarantees yet.
+
+See [release policy and maintainer workflow](docs/releases.md) for versioning,
+release notes, and the “bump the version” procedure. Product releases use `0.x`;
+any release may contain breaking changes until the explicit 1.0 transition.

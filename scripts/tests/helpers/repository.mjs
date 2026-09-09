@@ -36,7 +36,7 @@ function commandFailure(command, args, result) {
 }
 
 export function createRepository(t, prefix = "semantic-flow-") {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
   function result(command, args) {

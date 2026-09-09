@@ -37,7 +37,7 @@ fs.writeFileSync(
 fs.rmSync(outputDirectory, { recursive: true, force: true });
 fs.mkdirSync(outputDirectory, { recursive: true });
 
-await build({
+const compilation = await build({
   entryPoints: {
     "semantic-implementation": path.join(
       scriptsRoot,
@@ -56,10 +56,31 @@ await build({
   platform: "node",
   target: "node20",
   minify: true,
-  legalComments: "none",
+  legalComments: "eof",
+  metafile: true,
+  banner: { js: "import { createRequire as __releaseCreateRequire } from 'node:module'; const require = __releaseCreateRequire(import.meta.url);" },
   sourcemap: false,
   logLevel: "info",
 });
+
+// Include the complete license texts of dependencies actually bundled at runtime.
+const dependencies = new Map<string, string>();
+for (const input of Object.keys(compilation.metafile.inputs)) {
+  if (!input.includes("node_modules/")) continue;
+  let directory = path.dirname(path.resolve(input));
+  while (!fs.existsSync(path.join(directory, "package.json"))) {
+    const parent = path.dirname(directory);
+    if (parent === directory) throw new Error(`Cannot identify bundled dependency ${input}.`);
+    directory = parent;
+  }
+  const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+  const licenses = fs.readdirSync(directory).filter((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
+  if (!licenses.length) throw new Error(`Bundled dependency ${pkg.name} has no license file.`);
+  dependencies.set(`${pkg.name}@${pkg.version}`, licenses.map((name) => fs.readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n")).join("\n"));
+}
+fs.writeFileSync(path.join(skillRoot, "THIRD-PARTY-NOTICES.txt"), [...dependencies].sort(([a], [b]) => a.localeCompare(b))
+  .map(([name, license]) => `${name}\n${"=".repeat(name.length)}\n${license}`).join("\n\n"));
+if (fs.existsSync(path.join(repositoryRoot, "LICENSE"))) fs.copyFileSync(path.join(repositoryRoot, "LICENSE"), path.join(skillRoot, "LICENSE"));
 
 for (const file of [
   "semantic-implementation.mjs",

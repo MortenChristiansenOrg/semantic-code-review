@@ -3,6 +3,10 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
+import { downloadRelease, listReleases, selectRelease, upgradeNotes } from "./shared/release-client.js";
+import { compareVersions, parseVersion } from "./shared/release-version.js";
+import { skillFiles, unpackDistribution } from "./shared/distribution.js";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -92,7 +96,8 @@ interface TargetRestack {
 }
 
 function normalizedPath(value: string): string {
-  const resolved = path.resolve(value);
+  // Native resolution also expands Windows short-path aliases (for example RUNNER~1).
+  const resolved = fs.existsSync(value) ? fs.realpathSync.native(value) : path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
@@ -1020,6 +1025,8 @@ function schemaFormatVersion(relativePath: string): string {
 }
 
 function installedCommit(): string | null {
+  const metadata = path.join(skillDirectory, "RELEASE.json");
+  if (fs.existsSync(metadata)) return readJson(metadata).sourceCommit ?? null;
   const root = git(["rev-parse", "--show-toplevel"], {
     cwd: skillDirectory,
     allowFailure: true,
@@ -1028,7 +1035,7 @@ function installedCommit(): string | null {
     return null;
   }
   const relative = path.relative(path.resolve(root), skillDirectory);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (relative.split(path.sep).join("/") !== "skills/semantic-flow") {
     return null;
   }
   return (
@@ -1117,7 +1124,7 @@ function verifySkill(root: string): string[] {
       fail(`Built skill is missing ${relative}: ${root}.`);
     }
   }
-  return required;
+  return skillFiles(root);
 }
 
 function fileHash(file: string): string {
@@ -1237,7 +1244,7 @@ async function viewerForUpdate(
   return { ...viewer, repositoryRoot: viewerRoot };
 }
 
-async function update(options: Options): Promise<void> {
+async function updateFromSource(options: Options): Promise<void> {
   assertKnownOptions(
     options,
     commandOptionNames(semanticFlowApi, "update"),
@@ -1328,6 +1335,62 @@ async function update(options: Options): Promise<void> {
   console.log(`Updated semantic-flow ${previousVersion} -> ${installedVersion}.`);
   console.log(`Source: ${branch ?? "(detached)"} ${sourceCommit}`);
   console.log(`Installed at: ${skillDirectory}`);
+}
+
+async function update(options: Options): Promise<void> {
+  assertKnownOptions(options, commandOptionNames(semanticFlowApi, "update"));
+  const requested = option(options, "version");
+  const source = option(options, "source");
+  const allowDowngrade = flag(options, "allow-downgrade");
+  if (source) {
+    if (requested || allowDowngrade) fail("--source cannot be combined with release version options.");
+    return updateFromSource(options);
+  }
+  if (flag(options, "use-current-source")) fail("--use-current-source requires an explicit --source.");
+  if (allowDowngrade && !requested) fail("--allow-downgrade requires an explicit --version.");
+  if (requested) parseVersion(requested);
+  if (fs.existsSync(path.join(skillDirectory, "../../scripts/src/build-skill.ts"))) {
+    fail("This is the source skill. Install a release in a separate destination; do not replace repository source files.");
+  }
+  const previousVersion = readVersion(skillDirectory);
+  parseVersion(previousVersion);
+  const releases = await listReleases();
+  const release = selectRelease(releases, requested);
+  const targetVersion = release.tag_name.slice(1);
+  const difference = compareVersions(targetVersion, previousVersion);
+  if (difference < 0 && !allowDowngrade) fail(`Installed ${previousVersion} is newer than ${targetVersion}. Use --version with --allow-downgrade only for intentional recovery.`);
+  const installedMetadata = path.join(skillDirectory, "RELEASE.json");
+  if (difference === 0 && fs.existsSync(installedMetadata)) {
+    console.log(`semantic-flow ${previousVersion} is already current. Installed at: ${skillDirectory}`);
+    return;
+  }
+  console.log(upgradeNotes(releases, previousVersion, targetVersion));
+  const targetRoot = repositoryRoot(process.cwd());
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-release-"));
+  try {
+    const staged = path.join(temporary, "semantic-flow");
+    const metadata = await unpackDistribution(await downloadRelease(release), staged, targetVersion);
+    const required = verifySkill(staged);
+    const viewer = await viewerForUpdate(targetRoot);
+    if (viewer) await stopViewerAndWait(viewer);
+    try {
+      replaceInstalledSkill(staged, skillDirectory, required);
+    } catch (error) {
+      if (viewer) {
+        try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+        catch (restartError) { throw new AggregateError([error, restartError], "Update failed; restoring the old viewer also failed."); }
+      }
+      throw error;
+    }
+    if (viewer) {
+      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+      catch (error) { fail(`Installed ${targetVersion}, but the viewer could not restart. Run review to reopen it. ${String(error)}`); }
+    }
+    console.log(`Updated semantic-flow ${previousVersion} -> ${targetVersion}.`);
+    console.log(`Source commit: ${metadata.sourceCommit}`);
+    console.log(`Installed at: ${skillDirectory}`);
+    console.log(`Release notes: https://github.com/${metadata.repository}/releases/tag/v${targetVersion}`);
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 
 async function dispatch(positionals: string[], options: Options): Promise<void> {

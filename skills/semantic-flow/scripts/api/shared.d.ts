@@ -1,4 +1,5 @@
-export type SpecificationSourceKind = "azure-devops" | "github" | "url" | "local";
+/** Non-empty origin identifier; provider names are not restricted. */
+export type SpecificationSourceKind = string;
 export type InsightKind = "decision" | "assumption" | "alternative" | "failed-attempt" | "risk" | "question";
 export type DecisionCategory = "specification" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";

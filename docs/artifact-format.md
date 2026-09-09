@@ -78,6 +78,15 @@ A specification records `id`, `title`, `summary`, source provenance, and at leas
 one acceptance criterion. Criterion references use
 `<specification-id>#<criterion-id>`.
 
+`source.kind` is any non-empty origin identifier, such as `local`, `url`,
+`jira`, or an internal tracker name. `source.reference` is required and non-empty.
+An optional `source.url` must be a valid URI; `kind: url` requires it. Provider
+names do not require schema or API changes. For example:
+
+```json
+{ "kind": "internal-tracker", "reference": "TEAM-42", "url": "https://work.example.com/TEAM-42" }
+```
+
 ## Stage
 
 A stage records its intent, dependencies, specification references, rationale,
