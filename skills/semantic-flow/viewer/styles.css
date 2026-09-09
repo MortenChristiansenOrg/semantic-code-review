@@ -1280,7 +1280,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .cov-key i { display: inline-block; width: 18px; height: 5px; border-radius: 999px; background: linear-gradient(90deg, var(--signal), var(--signal-2)); margin-right: 6px; vertical-align: middle; }
 .cov-key i.files { background: var(--ok); }
 
-.notes-list { padding: 0 0 22px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; overflow-x: hidden; }
+.notes-list { align-content: start; grid-auto-rows: max-content; min-height: 0; padding: 0 0 22px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; overflow-x: hidden; }
 .note-stage { display: grid; gap: 12px; }
 .note-stage-h {
   font-family: var(--display); font-size: 14px; font-weight: 600; color: var(--text);
@@ -1349,12 +1349,20 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .notes-switch-btn:hover { border-color: var(--signal); color: var(--signal); }
 .notes-switch-btn.is-on { border-color: var(--signal); color: var(--signal); background: var(--signal-soft); }
 .notes-switch-btn b { font-weight: 700; }
-.notes-track { display: flex; align-items: flex-start; width: 200%; transition: transform .32s var(--ease); }
-.notes-track.is-active { transform: translateX(0); }
-.notes-track.is-resolved { transform: translateX(-50%); }
+.notes-track { min-width: 0; }
 .notes-col {
-  flex: 0 0 50%; width: 50%; min-width: 0; padding: 0 22px;
+  min-width: 0; padding: 0 22px;
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-content: start;
+}
+.notes-col[hidden] { display: none; }
+.tnote-h { cursor: default; }
+.ownership-notice {
+  padding: 6px 12px; color: var(--muted); background: var(--panel);
+  font-size: 11px; white-space: normal; display: flex; align-items: center; gap: 12px;
+}
+.ownership-notice button {
+  display: inline-flex; align-items: center; gap: 4px; color: var(--signal);
+  background: transparent; border: 0; cursor: pointer; font: inherit;
 }
 .notes-col .note-convos,
 .notes-col .note-stage,

@@ -29,3 +29,17 @@ Edit `src/api/*.ts` and `src/command-api.ts` together when the CLI surface
 changes. The build rejects command or parameter drift and missing source JSDoc.
 Do not edit generated files under `skills/semantic-flow/scripts` or generated
 schema copies under `skills/semantic-flow/references`.
+
+### Viewer browser regressions
+
+Run `npm ci`, then `npx playwright install chromium` (or
+`npx playwright install --with-deps chromium` on a fresh Linux CI machine), and
+`npm run test:browser` from `scripts/`. The tests serve the production viewer
+with intercepted fixture responses and cover layout at empty/short/overflowing
+sizes, saved stage choices, feedback refresh, keyboard submission, node context,
+and accessible tooltips. They do not require a running artifact server.
+
+The artifact command suite also scripts recovery from an unsupported decision
+category: the rejected write preserves application work, a supported retry keeps
+the observed rationale, and the stage finishes. This verifies the recovery path;
+it is not an evaluation of a particular model's compliance with the skill.
