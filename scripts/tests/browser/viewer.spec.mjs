@@ -244,6 +244,9 @@ test('renamed file comments render under their original node and line anchors fa
   await openFile(page, 'first-one');
   await expect(page.locator('.file-notes .tthread')).toHaveCount(0);
   await showNotes(page);
+  const localFileLabel = page.locator('.side.notes .tnote').filter({ hasText: 'Local renamed file' }).locator('.tthread-title');
+  await expect(localFileLabel).toHaveText('renamed.js');
+  await expect(localFileLabel).toHaveAttribute('data-tooltip', 'renamed.js');
   await page.locator('.side.notes [data-thread-id="renamed-line"] [data-action="jump-to"]').click();
   await expect(page.locator('details[data-node="first-two"] .file-notes')).toContainText('Feedback renamed-line');
   expect(errors).toEqual([]);

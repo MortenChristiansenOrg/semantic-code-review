@@ -1724,7 +1724,7 @@
   // Notes list: show only the filename, keep the full project-relative path on hover.
   function noteTargetLabel(c) {
     if (c.kind === "file") {
-      const full = fileById.get(c.id)?.file.path || c.id;
+      const full = noteFileEntry(c.kind, c.id)?.file.path || c.id;
       return { text: splitPath(full).name, title: full };
     }
     if (c.kind === "line") {
