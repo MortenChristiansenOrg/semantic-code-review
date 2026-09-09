@@ -96,7 +96,8 @@ interface TargetRestack {
 }
 
 function normalizedPath(value: string): string {
-  const resolved = fs.existsSync(value) ? fs.realpathSync(value) : path.resolve(value);
+  // Native resolution also expands Windows short-path aliases (for example RUNNER~1).
+  const resolved = fs.existsSync(value) ? fs.realpathSync.native(value) : path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 

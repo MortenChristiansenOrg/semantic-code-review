@@ -191,6 +191,8 @@ test('custom tooltips work on focus without native duplicates and dismiss with E
   await openFile(page);
   await expect(page.locator('#app [title]')).toHaveCount(0);
   await expect(page.locator('.frow .kind[tabindex], .frow .cls[tabindex], .frow .fp-from[tabindex]')).toHaveCount(0);
+  // Keep prior click/hover state separate from the keyboard dismissal check.
+  await page.mouse.move(0, 0);
   await page.locator('details[data-node="first-one"] .frow-open').focus();
   await expect(page.locator('[role="tooltip"]')).toContainText('this step owns hunk 1');
   const target = page.locator('.cinema-diff [data-action="toggle-hide-removed"]');

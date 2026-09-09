@@ -331,7 +331,7 @@ test("version reports installed and schema versions", () => {
 
 function createUpdateFixture(t) {
   const root = fs.mkdtempSync(
-    path.join(fs.realpathSync(os.tmpdir()), "semantic-flow-update-test-"),
+    path.join(fs.realpathSync.native(os.tmpdir()), "semantic-flow-update-test-"),
   );
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -669,5 +669,5 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
   const current = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = current.processId;
   assert.ok(previous.messages.includes("shutdown"));
-  assert.equal(current.skillDirectory, fs.realpathSync(fixture.installedSkill));
+  assert.equal(current.skillDirectory, fs.realpathSync.native(fixture.installedSkill));
 });

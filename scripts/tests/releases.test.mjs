@@ -23,7 +23,7 @@ function release(version, overrides = {}) {
     assets: [{ name, url: `${api}/releases/assets/1` }, { name: `${name}.sha256`, url: `${api}/releases/assets/2` }], ...overrides };
 }
 function temp(t) {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'semantic-release-test-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'semantic-release-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
