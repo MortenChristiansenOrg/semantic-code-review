@@ -76,7 +76,7 @@ for (const input of Object.keys(compilation.metafile.inputs)) {
   const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
   const licenses = fs.readdirSync(directory).filter((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
   if (!licenses.length) throw new Error(`Bundled dependency ${pkg.name} has no license file.`);
-  dependencies.set(`${pkg.name}@${pkg.version}`, licenses.map((name) => fs.readFileSync(path.join(directory, name), "utf8")).join("\n"));
+  dependencies.set(`${pkg.name}@${pkg.version}`, licenses.map((name) => fs.readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n")).join("\n"));
 }
 fs.writeFileSync(path.join(skillRoot, "THIRD-PARTY-NOTICES.txt"), [...dependencies].sort(([a], [b]) => a.localeCompare(b))
   .map(([name, license]) => `${name}\n${"=".repeat(name.length)}\n${license}`).join("\n\n"));

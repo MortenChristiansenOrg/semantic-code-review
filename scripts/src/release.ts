@@ -57,6 +57,8 @@ export async function packageRelease(output: string): Promise<{ archive: string;
     const extracted = path.join(temporary, "semantic-flow");
     await unpackDistribution(fs.readFileSync(archive), extracted, version);
     const run = (name: string, ...args: string[]) => execFileSync(process.execPath, [path.join(extracted, "scripts", `${name}.mjs`), ...args], { cwd: temporary, windowsHide: true, encoding: "utf8" });
+    // Runtime commands operate in a user's Git repository, never the build checkout.
+    execFileSync("git", ["init", "-b", "main"], { cwd: temporary, windowsHide: true, stdio: "ignore" });
     const installed = JSON.parse(run("semantic-flow", "version", "--json"));
     if (installed.skillVersion !== version || installed.sourceCommit !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
     for (const name of ["semantic-flow", "semantic-implementation", "review-feedback", "semantic-view"]) run(name, "--help");
