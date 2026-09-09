@@ -273,3 +273,35 @@ test('shared-file jumps stay in their stage when node IDs repeat across stages',
   await showNotes(page);
   await expect(page.locator('.side.notes .tnote .tthread-title')).toHaveText('second one');
 });
+
+test('equal node IDs in two stages keep independent note-panel visibility across toggles and reloads', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) {
+    stage.nodes[0].id = 'same-node';
+    stage.files[0].memberships[0].nodeId = 'same-node';
+  }
+  data.feedback = data.stages.map((stage) => thread(`${stage.id}-thread`, 'open', {
+    kind: 'node', stageId: stage.id, nodeId: 'same-node', label: `${stage.id} node`,
+  }));
+  const errors = await mount(page, data, { openStages: { first: true, second: true }, comments:
+    data.stages.map((stage) => ({ kind: 'node', id: 'same-node', stageId: stage.id, mode: 'personal', body: `${stage.id} personal note` })),
+  });
+  const first = page.locator('.stage[data-stage="first"] details[data-node="same-node"]');
+  const second = page.locator('.stage[data-stage="second"] details[data-node="same-node"]');
+  await first.locator('summary').click();
+  await second.locator('summary').click();
+  await first.locator('.notes-toggle').click();
+  await expect(first.locator('.thread .tthread')).toHaveCount(2);
+  await expect(second.locator('.thread .tthread')).toHaveCount(0);
+  await second.locator('.notes-toggle').click();
+  await expect(second.locator('.thread .tthread')).toHaveCount(2);
+  await first.locator('.notes-toggle').click();
+  await expect(first.locator('.thread .tthread')).toHaveCount(0);
+  await expect(second.locator('.thread .tthread')).toHaveCount(2);
+  await page.reload();
+  await expect(first.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'false');
+  await expect(second.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'true');
+  await expect(first.locator('.thread .tthread')).toHaveCount(0);
+  await expect(second.locator('.thread .tthread')).toHaveCount(2);
+  expect(errors).toEqual([]);
+});

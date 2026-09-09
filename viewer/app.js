@@ -778,10 +778,13 @@
   function commentBtn(kind, id, stageId) {
     return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
   }
+  function threadStateKey(kind, id, stageId) {
+    return kind === "node" ? `n:${stageId}:${id}` : id;
+  }
   function notesToggle(kind, id, stageId) {
     const { total, open: openCount } = threadToggleCounts(kind, id, stageId);
     if (!total) return "";
-    const open = Boolean(state.openThreads[id]);
+    const open = Boolean(state.openThreads[threadStateKey(kind, id, stageId)]);
     return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
       ${bubble()}<b>${total}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
   }
@@ -1042,7 +1045,7 @@
     const arts = artifactThreadsForElement(kind, id, stageId);
     const locals = localVisibleForElement(id, elementNodeId(kind, id), kind, stageId);
     const hasContent = arts.length || locals.length;
-    if (!state.openThreads[id] && !composingNew) return "";
+    if (!state.openThreads[threadStateKey(kind, id, stageId)] && !composingNew) return "";
     if (!hasContent && !composingNew) return "";
     const rows =
       arts.map((t) => renderArtifactThread(t, false)).join("") +
@@ -1957,11 +1960,12 @@
       }
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
-      const opening = !state.openThreads[id];
-      state.openThreads[id] = opening;
+      const key = threadStateKey(btn.dataset.kind, id, btn.dataset.stage);
+      const opening = !state.openThreads[key];
+      state.openThreads[key] = opening;
       persist();
       if (opening) { render(); }
-      else { collapseThenRender(app.querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
+      else { collapseThenRender((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "set-view") {
@@ -2045,7 +2049,7 @@
     state.notesOpen = false;
     state.coverageOpen = false;
     if (kind === "line") state.openLineThreads[id] = true;
-    else state.openThreads[id] = true;
+    else state.openThreads[threadStateKey(kind, id, stageId)] = true;
     let lineFileId = null;
     let lineMembership = null;
     let lineEntry = null;
@@ -2493,7 +2497,7 @@
     };
     rememberDraftSnapshot(compose);
     if (kind === "line") state.openLineThreads[id] = true;
-    else state.openThreads[id] = true;
+    else state.openThreads[threadStateKey(kind, id, stageId)] = true;
     // File notes live inside the file's open diff unit, so adding one opens it.
     if (kind === "file") {
       const entry = fileById.get(id);
@@ -2522,7 +2526,7 @@
       dirty: false,
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
-    else state.openThreads[c.id] = true;
+    else state.openThreads[threadStateKey(c.kind, c.id, c.stageId)] = true;
     if (c.kind === "file" || c.kind === "line") {
       const entry = noteFileEntry(c.kind, c.id);
       if (entry && noteNodeId(c)) state.activeFiles[entry.id] = noteNodeId(c);
