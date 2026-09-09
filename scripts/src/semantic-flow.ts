@@ -96,7 +96,7 @@ interface TargetRestack {
 }
 
 function normalizedPath(value: string): string {
-  const resolved = path.resolve(value);
+  const resolved = fs.existsSync(value) ? fs.realpathSync(value) : path.resolve(value);
   return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 

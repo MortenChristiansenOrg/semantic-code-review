@@ -12,6 +12,7 @@ import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetNa
 import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
 import { validateNotes } from '../src/release.ts';
+import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
 
 const api = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
@@ -22,7 +23,7 @@ function release(version, overrides = {}) {
     assets: [{ name, url: `${api}/releases/assets/1` }, { name: `${name}.sha256`, url: `${api}/releases/assets/2` }], ...overrides };
 }
 function temp(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-release-test-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'semantic-release-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
@@ -196,16 +197,17 @@ for (const options of [{ corrupt: true }, { missing: true }, { failReplacement: 
 }
 
 test('release update restarts the matching viewer and preserves repository artifacts', async (t) => {
+  let port;
+  t.after(async () => {
+    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+  });
   const fixture = await updateFixture(t);
   initializeImplementation(fixture.repository);
   const beforeArtifact = fixture.repository.read('.semantic-review/manifest.json');
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const port = server.address().port; server.close(); await once(server, 'close');
+  port = server.address().port; server.close(); await once(server, 'close');
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' };
-  t.after(async () => {
-    try { await fetch(`http://127.0.0.1:${port}/api/shutdown`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); } catch {}
-  });
   const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, ...env }, encoding: 'utf8' });
   assert.equal(launch.status, 0, launch.stderr);
   const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());

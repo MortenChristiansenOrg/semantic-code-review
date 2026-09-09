@@ -331,7 +331,7 @@ test("version reports installed and schema versions", () => {
 
 function createUpdateFixture(t) {
   const root = fs.mkdtempSync(
-    path.join(os.tmpdir(), "semantic-flow-update-test-"),
+    path.join(fs.realpathSync(os.tmpdir()), "semantic-flow-update-test-"),
   );
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -652,4 +652,22 @@ test("update never sends shutdown to a replacement on a new connection", async (
   assert.equal(identity.implementationId, "replacement");
   assert.deepEqual(messages, ["ready"]);
   assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), `${builtSkillVersion}\n`);
+});
+
+test("update recognizes a matching viewer through a filesystem alias", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
+  fixture.initialize();
+  const alias = path.join(fixture.root, "skill-alias");
+  fs.symlinkSync(fixture.installedSkill, alias, process.platform === "win32" ? "junction" : "dir");
+  const previous = await startUpdateViewerFixture(t, fixture, port, { identity: { skillDirectory: alias } });
+  viewerPid = previous.child.pid;
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const current = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  viewerPid = current.processId;
+  assert.ok(previous.messages.includes("shutdown"));
+  assert.equal(current.skillDirectory, fs.realpathSync(fixture.installedSkill));
 });

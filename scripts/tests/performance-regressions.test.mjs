@@ -181,8 +181,9 @@ test('API index exposes all groups and contract checks still catch drift and mis
   const stages = path.join(copy, 'api/stages.ts');
   const original = fs.readFileSync(stages, 'utf8');
   const program = `import {compileApiDefinition} from ${JSON.stringify(pathToFileURL(path.join(sourceRoot, 'scripts/src/api-contract-check.ts')).href)}; import {cliApis} from ${JSON.stringify(pathToFileURL(path.join(sourceRoot, 'scripts/src/command-api.ts')).href)}; compileApiDefinition(${JSON.stringify(path.join(copy, 'api.ts'))},cliApis);`;
-  const check = () => spawnSync(process.execPath, ['--import', path.join(sourceRoot, 'scripts/node_modules/tsx/dist/loader.mjs'), '--input-type=module', '-e', program], { encoding: 'utf8' });
-  assert.equal(check().status, 0);
+  const check = () => spawnSync(process.execPath, ['--import', pathToFileURL(path.join(sourceRoot, 'scripts/node_modules/tsx/dist/loader.mjs')).href, '--input-type=module', '-e', program], { encoding: 'utf8' });
+  const baseline = check();
+  assert.equal(baseline.status, 0, baseline.stderr);
   fs.writeFileSync(stages, original.replace('  json?: true;', '  json: true;'));
   const drift = check(); assert.notEqual(drift.status, 0); assert.match(drift.stderr, /required/);
   fs.writeFileSync(stages, original.replace('/** Emits stage branch, immutable revisions, worktree, and next action as JSON. */', ''));
