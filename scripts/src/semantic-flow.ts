@@ -1364,12 +1364,12 @@ async function update(options: Options): Promise<void> {
     return;
   }
   console.log(upgradeNotes(releases, previousVersion, targetVersion));
+  const targetRoot = repositoryRoot(process.cwd());
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-release-"));
   try {
     const staged = path.join(temporary, "semantic-flow");
     const metadata = await unpackDistribution(await downloadRelease(release), staged, targetVersion);
     const required = verifySkill(staged);
-    const targetRoot = repositoryRoot(process.cwd());
     const viewer = await viewerForUpdate(targetRoot);
     if (viewer) await stopViewerAndWait(viewer);
     try {

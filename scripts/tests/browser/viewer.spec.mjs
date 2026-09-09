@@ -324,3 +324,27 @@ test('unsupported experimental UI records reset while current approvals and draf
   await showNotes(page);
   await expect(page.getByText('Keep my note', { exact: true }).first()).toBeVisible();
 });
+
+test('file approvals require revisions and unsupported renamed-file records are ignored', async ({ page }) => {
+  const data = fixture();
+  data.stages[1].files[0].kind = 'renamed';
+  data.stages[1].files[0].previousPath = 'old.js';
+  await mount(page, data, { approvals: {
+    [fileId]: { rev: null, at: 1 },
+    first: { rev: null, at: 1 },
+    'f:second:old.js': true,
+  } });
+  await expect(page.locator('.frow.is-approved, .frow.is-stale, .stage.is-approved')).toHaveCount(0);
+});
+
+test('valid changed and renamed file approvals remain stale', async ({ page }) => {
+  const data = fixture();
+  data.stages[1].files[0].kind = 'renamed';
+  data.stages[1].files[0].previousPath = 'old.js';
+  await mount(page, data, { approvals: {
+    [fileId]: { rev: 'previous', at: 1 },
+    'f:second:old.js': { rev: 'previous', at: 1 },
+  } });
+  await expect(page.locator('.frow.is-stale')).toHaveCount(4);
+  await expect(page.locator('.frow.is-approved')).toHaveCount(0);
+});

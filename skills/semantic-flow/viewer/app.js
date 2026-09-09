@@ -400,17 +400,22 @@
       return fileKey(entry.stage.id, entry.file.previousPath);
     return null;
   }
-  function approvalState(id) {
+  function approvalRecord(id) {
     const rec = state.approvals[id];
-    if (rec && typeof rec === "object" && typeof rec.at === "number" && Object.hasOwn(rec, "rev")) {
-      if (rec.rev != null)
-        return rec.rev === revisionFor(id) ? "approved" : "stale";
+    if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
+    if (id.startsWith("f:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
+    return stageById.has(id) && rec.rev === null ? rec : null;
+  }
+  function approvalState(id) {
+    const rec = approvalRecord(id);
+    if (rec) {
+      if (id.startsWith("f:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
     // as it stands now, so surface it as stale to prompt a fresh look.
     const prevId = previousApprovalId(id);
-    if (prevId && state.approvals[prevId]) return "stale";
+    if (prevId && approvalRecord(prevId)) return "stale";
     return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
