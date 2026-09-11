@@ -427,7 +427,8 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     memberships: [{ nodeId: "first-node" }, { nodeId: "clicked-node" }],
   };
   assert.equal(selectedNodeForFile("clicked-node", sharedFile), "clicked-node");
-  assert.equal(selectedNodeForFile(true, sharedFile), "first-node");
+  assert.equal(selectedNodeForFile(true, sharedFile), null);
+  assert.equal(selectedNodeForFile("removed-node", sharedFile), null);
   assert.equal(selectedNodeForFile(false, sharedFile), null);
   const aggregateStart = viewerApp.indexOf("function aggregateApprovalState(states)");
   const aggregateEnd = viewerApp.indexOf("\n  function nodeApprovalState", aggregateStart);

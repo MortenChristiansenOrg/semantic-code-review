@@ -253,9 +253,7 @@
     return stage.files.filter((file) => file.memberships.some((m) => m.nodeId === node.id));
   }
   function selectedNodeForFile(activeValue, file) {
-    if (typeof activeValue === "string") return activeValue;
-    if (!activeValue) return null;
-    return (file.memberships || [])[0]?.nodeId || null;
+    return typeof activeValue === "string" && file.memberships?.some((m) => m.nodeId === activeValue) ? activeValue : null;
   }
   function activeFileNodeId(id) {
     const entry = fileById.get(id);
@@ -2225,7 +2223,7 @@
       if (entry) {
         const membership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[id] = membership?.nodeId || true;
+        state.activeFiles[id] = membership?.nodeId || null;
       }
     } else if (kind === "line") {
       const p = parseLineId(id);
@@ -2236,7 +2234,7 @@
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[entry.id] = lineMembership?.nodeId || true;
+        state.activeFiles[entry.id] = lineMembership?.nodeId || null;
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
@@ -2625,7 +2623,7 @@
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
     if (entry) delete entry.file._diffError;
-    state.activeFiles[id] = targetNodeId || true;
+    state.activeFiles[id] = targetNodeId || null;
     persist();
     pendingHighlight = { id, nodeId: targetNodeId };
     render();
@@ -2669,7 +2667,7 @@
     if (kind === "file") {
       const entry = fileById.get(id);
       if (!state.activeFiles[id])
-        state.activeFiles[id] = (entry?.file.memberships || [])[0]?.nodeId || true;
+        state.activeFiles[id] = (entry?.file.memberships || [])[0]?.nodeId || null;
       pendingHighlight = { id, nodeId: activeFileNodeId(id) };
     }
     persist();
@@ -2900,7 +2898,7 @@
     const diffScrolls = {};
     const pendingDiffs = [];
     Object.keys(state.activeFiles).forEach((fid) => {
-      if (!state.activeFiles[fid]) return;
+      if (!activeFileNodeId(fid)) return;
       const holder = fileRowElement(fid)?.nextElementSibling;
       const scroller = holder && holder.classList.contains("cinema-diff")
         ? holder.querySelector(".diff-scroll")
@@ -2910,7 +2908,7 @@
     _render();
     restoreOpen(open);
     Object.keys(state.activeFiles).forEach((fid) => {
-      if (!state.activeFiles[fid]) return;
+      if (!activeFileNodeId(fid)) return;
       const row = fileRowElement(fid);
       const entry = fileById.get(fid);
       if (row && entry) {

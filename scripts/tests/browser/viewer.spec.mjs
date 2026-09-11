@@ -350,12 +350,13 @@ test('equal node IDs in two stages keep independent note-panel visibility across
 
 test('unsupported experimental UI records reset while current approvals and drafts survive', async ({ page }) => {
   const saved = {
-    specificationOpen: true, active: fileId, activeFiles: {},
+    specificationOpen: true, active: fileId, activeFiles: { [fileId]: true },
     approvals: { [fileId]: true, [approvalKey('second', 'second-one')]: { rev: firstMembershipRevision, at: 1 } },
     comments: [{ id: fileId, kind: 'file', body: 'Keep my note', at: 1 }],
     replyDrafts: [],
   };
   const errors = await mount(page, fixture(), saved);
+  await expect(page.locator(".cinema-diff")).toHaveCount(0);
   await openFile(page);
   expect(errors).toEqual([]);
   await expect(page.locator('.stage[data-stage="second"] .frow.is-approved')).toHaveCount(1);
