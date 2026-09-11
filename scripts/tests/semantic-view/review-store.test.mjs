@@ -59,3 +59,18 @@ test('separate processes cannot lose independent state writes', async (t) => {
   await Promise.all(Array.from({ length: 6 }, (_, i) => promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, review.id, review.generation, JSON.stringify([change(['approvals', String(i)], i)])])));
   assert.deepEqual(readReview(review.id).state.approvals, { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 });
 });
+
+
+test('failed owner metadata writes release the lock for the next operation', (t) => {
+  const root = setup(t);
+  const write = fs.writeFileSync;
+  const failure = Object.assign(new Error('Disk full'), { code: 'ENOSPC' });
+  const mocked = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    if (path.basename(String(file)) === 'owner.json') throw failure;
+    return write(file, ...args);
+  });
+  assert.throws(() => registerReview(path.join(root, 'a'), 'id', 'Review'), (error) => error === failure);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'user-data', 'locks')), []);
+  mocked.mock.restore();
+  assert.equal(registerReview(path.join(root, 'a'), 'id', 'Review').implementationId, 'id');
+});

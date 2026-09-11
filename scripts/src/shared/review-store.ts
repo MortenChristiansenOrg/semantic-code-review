@@ -29,11 +29,18 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
   const lock = path.join(locks, path.basename(reviewDirectory(id)) + ".lock");
   const deadline = Date.now() + 5000;
   while (true) {
+    let acquired = false;
     try {
       fs.mkdirSync(lock);
+      acquired = true;
       fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid }));
       break;
     } catch (error) {
+      if (acquired) {
+        // Initialization failed before the normal release path was installed.
+        try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* Preserve the original write error. */ }
+        throw error;
+      }
       if (error.code !== "EEXIST") throw error;
       // Serialize crash recovery too: two waiters must not both remove a
       // dead owner's directory after one of them has acquired the new lock.
