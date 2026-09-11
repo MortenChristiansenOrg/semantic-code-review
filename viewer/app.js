@@ -1,12 +1,25 @@
 /* Semantic Flow review viewer — Cinema.
    Renders a semantic implementation artifact (window.SEMANTIC_IMPLEMENTATION) as a full-bleed
    inline-diff reading experience. */
-(function () {
+(async function () {
   "use strict";
 
   const data = window.SEMANTIC_IMPLEMENTATION;
   const app = document.querySelector("#app");
-  const storeKey = `semantic-view:${data.implementationId}`;
+  let savedReview;
+  try {
+    const response = await fetch("/api/review-state", { cache: "no-store" });
+    savedReview = await response.json();
+    if (!response.ok || !savedReview.ok) throw new Error(savedReview.error || "Review data could not be loaded.");
+  } catch (error) {
+    app.textContent = `${error.message} Reload to retry.`;
+    return;
+  }
+  let persistedState = structuredClone(savedReview.state);
+  let savingState = false;
+  let saveError = "";
+  let saveTimer;
+
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
   function adoptViewerSnapshot(snapshot) {
@@ -293,10 +306,10 @@
 
   /* ---- state ------------------------------------------------------------ */
   let state = load();
-  let compose = null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
-  let replyTo = null;              // artifact thread id currently being replied to
-  let replyDraft = "";             // unsent text of the open reply, kept across re-renders
-  let replyEditId = null;          // id of the pending reply draft being edited (if any)
+  let compose = state.editor?.compose || null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
+  let replyTo = state.editor?.replyTo || null;              // artifact thread id currently being replied to
+  let replyDraft = state.editor?.replyDraft || "";             // unsent text of the open reply, kept across re-renders
+  let replyEditId = state.editor?.replyEditId || null;          // id of the pending reply draft being edited (if any)
   let replyDirty = false;
   let pendingLazyJump = null;
   function resumePendingLazyJump() {
@@ -366,17 +379,62 @@
     };
   }
   function load() {
-    try {
-      const merged = { ...defaults(), ...JSON.parse(localStorage.getItem(storeKey) || "{}") };
-      // Invalid experimental UI preferences reset; old formats are not migrated.
-      for (const key of ["specificationOpen", "activeFiles", "approvals"]) {
-        if (!merged[key] || typeof merged[key] !== "object" || Array.isArray(merged[key])) merged[key] = {};
-      }
-      return merged;
-    }
-    catch { return defaults(); }
+    return { ...defaults(), ...savedReview.state };
   }
-  function persist() { localStorage.setItem(storeKey, JSON.stringify(state)); }
+  function stateChanges(before, after, prefix = []) {
+    const changes = [];
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const a = before[key], b = after[key];
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      const object = (value) => value && typeof value === "object" && !Array.isArray(value);
+      if ((a === undefined || object(a)) && object(b)) changes.push(...stateChanges(a || {}, b, [...prefix, key]));
+      else changes.push({ path: [...prefix, key], before: key in before ? { present: true, value: a } : { present: false }, after: key in after ? { present: true, value: b } : { present: false } });
+    }
+    return changes;
+  }
+  function captureEditor() {
+    state.editor = { compose, replyTo, replyDraft, replyEditId };
+    for (const note of [...state.comments, compose].filter(Boolean)) {
+      const snapshot = draftSnapshots.get(note);
+      if (snapshot) note.snapshot = snapshot;
+    }
+  }
+  function persist() {
+    captureEditor();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveState, 50);
+  }
+  function showSaveStatus() {
+    let notice = document.querySelector("#save-status");
+    if (!notice) { notice = document.createElement("div"); notice.id = "save-status"; notice.setAttribute("role", "status"); document.body.append(notice); }
+    notice.className = "save-status";
+    notice.hidden = !saveError && !savingState;
+    notice.textContent = saveError ? `Review changes are not saved: ${saveError}` : "Saving review…";
+  }
+  async function saveState() {
+    if (savingState) return;
+    captureEditor();
+    const next = JSON.parse(JSON.stringify(state));
+    const changes = stateChanges(persistedState, next);
+    if (!changes.length) return;
+    savingState = true; showSaveStatus();
+    try {
+      const response = await fetch("/api/review-state", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Save failed. Make another edit to retry.");
+      persistedState = next;
+      saveError = "";
+    } catch (error) { saveError = error.message; }
+    finally { savingState = false; showSaveStatus(); }
+    if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
+  }
+  window.addEventListener("beforeunload", (event) => {
+    captureEditor();
+    if (savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
+  });
 
   /* ---- helpers ---------------------------------------------------------- */
   function esc(v) {
@@ -1992,7 +2050,7 @@
     else if (a === "export-feedback") {
       exportFeedback();
     } else if (a === "compose-cancel") {
-      compose = null; render();
+      compose = null; persist(); render();
     } else if (a === "jump-to") {
       jumpToElement(btn.dataset.kind, btn.dataset.id, btn.dataset.stage, btn.dataset.nodeId);
     } else if (a === "thread-reply") {
@@ -2017,7 +2075,7 @@
       if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyDirty = false; }
       persist(); render();
     } else if (a === "reply-cancel") {
-      replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render();
+      replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; persist(); render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -2541,9 +2599,11 @@
     if (compose && t.matches('.note-compose textarea[name="nc-body"]')) {
       compose.body = t.value;
       compose.dirty = true;
+      persist();
     } else if (t.matches('.tthread-reply textarea[name="reply-body"]')) {
       replyDraft = t.value;
       replyDirty = true;
+      persist();
     }
   });
   document.addEventListener("change", (e) => {
@@ -2551,6 +2611,7 @@
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
+      persist();
     }
   });
   document.addEventListener("submit", (e) => {
@@ -2600,8 +2661,8 @@
       if (h && !e.target.closest("button, a")) { e.preventDefault(); toggleThreadCollapse(h.dataset.id); return; }
     }
     if (e.key === "Escape") {
-      if (compose) { compose = null; render(); return; }
-      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render(); return; }
+      if (compose) { compose = null; persist(); render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; persist(); render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
@@ -2763,7 +2824,16 @@
     resumePendingLazyJump();
   };
 
+  for (const note of [...state.comments, compose].filter(Boolean)) {
+    if (note.snapshot) draftSnapshots.set(note, note.snapshot);
+  }
+  const recoveredStage = compose && noteStage(compose);
+  if (recoveredStage) state.openStages[recoveredStage.id] = true;
   render();
+  if (compose?.nodeId && recoveredStage) {
+    const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);
+    if (node) node.open = true;
+  }
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
 })();

@@ -27,6 +27,9 @@ import {
   viewerPort,
 } from "./shared/viewer-lifecycle.js";
 
+export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId } from "./shared/review-store.js";
+import { registerReview, readReview, patchReviewState } from "./shared/review-store.js";
+
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -1483,10 +1486,25 @@ function serveViewer({
   dataSource,
   viewerVersion,
 }) {
+  const review = registerReview(repoRoot, implementationId, implementationSummary(repoRoot).title);
   let server = null;
   const requestHandler = async (request, response) => {
     const url = new URL(request.url, `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+
+    if (pathname === "/api/review-state") {
+      try {
+        let record;
+        if (request.method === "GET") record = await dataSource.call("readReview", [implementationId, review.id]);
+        else if (request.method === "POST" && isTrustedRequest(request, port)) {
+          const payload = JSON.parse(await readRequestBody(request));
+          if (payload.reviewId !== review.id) throw new Error("This request belongs to another review.");
+          record = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
+        } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
+        sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
 
     if (request.method === "GET" && pathname === "/api/whoami") {
       sendJson(response, 200, {
@@ -1713,6 +1731,8 @@ if (!isMainThread && workerData?.repoRoot) {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root) }, args[1]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli }, args[1]);
+        else if (method === "readReview") result = readReview(args[1]);
+        else if (method === "patchReviewState") result = patchReviewState(args[1], args[2], args[3]);
         else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, root, args[1]);
         else throw new Error("Unknown viewer operation.");
       }
