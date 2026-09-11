@@ -450,3 +450,17 @@ Dimmed shared-file sections explain their owning step and provide a jump to that
 step at the same line. File rows show file and line feedback counts separately,
 with personal notes in their own badge.
 Use Ctrl+Enter in a note or reply input to submit it; ordinary Enter adds a line.
+
+Concurrent reviews use separate localhost services. Opening a different review
+keeps existing viewers available; reopening the same review reuses its healthy
+service. The preferred `SEMANTIC_VIEW_PORT` is used when available, otherwise the
+viewer chooses another port and records it in the user store. A service restart
+retains review state, and a skill update restarts matching registered services
+for the current repository's worktrees.
+
+Every viewer command belongs to the review that initiated it. The server resolves
+that review's registry identity to its artifact worktree and retains the context
+through queued work and subprocesses. It never uses the launching directory as a
+fallback. A removed worktree, changed implementation, or deleted session produces
+an explicit error. Future viewer command handlers must use the shared review
+command runner and explicitly validate any associated working worktree.

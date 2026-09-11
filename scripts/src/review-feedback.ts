@@ -1043,6 +1043,9 @@ try {
   if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, command));
   const paths = pathsFor(repositoryRoot());
+  if (process.env.SEMANTIC_FLOW_REVIEW_ID) {
+    if (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION) fail("The initiating review session changed. Reopen the viewer.");
+  }
   if (command === "init") {
     const { manifest } = semanticArtifact(paths);
     registerReview(paths.root, manifest.implementationId, manifest.title);
