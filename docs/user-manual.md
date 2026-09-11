@@ -465,3 +465,17 @@ through queued work and subprocesses. It never uses the launching directory as a
 fallback. A removed worktree, changed implementation, or deleted session produces
 an explicit error. Future viewer command handlers must use the shared review
 command runner and explicitly validate any associated working worktree.
+
+Use **Reviews** in the viewer toolbar to revisit any saved review without asking
+an agent to run another review command. The list shows each implementation's
+title and ID, repository/worktree path, last edit, and availability. Switching
+saves the current draft, starts or reuses the selected review's service, and
+opens its page. If saving or opening fails, the current page and draft remain.
+A removed or changed worktree remains listed with an explanation; its stored
+review data is never silently reassigned to another worktree.
+
+**Mark complete** and **Reopen review** change only the local review's lifecycle.
+Completion does not approve files, land an implementation, stop its service, or
+delete data. Opening an already completed review leaves it completed. Last edit
+tracks comments, feedback, approvals, typed draft text, and lifecycle changes;
+opening a page or changing navigation preferences does not update it.

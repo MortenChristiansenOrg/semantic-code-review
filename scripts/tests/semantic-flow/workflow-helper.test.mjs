@@ -735,4 +735,10 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
   assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
   assert.equal((await request(first, "api/implementation")).status, 200);
+  const missingViewer = { ...recovered, url: restarted.url };
+  const saved = await request(missingViewer, "api/review-state", { reviewId: recovered.reviewId, generation: recovered.generation, changes: [{ path: ['draft'], before: { present: false }, after: { present: true, value: 'Retain after removal' } }] });
+  assert.equal(saved.status, 200, await saved.text());
+  const list = await request(missingViewer, "api/reviews").then((r) => r.json());
+  assert.equal(list.reviews.find((r) => r.id === recovered.reviewId).available, false);
+  assert.equal((await request(missingViewer, "api/reviews/open", { reviewId: first.reviewId, generation: first.generation })).status, 200);
 });

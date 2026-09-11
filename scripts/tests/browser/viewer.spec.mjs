@@ -23,17 +23,28 @@ function fixture() {
 function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first', label: 'Stage first' }) {
   return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
-async function mount(page, data = fixture(), saved = {}) {
+async function mount(page, data = fixture(), saved = {}, other = []) {
+  const allData = [data, ...other];
+  const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://viewer.test/**', async (route) => {
     const url = new URL(route.request().url());
+    const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || url.pathname.slice(1))) || data;
+    const currentId = currentData.reviewId || currentData.implementationId;
     const json = (body) => route.fulfill({ json: body });
+    if (url.pathname === '/api/reviews') return json({ ok: true, reviews: records });
+    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://viewer.test/${route.request().postDataJSON().reviewId}` });
+    if (url.pathname === '/api/reviews/completion') {
+      const payload = route.request().postDataJSON();
+      records.find((r) => r.id === payload.reviewId).completedAt = payload.completed ? '2026-09-11T11:00:00Z' : null;
+      return json({ ok: true });
+    }
     if (url.pathname === '/api/review-state') {
-      if (!stores.has(data.implementationId)) stores.set(data.implementationId, structuredClone(saved));
-      const state = stores.get(data.implementationId);
+      if (!stores.has(currentId)) stores.set(currentId, structuredClone(saved));
+      const state = stores.get(currentId);
       if (route.request().method() === 'POST') {
         for (const change of route.request().postDataJSON().changes) {
           let target = state;
@@ -42,19 +53,20 @@ async function mount(page, data = fixture(), saved = {}) {
           else delete target[change.path.at(-1)];
         }
       }
-      return json({ ok: true, reviewId: data.implementationId, generation: 'test', state });
+      return json({ ok: true, reviewId: currentId, generation: 'test', state });
     }
-    if (url.pathname === '/api/revision') return json({ ok: true, revision: data.viewerRevision });
-    if (url.pathname === '/api/implementation') return json({ ok: true, implementation: data });
+    if (url.pathname === '/api/feedback/export') return json({ ok: true, exported: route.request().postDataJSON().notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })), skipped: [] });
+    if (url.pathname === '/api/revision') return json({ ok: true, revision: currentData.viewerRevision });
+    if (url.pathname === '/api/implementation') return json({ ok: true, implementation: currentData });
     if (url.pathname === '/api/feedback/resolve' || url.pathname === '/api/feedback/reopen') {
-      const target = data.feedback.find((t) => t.id === route.request().postDataJSON().threadId);
+      const target = currentData.feedback.find((t) => t.id === route.request().postDataJSON().threadId);
       target.status = url.pathname.endsWith('resolve') ? 'resolved' : 'open';
       return json({ ok: true, status: target.status });
     }
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
-    if (url.pathname === '/api/diff') return json({ ok: true, lines: data.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(data)}</script><script src="/app.js"></script>` });
+    if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
+    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/app.js"></script>` });
   });
   await page.goto('http://viewer.test/');
   await expect(page.locator('.stage')).toHaveCount(2);
@@ -387,8 +399,65 @@ test('unfinished message text survives a reload and failed saves stay visible', 
   await page.reload();
   await expect(input).toHaveValue('Unfinished screenshot explanation');
   await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
-  await page.route('**/api/review-state', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Another tab changed this draft.' } }));
+  await page.route('**/api/review-state*', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Another tab changed this draft.' } }));
   await input.fill('Keep this conflicting text');
   await expect(page.locator('#save-status')).toContainText('not saved');
   await expect(input).toHaveValue('Keep this conflicting text');
+});
+
+
+test('review switching saves drafts and pins subsequent commands to the selected review', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'worktree-a', title: 'Worktree A' };
+  const b = { ...fixture(), reviewId: 'worktree-b', title: 'Worktree B' }; // same implementation ID
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await page.locator('textarea[name="nc-body"]').fill('Keep draft in A');
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="worktree-b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page).toHaveURL('http://viewer.test/worktree-b');
+  await expect(page.locator('h1')).toHaveText('Worktree B');
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Feedback only for B');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await showNotes(page);
+  const feedbackRequest = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/feedback/export');
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  const prepared = await feedbackRequest;
+  expect(new URL(prepared.url()).searchParams.get('review')).toBe('worktree-b');
+  expect(new URL(prepared.url()).searchParams.get('generation')).toBe('test');
+  expect(prepared.postDataJSON().notes[0].body).toBe('Feedback only for B');
+  await expect(page.getByRole('button', { name: /Sending/ })).toHaveCount(0);
+  await page.locator('.side.notes').getByRole('button', { name: 'Close', exact: true }).click();
+  const command = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/reviews/completion');
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="worktree-b"]').getByRole('button', { name: 'Mark complete' }).click();
+  const request = await command;
+  expect(new URL(request.url()).searchParams.get('review')).toBe('worktree-b');
+  expect(request.postDataJSON().reviewId).toBe('worktree-b');
+  await expect(page.locator('[data-review="worktree-b"]')).toContainText('Completed');
+  await page.locator('[data-review="worktree-b"]').getByRole('button', { name: 'Reopen review', exact: true }).click();
+  await expect(page.locator('[data-review="worktree-b"]')).toContainText('Active');
+  await page.locator('[data-review="worktree-a"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Keep draft in A');
+});
+
+test('failed saves prevent switching and unavailable reviews stay visible', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await page.route('**/api/review-state*', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Conflicting draft' } }));
+  await page.locator('textarea[name="nc-body"]').fill('Do not lose me');
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page.locator('#review-list [role="alert"]')).toContainText('Conflicting draft');
+  await expect(page).toHaveURL('http://viewer.test/');
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Do not lose me');
+  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: [{ id: 'missing', generation: 'test', title: 'Old review', implementationId: 'old', repositoryRoot: '/missing', updatedAt: new Date().toISOString(), available: false, unavailableReason: 'The worktree was removed.' }] } }));
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('[data-review="missing"]')).toContainText('The worktree was removed.');
+  await expect(page.locator('[data-review="missing"]').getByRole('button', { name: 'Open review', exact: true })).toBeDisabled();
 });

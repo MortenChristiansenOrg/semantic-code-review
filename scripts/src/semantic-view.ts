@@ -27,8 +27,8 @@ import {
   viewerPort,
 } from "./shared/viewer-lifecycle.js";
 
-export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews } from "./shared/review-store.js";
-import { registerReview, readReview, patchReviewState, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer } from "./shared/review-store.js";
+export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, patchReviewState, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
@@ -1505,6 +1505,15 @@ async function handleThreadAction(request, response, context, action) {
   }
 }
 
+export function registeredReviews() {
+  return listReviews().map((record) => {
+    let unavailableReason = "";
+    try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
+    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt } = record;
+    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, available: !unavailableReason, unavailableReason };
+  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+}
+
 /** Reopen using a registry identity, with no caller-supplied path or command. */
 export async function openRegisteredReview(id: string, generation: string): Promise<string> {
   const context = captureReviewContext(id);
@@ -1550,8 +1559,23 @@ function serveViewer({
       if ((url.searchParams.get("review") !== context.reviewId || url.searchParams.get("generation") !== context.generation)) {
         sendJson(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
-      try { assertReviewContext(context); }
+      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); return; }
+    }
+
+    if (request.method === "GET" && pathname === "/api/reviews") {
+      try { sendJson(response, 200, { ok: true, reviews: registeredReviews() }); }
+      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+    if (request.method === "POST" && pathname === "/api/reviews/completion") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Changing completion requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        setReviewCompleted(payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt);
+        sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
     }
 
     if (request.method === "POST" && pathname === "/api/reviews/open") {
@@ -1801,15 +1825,18 @@ if (!isMainThread && workerData?.repoRoot) {
   const feedbackCli = locateFeedbackCli();
   parentPort.on("message", async ({ id, method, args }) => {
     try {
-      assertReviewContext(context); // Includes queued reads and future commands.
+      const localState = ["readReview", "patchReviewState"].includes(method);
+      if (localState) {
+        if (args[1] !== context.reviewId || readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+      } else assertReviewContext(context); // Includes queued repository reads and commands.
       let result;
-      if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      if (method === "readReview") result = readReview(context.reviewId);
+      else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
+      else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
-        else if (method === "readReview") result = readReview(args[1]);
-        else if (method === "patchReviewState") result = patchReviewState(args[1], args[2], args[3]);
         else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, context, args[1]);
         else throw new Error("Unknown viewer operation.");
       }
