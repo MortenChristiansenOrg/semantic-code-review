@@ -32,6 +32,7 @@ import {
   stopViewerAndWait,
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
+import { feedbackDirectory } from "./shared/review-store.js";
 import { withCheckedFeedback } from "./review-feedback.js";
 import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
 
@@ -58,6 +59,7 @@ interface ArtifactCandidate {
   finalizedStageIds: string[];
   workingStageIds: string[];
   feedbackExists: boolean;
+  feedbackDirectory: string;
 }
 
 interface Inspection {
@@ -170,8 +172,9 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
       }) ?? null,
     finalizedStageIds: [...(manifest.stages ?? [])],
     workingStageIds: workingStageIds(root),
+    feedbackDirectory: feedbackDirectory(root, manifest.implementationId),
     feedbackExists: fs.existsSync(
-      path.join(root, ".semantic-review-feedback", "manifest.json"),
+      path.join(feedbackDirectory(root, manifest.implementationId), "manifest.json"),
     ),
   };
 }
@@ -370,10 +373,7 @@ function status(options: Options): void {
     (stage) => stage.validation ?? [],
   );
 
-  const feedbackRoot = path.join(
-    candidate.worktree,
-    ".semantic-review-feedback",
-  );
+  const feedbackRoot = candidate.feedbackDirectory;
   let feedback = {
     exists: false,
     threads: {},
@@ -656,10 +656,7 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
 
   const replayedThreadIds: string[] = [];
   if (candidate.feedbackExists) {
-    const feedbackRoot = path.join(
-      candidate.worktree,
-      ".semantic-review-feedback",
-    );
+    const feedbackRoot = candidate.feedbackDirectory;
     const feedbackManifest = readJson(path.join(feedbackRoot, "manifest.json"));
     for (const id of feedbackManifest.threads ?? []) {
       const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
@@ -781,10 +778,7 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
   const worktreeChanges = worktreeStatus
     ? worktreeStatus.split(/\r?\n/).filter(Boolean)
     : [];
-  const feedbackRoot = path.join(
-    candidate.worktree,
-    ".semantic-review-feedback",
-  );
+  const feedbackRoot = candidate.feedbackDirectory;
   if (
     !candidate.feedbackExists &&
     fs.existsSync(feedbackRoot) &&

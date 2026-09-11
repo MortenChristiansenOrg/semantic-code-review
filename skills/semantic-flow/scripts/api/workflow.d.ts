@@ -9,7 +9,7 @@ export interface InspectSemanticFlowOptions {
     project?: string;
     /** Selects one artifact by its implementation ID when several linked worktrees contain implementations. */
     "implementation-id"?: string;
-    /** Emits machine-readable repository, candidate, and selected artifact details. */
+    /** Emits machine-readable repository, candidate, and selected artifact details, including each candidate's user-local feedbackDirectory. */
     json?: true;
 }
 /**

@@ -1,9 +1,14 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const testReviewHome = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-test-user-data-"));
+process.env.SEMANTIC_FLOW_HOME = testReviewHome;
+process.on("exit", () => fs.rmSync(testReviewHome, { recursive: true, force: true }));
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const scriptsDirectory = path.resolve(
@@ -73,7 +78,13 @@ export function createRepository(t, prefix = "semantic-flow-") {
     return execution;
   }
 
+  const privateFeedbackPath = (...parts) => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, '.semantic-review', 'manifest.json'), 'utf8'));
+    const id = createHash('sha256').update(JSON.stringify([fs.realpathSync(root), manifest.implementationId])).digest('hex');
+    return path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews', id, 'feedback', ...parts);
+  };
   const repository = {
+    feedbackPath: privateFeedbackPath,
     root,
     run,
     result,
@@ -108,23 +119,23 @@ export function createRepository(t, prefix = "semantic-flow-") {
           },
         );
       }),
-    path: (...parts) => path.join(root, ...parts),
+    path: (...parts) => path.resolve(root, ...parts),
     write(relativePath, contents) {
-      const file = path.join(root, relativePath);
+      const file = path.resolve(root, relativePath);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, contents, "utf8");
     },
     read(relativePath) {
-      return fs.readFileSync(path.join(root, relativePath), "utf8");
+      return fs.readFileSync(path.resolve(root, relativePath), "utf8");
     },
     readJson(relativePath) {
-      return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
+      return JSON.parse(fs.readFileSync(path.resolve(root, relativePath), "utf8"));
     },
     exists(relativePath) {
-      return fs.existsSync(path.join(root, relativePath));
+      return fs.existsSync(path.resolve(root, relativePath));
     },
     remove(relativePath) {
-      fs.rmSync(path.join(root, relativePath), {
+      fs.rmSync(path.resolve(root, relativePath), {
         recursive: true,
         force: true,
       });

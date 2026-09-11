@@ -22,7 +22,15 @@ import {
 import { fail } from "./shared/errors.js";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
-import { readJson, writeJson } from "./shared/json.js";
+import { readJson } from "./shared/json.js";
+import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
+
+let feedbackWritten = false;
+function writeJson(file: string, value: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicJson(file, value);
+  feedbackWritten = true;
+}
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
@@ -43,74 +51,28 @@ function repositoryRoot() {
 }
 
 function pathsFor(root) {
-  const feedback = path.join(root, ".semantic-review-feedback");
-  const gitLock = git(
-    ["rev-parse", "--git-path", "semantic-review-feedback.lock"],
-    { cwd: root },
-  );
+  const feedback = feedbackDirectory(root);
+  const manifest = readJson(path.join(root, ".semantic-review", "manifest.json"));
   return {
     root,
+    reviewId: reviewId(root, manifest.implementationId),
     semantic: path.join(root, ".semantic-review"),
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
     threads: path.join(feedback, "threads"),
-    lock: path.isAbsolute(gitLock) ? gitLock : path.resolve(root, gitLock),
   };
 }
 
-function sleep(milliseconds) {
-  Atomics.wait(
-    new Int32Array(new SharedArrayBuffer(4)),
-    0,
-    0,
-    milliseconds,
-  );
-}
-
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
-  }
-}
-
-function withFeedbackLock(paths, action) {
-  const lock = paths.lock;
-  const owner = path.join(lock, "owner.json");
-  const deadline = Date.now() + 10_000;
-  while (true) {
-    try {
-      fs.mkdirSync(lock);
-      writeJson(owner, {
-        pid: process.pid,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      let stale = false;
-      try {
-        stale = !processIsAlive(readJson(owner).pid);
-      } catch {
-        stale = Date.now() - fs.statSync(lock).mtimeMs > 10_000;
-      }
-      if (stale) {
-        fs.rmSync(lock, { recursive: true, force: true });
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        fail("Timed out waiting for another feedback mutation to finish.");
-      }
-      sleep(25);
-    }
-  }
-  try {
-    return action();
-  } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
-  }
+function withFeedbackLock<T>(paths, action: () => T): T {
+  const recordFile = path.join(reviewDirectory(paths.reviewId), "review.json");
+  const generation = fs.existsSync(recordFile) ? readReview(paths.reviewId).generation : null;
+  return withReviewLock(paths.reviewId, () => {
+    if (generation && readReview(paths.reviewId).generation !== generation) fail("The review session changed. Retry from the current review.");
+    feedbackWritten = false;
+    const result = action();
+    if (feedbackWritten && fs.existsSync(recordFile)) touchReview(paths.reviewId);
+    return result;
+  });
 }
 
 /** Keeps the reviewed feedback state stable through a workflow's final mutation. */
@@ -195,7 +157,7 @@ function validateDocument(ajv, value, file) {
 
 function loadFeedback(paths, { required = true } = {}) {
   if (!fs.existsSync(paths.feedbackManifest)) {
-    if (required) fail("No .semantic-review-feedback manifest exists.");
+    if (required) fail("No feedback manifest exists for this review.");
     return null;
   }
   const manifest = readJson(paths.feedbackManifest);
@@ -415,20 +377,6 @@ function validateFeedback(
   return { semantic, feedback };
 }
 
-function ensureExcluded(root) {
-  const exclude = git(["rev-parse", "--git-path", "info/exclude"], { cwd: root });
-  const resolved = path.isAbsolute(exclude) ? exclude : path.resolve(root, exclude);
-  const content = fs.existsSync(resolved) ? fs.readFileSync(resolved, "utf8") : "";
-  if (!content.split(/\r?\n/).includes(".semantic-review-feedback/")) {
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.appendFileSync(
-      resolved,
-      `${content && !content.endsWith("\n") ? "\n" : ""}.semantic-review-feedback/\n`,
-      "utf8",
-    );
-  }
-}
-
 function initialize(paths, options) {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "init"));
   if (fs.existsSync(paths.feedbackManifest)) fail("Feedback state already exists.");
@@ -438,7 +386,6 @@ function initialize(paths, options) {
     );
   }
   const semantic = semanticArtifact(paths);
-  ensureExcluded(paths.root);
   try {
     writeJson(paths.feedbackManifest, {
       $schema: MANIFEST_SCHEMA,
@@ -1084,17 +1031,21 @@ try {
     process.argv.slice(2),
   );
   const options = expandInputOptions(parsedOptions, process.cwd());
-  const paths = pathsFor(repositoryRoot());
-  const readOnly =
-    positionals.length === 0 ||
-    positionals[0] === "help" ||
-    options.has("help") ||
-    positionals[0] === "validate";
-  if (readOnly) {
-    withValidationContext(() => dispatch(paths, positionals, options));
-  } else {
-    withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
+  const command = positionals.join(" ");
+  if (!positionals.length || positionals[0] === "help" || options.has("help")) {
+    dispatch(null, positionals, options);
+    return;
   }
+  if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
+  assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, command));
+  const paths = pathsFor(repositoryRoot());
+  if (command === "init") {
+    const { manifest } = semanticArtifact(paths);
+    registerReview(paths.root, manifest.implementationId, manifest.title);
+  }
+  // Validation also holds the shared lock so it never observes a partial batch.
+  withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
+
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);

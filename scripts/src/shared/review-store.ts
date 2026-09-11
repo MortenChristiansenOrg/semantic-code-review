@@ -7,7 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 export function reviewHome() {
-  return path.resolve(process.env.SEMANTIC_FLOW_HOME || path.join(os.homedir(), ".semantic-flow"));
+  const configured = process.env.SEMANTIC_FLOW_HOME;
+  if (configured && !path.isAbsolute(configured)) throw new Error("SEMANTIC_FLOW_HOME must be an absolute path so all commands use the same user store.");
+  return path.resolve(configured || path.join(os.homedir(), ".semantic-flow"));
 }
 export function reviewDirectory(id: string) {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid review identity.");
@@ -15,6 +17,21 @@ export function reviewDirectory(id: string) {
 }
 export function reviewId(root: string, implementationId: string) {
   return createHash("sha256").update(JSON.stringify([fs.realpathSync(root), implementationId])).digest("hex");
+}
+/** Resolves private feedback without registering a review or creating files. */
+export function feedbackDirectory(root: string, implementationId?: string) {
+  if (implementationId === undefined) {
+    const file = path.join(root, ".semantic-review", "manifest.json");
+    if (!fs.existsSync(file)) throw new Error("No active .semantic-review artifact exists.");
+    implementationId = JSON.parse(fs.readFileSync(file, "utf8")).implementationId;
+  }
+  return path.join(reviewDirectory(reviewId(root, implementationId)), "feedback");
+}
+/** Caller must hold this review's lock. */
+export function touchReview(id: string) {
+  const record = readReview(id);
+  record.updatedAt = new Date().toISOString();
+  atomicJson(path.join(reviewDirectory(id), "review.json"), record);
 }
 export function atomicJson(file: string, value: unknown) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -27,7 +44,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
   const locks = path.join(reviewHome(), "locks");
   fs.mkdirSync(locks, { recursive: true, mode: 0o700 });
   const lock = path.join(locks, path.basename(reviewDirectory(id)) + ".lock");
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 10_000;
   while (true) {
     let acquired = false;
     try {

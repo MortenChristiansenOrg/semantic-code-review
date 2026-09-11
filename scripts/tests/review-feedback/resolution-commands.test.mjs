@@ -85,7 +85,7 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
   repository.flow("validate", "--publish");
   assert.equal(repository.feedback("next"), "No open feedback remains.");
   const thread = repository.readJson(
-    ".semantic-review-feedback/threads/second-comment.json",
+    repository.feedbackPath("threads/second-comment.json"),
   );
   assert.equal(thread.status, "resolved");
   assert.match(thread.resolvedAt, /^\d{4}-\d{2}-\d{2}T/);
@@ -128,7 +128,7 @@ test("answer-only threads use the same resolution flow", (t) => {
   repository.feedback("thread", "resolve", "--id", "why-this-way");
 
   const thread = repository.readJson(
-    ".semantic-review-feedback/threads/why-this-way.json",
+    repository.feedbackPath("threads/why-this-way.json"),
   );
   assert.equal(thread.status, "resolved");
   assert.equal(thread.comments[1].author, "agent");
@@ -168,13 +168,13 @@ test("thread reply-batch validates and writes one atomic batch", (t) => {
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/threads/batch-first.json",
+      repository.feedbackPath("threads/batch-first.json"),
     ).comments.at(-1).body,
     "First reply.",
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/threads/batch-second.json",
+      repository.feedbackPath("threads/batch-second.json"),
     ).comments.at(-1).body,
     "Second reply.",
   );
@@ -205,7 +205,7 @@ test("thread reply-batch validates and writes one atomic batch", (t) => {
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/threads/batch-first.json",
+      repository.feedbackPath("threads/batch-first.json"),
     ).comments.some((comment) => comment.id === "batch-first-not-kept"),
     false,
   );
@@ -242,7 +242,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
   );
   assert.equal(
     repository.readJson(
-      ".semantic-review-feedback/threads/already-answered.json",
+      repository.feedbackPath("threads/already-answered.json"),
     ).status,
     "open",
   );
@@ -327,7 +327,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
   assert.equal(lineThread.stale, true);
   assert.equal("reanchored" in lineThread, false);
   const storedStageThread = repository.readJson(
-    ".semantic-review-feedback/threads/already-answered.json",
+    repository.feedbackPath("threads/already-answered.json"),
   );
   const currentStage = repository.readJson(
     ".semantic-review/stages/implementation.json",
@@ -343,7 +343,7 @@ test("reviewers reopen and continue resolved threads", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "chat", "Question?");
-  const threadPath = ".semantic-review-feedback/threads/chat.json";
+  const threadPath = repository.feedbackPath("threads/chat.json");
 
   repository.feedback(
     "thread",

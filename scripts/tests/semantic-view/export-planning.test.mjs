@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
   createRepository,
   feedbackCli,
+  flowCli,
   initializeImplementation,
   organizeStage,
   scriptsDirectory,
@@ -27,6 +29,7 @@ const {
   mapNoteTarget,
   readFeedbackThread,
   viewerSnapshot,
+  feedbackDirectory,
 } = await import(moduleUrl);
 
 const implementation = {
@@ -896,4 +899,44 @@ test("readFeedbackThread reloads one thread without rebuilding implementation da
     "resolved",
   );
   assert.equal(readFeedbackThread(repository.root, "missing"), null);
+});
+
+
+test("viewer and CLI feedback use the selected worktree across identical implementation IDs", (t) => {
+  const { repository: first } = createImplementationWithStages(t);
+  const { repository: otherRepo } = createImplementationWithStages(t);
+  const linked = first.root + "-linked";
+  first.git("worktree", "add", "--detach", linked, "HEAD");
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  fs.cpSync(first.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  const roots = [first.root, linked, otherRepo.root];
+  const ids = roots.map((repoRoot) => {
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli },
+      [{ kind: "stage", id: "implementation", body: "Same message", clientId: "same-client" }]);
+    assert.equal(result.ok, true);
+    assert.equal(fs.existsSync(path.join(repoRoot, ".semantic-review-feedback")), false);
+    return result.exported[0].threadId;
+  });
+  assert.equal(new Set(roots.map((root) => feedbackDirectory(root))).size, 3);
+  assert.equal(new Set(ids).size, 1); // Same IDs remain isolated by review identity.
+  const before = fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8");
+  const replies = exportFeedbackReplies({ repoRoot: linked, feedbackCli }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
+  assert.equal(replies.ok, true);
+  assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
+  const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
+  assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(linked));
+  assert.notEqual(fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8"), before);
+});
+
+test("concurrent first submissions initialize shared feedback once and deduplicate retries", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const source = `import { exportFeedback, buildFeedbackTargetData } from ${JSON.stringify(moduleUrl)};
+    const repoRoot = process.argv[1];
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli: process.argv[2] }, [{ kind: "stage", id: "implementation", body: "Concurrent message", clientId: "retry" }]);
+    console.log(JSON.stringify(result));`;
+  const results = await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, repository.root, feedbackCli])));
+  for (const result of results) assert.equal(JSON.parse(result.stdout).ok, true);
+  const manifest = repository.readJson(repository.feedbackPath("manifest.json"));
+  assert.equal(manifest.threads.length, 1);
+  assert.equal(readFeedbackThread(repository.root, manifest.threads[0]).comments.length, 1);
 });

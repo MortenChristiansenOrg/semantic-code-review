@@ -43,7 +43,7 @@ Capture the smallest reproducible failure before changing source:
 3. Distinguish an invalid invocation, unsupported workflow, damaged target
    artifact, or interrupted write from a defect in the skill.
 4. Run read-only diagnostics first. Never hand-edit `.semantic-review/` or
-   `.semantic-review-feedback/` to make the reproduction pass.
+   the user-local feedback store to make the reproduction pass.
 
 Use the bundled `repair` command only for the unambiguous interrupted writes it
 supports. A missing capability, wrong mutation, misleading instruction,

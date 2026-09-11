@@ -11,7 +11,7 @@ branch immediately below it.
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
 | `semantic-flow/<implementation-id>/<NN>-<stage-id>` | Cumulative stage branch |
-| `.semantic-review-feedback/` | Local open and resolved feedback threads |
+| `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
 | `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
 

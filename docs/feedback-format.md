@@ -2,12 +2,17 @@
 
 **Status:** Proposal 0.1
 
-Feedback is mutable local workflow state under `.semantic-review-feedback/`.
-It connects reviewer comments to semantic targets and the stage snapshot used
-to process them.
+Feedback is mutable local workflow state under
+`~/.semantic-flow/reviews/<review-id>/feedback/`. The viewer and CLI use the
+same store, keyed by canonical artifact-worktree path and implementation ID.
+`semantic-flow inspect --json` exposes each candidate's resolved `feedbackDirectory`;
+use that output instead of constructing a path. `SEMANTIC_FLOW_HOME` overrides
+the user data root and must be an absolute path. There is no migration or fallback
+to worktree-local feedback. Feedback connects reviewer comments to semantic targets
+and the stage snapshot used to process them.
 
 ```text
-.semantic-review-feedback/
+~/.semantic-flow/reviews/<review-id>/feedback/
   manifest.json
   threads/<thread-id>.json
 ```
@@ -21,8 +26,8 @@ Adding a thread captures its responsible stage and that stage's current head.
 The implementation agent replies after answering the question or making the
 requested change. Only the reviewer resolves or reopens the thread.
 
-Draft notes stay in the viewer until the reviewer sends them. They are not part
-of the persisted feedback format.
+Draft notes persist as private viewer state in the same review directory. They
+enter the submitted feedback format only when the reviewer sends them.
 
 ## Targets
 
@@ -53,8 +58,10 @@ disappeared.
 
 The agent does not resolve threads.
 
-Every feedback mutation holds a repository-scoped lock. Publication-readiness
-validation requires every thread to be resolved. Metadata publication and
+Feedback mutations and validation share the per-review lock used by viewer state.
+Batch reads in the viewer use the same lock. Feedback files are replaced atomically,
+and successful feedback writes update the review's last-edited timestamp.
+Publication-readiness validation requires every thread to be resolved. Metadata publication and
 local branch preparation are separate implementation-artifact operations.
 
 Feedback remains independent from the implementation artifact and is not
