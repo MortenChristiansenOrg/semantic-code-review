@@ -18,7 +18,17 @@ branch immediately below it.
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
 
-The viewer stores review-progress approvals in browser-local state. Approvals can be recorded for the
+The viewer stores review progress, drafts, personal notes, and preferences under
+`~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
+data root. Review identity combines the canonical artifact-worktree path and
+implementation ID, independently of browser ports. Moving a worktree creates a new
+review identity; the old data remains available for cleanup. There is no migration
+from browser storage. Simultaneous independent edits merge; conflicting edits to
+the same field or draft list fail visibly rather than overwrite another tab.
+Unfinished composers are shared review state; preserve conflicting text before
+reloading. Wait for the saving indicator to clear before closing the viewer.
+
+Approvals remain personal sign-offs. Approvals can be recorded for the
 complete change set, a stage, a change node, or a file within one stage.
 Approving a parent visually approves its descendants and makes their controls
 read-only; removing that parent approval restores each descendant's explicit

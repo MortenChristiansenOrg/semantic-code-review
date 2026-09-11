@@ -24,11 +24,26 @@ function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first',
   return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
 async function mount(page, data = fixture(), saved = {}) {
+  await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
+  const stores = new Map();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://viewer.test/**', async (route) => {
     const url = new URL(route.request().url());
     const json = (body) => route.fulfill({ json: body });
+    if (url.pathname === '/api/review-state') {
+      if (!stores.has(data.implementationId)) stores.set(data.implementationId, structuredClone(saved));
+      const state = stores.get(data.implementationId);
+      if (route.request().method() === 'POST') {
+        for (const change of route.request().postDataJSON().changes) {
+          let target = state;
+          for (const key of change.path.slice(0, -1)) target = target[key] ||= {};
+          if (change.after.present) target[change.path.at(-1)] = change.after.value;
+          else delete target[change.path.at(-1)];
+        }
+      }
+      return json({ ok: true, reviewId: data.implementationId, generation: 'test', state });
+    }
     if (url.pathname === '/api/revision') return json({ ok: true, revision: data.viewerRevision });
     if (url.pathname === '/api/implementation') return json({ ok: true, implementation: data });
     if (url.pathname === '/api/feedback/resolve' || url.pathname === '/api/feedback/reopen') {
@@ -39,11 +54,8 @@ async function mount(page, data = fixture(), saved = {}) {
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
     if (url.pathname === '/api/diff') return json({ ok: true, lines: data.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', body: `<link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(data)}</script><script src="/app.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(data)}</script><script src="/app.js"></script>` });
   });
-  await page.addInitScript(({ id, saved }) => {
-    if (!localStorage.getItem(`semantic-view:${id}`)) localStorage.setItem(`semantic-view:${id}`, JSON.stringify(saved));
-  }, { id: data.implementationId, saved });
   await page.goto('http://viewer.test/');
   await expect(page.locator('.stage')).toHaveCount(2);
   expect(errors).toEqual([]);
@@ -64,9 +76,13 @@ test('fresh stages collapse; saved choices restore only for their implementation
   await mount(page, data);
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
   await page.locator('.stage-title[data-id="second"]').click();
+  await expect(page.locator("#save-status")).toBeHidden();
+  await page.waitForTimeout(100);
   await page.reload();
   await expect(page.locator('.stage.is-open')).toHaveAttribute('data-stage', 'second');
   data.implementationId = 'another-review';
+  await expect(page.locator("#save-status")).toBeHidden();
+  await page.waitForTimeout(100);
   await page.reload();
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
 });
@@ -166,6 +182,7 @@ test('resolve and reopen update global badge, lists, and inline thread immediate
   await expect(page.locator('.notes-col-active .notes-empty')).toBeVisible();
   await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
   await page.locator('.notes-col-resolved [data-action="toggle-thread-collapse"]').click();
+  await page.keyboard.press('Escape');
   await page.locator('.notes-col-resolved [data-action="thread-reopen"]').click();
   await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 1');
   await page.locator('.notes-switch-btn[data-filter="active"]').click();
@@ -303,6 +320,8 @@ test('equal node IDs in two stages keep independent note-panel visibility across
   await first.locator('.notes-toggle').click();
   await expect(first.locator('.thread .tthread')).toHaveCount(0);
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
+  await expect(page.locator("#save-status")).toBeHidden();
+  await page.waitForTimeout(100);
   await page.reload();
   await expect(first.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'false');
   await expect(second.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'true');
@@ -349,4 +368,21 @@ test('valid changed and renamed file approvals remain stale', async ({ page }) =
   } });
   await expect(page.locator('.frow.is-stale')).toHaveCount(4);
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
+});
+
+
+test('unfinished message text survives a reload and failed saves stay visible', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  const input = page.locator('textarea[name="nc-body"]');
+  await input.fill('Unfinished screenshot explanation');
+  await expect(page.locator('#save-status')).toBeHidden();
+  await page.waitForTimeout(150);
+  await page.reload();
+  await expect(input).toHaveValue('Unfinished screenshot explanation');
+  await page.route('**/api/review-state', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Another tab changed this draft.' } }));
+  await input.fill('Keep this conflicting text');
+  await expect(page.locator('#save-status')).toContainText('not saved');
+  await expect(input).toHaveValue('Keep this conflicting text');
 });

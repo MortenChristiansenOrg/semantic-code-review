@@ -686,7 +686,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.doesNotMatch(styles, /\.drow code \{/);
 });
 
-test("viewer client ignores obsolete approvals without hiding current feedback", () => {
+test("viewer client restores stored state without hiding current feedback", async () => {
   const source = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
     "utf8",
@@ -778,34 +778,14 @@ test("viewer client ignores obsolete approvals without hiding current feedback",
     body: { classList },
     documentElement: { style: {} },
   };
-  const storage = {
-    getItem: () => JSON.stringify({
-      openThreads: { implementation: true, "configure-settings": true },
-      approvals: {
-        implementation: true,
-        "f:implementation:appsettings.json": {
-          fp: "legacy-diff-fingerprint",
-          at: 1,
-        },
-      },
-    }),
-    setItem() {},
-  };
-
-  new Function(
-    "window",
-    "document",
-    "localStorage",
-    "CSS",
-    "fetch",
-    "requestAnimationFrame",
-    source,
+  const state = { openThreads: { implementation: true, "configure-settings": true }, approvals: {} };
+  await new Function(
+    "window", "document", "CSS", "fetch", "requestAnimationFrame",
+    source.replace("(async function ()", "return (async function ()"),
   )(
-    windowObject,
-    documentObject,
-    storage,
+    windowObject, documentObject,
     { escape: (value) => String(value) },
-    () => Promise.reject(new Error("unexpected fetch")),
+    async () => ({ ok: true, json: async () => ({ ok: true, reviewId: "test", generation: "test", state }) }),
     (callback) => callback(),
   );
 

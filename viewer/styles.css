@@ -1809,3 +1809,5 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .diff-pages button { cursor: pointer; padding: 6px 10px; }
 
 .hide-removed .d-del, .hide-removed .d-del + .line-thread { display: none; }
+
+.save-status { position: fixed; bottom: 60px; right: 16px; z-index: 100; max-width: min(520px, 90vw); padding: 10px 14px; border-radius: 8px; background: var(--panel-2); color: var(--text); box-shadow: var(--shadow); }
