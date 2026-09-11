@@ -1811,3 +1811,14 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .hide-removed .d-del, .hide-removed .d-del + .line-thread { display: none; }
 
 .save-status { position: fixed; bottom: 60px; right: 16px; z-index: 100; max-width: min(520px, 90vw); padding: 10px 14px; border-radius: 8px; background: var(--panel-2); color: var(--text); box-shadow: var(--shadow); }
+
+.review-list { max-width: 1100px; margin: 18px auto; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.review-list > header, .review-list article { display: flex; align-items: center; gap: 14px; }
+.review-list h2 { margin-right: auto; font-size: 18px; }
+.review-list article { justify-content: space-between; padding: 16px 0; border-top: 1px solid var(--line); }
+.review-list article[aria-current] strong { color: var(--signal); }
+.review-list p { margin: 5px 0; font-size: 12px; }
+.review-location { overflow-wrap: anywhere; font-family: var(--mono); }
+.review-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.review-unavailable, .review-list [role="alert"] { color: var(--t-risk); }
+@media (max-width: 700px) { .review-list { margin: 10px; } .review-list article { align-items: flex-start; flex-direction: column; } .review-actions { flex-wrap: wrap; } }

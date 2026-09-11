@@ -29,6 +29,11 @@
   let savingState = false;
   let saveError = "";
   let saveTimer;
+  let saveOperation = null;
+  let reviewsOpen = false;
+  let reviewList = [];
+  let reviewListError = "";
+  let reviewListBusy = false;
 
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
@@ -421,8 +426,12 @@
     notice.hidden = !saveError && !savingState;
     notice.textContent = saveError ? `Review changes are not saved: ${saveError}` : "Saving review…";
   }
-  async function saveState() {
-    if (savingState) return;
+  function saveState() {
+    if (saveOperation) return saveOperation;
+    saveOperation = writeState().finally(() => { saveOperation = null; });
+    return saveOperation;
+  }
+  async function writeState() {
     captureEditor();
     const next = JSON.parse(JSON.stringify(state));
     const changes = stateChanges(persistedState, next);
@@ -441,6 +450,19 @@
     finally { savingState = false; showSaveStatus(); }
     if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
   }
+  async function flushReviewState() {
+    clearTimeout(saveTimer);
+    await saveState();
+    if (saveError) throw new Error(saveError);
+    captureEditor();
+    while (stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) {
+      await saveState();
+      if (saveError) throw new Error(saveError);
+      captureEditor();
+    }
+    clearTimeout(saveTimer);
+  }
+
   window.addEventListener("beforeunload", (event) => {
     captureEditor();
     if (savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
@@ -1483,12 +1505,70 @@
           <div><strong>Implementation</strong><span>${esc(data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
+          <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
           <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${activeNoteCount()}</b></button>
         </div>
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
     </div>`;
+  }
+
+  function reviewsPanel() {
+    if (!reviewsOpen) return "";
+    return `<section id="review-list" class="review-list" aria-label="Saved reviews">
+      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button><button class="tb-btn" type="button" data-action="toggle-reviews">Close</button></header>
+      ${reviewListError ? `<p role="alert">${esc(reviewListError)}</p>` : ""}
+      ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
+      ${!reviewList.length && !reviewListBusy ? '<p>No saved reviews.</p>' : ""}
+      ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${review.id === savedReview.reviewId ? 'aria-current="true"' : ""}>
+        <div><strong>${esc(review.title)}</strong> <span>${review.completedAt ? "Completed" : "Active"}${review.id === savedReview.reviewId ? " · Current" : ""}</span>
+        <p>${esc(review.implementationId)}</p><p class="review-location">${esc(review.repositoryRoot)}</p>
+        <p>Last edited <time datetime="${esc(review.updatedAt)}">${esc(new Date(review.updatedAt).toLocaleString())}</time></p>
+        ${!review.available ? `<p class="review-unavailable">Unavailable: ${esc(review.unavailableReason)}</p>` : ""}</div>
+        <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || review.id === savedReview.reviewId ? "disabled" : ""}>Open review</button>
+        <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button></div>
+      </article>`).join("")}
+    </section>`;
+  }
+  function updateReviewList() {
+    const existing = document.querySelector("#review-list");
+    if (existing) existing.outerHTML = reviewsPanel();
+  }
+  async function refreshReviews(force = false) {
+    if (reviewListBusy && !force) return;
+    reviewListBusy = true; reviewListError = ""; updateReviewList();
+    try {
+      const response = await fetch("/api/reviews", { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok || !result.ok || !Array.isArray(result.reviews)) throw new Error(result.error || "Could not load saved reviews.");
+      reviewList = result.reviews;
+    } catch (error) { reviewListError = error.message; }
+    finally { reviewListBusy = false; updateReviewList(); }
+  }
+  async function changeReview(id, complete = false) {
+    if (reviewListBusy) return;
+    const review = reviewList.find((item) => item.id === id);
+    if (!review) return;
+    // Capture the selected target before any await; another selection cannot redirect it.
+    const target = { reviewId: review.id, generation: review.generation, completed: !review.completedAt, expectedCompletedAt: review.completedAt };
+    reviewListBusy = true; reviewListError = ""; updateReviewList();
+    try {
+      await flushReviewState();
+      const response = await fetch(complete ? "/api/reviews/completion" : "/api/reviews/open", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not open the selected review.");
+      if (complete) await refreshReviews(true);
+      else {
+        // Save edits made while the service was starting. A full navigation also
+        // discards old responses, listeners, and caches instead of retargeting them.
+        await flushReviewState();
+        window.location.assign(result.url);
+      }
+    } catch (error) { reviewListError = error.message; }
+    finally { reviewListBusy = false; updateReviewList(); }
   }
 
   function hero() {
@@ -1793,7 +1873,7 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
-    app.innerHTML = `${topbar()}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    app.innerHTML = `${topbar()}${reviewsPanel()}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
@@ -1976,7 +2056,14 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "approve") {
+    if (a === "toggle-reviews") {
+      reviewsOpen = !reviewsOpen; render();
+      if (reviewsOpen) void refreshReviews();
+    } else if (a === "refresh-reviews") {
+      if (!reviewListBusy) void refreshReviews();
+    } else if (a === "open-review" || a === "complete-review") {
+      void changeReview(btn.dataset.reviewId, a === "complete-review");
+    } else if (a === "approve") {
       const id = btn.dataset.id;
       const stage = btn.dataset.kind === "stage" ? stageById.get(id) : null;
       if (stage && !stageNodesApproved(stage)) return;

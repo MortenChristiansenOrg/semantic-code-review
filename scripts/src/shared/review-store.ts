@@ -116,6 +116,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("This review session was replaced. Reopen the review.");
+    const previousActivity = structuredClone(reviewActivity(record.state));
     for (const change of changes) {
       if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid state change path.");
       validateValue(change.before); validateValue(change.after);
@@ -134,7 +135,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       else delete target[key];
     }
     if (changes.length) {
-      record.updatedAt = new Date().toISOString();
+      if (!isDeepStrictEqual(previousActivity, reviewActivity(record.state))) record.updatedAt = new Date().toISOString();
       atomicJson(path.join(reviewDirectory(id), "review.json"), record);
     }
     return record;
@@ -159,5 +160,24 @@ export function listReviews(): ReviewRecord[] {
       if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return [];
       throw error;
     }
+  });
+}
+
+/** View preferences and opening an empty editor do not count as review edits. */
+function reviewActivity(state: Record<string, any>) {
+  return { approvals: state.approvals || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
+    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "" };
+}
+export function setReviewCompleted(id: string, generation: string, completed: boolean, expectedCompletedAt: string | null) {
+  if (typeof completed !== "boolean" || (expectedCompletedAt !== null && typeof expectedCompletedAt !== "string")) throw new Error("Invalid review lifecycle change.");
+  return withReviewLock(id, () => {
+    const record = readReview(id);
+    if (record.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
+    if (Boolean(record.completedAt) === completed) return record;
+    if (record.completedAt !== expectedCompletedAt) throw new Error("The review lifecycle changed in another tab. Refresh the review list.");
+    record.updatedAt = new Date().toISOString();
+    record.completedAt = completed ? record.updatedAt : null;
+    atomicJson(path.join(reviewDirectory(id), "review.json"), record);
+    return record;
   });
 }
