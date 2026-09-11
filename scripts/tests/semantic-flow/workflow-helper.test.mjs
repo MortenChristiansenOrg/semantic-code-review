@@ -753,7 +753,15 @@ test("concurrent review services isolate commands and reopen registered worktree
   const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
   assert.equal(recovered.reviewId, third.reviewId);
   assert.notEqual(recovered.processId, third.processId);
+  const manifestPath = path.join(linked, ".semantic-review", "manifest.json"), originalManifest = fs.readFileSync(manifestPath);
+  fs.writeFileSync(manifestPath, '{broken JSON');
+  const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
+  fs.writeFileSync(manifestPath, originalManifest);
+  assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
   fs.rmSync(path.join(linked, ".semantic-review"), { recursive: true });
+  const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
   assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
   assert.equal((await request(first, "api/implementation")).status, 200);

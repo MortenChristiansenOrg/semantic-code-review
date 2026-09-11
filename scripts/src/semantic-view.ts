@@ -1798,6 +1798,10 @@ function serveViewer({
       let script;
       try { script = await dataSource.call("implementationDataScript", []); }
       catch (error) {
+        if (error.code !== "REVIEW_UNAVAILABLE" && error.code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
+          response.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          response.end(cliErrorMessage(error)); return;
+        }
         // The saved-review manager remains usable after deletion or worktree removal.
         script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title,
           summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" })};`;
@@ -1866,11 +1870,11 @@ function createViewerWorker(repoRoot, context: ReviewContext) {
   };
   worker.on("error", rejectAll);
   worker.on("exit", () => rejectAll(new Error("Viewer worker stopped; reopen the viewer.")));
-  worker.on("message", ({ id, result, error }) => {
+  worker.on("message", ({ id, result, error, code }) => {
     const request = pending.get(id);
     if (!request) return;
     pending.delete(id);
-    if (error) request.reject(new Error(error)); else request.resolve(result);
+    if (error) request.reject(Object.assign(new Error(error), { code })); else request.resolve(result);
   });
   return {
     get healthy() { return !stopped; },
@@ -1919,7 +1923,7 @@ if (!isMainThread && workerData?.repoRoot) {
         else throw new Error("Unknown viewer operation.");
       }
       parentPort.postMessage({ id, result });
-    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error) }); }
+    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error), code: error.code }); }
   });
 }
 
