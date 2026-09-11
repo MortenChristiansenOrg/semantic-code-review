@@ -69,20 +69,25 @@ async function openFile(page, node = 'first-one') {
   await details.locator('.frow-open').click();
   await expect(details.locator('.cinema-diff')).toBeVisible();
 }
+async function saveAction(page, action, matches) {
+  const saved = page.waitForResponse(async (response) => {
+    if (new URL(response.url()).pathname !== '/api/review-state' || response.request().method() !== 'POST') return false;
+    return response.ok() && matches((await response.json()).state);
+  });
+  await action();
+  await saved;
+  await expect(page.locator('#save-status')).toBeHidden();
+}
 async function showNotes(page) { await page.locator('.tb-btn[data-action="toggle-notes"]').click(); }
 
 test('fresh stages collapse; saved choices restore only for their implementation', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
-  await page.locator('.stage-title[data-id="second"]').click();
-  await expect(page.locator("#save-status")).toBeHidden();
-  await page.waitForTimeout(100);
+  await saveAction(page, () => page.locator('.stage-title[data-id="second"]').click(), (state) => state.openStages?.second === true);
   await page.reload();
   await expect(page.locator('.stage.is-open')).toHaveAttribute('data-stage', 'second');
   data.implementationId = 'another-review';
-  await expect(page.locator("#save-status")).toBeHidden();
-  await page.waitForTimeout(100);
   await page.reload();
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
 });
@@ -317,11 +322,10 @@ test('equal node IDs in two stages keep independent note-panel visibility across
   await expect(second.locator('.thread .tthread')).toHaveCount(0);
   await second.locator('.notes-toggle').click();
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
-  await first.locator('.notes-toggle').click();
+  await saveAction(page, () => first.locator('.notes-toggle').click(),
+    (state) => state.openThreads?.['n:first:same-node'] === false && state.openThreads?.['n:second:same-node'] === true);
   await expect(first.locator('.thread .tthread')).toHaveCount(0);
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
-  await expect(page.locator("#save-status")).toBeHidden();
-  await page.waitForTimeout(100);
   await page.reload();
   await expect(first.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'false');
   await expect(second.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'true');
@@ -376,10 +380,10 @@ test('unfinished message text survives a reload and failed saves stay visible', 
   await openFile(page);
   await page.locator('.file-notes .thread-add').click();
   const input = page.locator('textarea[name="nc-body"]');
-  await input.fill('Unfinished screenshot explanation');
-  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
-  await expect(page.locator('#save-status')).toBeHidden();
-  await page.waitForTimeout(150);
+  await saveAction(page, () => input.fill('Unfinished screenshot explanation'),
+    (state) => state.editor?.compose?.body === 'Unfinished screenshot explanation');
+  await saveAction(page, () => page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click(),
+    (state) => state.editor?.compose?.mode === 'feedback');
   await page.reload();
   await expect(input).toHaveValue('Unfinished screenshot explanation');
   await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
