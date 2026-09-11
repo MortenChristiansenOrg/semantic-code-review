@@ -377,10 +377,12 @@ test('unfinished message text survives a reload and failed saves stay visible', 
   await page.locator('.file-notes .thread-add').click();
   const input = page.locator('textarea[name="nc-body"]');
   await input.fill('Unfinished screenshot explanation');
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
   await expect(page.locator('#save-status')).toBeHidden();
   await page.waitForTimeout(150);
   await page.reload();
   await expect(input).toHaveValue('Unfinished screenshot explanation');
+  await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
   await page.route('**/api/review-state', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Another tab changed this draft.' } }));
   await input.fill('Keep this conflicting text');
   await expect(page.locator('#save-status')).toContainText('not saved');

@@ -2611,6 +2611,7 @@
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
+      persist();
     }
   });
   document.addEventListener("submit", (e) => {
