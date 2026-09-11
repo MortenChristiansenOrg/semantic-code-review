@@ -106,7 +106,8 @@ failures or skipped checks.
 ### Commit and organize
 
 Commit the stage implementation. Multiple linear commits are allowed. Exclude
-`.semantic-review/` and `.semantic-review-feedback/`.
+`.semantic-review/`. Private feedback is stored outside the repository under
+`~/.semantic-flow` and must never be copied into stage commits.
 
 Use `stage plan` to obtain the committed file inventory and unlinked insight
 IDs; add `--selectors` only for shared-file hunk/range ownership. The CLI

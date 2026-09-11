@@ -27,8 +27,8 @@ import {
   viewerPort,
 } from "./shared/viewer-lifecycle.js";
 
-export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { registerReview, readReview, patchReviewState } from "./shared/review-store.js";
+export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory } from "./shared/review-store.js";
+import { registerReview, readReview, patchReviewState, feedbackDirectory, reviewId, withReviewLock } from "./shared/review-store.js";
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -139,8 +139,18 @@ function listJsonDocuments(directory) {
 }
 
 export function viewerSnapshot(repoRoot) {
+  const implementationId = activeImplementationId(repoRoot);
+  return withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
+    const snapshot = readViewerSnapshot(repoRoot, implementationId);
+    requireImplementation(repoRoot, implementationId);
+    return snapshot;
+  });
+}
+
+function readViewerSnapshot(repoRoot, implementationId) {
   const semanticRoot = path.join(repoRoot, ".semantic-review");
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const files = [
     path.join(semanticRoot, "manifest.json"),
     ...listJsonDocuments(path.join(semanticRoot, "requirements")),
@@ -197,10 +207,11 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
       return nextDocuments.get(file).value;
     };
     const semantic = path.join(repoRoot, ".semantic-review");
-    const feedback = path.join(repoRoot, ".semantic-review-feedback");
-    read(path.join(semantic, "manifest.json"));
+    const artifact = read(path.join(semantic, "manifest.json"));
+    const feedback = feedbackDirectory(repoRoot, artifact.implementationId);
     for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
     let awaitingAgentReplies = 0;
+    withReviewLock(reviewId(repoRoot, artifact.implementationId), () => {
     if (fs.existsSync(path.join(feedback, "manifest.json"))) {
       const manifest = read(path.join(feedback, "manifest.json"));
       for (const id of manifest.threads || []) {
@@ -208,6 +219,7 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
         if (thread.status === "open" && thread.comments?.at(-1)?.author !== "agent") awaitingAgentReplies++;
       }
     }
+    });
     for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
     if (changed) {
       const hash = createHash("sha256");
@@ -218,6 +230,10 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
     if (scan) lastScan = now();
     return previous;
   };
+}
+
+function requireImplementation(repoRoot, implementationId) {
+  if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
 }
 
 function activeImplementationId(repoRoot) {
@@ -798,7 +814,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     })),
   }));
 
-  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages));
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
   return {
     implementationId: manifest.implementationId,
     title: manifest.title,
@@ -920,22 +936,19 @@ export function createImplementationDataScript(repoRoot) {
 
 // Load open and resolved feedback threads from the local feedback store. A
 // thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot, stages) {
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
-  const manifestPath = path.join(feedbackRoot, "manifest.json");
-  if (!fs.existsSync(manifestPath)) return [];
-  const manifest = readJson(manifestPath);
-  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
-    throw new Error(
-      "this feedback workspace uses an unsupported v0.1 layout",
-    );
-  }
+function buildFeedbackThreads(repoRoot, stages, implementationId) {
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
+  const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
+    const manifestPath = path.join(feedbackRoot, "manifest.json");
+    if (!fs.existsSync(manifestPath)) return [];
+    const manifest = readJson(manifestPath);
+    if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) throw new Error("Invalid feedback manifest.");
+    return manifest.threads.map((id) => readJson(path.join(feedbackRoot, "threads", `${id}.json`)));
+  });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
   const threads: Array<Record<string, any>> = [];
-  for (const threadId of manifest.threads || []) {
-    const thread = readJson(
-      path.join(feedbackRoot, "threads", `${threadId}.json`),
-    );
+  for (const thread of storedThreads) {
     const currentHead = currentHeads.get(thread.target?.stageId);
     const targetHead = thread.target?.stageHead;
     let targetState = null;
@@ -1179,9 +1192,10 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
     return { ok: false, error: "No notes could be exported.", skipped };
   }
 
-  const manifest = path.join(repoRoot, ".semantic-review-feedback", "manifest.json");
+  const manifest = path.join(feedbackDirectory(repoRoot), "manifest.json");
   if (!fs.existsSync(manifest)) {
-    runFeedbackCli(feedbackCli, repoRoot, ["init"]);
+    try { runFeedbackCli(feedbackCli, repoRoot, ["init"]); }
+    catch (error) { if (!fs.existsSync(manifest)) throw error; } // Another viewer may have initialized it first.
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
   const batch = planned.map((thread, index) => {
@@ -1374,7 +1388,7 @@ async function handleFeedbackReplyBatch(request, response, context) {
 }
 
 export function readFeedbackThread(repoRoot, threadId) {
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const feedbackRoot = feedbackDirectory(repoRoot);
   const manifestPath = path.join(feedbackRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) return null;
 

@@ -22,7 +22,8 @@ approval. A metadata recording failure does not pause otherwise valid work.
    <semantic-flow> validate --project <artifact-worktree-path>
    ```
 
-4. Inspect feedback state when `.semantic-review-feedback/` exists. If open
+4. Inspect feedback state when `inspect --json` reports `selected.feedbackExists`.
+   Its `selected.feedbackDirectory` is in the shared user-local store. If open
    feedback is the work awaiting action, explain that and follow
    `feedback.md` rather than treating it as ordinary implementation.
 

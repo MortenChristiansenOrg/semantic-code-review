@@ -79,7 +79,7 @@ test("thread add-batch validates and writes one atomic batch", (t) => {
     "feedback-batch.json",
   );
   const manifest = repository.readJson(
-    ".semantic-review-feedback/manifest.json",
+    repository.feedbackPath("manifest.json"),
   );
   assert.deepEqual(manifest.threads, ["batch-one", "batch-two"]);
 
@@ -114,12 +114,12 @@ test("thread add-batch validates and writes one atomic batch", (t) => {
   );
   assert.equal(
     repository.exists(
-      ".semantic-review-feedback/threads/batch-not-kept.json",
+      repository.feedbackPath("threads/batch-not-kept.json"),
     ),
     false,
   );
   assert.deepEqual(
-    repository.readJson(".semantic-review-feedback/manifest.json").threads,
+    repository.readJson(repository.feedbackPath("manifest.json")).threads,
     ["batch-one", "batch-two"],
   );
 });
@@ -146,7 +146,7 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
     "implementation",
   );
   assert.equal(
-    repository.exists(".semantic-review-feedback/threads/lpt1.json"),
+    repository.exists(repository.feedbackPath("threads/lpt1.json")),
     false,
   );
 });
@@ -154,7 +154,7 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
 test("feedback init does not strand a manifest among pre-existing files", (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.write(
-    ".semantic-review-feedback/threads/orphan.json",
+    repository.feedbackPath("threads/orphan.json"),
     "{}\n",
   );
 
@@ -163,11 +163,11 @@ test("feedback init does not strand a manifest among pre-existing files", (t) =>
     "init",
   );
   assert.equal(
-    repository.exists(".semantic-review-feedback/manifest.json"),
+    repository.exists(repository.feedbackPath("manifest.json")),
     false,
   );
 
-  repository.remove(".semantic-review-feedback");
+  repository.remove(repository.feedbackPath());
   repository.feedback("init");
   repository.feedback("validate");
 });
@@ -380,7 +380,7 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
   ]);
 
   const manifest = repository.readJson(
-    ".semantic-review-feedback/manifest.json",
+    repository.feedbackPath("manifest.json"),
   );
   assert.ok(manifest.threads.includes("concurrent-one"));
   assert.ok(manifest.threads.includes("concurrent-two"));

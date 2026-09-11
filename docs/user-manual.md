@@ -11,7 +11,7 @@ branch immediately below it.
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
 | `semantic-flow/<implementation-id>/<NN>-<stage-id>` | Cumulative stage branch |
-| `.semantic-review-feedback/` | Local open and resolved feedback threads |
+| `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
 | `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
 
@@ -20,7 +20,7 @@ as a collapsible folder.
 
 The viewer stores review progress, drafts, personal notes, and preferences under
 `~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
-data root. Review identity combines the canonical artifact-worktree path and
+data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
 implementation ID, independently of browser ports. Moving a worktree creates a new
 review identity; the old data remains available for cleanup. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to

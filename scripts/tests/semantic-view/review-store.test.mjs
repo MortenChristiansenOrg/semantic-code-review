@@ -74,3 +74,10 @@ test('failed owner metadata writes release the lock for the next operation', (t)
   mocked.mock.restore();
   assert.equal(registerReview(path.join(root, 'a'), 'id', 'Review').implementationId, 'id');
 });
+
+
+test('relative user-store overrides cannot change meaning between CLI worktrees', (t) => {
+  const root = setup(t);
+  process.env.SEMANTIC_FLOW_HOME = 'relative-user-data';
+  assert.throws(() => registerReview(path.join(root, 'a'), 'id', 'Review'), /absolute path/);
+});

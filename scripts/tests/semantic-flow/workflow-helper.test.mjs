@@ -276,7 +276,7 @@ test("feedback does not restack an implementation already landed on target", (t)
 
 test("feedback rejects incomplete feedback state", (t) => {
   const { repository } = createImplementationWithStages(t);
-  repository.write(".semantic-review-feedback/orphan.json", "{}\n");
+  repository.write(repository.feedbackPath("orphan.json"), "{}\n");
 
   const result = repository.result(process.execPath, [
     flowCli,

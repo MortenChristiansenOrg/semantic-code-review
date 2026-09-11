@@ -126,8 +126,8 @@ author chose an approach unless the source material says so.
 
 1. Compare the final stage tree with the temporary snapshot. They must contain
    identical application content, including added, renamed, and deleted files.
-   Exclude `.semantic-review/` and `.semantic-review-feedback/` from this
-   comparison.
+   Exclude `.semantic-review/` from this comparison. Private feedback lives
+   outside the repository and must not be copied into either tree.
 2. Confirm the source branch and source commit are unchanged.
 3. Confirm the target branch still points to the recorded target commit. If it
    moved, retain the snapshot and stop; do not silently change the simulated
