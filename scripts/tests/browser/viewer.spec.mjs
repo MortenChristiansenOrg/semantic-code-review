@@ -5,6 +5,8 @@ const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('app.js', viewer), 'utf8');
 const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';
+const approvalKey = (stage, node, file = 'shared.js') => `m:${JSON.stringify([stage, node, file])}`;
+const firstMembershipRevision = JSON.stringify(['rev', 'a'.repeat(40), 'behavior', [1], null]);
 function fixture() {
   return {
     implementationId: 'browser-review', title: 'Review fixes', summary: 'Browser fixture',
@@ -348,15 +350,16 @@ test('equal node IDs in two stages keep independent note-panel visibility across
 
 test('unsupported experimental UI records reset while current approvals and drafts survive', async ({ page }) => {
   const saved = {
-    specificationOpen: true, active: fileId, activeFiles: {},
-    approvals: { [fileId]: true, 'f:second:shared.js': { rev: 'rev', at: 1 } },
+    specificationOpen: true, active: fileId, activeFiles: { [fileId]: true },
+    approvals: { [fileId]: true, [approvalKey('second', 'second-one')]: { rev: firstMembershipRevision, at: 1 } },
     comments: [{ id: fileId, kind: 'file', body: 'Keep my note', at: 1 }],
     replyDrafts: [],
   };
   const errors = await mount(page, fixture(), saved);
+  await expect(page.locator(".cinema-diff")).toHaveCount(0);
   await openFile(page);
   expect(errors).toEqual([]);
-  await expect(page.locator('.stage[data-stage="second"] .frow.is-approved')).toHaveCount(2);
+  await expect(page.locator('.stage[data-stage="second"] .frow.is-approved')).toHaveCount(1);
   await expect(page.locator('.stage[data-stage="first"] .frow.is-approved')).toHaveCount(0);
   await showNotes(page);
   await expect(page.getByText('Keep my note', { exact: true }).first()).toBeVisible();
@@ -367,7 +370,7 @@ test('file approvals require revisions and unsupported renamed-file records are 
   data.stages[1].files[0].kind = 'renamed';
   data.stages[1].files[0].previousPath = 'old.js';
   await mount(page, data, { approvals: {
-    [fileId]: { rev: null, at: 1 },
+    [approvalKey('first', 'first-one')]: { rev: null, at: 1 },
     first: { rev: null, at: 1 },
     'f:second:old.js': true,
   } });
@@ -379,10 +382,10 @@ test('valid changed and renamed file approvals remain stale', async ({ page }) =
   data.stages[1].files[0].kind = 'renamed';
   data.stages[1].files[0].previousPath = 'old.js';
   await mount(page, data, { approvals: {
-    [fileId]: { rev: 'previous', at: 1 },
-    'f:second:old.js': { rev: 'previous', at: 1 },
+    [approvalKey('first', 'first-one')]: { rev: 'previous', at: 1 },
+    [approvalKey('second', 'second-one', 'old.js')]: { rev: 'previous', at: 1 },
   } });
-  await expect(page.locator('.frow.is-stale')).toHaveCount(4);
+  await expect(page.locator('.frow.is-stale')).toHaveCount(2);
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
 });
 
@@ -460,4 +463,47 @@ test('failed saves prevent switching and unavailable reviews stay visible', asyn
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.locator('[data-review="missing"]')).toContainText('The worktree was removed.');
   await expect(page.locator('[data-review="missing"]').getByRole('button', { name: 'Open review', exact: true })).toBeDisabled();
+});
+
+
+test('shared files have independent node approvals, counts, and revocation', async ({ page }) => {
+  await mount(page);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]'), two = page.locator('details[data-node="first-two"]');
+  await one.locator('summary').click(); await two.locator('summary').click();
+  const stageApproval = page.locator('.stage[data-stage="first"] .stage-approve .approve');
+  await expect(stageApproval).toBeDisabled();
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await expect(one.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(two.locator('.frow')).not.toHaveClass(/is-approved/);
+  await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('2/10');
+  await expect(stageApproval).toBeDisabled();
+  await two.locator('.mini-approve').click();
+  await stageApproval.click();
+  await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('5/10');
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !state.approvals?.[approvalKey('first', 'first-one')] && !state.approvals?.first);
+  await expect(two.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(stageApproval).toBeDisabled();
+  await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('2/10');
+  await page.reload();
+  await expect(one.locator('.frow')).not.toHaveClass(/is-approved/);
+  await expect(two.locator('.frow')).toHaveClass(/is-approved/);
+});
+
+test('ownership changes stale only that membership; file content changes stale every approval', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]'), two = page.locator('details[data-node="first-two"]');
+  await one.locator('summary').click(); await two.locator('summary').click();
+  await one.locator('.mini-approve').click();
+  await saveAction(page, () => two.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-two')]);
+  data.stages[0].files[0].memberships[0].hunks = [1, 3]; data.viewerRevision = 'ownership-changed';
+  await expect(one.locator('.frow')).toHaveClass(/is-stale/);
+  await expect(two.locator('.frow')).toHaveClass(/is-approved/);
+  data.stages[0].files[0].revision = 'new-file-content'; data.viewerRevision = 'content-changed';
+  await expect(two.locator('.frow')).toHaveClass(/is-stale/);
+  await one.locator('.mini-approve').click();
+  await expect(one.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(two.locator('.frow')).toHaveClass(/is-stale/);
 });
