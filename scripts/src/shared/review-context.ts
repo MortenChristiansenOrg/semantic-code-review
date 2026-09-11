@@ -26,9 +26,14 @@ export function captureReviewContext(id: string): ReviewContext {
 export function assertReviewContext(context: ReviewContext): ReviewRecord {
   const review = readReview(context.reviewId);
   if (review.generation !== context.generation || review.repositoryRoot !== context.repositoryRoot || review.implementationId !== context.implementationId) throw new Error("This review session changed or was deleted. Reopen the review.");
-  if (!fs.existsSync(context.repositoryRoot) || reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw new Error("The review worktree is unavailable or moved.");
-  const manifest = path.join(context.repositoryRoot, ".semantic-review", "manifest.json");
-  if (!fs.existsSync(manifest) || JSON.parse(fs.readFileSync(manifest, "utf8")).implementationId !== context.implementationId) throw new Error("The active implementation changed or is unavailable. Reopen the review.");
+  try {
+    if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The review worktree moved."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+    const manifest = path.join(context.repositoryRoot, ".semantic-review", "manifest.json");
+    if (JSON.parse(fs.readFileSync(manifest, "utf8")).implementationId !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+  } catch (error) {
+    if (error.code === "ENOENT") throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+    throw error;
+  }
   return review;
 }
 

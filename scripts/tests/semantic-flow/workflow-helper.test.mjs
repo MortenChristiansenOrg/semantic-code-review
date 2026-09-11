@@ -753,7 +753,15 @@ test("concurrent review services isolate commands and reopen registered worktree
   const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
   assert.equal(recovered.reviewId, third.reviewId);
   assert.notEqual(recovered.processId, third.processId);
+  const manifestPath = path.join(linked, ".semantic-review", "manifest.json"), originalManifest = fs.readFileSync(manifestPath);
+  fs.writeFileSync(manifestPath, '{broken JSON');
+  const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
+  fs.writeFileSync(manifestPath, originalManifest);
+  assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
   fs.rmSync(path.join(linked, ".semantic-review"), { recursive: true });
+  const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
   assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
   assert.equal((await request(first, "api/implementation")).status, 200);
@@ -763,4 +771,33 @@ test("concurrent review services isolate commands and reopen registered worktree
   const list = await request(missingViewer, "api/reviews").then((r) => r.json());
   assert.equal(list.reviews.find((r) => r.id === recovered.reviewId).available, false);
   assert.equal((await request(missingViewer, "api/reviews/open", { reviewId: first.reviewId, generation: first.generation })).status, 200);
+  const storage = await request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(storage.ok, true, JSON.stringify(storage)); assert.ok(storage.storage.bytes > 0);
+  const deleted = await request(first, "api/reviews/delete", { reviewId: third.reviewId, generation: third.generation, fingerprint: storage.storage.fingerprint }).then((r) => r.json());
+  assert.equal(deleted.deleted, true); assert.equal(deleted.cleanupPending, false);
+  assert.equal((await request(missingViewer, "api/review-state")).status, 409);
+  assert.equal((await request(missingViewer, "api/attachments", upload)).status, 409);
+  assert.equal((await request(missingViewer, "api/review-state", { reviewId: third.reviewId, generation: third.generation, changes: [] })).status, 409);
+  assert.equal((await request(missingViewer, "api/reviews")).status, 200);
+  const bootstrap = await fetch(new URL("implementation-data.js", missingViewer.url)).then((r) => r.text());
+  assert.match(bootstrap, /SEMANTIC_REVIEW_CONTEXT/); assert.match(bootstrap, /"stages":\[\]/);
+  await delay(1200);
+  assert.equal((await fetch(new URL("api/whoami", missingViewer.url)).then((r) => r.json())).healthy, false);
+  assert.equal((await request(first, "api/implementation")).status, 200);
+
+});
+
+
+test('a viewer-triggered feedback init cannot recreate data deleted after its initial generation check', async (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  const module = await import(pathToFileURL(path.join(scriptsDirectory, 'semantic-view.mjs')).href);
+  const manifest = repository.readJson('.semantic-review/manifest.json');
+  const id = module.reviewId(repository.root, manifest.implementationId), review = module.readReview(id);
+  const record = path.join(module.reviewDirectory(id), 'review.json');
+  const preload = repository.path('delete-during-read.mjs');
+  fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path'; const read = fs.readFileSync; let removed = false; fs.readFileSync = function(file, ...args) { const value = read.call(this, file, ...args); if (!removed && String(file) === ${JSON.stringify(record)}) { removed = true; fs.rmSync(path.dirname(String(file)), { recursive: true, force: true }); } return value; };`);
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, path.join(scriptsDirectory, 'review-feedback.mjs'), 'init'], { cwd: repository.root, env: { ...process.env, SEMANTIC_FLOW_REVIEW_ID: id, SEMANTIC_FLOW_REVIEW_GENERATION: review.generation }, encoding: 'utf8' });
+  assert.notEqual(result.status, 0); assert.match(result.stderr, /deleted|unavailable/);
+  assert.equal(fs.existsSync(module.reviewDirectory(id)), false);
+  repository.feedback('init'); assert.notEqual(module.readReview(id).generation, review.generation);
 });

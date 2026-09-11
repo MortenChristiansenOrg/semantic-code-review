@@ -29,11 +29,13 @@ import {
 } from "./shared/viewer-lifecycle.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
-import { registerReview, readReview, patchReviewState, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
 
+export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
+import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
@@ -1520,12 +1522,12 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
 }
 
 export function registeredReviews() {
-  return listReviews().map((record) => {
+  return [...listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
     const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt } = record;
     return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, available: !unavailableReason, unavailableReason };
-  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
 /** Reopen using a registry identity, with no caller-supplied path or command. */
@@ -1551,6 +1553,30 @@ export async function openRegisteredReview(id: string, generation: string): Prom
   } finally { child.unref(); }
 }
 
+export function reviewSessionUnavailable(context: ReviewContext) {
+  try { return readReview(context.reviewId).generation !== context.generation; }
+  catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+}
+/** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
+export function reviewRetirementCheck(context: ReviewContext) {
+  const directory = reviewDirectory(context.reviewId);
+  const identity = () => { const stat = fs.statSync(directory, { bigint: true }); return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`; };
+  let original: string | null | undefined;
+  try { original = identity(); } catch (error) { if (error.code === "ENOENT") original = null; }
+  return () => {
+    if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
+    let current: string;
+    try { current = identity(); } catch (error) { return error.code === "ENOENT"; }
+    if (original === null) return true;
+    if (original === undefined) {
+      // A new generation may have appeared while the initial identity was unreadable.
+      try { if (readReview(context.reviewId).generation !== context.generation) return true; }
+      catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+      original = current;
+    }
+    return current !== original;
+  };
+}
 function serveViewer({
   viewerDir,
   port,
@@ -1574,7 +1600,7 @@ function serveViewer({
         sendJson(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
-      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); return; }
+      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
     }
 
     if (pathname === "/api/attachments" && request.method === "POST") {
@@ -1615,6 +1641,17 @@ function serveViewer({
       return;
     }
 
+    if (request.method === "POST" && ["/api/reviews/storage", "/api/reviews/delete", "/api/reviews/clean-unused"].includes(pathname)) {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Managing review data requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: inspectReviewStorage(payload.reviewId, payload.generation) });
+        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...deleteReviewData(payload.reviewId, payload.generation, payload.fingerprint) });
+        else sendJson(response, 200, { ok: true, ...cleanUnusedReviewFiles(payload.reviewId, payload.generation, payload.fingerprint) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/api/reviews") {
       try { sendJson(response, 200, { ok: true, reviews: registeredReviews() }); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
@@ -1649,7 +1686,7 @@ function serveViewer({
           record = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
         } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
         sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
     }
 
@@ -1778,23 +1815,20 @@ function serveViewer({
     }
 
     if (pathname === "/implementation-data.js") {
-      try {
-        const script = await dataSource.call("implementationDataScript", []);
-        const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify({ reviewId: context.reviewId, generation: context.generation })};\n`, "utf8");
-        response.writeHead(200, {
-          "content-type": "text/javascript; charset=utf-8",
-          "content-length": body.length,
-          "cache-control": "no-store",
-        });
-        response.end(body);
-      } catch (error) {
-        response.writeHead(500, {
-          "content-type": "text/plain; charset=utf-8",
-          "cache-control": "no-store",
-        });
-        response.end(`Failed to refresh implementation data: ${cliErrorMessage(error)}`);
+      let script;
+      try { script = await dataSource.call("implementationDataScript", []); }
+      catch (error) {
+        if (error.code !== "REVIEW_UNAVAILABLE" && error.code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
+          response.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          response.end(cliErrorMessage(error)); return;
+        }
+        // The saved-review manager remains usable after deletion or worktree removal.
+        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title,
+          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" })};`;
       }
-      return;
+      const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify({ reviewId: context.reviewId, generation: context.generation })};\n`, "utf8");
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "content-length": body.length, "cache-control": "no-store" });
+      response.end(body); return;
     }
 
     const safe = path
@@ -1825,7 +1859,16 @@ function serveViewer({
   server = http.createServer(requestHandler);
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, VIEWER_HOST, () => resolve(server));
+    server.listen(port, VIEWER_HOST, () => {
+      const shouldRetire = reviewRetirementCheck(context);
+      const retirement = setInterval(() => {
+        if (shouldRetire()) {
+          clearInterval(retirement); review.state = {}; void dataSource.close();
+        }
+      }, 1000);
+      retirement.unref(); server.once("close", () => clearInterval(retirement));
+      resolve(server);
+    });
   });
 }
 
@@ -1842,11 +1885,11 @@ function createViewerWorker(repoRoot, context: ReviewContext) {
   };
   worker.on("error", rejectAll);
   worker.on("exit", () => rejectAll(new Error("Viewer worker stopped; reopen the viewer.")));
-  worker.on("message", ({ id, result, error }) => {
+  worker.on("message", ({ id, result, error, code }) => {
     const request = pending.get(id);
     if (!request) return;
     pending.delete(id);
-    if (error) request.reject(new Error(error)); else request.resolve(result);
+    if (error) request.reject(Object.assign(new Error(error), { code })); else request.resolve(result);
   });
   return {
     get healthy() { return !stopped; },
@@ -1895,7 +1938,7 @@ if (!isMainThread && workerData?.repoRoot) {
         else throw new Error("Unknown viewer operation.");
       }
       parentPort.postMessage({ id, result });
-    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error) }); }
+    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error), code: error.code }); }
   });
 }
 

@@ -81,6 +81,7 @@ function withFeedbackLock<T>(paths, action: () => T): T {
   const recordFile = path.join(reviewDirectory(paths.reviewId), "review.json");
   const generation = fs.existsSync(recordFile) ? readReview(paths.reviewId).generation : null;
   return withReviewLock(paths.reviewId, () => {
+    if (process.env.SEMANTIC_FLOW_REVIEW_ID && (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION)) fail("The initiating review was deleted or replaced.");
     if (generation && readReview(paths.reviewId).generation !== generation) fail("The review session changed. Retry from the current review.");
     feedbackWritten = false;
     const result = action();
@@ -1070,7 +1071,7 @@ try {
   if (process.env.SEMANTIC_FLOW_REVIEW_ID) {
     if (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION) fail("The initiating review session changed. Reopen the viewer.");
   }
-  if (command === "init") {
+  if (command === "init" && !process.env.SEMANTIC_FLOW_REVIEW_ID) {
     const { manifest } = semanticArtifact(paths);
     registerReview(paths.root, manifest.implementationId, manifest.title);
   }

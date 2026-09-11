@@ -55,7 +55,11 @@ export function storeAttachment(reviewId: string, generation: string, filename: 
   const sha256 = hash(bytes), id = hash(JSON.stringify([filename, mediaType, sha256]));
   const attachment: Attachment = { id, filename, mediaType, size: bytes.length, sha256, path: `attachments/${id}/content.bin` };
   const dir = directory(reviewId, id);
-  if (fs.existsSync(dir)) { validateAttachmentReferences(reviewId, [attachment]); return attachment; }
+  if (fs.existsSync(dir)) {
+    validateAttachmentReferences(reviewId, [attachment]);
+    atomicJson(path.join(dir, "metadata.json"), { attachment, uploadedAt: new Date().toISOString() });
+    touchReview(reviewId); return attachment;
+  }
   const temporary = fs.mkdtempSync(path.join(reviewDirectory(reviewId), "attachments", ".upload-"));
   try {
     fs.writeFileSync(path.join(temporary, "content.bin"), bytes, { mode: 0o600 });
