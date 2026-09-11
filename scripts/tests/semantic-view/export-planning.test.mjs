@@ -940,3 +940,20 @@ test("concurrent first submissions initialize shared feedback once and deduplica
   assert.equal(manifest.threads.length, 1);
   assert.equal(readFeedbackThread(repository.root, manifest.threads[0]).comments.length, 1);
 });
+
+
+test("snapshot reads reject an implementation switch instead of changing feedback stores", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const manifestPath = repository.path(".semantic-review", "manifest.json");
+  const originalRead = fs.readFileSync;
+  const initial = JSON.parse(originalRead(manifestPath, "utf8"));
+  let reads = 0;
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (String(file) === manifestPath) {
+      reads++;
+      return JSON.stringify({ ...initial, implementationId: reads === 1 ? initial.implementationId : "replacement" });
+    }
+    return originalRead(file, ...args);
+  });
+  assert.throws(() => viewerSnapshot(repository.root), /active implementation changed/);
+});

@@ -51,10 +51,13 @@ function repositoryRoot() {
 }
 
 function pathsFor(root) {
-  const feedback = feedbackDirectory(root);
-  const manifest = readJson(path.join(root, ".semantic-review", "manifest.json"));
+  const manifestPath = path.join(root, ".semantic-review", "manifest.json");
+  if (!fs.existsSync(manifestPath)) fail("No active .semantic-review artifact exists.");
+  const manifest = readJson(manifestPath);
+  const feedback = feedbackDirectory(root, manifest.implementationId);
   return {
     root,
+    implementationId: manifest.implementationId,
     reviewId: reviewId(root, manifest.implementationId),
     semantic: path.join(root, ".semantic-review"),
     feedback,
@@ -102,6 +105,7 @@ function semanticArtifact(paths) {
     fail("No active .semantic-review artifact exists.");
   }
   const manifest = readJson(path.join(paths.semantic, "manifest.json"));
+  if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
   const requirements = new Map<string, any>(
     manifest.requirements.map((id) => [
       id,

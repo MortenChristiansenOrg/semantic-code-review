@@ -139,12 +139,18 @@ function listJsonDocuments(directory) {
 }
 
 export function viewerSnapshot(repoRoot) {
-  return withReviewLock(reviewId(repoRoot, activeImplementationId(repoRoot)), () => readViewerSnapshot(repoRoot));
+  const implementationId = activeImplementationId(repoRoot);
+  return withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
+    const snapshot = readViewerSnapshot(repoRoot, implementationId);
+    requireImplementation(repoRoot, implementationId);
+    return snapshot;
+  });
 }
 
-function readViewerSnapshot(repoRoot) {
+function readViewerSnapshot(repoRoot, implementationId) {
   const semanticRoot = path.join(repoRoot, ".semantic-review");
-  const feedbackRoot = feedbackDirectory(repoRoot);
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const files = [
     path.join(semanticRoot, "manifest.json"),
     ...listJsonDocuments(path.join(semanticRoot, "requirements")),
@@ -224,6 +230,10 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
     if (scan) lastScan = now();
     return previous;
   };
+}
+
+function requireImplementation(repoRoot, implementationId) {
+  if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
 }
 
 function activeImplementationId(repoRoot) {
@@ -804,7 +814,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     })),
   }));
 
-  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages));
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
   return {
     implementationId: manifest.implementationId,
     title: manifest.title,
@@ -926,9 +936,10 @@ export function createImplementationDataScript(repoRoot) {
 
 // Load open and resolved feedback threads from the local feedback store. A
 // thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot, stages) {
-  const feedbackRoot = feedbackDirectory(repoRoot);
-  const storedThreads = withReviewLock(reviewId(repoRoot, activeImplementationId(repoRoot)), () => {
+function buildFeedbackThreads(repoRoot, stages, implementationId) {
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
+  const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
     const manifestPath = path.join(feedbackRoot, "manifest.json");
     if (!fs.existsSync(manifestPath)) return [];
     const manifest = readJson(manifestPath);

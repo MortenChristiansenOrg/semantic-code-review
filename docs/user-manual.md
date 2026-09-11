@@ -20,7 +20,7 @@ as a collapsible folder.
 
 The viewer stores review progress, drafts, personal notes, and preferences under
 `~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
-data root. Review identity combines the canonical artifact-worktree path and
+data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
 implementation ID, independently of browser ports. Moving a worktree creates a new
 review identity; the old data remains available for cleanup. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
