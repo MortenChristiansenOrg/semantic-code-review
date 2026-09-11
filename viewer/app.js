@@ -135,6 +135,19 @@
 
   /* ---- ids & lookups ---------------------------------------------------- */
   const fileKey = (stageId, path) => `f:${stageId}:${path}`;
+  const fileApprovalKey = (stageId, nodeId, path) => `m:${JSON.stringify([stageId, nodeId, path])}`;
+  function approvalEntry(id) {
+    if (!id.startsWith("m:")) return null;
+    try {
+      const [stageId, nodeId, path] = JSON.parse(id.slice(2));
+      const entry = fileById.get(fileKey(stageId, path));
+      const membership = entry?.file.memberships?.find((item) => item.nodeId === nodeId);
+      return membership ? { ...entry, nodeId, membership } : null;
+    } catch { return null; }
+  }
+  function stageFileApprovals(stage) {
+    return stage.nodes.flatMap((node) => nodeFileList(stage, node).map((file) => fileApprovalKey(stage.id, node.id, file.path)));
+  }
   const insightKey = (stageId, collection, itemId) =>
     `i:${stageId}:${collection}:${itemId}`;
   // A line thread's element id carries everything needed to resolve a feedback
@@ -477,29 +490,29 @@
   function formatCommentBody(v) {
     return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
   }
-  /* File approvals carry an eager revision so staleness is known before their
-     diffs load. Stage approvals have no revision. Unsupported approval records are ignored. */
+  /* File approvals are scoped to a node and observe the complete file plus its ownership.
+     Changes outside owned ranges conservatively make that approval stale too. */
   function revisionFor(id) {
-    return fileById.get(id)?.file.revision || null;
+    const entry = approvalEntry(id);
+    if (!entry?.file.revision) return null;
+    const m = entry.membership;
+    return JSON.stringify([entry.file.revision, entry.stage.baseRevision, m.classification, m.hunks || null, m.lineRanges || null]);
   }
-  // A renamed file's approval was recorded under its pre-rename element id. Map
-  // to that id so the sign-off is not lost when the path changes.
   function previousApprovalId(id) {
-    const entry = fileById.get(id);
-    if (entry && entry.file.kind === "renamed" && entry.file.previousPath)
-      return fileKey(entry.stage.id, entry.file.previousPath);
-    return null;
+    const entry = approvalEntry(id);
+    return entry?.file.kind === "renamed" && entry.file.previousPath
+      ? fileApprovalKey(entry.stage.id, entry.nodeId, entry.file.previousPath) : null;
   }
   function approvalRecord(id) {
     const rec = state.approvals[id];
     if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
-    if (id.startsWith("f:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
+    if (id.startsWith("m:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
     return stageById.has(id) && rec.rev === null ? rec : null;
   }
   function approvalState(id) {
     const rec = approvalRecord(id);
     if (rec) {
-      if (id.startsWith("f:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
+      if (id.startsWith("m:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
@@ -516,7 +529,7 @@
   }
   function nodeApprovalState(stage, node) {
     return aggregateApprovalState(
-      nodeFileList(stage, node).map((file) => approvalState(fileKey(stage.id, file.path))),
+      nodeFileList(stage, node).map((file) => approvalState(fileApprovalKey(stage.id, node.id, file.path))),
     );
   }
   function stageNodesApproved(stage) {
@@ -733,7 +746,7 @@
 
   function reviewable() {
     let n = 0;
-    data.stages.forEach((s) => { n += 1 + s.nodes.length + s.files.length; });
+    data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
     return n;
   }
   function approvedCount() {
@@ -741,7 +754,7 @@
     data.stages.forEach((s) => {
       if (stageApproved(s)) n += 1;
       s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
-      s.files.forEach((file) => { if (approved(fileKey(s.id, file.path))) n += 1; });
+      stageFileApprovals(s).forEach((key) => { if (approved(key)) n += 1; });
     });
     return n;
   }
@@ -840,18 +853,18 @@
   /* ---- approvals / comments UI ----------------------------------------- */
   function approveBtn(kind, id, size = "") {
     const stage = kind === "stage" ? stageById.get(id) : null;
-    const blocked = stage && !stageNodesApproved(stage);
+    const blocked = stage ? !stageNodesApproved(stage) : !revisionFor(id);
     const st = stage ? stageApprovalState(stage) : approvalState(id);
     if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" disabled title="Approve every step before approving the stage">
+      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
         <span class="check"></span>Approve</button>`;
     }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
         <span class="check">!</span>Re-approve</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="${on}">
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="${on}">
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
   function commentBtn(kind, id, stageId) {
@@ -1144,6 +1157,7 @@
   }
   function fileRow(stage, node, file) {
     const id = fileKey(stage.id, file.path);
+    const approvalId = fileApprovalKey(stage.id, node.id, file.path);
     const cls = classificationFor(file, node.id);
     const { name } = splitPath(file.path);
     const dir = dirShort(splitPath(file.path).dir);
@@ -1152,7 +1166,7 @@
     const sharedChip = hint
       ? `<span class="cls cls-shared" title="Split across steps — this step owns ${esc(hint)}.">shared</span>`
       : "";
-    const st = approvalState(id);
+    const st = approvalState(approvalId);
     const isOn = st === "approved";
     const isStale = st === "stale";
     const isActive = activeFileNodeId(id) === node.id;
@@ -1182,7 +1196,7 @@
         </div>
         <div class="frow-act">
           ${threadBadge}${lineBadge}${noteBadge}
-          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
+          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${!revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
       </div>
     </div>`;
@@ -1204,7 +1218,7 @@
   function nodeFilesPanel(stage, node) {
     const files = nodeFileList(stage, node);
     const total = files.length;
-    const done = files.filter((f) => approved(fileKey(stage.id, f.path))).length;
+    const done = files.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
 
     // Group by owning .NET project (convention-based) for a quick overview.
     const groups = new Map();
@@ -1214,7 +1228,7 @@
       groups.get(k).push(f);
     });
     const groupHtml = [...groups.entries()].map(([proj, gfiles]) => {
-      const gd = gfiles.filter((f) => approved(fileKey(stage.id, f.path))).length;
+      const gd = gfiles.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
       const rows = gfiles.map((f) => fileRow(stage, node, f)).join("");
       return `<div class="fgroup ${gd === gfiles.length ? "all-done" : ""}">
         <div class="fgroup-h">
@@ -1442,7 +1456,7 @@
   function hideRemovedToggle(id) {
     const on = Boolean(state.hideDeleted[id]);
     return `<div class="view-toggle" role="group" aria-label="Removed lines">
-      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${id}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
+      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${esc(id)}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
     </div>`;
   }
   // Diff view controls: mode toggle + hide-removed. Added/deleted files render
@@ -1468,7 +1482,7 @@
       <div class="diff-actions">
         ${diffControls(entry)}
         ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
-        ${approveBtn("file", id, "sm")}
+        ${approveBtn("file", fileApprovalKey(stage.id, opts.nodeId || activeFileNodeId(id), file.path), "sm")}
         ${commentBtn("file", id)}
         ${opts.close ? `<button class="diff-close" data-action="${opts.close}" type="button" aria-label="Close">×</button>` : ""}
       </div>
@@ -1658,7 +1672,8 @@
 
   function stageSection(stage, i) {
     const open = Boolean(state.openStages[stage.id]);
-    const filesDone = stage.files.filter((f) => approved(fileKey(stage.id, f.path))).length;
+    const fileApprovals = stageFileApprovals(stage);
+    const filesDone = fileApprovals.filter(approved).length;
     const nodesDone = stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length;
     const done = stageApproved(stage);
     const acIds = stageAcceptanceRefs(stage);
@@ -1686,7 +1701,7 @@
           <p class="rationale"><span class="rationale-label">Why this stage</span>${esc(stage.rationale)}</p>
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
-            <span>${filesDone}/${stage.files.length} files</span>
+            <span>${filesDone}/${fileApprovals.length} file reviews</span>
             ${depsMeta}
             ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
@@ -1710,7 +1725,7 @@
       </div>
       <footer class="story-end">
         <span class="eyebrow">End of review</span>
-        <p>${approvedCount() === reviewable() ? "Every stage, step, and file has your approval." : `${reviewable() - approvedCount()} of ${reviewable()} items still await your review.`}</p>
+        <p>${approvedCount() === reviewable() ? "Every stage, step, and file review has your approval." : `${reviewable() - approvedCount()} of ${reviewable()} items still await your review.`}</p>
       </footer>
     </div>`;
   }
@@ -1719,22 +1734,23 @@
   function coveragePanel() {
     const rows = data.stages.map((s, i) => {
       const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
-      const fd = s.files.filter((f) => approved(fileKey(s.id, f.path))).length;
+      const fileApprovals = stageFileApprovals(s);
+      const fd = fileApprovals.filter(approved).length;
       const stageDone = stageApproved(s);
       return `<div class="cov-stage ${stageDone ? "is-approved" : ""}">
         <div class="cov-h"><span>${stageDone ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
         <div class="cov-bars">
           <span class="cov-bar" title="${nd}/${s.nodes.length} steps"><i style="width:${Math.round(nd / s.nodes.length * 100)}%"></i></span>
-          <span class="cov-bar files" title="${fd}/${s.files.length} files"><i style="width:${Math.round(fd / s.files.length * 100)}%"></i></span>
+          <span class="cov-bar files" title="${fd}/${fileApprovals.length} file reviews"><i style="width:${Math.round(fd / fileApprovals.length * 100)}%"></i></span>
         </div>
-        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${s.files.length} files</small>
+        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${fileApprovals.length} file reviews</small>
       </div>`;
     }).join("");
     return `<aside class="side coverage ${state.coverageOpen ? "is-open" : ""}" aria-hidden="${!state.coverageOpen}" ${state.coverageOpen ? "" : "inert"}>
       <div class="side-head"><div><span class="eyebrow">At a glance</span><h2>Review coverage</h2></div><button data-action="toggle-coverage" aria-label="Close" type="button">×</button></div>
       <div class="cov-score"><strong>${pct()}%</strong><span>${approvedCount()} of ${reviewable()} approved</span><div class="mini-bar"><i style="width:${pct()}%"></i></div></div>
       <div class="cov-list">${rows}</div>
-      <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>Files</span></div>
+      <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>File reviews</span></div>
     </aside>`;
   }
   function localNoteRef(c) {
@@ -2074,9 +2090,16 @@
       if (prevId) delete state.approvals[prevId];
       if (st === "approved") delete state.approvals[id];
       else {
-        state.approvals[id] = { rev: revisionFor(id), at: Date.now() };
+        const entry = approvalEntry(id);
+        if (!stage && !revisionFor(id)) return;
+        state.approvals[id] = { rev: revisionFor(id), at: Date.now(), ...(entry ? {
+          stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
+          baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision,
+          fileRevision: entry.file.revision, ownership: structuredClone(entry.membership),
+        } : {}) };
         // Approving a file means you're done with it — close its open diff.
-        if (state.activeFiles[id]) delete state.activeFiles[id];
+        const fileId = entry?.id;
+        if (fileId && state.activeFiles[fileId] === entry.nodeId) delete state.activeFiles[fileId];
       }
       persist(); render();
     } else if (a === "toggle-stage") {

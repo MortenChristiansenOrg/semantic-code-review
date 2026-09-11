@@ -479,3 +479,14 @@ Completion does not approve files, land an implementation, stop its service, or
 delete data. Opening an already completed review leaves it completed. Last edit
 tracks comments, feedback, approvals, typed draft text, and lifecycle changes;
 opening a page or changing navigation preferences does not update it.
+
+File approvals belong to a particular stage and change node. When a file appears
+in two nodes, approve each appearance separately. Node and stage summaries and
+coverage count those individual file reviews; unapproving one does not revoke
+another node's sign-off on the same file.
+
+A file review becomes stale if the full file diff changes, the stage base changes,
+or that node's classification or owned hunks/line ranges change. Changes outside
+the node's owned range also invalidate its approval because the sign-off records
+the whole file state. A rename retains a stale indicator only in the same node.
+Approvals remain personal review notes and do not gate CLI workflows.
