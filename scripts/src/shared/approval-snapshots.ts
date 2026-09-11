@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { assertReviewContext, runReviewCommand, type ReviewContext } from "./review-context.js";
-import { atomicJson, reviewDirectory, withReviewLock } from "./review-store.js";
+import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
 
 export type FileEndpoint = {
   stageId: string; nodeId: string; path: string; previousPath?: string;
@@ -46,7 +46,11 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     const file = approvalSnapshotPath(context.reviewId, snapshotId);
     if (!fs.existsSync(file)) throw new Error("Approved content is unavailable. Re-approve the current file to capture a new snapshot.");
     const snapshot: Snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || ![current.path, current.previousPath].includes(snapshot.endpoint.path)) throw new Error("The approved snapshot belongs to another file review.");
+    // A persisted reference carries identity through rename edges observed in earlier revisions.
+    const approvals = readReview(context.reviewId).state.approvals || {};
+    const retained = [current.path, current.previousPath].filter(Boolean).some((filePath) =>
+      approvals[`m:${JSON.stringify([current.stageId, current.nodeId, filePath])}`]?.snapshotId === snapshotId);
+    if (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
     if (snapshot.id !== snapshotId || digest(Buffer.from(before.bytes, "base64")) !== before.sha256) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
     const info = {

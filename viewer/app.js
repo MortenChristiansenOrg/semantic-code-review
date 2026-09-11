@@ -36,7 +36,7 @@
   let reviewListBusy = false;
   const approvalOps = new Map();
   const approvalComparisons = new Map();
-  let approvalError = "";
+  const approvalErrors = new Map();
 
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
@@ -512,7 +512,6 @@
     const entry = approvalEntry(id), rev = revisionFor(id), previousId = previousApprovalId(id);
     if (!stage && !rev) return;
     const remove = approvalState(id) === "approved";
-    approvalError = "";
     const operation = Promise.resolve().then(async () => {
       try {
         let retained = {};
@@ -529,12 +528,24 @@
           } : {}) };
           if (entry && activeFileNodeId(entry.id) === entry.nodeId) delete state.activeFiles[entry.id];
         }
+        approvalErrors.delete(id);
         persist();
-      } catch (error) { approvalError = `${entry?.file.path || id}: ${error.message}`; }
+      } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
       finally { approvalOps.delete(id); render(); }
     });
     approvalOps.set(id, operation); render();
     return operation;
+  }
+  // Retain each observed rename edge by moving the reference, never the captured endpoint.
+  function retainApprovalRenames() {
+    let changed = false;
+    for (const { stage, file } of flatFiles) for (const membership of file.memberships || []) {
+      const id = fileApprovalKey(stage.id, membership.nodeId, file.path), previousId = previousApprovalId(id);
+      if (!approvalRecord(id) && previousId && approvalRecord(previousId)) {
+        state.approvals[id] = state.approvals[previousId]; delete state.approvals[previousId]; changed = true;
+      }
+    }
+    if (changed) persist();
   }
   function previousApprovalId(id) {
     const entry = approvalEntry(id);
@@ -550,7 +561,7 @@
   function approvalState(id) {
     const rec = approvalRecord(id);
     if (rec) {
-      if (id.startsWith("m:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
+      if (id.startsWith("m:")) return rec.rev === revisionFor(id) && rec.path === approvalEntry(id)?.file.path ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
@@ -1539,6 +1550,7 @@
     if (approvalComparisons.get(key)?.loading) return;
     approvalComparisons.set(key, { loading: true, offset }); render();
     try {
+      await flushReviewState();
       const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset }) });
       const result = await response.json();
@@ -1982,7 +1994,7 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
-    app.innerHTML = `${topbar()}${reviewsPanel()}${approvalError ? `<div class="review-update" role="alert">Approval was not saved: ${esc(approvalError)}</div>` : ""}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    app.innerHTML = `${topbar()}${reviewsPanel()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
@@ -2967,6 +2979,7 @@
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
     const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    retainApprovalRenames();
     revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.

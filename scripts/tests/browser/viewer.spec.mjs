@@ -352,7 +352,7 @@ test('equal node IDs in two stages keep independent note-panel visibility across
 test('unsupported experimental UI records reset while current approvals and drafts survive', async ({ page }) => {
   const saved = {
     specificationOpen: true, active: fileId, activeFiles: { [fileId]: true },
-    approvals: { [fileId]: true, [approvalKey('second', 'second-one')]: { rev: firstMembershipRevision, at: 1 } },
+    approvals: { [fileId]: true, [approvalKey('second', 'second-one')]: { rev: firstMembershipRevision, at: 1, path: 'shared.js' } },
     comments: [{ id: fileId, kind: 'file', body: 'Keep my note', at: 1 }],
     replyDrafts: [],
   };
@@ -540,6 +540,12 @@ test('failed snapshot capture does not approve a file', async ({ page }) => {
   await expect(page.locator('[role="alert"]')).toContainText('Approval was not saved');
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
   await expect(page.locator('.cinema-diff')).toBeVisible();
+  await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  await page.locator('details[data-node="first-two"] summary').click();
+  await page.locator('details[data-node="first-two"] .mini-approve').click();
+  await expect(page.locator('[role="alert"]')).toContainText('Approval was not saved');
+  await page.locator('details[data-node="first-one"] .mini-approve').click();
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
 });
 
 
@@ -559,4 +565,21 @@ test('switching waits for an in-flight approval capture and its state save', asy
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-approved/);
+});
+
+
+test('approved identity follows observed rename chains across reloads', async ({ page }) => {
+  const data = fixture(); await mount(page, data); await openFile(page);
+  const one = page.locator('details[data-node="first-one"]');
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  const file = data.stages[0].files[0];
+  await saveAction(page, async () => { file.previousPath = file.path; file.path = 'middle.js'; file.kind = 'renamed'; data.viewerRevision = 'rename-one'; }, (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'middle.js')]);
+  await expect(one.locator('.frow')).toHaveClass(/is-stale/);
+  await page.reload();
+  file.previousPath = file.path; file.path = 'final.js'; data.viewerRevision = 'rename-two';
+  await expect(one.locator('.frow')).toContainText('final.js');
+  await expect(one.locator('.frow')).toHaveClass(/is-stale/);
+  if (!await one.evaluate((el) => el.open)) await one.locator('summary').click();
+  await one.locator('.frow').click();
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toBeVisible();
 });

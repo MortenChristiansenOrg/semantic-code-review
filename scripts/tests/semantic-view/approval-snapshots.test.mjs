@@ -30,6 +30,12 @@ test('approved content survives loss of the original Git objects and compares ac
   assert.equal(diff.approved.path, 'code.txt'); assert.equal(diff.current.path, 'renamed.txt');
   assert.equal(diff.baseChanged, true); assert.equal(diff.ownershipChanged, true);
   assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, { ...next, nodeId: 'other' }), /another file review/);
+  const key = `m:${JSON.stringify(['stage', 'node', 'renamed.txt'])}`;
+  patchReviewState(context.reviewId, context.generation, [change(key, { snapshotId: saved.snapshotId })]);
+  repo.git('mv', 'renamed.txt', 'third.txt'); repo.git('commit', '-m', 'Second rename');
+  const chained = compareApprovalSnapshot(context, saved.snapshotId, { ...endpoint(repo, undefined, 'third.txt'), previousPath: 'renamed.txt' });
+  assert.equal(chained.approved.path, 'code.txt'); assert.equal(chained.current.path, 'third.txt');
+  assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo, undefined, 'unrelated.txt')), /another file review/);
 });
 
 test('comparisons distinguish added, deleted, empty, and binary file states', (t) => {
