@@ -81,3 +81,18 @@ normalized media type, and content hash, making upload retries idempotent.
 References are validated against the managed metadata and contained file.
 CLI feedback output adds an absolute `localPath` for agent access; that path is
 not persisted in the feedback artifact. Experimental v0.1 changes in place.
+
+## Deletion and retention
+
+A review owns its feedback and files exclusively; identical attachments in
+separate reviews have separate stored copies. Explicit review deletion removes
+local feedback together with drafts, notes, approvals, attachments, and snapshots.
+The implementation artifact and archived or published provenance are unaffected.
+Deletion first records the retired generation under `~/.semantic-flow/deletions/`
+and moves its files into `~/.semantic-flow/trash/`. Pending removal remains
+retryable; a fresh session cannot start until it finishes. Stale writes fail.
+
+Unused-file cleanup keeps every persisted reference and protects fresh uploads
+and snapshots for one hour. Unreferenced files are retired inside the owning
+review's `.cleanup/` folder before removal, so interrupted cleanup can be retried
+without exposing half-removed attachments to new messages.

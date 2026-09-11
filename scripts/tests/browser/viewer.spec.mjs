@@ -32,6 +32,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
   const attachments = new Map();
+  const deleted = new Set();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://viewer.test/**', async (route) => {
@@ -40,6 +41,20 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
     const currentId = currentData.reviewId || currentData.implementationId;
     const json = (body) => route.fulfill({ json: body });
     if (url.pathname === '/api/reviews') return json({ ok: true, reviews: records });
+    if (url.pathname === '/api/reviews/storage') {
+      const input = route.request().postDataJSON(), review = records.find((record) => record.id === input.reviewId), state = stores.get(input.reviewId) || {};
+      const drafts = (state.comments || []).filter((note) => !note.exported && note.mode === 'feedback').length;
+      return json({ ok: true, storage: { review, storageDirectory: `/user-data/reviews/${input.reviewId}`, bytes: 2048, categories: [{ label: 'Review state', bytes: 1024, detail: `${drafts} unsent drafts · 1 personal note` }, { label: 'Submitted feedback', bytes: 1024, detail: '1 unresolved' }], drafts, unresolved: 1, unused: [], unusedBytes: 0, fingerprint: JSON.stringify(state), deletionPending: false } });
+    }
+    if (url.pathname === '/api/reviews/delete') {
+      const input = route.request().postDataJSON();
+      if (input.fingerprint !== JSON.stringify(stores.get(input.reviewId) || {})) return route.fulfill({ status: 409, json: { ok: false, error: 'Review data changed since the preview. Refresh the details before deleting.' } });
+      deleted.add(input.reviewId); stores.delete(input.reviewId);
+      for (const key of attachments.keys()) if (key.startsWith(input.reviewId + ":")) attachments.delete(key);
+      records.splice(records.findIndex((item) => item.id === input.reviewId), 1);
+      return json({ ok: true, deleted: true, cleanupPending: false });
+    }
+    if (deleted.has(currentId) && ['/api/review-state', '/api/revision', '/api/attachments'].includes(url.pathname)) return route.fulfill({ status: 409, json: { ok: false, reviewUnavailable: true, error: 'Review data was deleted.' } });
     if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://viewer.test/${route.request().postDataJSON().reviewId}` });
     if (url.pathname === '/api/reviews/completion') {
       const payload = route.request().postDataJSON();
@@ -685,4 +700,92 @@ test('review switching waits for uploads and retains files in the initiating rev
   await expect(page.locator('.note-compose .attachment a')).toHaveText('only-a.log');
   const attachmentUrl = await page.locator('.note-compose .attachment a').getAttribute('href');
   expect(await page.evaluate(async (url) => { const other = new URL(url); other.searchParams.set('review', 'b'); return (await fetch(other)).status; }, attachmentUrl)).toBe(404);
+});
+
+
+test('review deletion previews data, requires confirmation, and leaves other reviews accessible', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a', title: 'Review A' }, b = { ...fixture(), reviewId: 'b', title: 'Review B' };
+  const errors = await mount(page, a, { comments: [{ kind: 'stage', id: 'first', mode: 'feedback', body: 'Unsent feedback' }] }, [b]);
+  let deletions = 0; page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/reviews/delete') deletions++; });
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="a"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('1 unsent draft'); await expect(dialog).toContainText('1 unresolved feedback');
+  await expect(dialog).toContainText('/user-data/reviews/a'); expect(deletions).toBe(0);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); expect(deletions).toBe(0);
+  await page.locator('[data-review="a"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(dialog).toHaveCount(0); await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+  await expect(page.locator('[data-review="a"]')).toHaveCount(0); expect(deletions).toBe(1);
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Review B', exact: true })).toBeVisible();
+  await page.goto('http://viewer.test/a');
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+  await expect(page.locator('[data-review="b"]')).toBeVisible(); expect(errors).toEqual([]);
+  await expect(page.locator('#review-list [data-action="toggle-reviews"]')).toHaveCount(0);
+  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: [{ id: 'a', generation: 'fresh-session', title: 'Reopened A', repositoryRoot: '/repos/a', implementationId: 'browser-review', updatedAt: '2026-09-11T10:00:00Z', available: true, completedAt: null }] } }));
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true })).toBeEnabled();
+  await expect(page.locator('[data-review="a"]')).not.toHaveAttribute('aria-current', 'true');
+
+});
+
+test('changed storage previews cannot delete newly saved data without a refreshed confirmation', async ({ page }) => {
+  await mount(page); await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog'); await expect(dialog.getByRole('button', { name: 'Delete review data', exact: true })).toBeEnabled();
+  await page.evaluate(async () => fetch('/api/review-state?review=browser-review&generation=test', { method: 'POST', body: JSON.stringify({ changes: [{ path: ['otherTab'], after: { present: true, value: 'New data' } }] }) }));
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('changed since the preview');
+  await dialog.getByRole('button', { name: 'Refresh details', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+});
+
+test('a review deleted in another tab preserves unsent text for copying and rejects further saves', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').fill('Keep this unsent explanation'), (state) => state.editor?.compose?.body === 'Keep this unsent explanation');
+  await page.evaluate(async () => {
+    const input = { reviewId: 'browser-review', generation: 'test' }, query = '?review=browser-review&generation=test';
+    const result = await fetch('/api/reviews/storage' + query, { method: 'POST', body: JSON.stringify(input) }).then((r) => r.json());
+    await fetch('/api/reviews/delete' + query, { method: 'POST', body: JSON.stringify({ ...input, fingerprint: result.storage.fingerprint }) });
+  });
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+  await expect(page.locator('.deleted-review textarea')).toHaveValue('Keep this unsent explanation');
+  await expect(page.locator('.deleted-review textarea')).toHaveAttribute('readonly', '');
+  expect(await page.evaluate(async () => (await fetch('/api/review-state?review=browser-review&generation=test')).status)).toBe(409);
+});
+
+
+test('a pending deletion stays visible and can retry file removal', async ({ page }) => {
+  await mount(page); let pending = false, gone = false;
+  const record = { id: 'browser-review', generation: 'test', title: 'Review fixes', repositoryRoot: '/repos/review', implementationId: 'browser-review', updatedAt: '2026-09-11T10:00:00Z', completedAt: null };
+  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: gone ? [] : [{ ...record, available: !pending, deletionPending: pending }] } }));
+  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { review: record, storageDirectory: '/user-data/trash/review', bytes: 1024, categories: [], drafts: 0, unresolved: 0, fingerprint: 'preview', unused: [], unusedBytes: 0, deletionPending: pending } } }));
+  await page.route('**/api/reviews/delete?*', (route) => {
+    if (!pending) { pending = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: true, error: 'File is open. Retry removal.' } }); }
+    gone = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: false } });
+  });
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText('File is open');
+  await expect(page.locator('[data-review="browser-review"]')).toContainText('Deletion pending');
+  await dialog.getByRole('button', { name: 'Retry file removal', exact: true }).click();
+  await expect(dialog).toHaveCount(0); await expect(page.locator('[data-review="browser-review"]')).toHaveCount(0);
+});
+
+test('unused-file cleanup keeps the review and its saved messages', async ({ page }) => {
+  await mount(page); let cleaned = false;
+  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { storageDirectory: '/user-data/reviews/browser-review', bytes: cleaned ? 1024 : 2048, categories: [], drafts: 1, unresolved: 0, fingerprint: 'preview', unused: cleaned ? [] : [{ path: 'attachments/unused', bytes: 1024 }], unusedBytes: cleaned ? 0 : 1024, deletionPending: false } } }));
+  await page.route('**/api/reviews/clean-unused?*', (route) => { cleaned = true; return route.fulfill({ json: { ok: true, reclaimedBytes: 1024, failures: [] } }); });
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Clean unused files', exact: true }).click();
+  await expect(dialog.getByText('Reclaimed 1.0 KiB.')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Clean unused files', exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.locator('[data-review="browser-review"]')).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'Review fixes', exact: true })).toBeVisible();
 });

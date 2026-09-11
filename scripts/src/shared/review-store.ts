@@ -100,8 +100,30 @@ export type ReviewRecord = {
   state: Record<string, any>;
   viewer?: { port: number; processId: number; viewerVersion: string; skillDirectory: string };
 };
+export function reviewDeletionPath(id: string, generation: string) {
+  reviewDirectory(id);
+  if (typeof generation !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(generation)) throw new Error("Invalid review generation.");
+  return path.join(reviewHome(), "deletions", `${id}.${generation}.json`);
+}
+function hasPendingDeletion(id: string) {
+  const directory = path.join(reviewHome(), "deletions");
+  return fs.existsSync(directory) && fs.readdirSync(directory).some((file) => file.startsWith(id + ".") && file.endsWith(".json"));
+}
+export function attachmentIds(state: any): Set<string> {
+  const ids = new Set<string>();
+  function visit(value: any) {
+    if (!value || typeof value !== "object") return;
+    if (typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id) && value.path === `attachments/${value.id}/content.bin`) ids.add(value.id);
+    for (const item of Object.values(value)) visit(item);
+  }
+  visit(state); return ids;
+}
 export function readReview(id: string): ReviewRecord {
-  try { return JSON.parse(fs.readFileSync(path.join(reviewDirectory(id), "review.json"), "utf8")); }
+  try {
+    const record = JSON.parse(fs.readFileSync(path.join(reviewDirectory(id), "review.json"), "utf8"));
+    if (fs.existsSync(reviewDeletionPath(id, record.generation))) throw new Error("Review data was deleted; file cleanup is pending. Retry deletion from Saved reviews.");
+    return record;
+  }
   catch (error) { if (error.code === "ENOENT") throw new Error("Review data is unavailable or was deleted. Reopen the review explicitly."); throw error; }
 }
 export function registerReview(root: string, implementationId: string, title: string): ReviewRecord {
@@ -110,6 +132,7 @@ export function registerReview(root: string, implementationId: string, title: st
   return withReviewLock(id, () => {
     const directory = reviewDirectory(id);
     const file = path.join(directory, "review.json");
+    if (hasPendingDeletion(id)) throw new Error("Finish pending review deletion before starting a fresh review.");
     if (fs.existsSync(file)) return readReview(id);
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     // Children are owned by this review; later features can remove unreferenced
@@ -133,6 +156,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
     if (record.generation !== generation) throw new Error("This review session was replaced. Reopen the review.");
     const previousActivity = structuredClone(reviewActivity(record.state));
     const previousSnapshots = approvalSnapshotIds(record.state);
+    const previousAttachments = attachmentIds(record.state);
     for (const change of changes) {
       if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid state change path.");
       validateValue(change.before); validateValue(change.after);
@@ -149,6 +173,9 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (!isDeepStrictEqual(current, change.before)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
       if (change.after.present) Object.defineProperty(target, key, { value: change.after.value, enumerable: true, configurable: true, writable: true });
       else delete target[key];
+    }
+    for (const attachmentId of attachmentIds(record.state)) {
+      if (!previousAttachments.has(attachmentId) && !fs.existsSync(path.join(reviewDirectory(id), "attachments", attachmentId, "metadata.json"))) throw new Error("Attachment content was removed. Upload the file again before saving.");
     }
     const snapshots = approvalSnapshotIds(record.state);
     for (const snapshotId of snapshots) {
@@ -184,6 +211,7 @@ export function listReviews(): ReviewRecord[] {
   const directory = path.join(reviewHome(), "reviews");
   if (!fs.existsSync(directory)) return [];
   return fs.readdirSync(directory).filter((id) => /^[a-f0-9]{64}$/.test(id)).flatMap((id) => {
+    if (hasPendingDeletion(id)) return [];
     try { return [readReview(id)]; }
     catch (error) {
       if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return [];

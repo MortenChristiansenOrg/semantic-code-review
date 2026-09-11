@@ -528,3 +528,27 @@ Repeat `--attachments` for multiple IDs, or supply an array through JSON input.
 Feedback commands include these local paths so an agent can read the files.
 Only local uploads are supported. Cancelled drafts and failed sends leave files
 owned by the review for explicit cleanup; retries reuse the same managed file.
+
+### Delete review data or clean unused files
+
+Open **Reviews → Delete data…** to inspect a review's location, lifecycle status,
+storage size, drafts, personal notes, approvals, feedback, attachments, and saved
+snapshots. **Delete review data** confirms removal of that review's local data.
+Unsent drafts and unresolved feedback are highlighted before confirmation.
+Completion never deletes data automatically; unavailable worktrees can be cleaned
+too. Source files, branches, implementation artifacts, publications, and archives
+are preserved.
+
+**Clean unused files** reclaims unreferenced uploads and snapshots separately.
+Files referenced by saved messages, drafts, feedback, or approvals are retained.
+Recent uploads and snapshots have a one-hour grace period to protect in-flight
+work; uploading the same file again renews that protection. If another process
+changes the data after the preview, refresh the details before confirming.
+
+Deletion invalidates the old session before removing files. Stale tabs and CLI
+requests cannot recreate it. If a file is locked or removal is interrupted,
+**Retry deletion…** remains in Saved reviews. You can still open other reviews
+after deleting the current one, including after a page reload. A tab whose data
+was deleted elsewhere keeps unsent text visible for copying. Running review
+explicitly again in the original worktree starts a fresh session once pending
+removal is complete.

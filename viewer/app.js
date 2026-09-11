@@ -16,11 +16,16 @@
     }
     return window.fetch(url.href, options);
   };
+  let reviewDeleted = false;
+  let deletedElsewhere = false;
   let savedReview;
   try {
     const response = await fetch("/api/review-state", { cache: "no-store" });
     savedReview = await response.json();
-    if (!response.ok || !savedReview.ok) throw new Error(savedReview.error || "Review data could not be loaded.");
+    if (!response.ok || !savedReview.ok) {
+      if (savedReview.reviewUnavailable) { reviewDeleted = true; savedReview = { reviewId: requestReviewId, generation: requestGeneration, state: {} }; }
+      else throw new Error(savedReview.error || "Review data could not be loaded.");
+    }
   } catch (error) {
     app.textContent = `${error.message} Reload to retry.`;
     return;
@@ -30,7 +35,7 @@
   let saveError = "";
   let saveTimer;
   let saveOperation = null;
-  let reviewsOpen = false;
+  let reviewsOpen = reviewDeleted;
   let reviewList = [];
   let reviewListError = "";
   let reviewListBusy = false;
@@ -52,11 +57,15 @@
   const draftSnapshots = new WeakMap();
 
   async function pollViewerRevision() {
-    if (polling || document.hidden) return;
+    if (reviewDeleted || polling || document.hidden) return;
     polling = true;
     try {
       const response = await fetch("/api/revision", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) {
+        const failure = await response.json();
+        if (failure.reviewUnavailable) markReviewDeleted(true);
+        return;
+      }
       const snapshot = await response.json();
       if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
       // Let local feedback writes finish before adopting a server snapshot.
@@ -433,6 +442,7 @@
     }
   }
   function persist() {
+    if (reviewDeleted) return;
     captureEditor();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(saveState, 50);
@@ -450,6 +460,7 @@
     return saveOperation;
   }
   async function writeState() {
+    if (reviewDeleted) return;
     captureEditor();
     const next = JSON.parse(JSON.stringify(state));
     const changes = stateChanges(persistedState, next);
@@ -461,7 +472,10 @@
         body: JSON.stringify({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes }),
       });
       const payload = await response.json();
-      if (!response.ok || !payload.ok) throw new Error(payload.error || "Save failed. Make another edit to retry.");
+      if (!response.ok || !payload.ok) {
+        if (payload.reviewUnavailable) markReviewDeleted(true);
+        throw new Error(payload.error || "Save failed. Make another edit to retry.");
+      }
       persistedState = next;
       saveError = "";
     } catch (error) { saveError = error.message; }
@@ -469,6 +483,7 @@
     if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
   }
   async function flushReviewState() {
+    if (reviewDeleted) return;
     await Promise.all([...uploadOps, ...approvalOps.values()]);
     clearTimeout(saveTimer);
     await saveState();
@@ -484,6 +499,7 @@
   }
 
   window.addEventListener("beforeunload", (event) => {
+    if (reviewDeleted) return;
     captureEditor();
     if (uploadOps.size || approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
   });
@@ -1704,20 +1720,84 @@
     </div>`;
   }
 
+  function markReviewDeleted(external = false) {
+    reviewDeleted = true; deletedElsewhere = external; reviewsOpen = true;
+    clearTimeout(saveTimer); saveError = ""; showSaveStatus(); render(); void refreshReviews();
+  }
+  function deletedReviewPage() {
+    const text = deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
+    return `<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in the original worktree to start a fresh session.</p>
+      ${text ? `<label>Copy any unsent text you want to keep<textarea readonly rows="6">${esc(text)}</textarea></label>` : ""}</section>${reviewsPanel()}`;
+  }
+  const storageSize = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
+  async function manageReviewData(id) {
+    const review = reviewList.find((item) => item.id === id);
+    if (!review || reviewListBusy || document.querySelector(".review-cleanup")) return;
+    const target = { reviewId: review.id, generation: review.generation };
+    const dialog = document.createElement("dialog"); dialog.className = "review-cleanup"; dialog.setAttribute("aria-labelledby", "cleanup-title");
+    let storage = null, busy = false, error = "", message = "";
+    function paint() {
+      dialog.innerHTML = `<h2 id="cleanup-title">Review data</h2><strong>${esc(review.title)}</strong><p class="review-location">${esc(review.repositoryRoot)}</p>
+        <p class="review-location">${esc(review.id)} · ${storage?.deletionPending || review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}</p>
+        ${storage ? `<p class="review-location">Stored in ${esc(storage.storageDirectory)}</p><p><strong>${storageSize(storage.bytes)}</strong> total</p>
+          <table><thead><tr><th>Data</th><th>Size</th><th>Contents</th></tr></thead><tbody>${storage.categories.map((item) => `<tr><td>${esc(item.label)}</td><td>${storageSize(item.bytes)}</td><td>${esc(item.detail)}</td></tr>`).join("")}</tbody></table>
+          ${storage.drafts || storage.unresolved ? `<p class="cleanup-warning">This review has ${storage.drafts} unsent draft${storage.drafts === 1 ? "" : "s"} and ${storage.unresolved} unresolved feedback thread${storage.unresolved === 1 ? "" : "s"}.</p>` : ""}
+          <p>Deletion removes this review’s local data. Source files, branches, implementation artifacts, published metadata, and archives are preserved.</p>
+          ${!storage.deletionPending ? `<p>${storageSize(storage.unusedBytes)} in ${storage.unused.length} unused files or folders can be cleaned separately. Recent uploads and snapshots are protected for one hour.</p>` : ""}
+          ${storage.referenceError ? `<p role="alert">${esc(storage.referenceError)}</p>` : ""}` : ""}
+        ${busy ? '<p role="status">Working…</p>' : ""}${message ? `<p role="status">${esc(message)}</p>` : ""}${error ? `<p role="alert">${esc(error)}</p>` : ""}
+        <div class="cleanup-actions"><button class="tb-btn" type="button" data-cleanup="cancel" autofocus ${busy ? "disabled" : ""}>Cancel</button>
+          <button class="tb-btn" type="button" data-cleanup="refresh" ${busy ? "disabled" : ""}>Refresh details</button>
+          ${storage && !storage.deletionPending ? `<button class="tb-btn" type="button" data-cleanup="unused" ${busy || !storage.unused.length || storage.referenceError ? "disabled" : ""}>Clean unused files</button>` : ""}
+          <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ${busy || !storage ? "disabled" : ""}>${storage?.deletionPending ? "Retry file removal" : "Delete review data"}</button></div>`;
+    }
+    async function details() {
+      const response = await fetch("/api/reviews/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) });
+      const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not inspect review storage.");
+      storage = result.storage;
+    }
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+    dialog.addEventListener("click", async (event) => {
+      const action = event.target.closest("[data-cleanup]")?.dataset.cleanup;
+      if (!action || busy) return;
+      if (action === "cancel") { dialog.close(); return; }
+      busy = true; error = ""; message = ""; paint();
+      try {
+        if (action === "refresh") await details();
+        else {
+          const response = await fetch(action === "delete" ? "/api/reviews/delete" : "/api/reviews/clean-unused", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...target, fingerprint: storage.fingerprint }) });
+          const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not clean review data.");
+          if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && !reviewDeleted) markReviewDeleted();
+          if (result.deleted && !result.cleanupPending) { dialog.close(); await refreshReviews(true); return; }
+          if (result.cleanupPending) error = result.error;
+          else { message = `Reclaimed ${storageSize(result.reclaimedBytes)}.`; error = (result.failures || []).join(" "); }
+          await details(); await refreshReviews(true);
+        }
+      } catch (failure) { error = failure.message; }
+      finally { busy = false; if (dialog.isConnected) paint(); }
+    });
+    document.body.append(dialog); busy = true; paint(); dialog.showModal();
+    try { if (id === savedReview.reviewId) await flushReviewState(); await details(); }
+    catch (failure) { error = failure.message; }
+    finally { busy = false; paint(); }
+  }
+  const isCurrentReview = (review) => !reviewDeleted && review.id === savedReview.reviewId && review.generation === savedReview.generation;
   function reviewsPanel() {
     if (!reviewsOpen) return "";
     return `<section id="review-list" class="review-list" aria-label="Saved reviews">
-      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button><button class="tb-btn" type="button" data-action="toggle-reviews">Close</button></header>
+      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button>${reviewDeleted ? "" : `<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
       ${reviewListError ? `<p role="alert">${esc(reviewListError)}</p>` : ""}
       ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
       ${!reviewList.length && !reviewListBusy ? '<p>No saved reviews.</p>' : ""}
-      ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${review.id === savedReview.reviewId ? 'aria-current="true"' : ""}>
-        <div><strong>${esc(review.title)}</strong> <span>${review.completedAt ? "Completed" : "Active"}${review.id === savedReview.reviewId ? " · Current" : ""}</span>
+      ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${isCurrentReview(review) ? 'aria-current="true"' : ""}>
+        <div><strong>${esc(review.title)}</strong> <span>${review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}${isCurrentReview(review) ? " · Current" : ""}</span>
         <p>${esc(review.implementationId)}</p><p class="review-location">${esc(review.repositoryRoot)}</p>
         <p>Last edited <time datetime="${esc(review.updatedAt)}">${esc(new Date(review.updatedAt).toLocaleString())}</time></p>
         ${!review.available ? `<p class="review-unavailable">Unavailable: ${esc(review.unavailableReason)}</p>` : ""}</div>
-        <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || review.id === savedReview.reviewId ? "disabled" : ""}>Open review</button>
-        <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button></div>
+        <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || isCurrentReview(review) ? "disabled" : ""}>Open review</button>
+        <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy || review.deletionPending ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button>
+        <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.deletionPending ? "Retry deletion…" : "Delete data…"}</button></div>
       </article>`).join("")}
     </section>`;
   }
@@ -2065,6 +2145,7 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
+    if (reviewDeleted) { app.innerHTML = deletedReviewPage(); return; }
     app.innerHTML = `${topbar()}${reviewsPanel()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
@@ -2251,6 +2332,8 @@
     if (a === "toggle-reviews") {
       reviewsOpen = !reviewsOpen; render();
       if (reviewsOpen) void refreshReviews();
+    } else if (a === "manage-review-data") {
+      void manageReviewData(btn.dataset.reviewId);
     } else if (a === "refresh-reviews") {
       if (!reviewListBusy) void refreshReviews();
     } else if (a === "open-review" || a === "complete-review") {
@@ -3126,6 +3209,7 @@
     const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);
     if (node) node.open = true;
   }
+  if (reviewDeleted) void refreshReviews();
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
 })();
