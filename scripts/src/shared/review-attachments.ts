@@ -33,6 +33,8 @@ export function resolveAttachment(reviewId: string, id: string): Attachment & { 
       !Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > MAX_ATTACHMENT_BYTES) throw new Error("Invalid stored attachment metadata.");
   const localPath = path.join(root, metadata.path);
   if (fs.realpathSync(localPath) !== path.join(fs.realpathSync(root), metadata.path) || !fs.statSync(localPath).isFile() || fs.statSync(localPath).size !== metadata.size) throw new Error("Attachment content is unavailable or outside its review.");
+  const actualSha256 = hash(fs.readFileSync(localPath));
+  if (actualSha256 !== metadata.sha256 || hash(JSON.stringify([metadata.filename, metadata.mediaType, actualSha256])) !== metadata.id) throw new Error("Attachment content or identity is damaged.");
   return { ...metadata, localPath };
 }
 export function attachmentReferences(reviewId: string, ids: string[]): Attachment[] {

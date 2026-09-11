@@ -421,3 +421,11 @@ test('managed attachments reach agents in attachment-only messages and replies w
   input.threads[0].attachments = ['f'.repeat(64)]; repository.write('attachment-input.json', JSON.stringify(input));
   assert.equal(send().rejected.length, 1);
 });
+
+
+test('single-comment JSON input accepts attachment arrays, including an empty list with text', (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  repository.write('comment.json', JSON.stringify({ id: 'no-files', 'comment-id': 'first', body: 'Text only', attachments: [], label: 'Stage', 'target-kind': 'stage', stage: 'implementation' }));
+  repository.feedback('thread', 'add', '--input', 'comment.json');
+  repository.feedback('validate');
+});

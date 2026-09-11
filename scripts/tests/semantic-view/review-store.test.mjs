@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -134,4 +135,35 @@ test('attachments preserve bytes, enforce limits and ownership, and reject stale
     fs.rmSync(resolved.localPath); fs.symlinkSync(outside, resolved.localPath);
     assert.throws(() => resolveAttachment(review.id, attachment.id), /outside/);
   }
+});
+
+
+test('attachment resolution rejects same-size replacements and metadata with a stale identity', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'integrity', 'Integrity');
+  const attachment = storeAttachment(review.id, review.generation, 'context.log', 'text/plain', Buffer.from('before'));
+  const file = resolveAttachment(review.id, attachment.id).localPath;
+  fs.writeFileSync(file, 'after!');
+  assert.throws(() => resolveAttachment(review.id, attachment.id), /damaged/);
+  const metadataFile = path.join(path.dirname(file), 'metadata.json');
+  const metadata = JSON.parse(fs.readFileSync(metadataFile, 'utf8'));
+  metadata.attachment.sha256 = createHash('sha256').update('after!').digest('hex');
+  fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+  assert.throws(() => resolveAttachment(review.id, attachment.id), /damaged/);
+});
+
+test('lock cleanup retires its directory before removal and tolerates transient rename failures', (t) => {
+  const root = setup(t); const rename = fs.renameSync, remove = fs.rmSync;
+  let retries = 0, retired = 0;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from).endsWith('.lock') && retries++ === 0) throw Object.assign(new Error('Busy'), { code: 'EACCES' });
+    return rename(from, to);
+  });
+  t.mock.method(fs, 'rmSync', (file, options) => {
+    assert.equal(String(file).endsWith('.lock'), false, 'Never recursively remove the public lock path');
+    if (String(file).includes('.retired-')) { retired++; assert.equal(options.maxRetries, 10); }
+    return remove(file, options);
+  });
+  const review = registerReview(path.join(root, 'a'), 'locking', 'Locking');
+  patchReviewState(review.id, review.generation, [change(['draft'], 'saved')]);
+  assert.equal(readReview(review.id).state.draft, 'saved'); assert.equal(retired, 2); assert.ok(retries >= 3);
 });

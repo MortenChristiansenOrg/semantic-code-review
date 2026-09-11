@@ -63,10 +63,11 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
       const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
       const id = createHash('sha256').update(JSON.stringify(input)).digest('hex');
       const attachment = { id, filename: input.filename, mediaType: input.mediaType, size: bytes.length, sha256: id, path: `attachments/${id}/content.bin` };
-      attachments.set(id, { attachment, bytes }); return json({ ok: true, attachment });
+      attachments.set(`${currentId}:${id}`, { attachment, bytes }); return json({ ok: true, attachment });
     }
     if (url.pathname.startsWith('/api/attachments/')) {
-      const saved = attachments.get(url.pathname.split('/').at(-1));
+      const saved = attachments.get(`${currentId}:${url.pathname.split('/').at(-1)}`);
+      if (!saved) return route.fulfill({ status: 404 });
       return route.fulfill({ contentType: saved?.attachment.mediaType || 'application/octet-stream', body: saved?.bytes || Buffer.alloc(0) });
     }
     if (url.pathname === '/api/approval-snapshots') return json({ ok: true, snapshotId: 'a'.repeat(32), capturedAt: new Date().toISOString() });
@@ -682,4 +683,6 @@ test('review switching waits for uploads and retains files in the initiating rev
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.locator('.note-compose .attachment a')).toHaveText('only-a.log');
+  const attachmentUrl = await page.locator('.note-compose .attachment a').getAttribute('href');
+  expect(await page.evaluate(async (url) => { const other = new URL(url); other.searchParams.set('review', 'b'); return (await fetch(other)).status; }, attachmentUrl)).toBe(404);
 });
