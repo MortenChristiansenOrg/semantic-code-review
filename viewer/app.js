@@ -34,6 +34,9 @@
   let reviewList = [];
   let reviewListError = "";
   let reviewListBusy = false;
+  const approvalOps = new Map();
+  const approvalComparisons = new Map();
+  const approvalErrors = new Map();
 
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
@@ -55,12 +58,12 @@
       const snapshot = await response.json();
       if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
       // Let local feedback writes finish before adopting a server snapshot.
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
       if (!nextResponse.ok) return;
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const selection = window.getSelection();
       const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
       refreshNotice = "Review updated";
@@ -400,6 +403,7 @@
       threadCollapsed: {},
       openLineThreads: {},
       activeFiles: {},
+      approvalComparisons: {},
       notesFilter: "active",
       replyDrafts: []
     };
@@ -462,6 +466,7 @@
     if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
   }
   async function flushReviewState() {
+    await Promise.all([...approvalOps.values()]);
     clearTimeout(saveTimer);
     await saveState();
     if (saveError) throw new Error(saveError);
@@ -476,7 +481,7 @@
 
   window.addEventListener("beforeunload", (event) => {
     captureEditor();
-    if (savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
+    if (approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
   });
 
   /* ---- helpers ---------------------------------------------------------- */
@@ -496,6 +501,57 @@
     const m = entry.membership;
     return JSON.stringify([entry.file.revision, entry.stage.baseRevision, m.classification, m.hunks || null, m.lineRanges || null]);
   }
+  function approvalEndpoint(entry) {
+    return { stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
+      baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
+  }
+  function changeApproval(id, kind) {
+    if (approvalOps.has(id)) return;
+    const stage = kind === "stage" ? stageById.get(id) : null;
+    if (stage && !stageNodesApproved(stage)) return;
+    const entry = approvalEntry(id), rev = revisionFor(id), previousId = previousApprovalId(id);
+    if (!stage && !rev) return;
+    const remove = approvalState(id) === "approved";
+    const operation = Promise.resolve().then(async () => {
+      try {
+        let retained = {};
+        if (entry && !remove) {
+          const response = await fetch("/api/approval-snapshots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(approvalEndpoint(entry)) });
+          retained = await response.json();
+          if (!response.ok || !retained.ok) throw new Error(retained.error || "Could not retain approved content.");
+        }
+        if (previousId) delete state.approvals[previousId];
+        if (remove) delete state.approvals[id];
+        else {
+          state.approvals[id] = { rev, at: Date.now(), ...(entry ? {
+            ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
+          } : {}) };
+          if (entry && activeFileNodeId(entry.id) === entry.nodeId) delete state.activeFiles[entry.id];
+        }
+        approvalErrors.delete(id);
+        if (previousId) approvalErrors.delete(previousId);
+        persist();
+      } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
+      finally { approvalOps.delete(id); render(); }
+    });
+    approvalOps.set(id, operation); render();
+    return operation;
+  }
+  // Retain each observed rename edge by moving the reference, never the captured endpoint.
+  function retainApprovalRenames() {
+    let changed = false;
+    for (const { stage, file } of flatFiles) for (const membership of file.memberships || []) {
+      const id = fileApprovalKey(stage.id, membership.nodeId, file.path), previousId = previousApprovalId(id);
+      if (previousId && approvalErrors.has(previousId)) {
+        if (!approvalErrors.has(id)) approvalErrors.set(id, approvalErrors.get(previousId));
+        approvalErrors.delete(previousId);
+      }
+      if (!approvalRecord(id) && previousId && approvalRecord(previousId)) {
+        state.approvals[id] = state.approvals[previousId]; delete state.approvals[previousId]; changed = true;
+      }
+    }
+    if (changed) persist();
+  }
   function previousApprovalId(id) {
     const entry = approvalEntry(id);
     return entry?.file.kind === "renamed" && entry.file.previousPath
@@ -510,7 +566,7 @@
   function approvalState(id) {
     const rec = approvalRecord(id);
     if (rec) {
-      if (id.startsWith("m:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
+      if (id.startsWith("m:")) return rec.rev === revisionFor(id) && rec.path === approvalEntry(id)?.file.path ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
@@ -851,7 +907,7 @@
   /* ---- approvals / comments UI ----------------------------------------- */
   function approveBtn(kind, id, size = "") {
     const stage = kind === "stage" ? stageById.get(id) : null;
-    const blocked = stage ? !stageNodesApproved(stage) : !revisionFor(id);
+    const blocked = approvalOps.has(id) || (stage ? !stageNodesApproved(stage) : !revisionFor(id));
     const st = stage ? stageApprovalState(stage) : approvalState(id);
     if (blocked) {
       return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
@@ -1194,7 +1250,7 @@
         </div>
         <div class="frow-act">
           ${threadBadge}${lineBadge}${noteBadge}
-          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${!revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
+          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
       </div>
     </div>`;
@@ -1486,6 +1542,55 @@
       </div>
     </header>`;
   }
+  function retainedApproval(id) {
+    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
+  }
+  function comparisonKey(id, entry) {
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id)]);
+  }
+  async function loadApprovalComparison(id, entry, offset = 0) {
+    const approval = retainedApproval(id);
+    if (!approval?.snapshotId) return;
+    const key = comparisonKey(id, entry);
+    if (approvalComparisons.get(key)?.loading) return;
+    approvalComparisons.set(key, { loading: true, offset }); render();
+    try {
+      await flushReviewState();
+      const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
+      approvalComparisons.set(key, result);
+    } catch (error) { approvalComparisons.set(key, { error: error.message, offset }); }
+    while (approvalComparisons.size > 32) approvalComparisons.delete(approvalComparisons.keys().next().value);
+    render();
+  }
+  function approvalComparisonBody(id, entry) {
+    const approval = retainedApproval(id);
+    if (!approval?.snapshotId) return '<div class="diff-empty">Approved content is unavailable. Re-approve the current file to retain a snapshot.</div>';
+    const key = comparisonKey(id, entry), comparison = approvalComparisons.get(key);
+    if (!comparison) { queueMicrotask(() => { if (state.approvalComparisons[id]) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
+    if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
+    if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
+    const endpoint = (label, value) => `${label}: ${esc(value.path)} @ ${esc(value.headRevision.slice(0, 10))} (${value.exists ? `${value.size} bytes, mode ${esc(value.mode)}${value.mode === "160000" ? `, commit ${esc(value.objectId)}` : ""}` : "absent"})`;
+    const info = `<div class="comparison-info"><p>${endpoint("Approved", comparison.approved)} → ${endpoint("Current", comparison.current)}</p>
+      <p>Full file comparison. Use Current stage diff to add line comments.</p>
+      ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
+    if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256)}<br>Current SHA-256: ${esc(comparison.current.sha256)}</p></div>`;
+    if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
+    const rows = []; let previousNew = 0;
+    for (const row of comparison.lines) {
+      if (previousNew && row.n > previousNew + 1) rows.push(gapHtml(row.n - previousNew - 1));
+      rows.push(drowHtml(row, langFor(entry.file.path), null));
+      if (row.n) previousNew = row.n;
+    }
+    const pager = comparison.offset || comparison.nextOffset != null ? `<div class="diff-pages">
+      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${Math.max(0, comparison.offset - 900)}" ${comparison.offset ? "" : "disabled"}>Previous page</button>
+      <span>Rows ${comparison.offset + 1}–${comparison.offset + comparison.lines.length}</span>
+      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${comparison.nextOffset || 0}" ${comparison.nextOffset == null ? "disabled" : ""}>Next page</button></div>` : "";
+    return `${info}<div class="diff-scroll"><div class="diff-grid">${rows.join("")}${pager}</div></div>`;
+  }
+
   function diffPanel(entry, opts = {}) {
     if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
     const ctx = {
@@ -1494,9 +1599,16 @@
       ownership: membershipOwnership(entry.file),
       focusNodeId: opts.focusNodeId || null,
     };
-    return `<section class="diff-panel ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
-      ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
+    const approvalId = fileApprovalKey(entry.stage.id, opts.focusNodeId || activeFileNodeId(entry.id), entry.file.path);
+    const sinceApproval = retainedApproval(approvalId) && state.approvalComparisons[approvalId];
+    const comparisonEntry = approvalEntry(approvalId);
+    const comparisonToggle = retainedApproval(approvalId) ? `<div class="view-toggle comparison-toggle" role="group" aria-label="Comparison endpoints">
+      <button class="vt ${!sinceApproval ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(approvalId)}" data-mode="current" aria-pressed="${!sinceApproval}">Current stage diff</button>
+      <button class="vt ${sinceApproval ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(approvalId)}" data-mode="approved" aria-pressed="${Boolean(sinceApproval)}">Since approval</button></div>` : "";
+    return `<section class="diff-panel ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
+      ${sinceApproval ? '<header class="diff-bar"><span class="diff-bar-hint">Changes since approval</span></header>' : opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
+      ${comparisonToggle}
+      ${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
     </section>`;
   }
   function diffToolbar(entry) {
@@ -1887,7 +1999,7 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
-    app.innerHTML = `${topbar()}${reviewsPanel()}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    app.innerHTML = `${topbar()}${reviewsPanel()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
@@ -2078,28 +2190,13 @@
     } else if (a === "open-review" || a === "complete-review") {
       void changeReview(btn.dataset.reviewId, a === "complete-review");
     } else if (a === "approve") {
-      const id = btn.dataset.id;
-      const stage = btn.dataset.kind === "stage" ? stageById.get(id) : null;
-      if (stage && !stageNodesApproved(stage)) return;
-      const st = approvalState(id);
-      // A rename carried its old approval forward as stale; clear that orphaned
-      // record so acting on the file now writes a single canonical entry.
-      const prevId = previousApprovalId(id);
-      if (prevId) delete state.approvals[prevId];
-      if (st === "approved") delete state.approvals[id];
-      else {
-        const entry = approvalEntry(id);
-        if (!stage && !revisionFor(id)) return;
-        state.approvals[id] = { rev: revisionFor(id), at: Date.now(), ...(entry ? {
-          stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
-          baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision,
-          fileRevision: entry.file.revision, ownership: structuredClone(entry.membership),
-        } : {}) };
-        // Approving a file means you're done with it — close its open diff.
-        const fileId = entry?.id;
-        if (fileId && state.activeFiles[fileId] === entry.nodeId) delete state.activeFiles[fileId];
-      }
+      void changeApproval(btn.dataset.id, btn.dataset.kind);
+    } else if (a === "approval-comparison") {
+      state.approvalComparisons[btn.dataset.id] = btn.dataset.mode === "approved";
       persist(); render();
+    } else if (a === "approval-page") {
+      const entry = approvalEntry(btn.dataset.id);
+      if (entry) void loadApprovalComparison(btn.dataset.id, entry, Number(btn.dataset.offset));
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
@@ -2235,6 +2332,7 @@
         lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
         state.activeFiles[entry.id] = lineMembership?.nodeId || null;
+        if (lineMembership) state.approvalComparisons[fileApprovalKey(entry.stage.id, lineMembership.nodeId, entry.file.path)] = false;
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
@@ -2886,6 +2984,7 @@
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
     const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    retainApprovalRenames();
     revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.

@@ -1822,3 +1822,8 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .review-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .review-unavailable, .review-list [role="alert"] { color: var(--t-risk); }
 @media (max-width: 700px) { .review-list { margin: 10px; } .review-list article { align-items: flex-start; flex-direction: column; } .review-actions { flex-wrap: wrap; } }
+
+.comparison-toggle { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+.comparison-info { padding: 10px 14px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+.comparison-info p { margin: 4px 0; }
+.is-approved-comparison .diff-empty { overflow-wrap: anywhere; }

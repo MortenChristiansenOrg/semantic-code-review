@@ -34,7 +34,10 @@ export function assertReviewContext(context: ReviewContext): ReviewRecord {
 
 /** Internal command runner; executable/args are selected by server handlers,
  * never by a general-purpose shell endpoint. Future viewer CLI actions use this. */
-export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options: { input?: string; workingWorktree?: string } = {}) {
+type ReviewCommandOptions = { input?: string; workingWorktree?: string };
+export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options: ReviewCommandOptions & { encoding: null }): Buffer;
+export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options?: ReviewCommandOptions & { encoding?: BufferEncoding }): string;
+export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options: ReviewCommandOptions & { encoding?: BufferEncoding | null } = {}): string | Buffer {
   assertReviewContext(context);
   const cwd = options.workingWorktree ? fs.realpathSync(options.workingWorktree) : context.repositoryRoot;
   const env = { ...reviewEnvironment(), SEMANTIC_FLOW_HOME: reviewHome(), SEMANTIC_FLOW_REVIEW_ID: context.reviewId, SEMANTIC_FLOW_REVIEW_GENERATION: context.generation };
@@ -42,7 +45,7 @@ export function runReviewCommand(context: ReviewContext, executable: string, arg
     const common = (root: string) => fs.realpathSync(path.resolve(root, execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd: root, env, encoding: "utf8", windowsHide: true }).trim()));
     if (common(cwd) !== common(context.repositoryRoot)) throw new Error("The command's working worktree belongs to another repository.");
   }
-  return execFileSync(executable, args, { cwd, env, input: options.input, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync(executable, args, { cwd, env, input: options.input, encoding: options.encoding === null ? null : options.encoding || "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
 }
 
 /** Asynchronous counterpart for launching another registered review service. */

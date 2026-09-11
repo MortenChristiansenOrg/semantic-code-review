@@ -490,3 +490,18 @@ or that node's classification or owned hunks/line ranges change. Changes outside
 the node's owned range also invalidate its approval because the sign-off records
 the whole file state. A rename retains a stale indicator only in the same node.
 Approvals remain personal review notes and do not gate CLI workflows.
+
+Approving a file retains its complete head content under that review's local
+`snapshots/` directory. Open an approved or stale file and choose **Since approval**
+to compare that retained content with the current head. **Current stage diff**
+keeps the normal stage base-to-head comparison. The comparison names both paths
+and revisions and reports changed ownership, stage bases, existence, and file
+modes. Binary content shows hashes and sizes instead of a line diff; unavailable
+content produces an explicit error.
+
+Snapshots survive restacking and Git garbage collection. Reapproval captures a
+new snapshot; saving reapproval or removing approval releases the previous
+snapshot when no approval references it. Failed or abandoned captures remain
+owned by the review for cleanup. Historical comparisons have no line-comment
+controls. Jumping to a line note restores the current stage diff, preserving its
+actual feedback anchor.

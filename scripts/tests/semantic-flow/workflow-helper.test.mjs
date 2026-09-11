@@ -704,6 +704,15 @@ test("concurrent review services isolate commands and reopen registered worktree
   });
   assert.equal((await request(first, "api/implementation", null, third.reviewId)).status, 409);
   assert.equal((await request({ ...third, generation: "previous-session" }, "api/implementation")).status, 409);
+  const implementation = await request(third, "api/implementation").then((r) => r.json());
+  const stage = implementation.implementation.stages[0], file = stage.files[0];
+  const approval = { stageId: stage.id, nodeId: file.memberships[0].nodeId, path: file.path, baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
+  const snapshot = await request(third, "api/approval-snapshots", approval).then((r) => r.json());
+  assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+  const comparison = await request(third, "api/approval-comparison", { ...approval, snapshotId: snapshot.snapshotId }).then((r) => r.json());
+  assert.equal(comparison.ok, true, JSON.stringify(comparison)); assert.deepEqual(comparison.lines, []);
+  assert.equal((await request(third, "api/approval-snapshots", { ...approval, fileRevision: 'outdated' })).status, 409);
+  assert.equal((await request(third, "api/approval-snapshots", { ...approval, ownership: {} })).status, 409);
   const payload = { implementationId: third.implementationId, notes: [{ ref: 0, kind: "stage", id: "implementation", body: "Only linked worktree", clientId: "concurrent-context" }] };
   const exports = await Promise.all([request(third, "api/feedback/export", payload), request(third, "api/feedback/export", payload)]);
   for (const result of exports) assert.equal(result.status, 200, await result.text());

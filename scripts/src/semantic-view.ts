@@ -13,6 +13,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -32,6 +33,9 @@ import { registerReview, readReview, patchReviewState, feedbackDirectory, review
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
+
+export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
+import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -1505,6 +1509,17 @@ async function handleThreadAction(request, response, context, action) {
   }
 }
 
+function approvedFileEndpoint(input, script: string): FileEndpoint {
+  const data = JSON.parse(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
+  const stage = data.stages.find((stage) => stage.id === input.stageId);
+  const file = stage?.files.find((file) => file.path === input.path);
+  const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
+  if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
+  if (stage.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath,
+    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+}
+
 export function registeredReviews() {
   return listReviews().map((record) => {
     let unavailableReason = "";
@@ -1561,6 +1576,16 @@ function serveViewer({
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); return; }
+    }
+
+    if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        const method = pathname === "/api/approval-snapshots" ? "captureApproval" : "compareApproval";
+        sendJson(response, 200, { ok: true, ...await dataSource.call(method, [implementationId, payload]) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
     }
 
     if (request.method === "GET" && pathname === "/api/reviews") {
@@ -1835,7 +1860,9 @@ if (!isMainThread && workerData?.repoRoot) {
       else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-        if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
+        if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
+        else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0);
+        else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
         else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, context, args[1]);
         else throw new Error("Unknown viewer operation.");
