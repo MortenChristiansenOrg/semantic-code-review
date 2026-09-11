@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-cleanup-')), previous = process.env.SEMANTIC_FLOW_HOME;
   process.env.SEMANTIC_FLOW_HOME = path.join(root, 'data');
@@ -137,4 +137,24 @@ test('temporary read errors do not classify a live review as deleted', (t) => {
   assert.throws(() => readReview(review.id), (error) => error.code === 'EACCES'); mock.mock.restore();
   deleteReviewData(review.id, review.generation, preview(review).fingerprint);
   assert.equal(reviewSessionUnavailable(context), true);
+});
+
+
+test('retirement retries an unknown startup identity and still rejects replaced generations', (t) => {
+  const { review } = setup(t), context = { reviewId: review.id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId };
+  const stat = fs.statSync;
+  let denied = true;
+  const mock = t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (denied && String(file) === reviewDirectory(review.id)) throw Object.assign(new Error('Temporarily denied'), { code: 'EACCES' });
+    return stat(file, ...args);
+  });
+  const check = reviewRetirementCheck(context), unknown = reviewRetirementCheck(context);
+  assert.equal(check(), false); denied = false;
+  assert.equal(check(), false); // Successful recovery establishes the same live session.
+  denied = true; assert.equal(check(), false); denied = false;
+  deleteReviewData(review.id, review.generation, preview(review).fingerprint);
+  assert.equal(check(), true);
+  registerReview(review.repositoryRoot, review.implementationId, review.title);
+  assert.equal(unknown(), true); // Never accept a replacement as the unknown baseline.
+  mock.mock.restore();
 });

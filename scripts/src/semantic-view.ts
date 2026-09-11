@@ -1557,6 +1557,26 @@ export function reviewSessionUnavailable(context: ReviewContext) {
   try { return readReview(context.reviewId).generation !== context.generation; }
   catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
 }
+/** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
+export function reviewRetirementCheck(context: ReviewContext) {
+  const directory = reviewDirectory(context.reviewId);
+  const identity = () => { const stat = fs.statSync(directory, { bigint: true }); return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`; };
+  let original: string | null | undefined;
+  try { original = identity(); } catch (error) { if (error.code === "ENOENT") original = null; }
+  return () => {
+    if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
+    let current: string;
+    try { current = identity(); } catch (error) { return error.code === "ENOENT"; }
+    if (original === null) return true;
+    if (original === undefined) {
+      // A new generation may have appeared while the initial identity was unreadable.
+      try { if (readReview(context.reviewId).generation !== context.generation) return true; }
+      catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+      original = current;
+    }
+    return current !== original;
+  };
+}
 function serveViewer({
   viewerDir,
   port,
@@ -1840,14 +1860,9 @@ function serveViewer({
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, VIEWER_HOST, () => {
-      const directory = reviewDirectory(context.reviewId);
-      const identity = () => { const stat = fs.statSync(directory, { bigint: true }); return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`; };
-      let original;
-      try { original = identity(); } catch { original = null; }
+      const shouldRetire = reviewRetirementCheck(context);
       const retirement = setInterval(() => {
-        let current;
-        try { current = identity(); } catch (error) { if (error.code !== "ENOENT") return; current = null; }
-        if (!current || current !== original || fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) {
+        if (shouldRetire()) {
           clearInterval(retirement); review.state = {}; void dataSource.close();
         }
       }, 1000);
