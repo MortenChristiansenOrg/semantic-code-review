@@ -583,3 +583,19 @@ test('approved identity follows observed rename chains across reloads', async ({
   await one.locator('.frow').click();
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toBeVisible();
 });
+
+
+test('failed approvals follow renamed files and clear when the retry succeeds', async ({ page }) => {
+  const data = fixture(); await mount(page, data); await openFile(page);
+  await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Capture failed' } }));
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('.mini-approve').click();
+  await expect(page.locator('[role="alert"]')).toContainText('Capture failed');
+  const file = data.stages[0].files[0];
+  file.previousPath = file.path; file.path = 'renamed.js'; file.kind = 'renamed'; data.viewerRevision = 'renamed-error';
+  await expect(one.locator('.frow')).toContainText('renamed.js');
+  await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  await one.locator('.mini-approve').click();
+  await expect(one.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
+});

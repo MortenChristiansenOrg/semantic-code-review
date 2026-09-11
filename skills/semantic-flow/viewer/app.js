@@ -58,12 +58,12 @@
       const snapshot = await response.json();
       if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
       // Let local feedback writes finish before adopting a server snapshot.
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
       if (!nextResponse.ok) return;
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const selection = window.getSelection();
       const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
       refreshNotice = "Review updated";
@@ -529,6 +529,7 @@
           if (entry && activeFileNodeId(entry.id) === entry.nodeId) delete state.activeFiles[entry.id];
         }
         approvalErrors.delete(id);
+        if (previousId) approvalErrors.delete(previousId);
         persist();
       } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
       finally { approvalOps.delete(id); render(); }
@@ -541,6 +542,10 @@
     let changed = false;
     for (const { stage, file } of flatFiles) for (const membership of file.memberships || []) {
       const id = fileApprovalKey(stage.id, membership.nodeId, file.path), previousId = previousApprovalId(id);
+      if (previousId && approvalErrors.has(previousId)) {
+        if (!approvalErrors.has(id)) approvalErrors.set(id, approvalErrors.get(previousId));
+        approvalErrors.delete(previousId);
+      }
       if (!approvalRecord(id) && previousId && approvalRecord(previousId)) {
         state.approvals[id] = state.approvals[previousId]; delete state.approvals[previousId]; changed = true;
       }
