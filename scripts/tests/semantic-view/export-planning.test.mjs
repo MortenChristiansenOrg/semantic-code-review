@@ -781,6 +781,8 @@ test("viewer client restores stored state without hiding current feedback", asyn
     body: { classList },
     documentElement: { style: {} },
   };
+  windowObject.location = { href: "http://127.0.0.1:3456/" };
+  windowObject.fetch = async () => ({ ok: true, json: async () => ({ ok: true, reviewId: "test", generation: "test", state }) });
   const state = { openThreads: { implementation: true, "configure-settings": true }, approvals: {} };
   await new Function(
     "window", "document", "CSS", "fetch", "requestAnimationFrame",

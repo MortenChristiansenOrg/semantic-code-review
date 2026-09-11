@@ -126,7 +126,7 @@ test("review leaves a detached viewer running after the command exits", async (t
   const reused = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(reused.processId, identity.processId);
   assert.match(reused.viewerVersion, /^[0-9a-f]{64}$/);
-  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation`).then((response) => response.json());
+  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation?review=${identity.reviewId}&generation=${identity.generation}`).then((response) => response.json());
   assert.equal(payload.ok, true);
   assert.equal(payload.implementation.implementationId, "persistent-review");
 
@@ -670,4 +670,69 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
   viewerPid = current.processId;
   assert.ok(previous.messages.includes("shutdown"));
   assert.equal(current.skillDirectory, fs.realpathSync.native(fixture.installedSkill));
+});
+
+test("concurrent review services isolate commands and reopen registered worktrees", async (t) => {
+  const viewers = [];
+  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId); });
+  const { repository: a } = createImplementationWithStages(t);
+  const b = createRepository(t, "concurrent-review-b-");
+  initializeImplementation(b); // Deliberately the same implementation ID.
+  const linked = a.path("../", path.basename(a.root) + "-linked");
+  a.git("worktree", "add", "--detach", linked, "HEAD");
+  fs.cpSync(a.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  const port = await reserveViewerPort();
+  const deniedPortHook = a.path("denied-port.cjs");
+  fs.writeFileSync(deniedPortHook, `const net = require('node:net'); const listen = net.Server.prototype.listen; let denied = 0; net.Server.prototype.listen = function(...args) { if (typeof args[0] === 'number' && denied++ < 2) { process.nextTick(() => this.emit('error', Object.assign(new Error('Reserved port'), { code: 'EACCES' }))); return this; } return listen.apply(this, args); };`);
+  const start = async (root, denyPorts = false) => {
+    const child = spawn(process.execPath, [path.join(scriptsDirectory, "semantic-view.mjs"), "review", root], {
+      cwd: a.root, stdio: ["ignore", "ignore", "pipe", "ipc"],
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port), GIT_DIR: a.path(".git"), ...(denyPorts ? { NODE_OPTIONS: `--import=${pathToFileURL(deniedPortHook).href}` } : {}) },
+    });
+    const [message] = await once(child, "message");
+    assert.equal(message.type, "ready", JSON.stringify(message));
+    const identity = await fetch(new URL("api/whoami", message.url)).then((r) => r.json());
+    viewers.push(identity); child.unref();
+    return { ...identity, url: message.url };
+  };
+  const first = await start(a.root), second = await start(b.root), third = await start(linked, true);
+  assert.equal(new Set([first.port, second.port, third.port]).size, 3);
+  assert.equal(new Set([first.reviewId, second.reviewId, third.reviewId]).size, 3);
+  const request = (viewer, route, body, review = viewer.reviewId) => fetch(new URL(`${route}?review=${review}&generation=${viewer.generation}`, viewer.url), {
+    ...(body ? { method: "POST", headers: { "content-type": "application/json", origin: new URL(viewer.url).origin }, body: JSON.stringify(body) } : {}),
+  });
+  assert.equal((await request(first, "api/implementation", null, third.reviewId)).status, 409);
+  assert.equal((await request({ ...third, generation: "previous-session" }, "api/implementation")).status, 409);
+  const payload = { implementationId: third.implementationId, notes: [{ ref: 0, kind: "stage", id: "implementation", body: "Only linked worktree", clientId: "concurrent-context" }] };
+  const exports = await Promise.all([request(third, "api/feedback/export", payload), request(third, "api/feedback/export", payload)]);
+  for (const result of exports) assert.equal(result.status, 200, await result.text());
+  assert.equal(a.exists(a.feedbackPath("manifest.json")), false);
+  assert.equal(b.exists(b.feedbackPath("manifest.json")), false);
+  const module = await import(pathToFileURL(path.join(scriptsDirectory, "semantic-view.mjs")).href);
+  const linkedFeedback = module.feedbackDirectory(linked);
+  assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);
+  const context = module.captureReviewContext(third.reviewId);
+  const oldGit = process.env.GIT_DIR;
+  const oldLowerGit = process.env.git_dir;
+  process.env.git_dir = a.path(".git");
+  process.env.GIT_DIR = a.path(".git");
+  try {
+    assert.equal(module.runReviewCommand(context, process.execPath, ["-e", "console.log(process.env.git_dir || process.env.GIT_DIR || 'clear')"]).trim(), "clear");
+    assert.equal(module.runReviewCommand(context, "git", ["rev-parse", "--show-toplevel"]).trim(), linked.replaceAll("\\", "/"));
+    assert.throws(() => module.runReviewCommand(context, "git", ["status"], { workingWorktree: b.root }), /another repository/);
+  } finally { if (oldLowerGit === undefined) delete process.env.git_dir; else process.env.git_dir = oldLowerGit; if (oldGit === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGit; }
+  const opened = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(opened.url, third.url);
+  await stopViewer(third.port, third.processId);
+  viewers.pop();
+  const restarted = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(restarted.ok, true, JSON.stringify(restarted));
+  const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
+  assert.equal(recovered.reviewId, third.reviewId);
+  assert.notEqual(recovered.processId, third.processId);
+  fs.rmSync(path.join(linked, ".semantic-review"), { recursive: true });
+  assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
+  assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
+  assert.equal((await request(first, "api/implementation")).status, 200);
 });

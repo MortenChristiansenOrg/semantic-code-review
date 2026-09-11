@@ -13,6 +13,10 @@ export interface ViewerIdentity {
   processId?: number;
   viewerVersion?: string;
   healthy?: boolean;
+  port?: number;
+  reviewId?: string;
+  generation?: string;
+  reviewHome?: string;
 }
 
 export function viewerPort(): number {
@@ -50,7 +54,7 @@ export function probeViewer(
               parsed &&
                 parsed.app === VIEWER_APP_ID &&
                 typeof parsed.implementationId === "string"
-                ? parsed
+                ? { ...parsed, port }
                 : null,
             );
           } catch {
@@ -98,7 +102,7 @@ export function requestViewerShutdown(
 
 export async function stopViewerAndWait(
   viewer: ViewerIdentity,
-  port = viewerPort(),
+  port = viewer.port ?? viewerPort(),
   timeoutMs = 5000,
 ): Promise<void> {
   const pid = viewer.processId;

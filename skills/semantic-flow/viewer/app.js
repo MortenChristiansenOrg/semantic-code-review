@@ -6,6 +6,16 @@
 
   const data = window.SEMANTIC_IMPLEMENTATION;
   const app = document.querySelector("#app");
+  const requestReviewId = window.SEMANTIC_REVIEW_CONTEXT?.reviewId || data.reviewId;
+  const requestGeneration = window.SEMANTIC_REVIEW_CONTEXT?.generation;
+  const fetch = (input, options) => {
+    const url = new URL(input, window.location.href);
+    if (requestReviewId && url.pathname.startsWith("/api/")) {
+      url.searchParams.set("review", requestReviewId);
+      url.searchParams.set("generation", requestGeneration || "");
+    }
+    return window.fetch(url.href, options);
+  };
   let savedReview;
   try {
     const response = await fetch("/api/review-state", { cache: "no-store" });

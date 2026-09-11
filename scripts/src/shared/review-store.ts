@@ -83,6 +83,7 @@ export type ReviewRecord = {
   id: string; generation: string; repositoryRoot: string; implementationId: string;
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
   state: Record<string, any>;
+  viewer?: { port: number; processId: number; viewerVersion: string; skillDirectory: string };
 };
 export function readReview(id: string): ReviewRecord {
   try { return JSON.parse(fs.readFileSync(path.join(reviewDirectory(id), "review.json"), "utf8")); }
@@ -137,5 +138,26 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       atomicJson(path.join(reviewDirectory(id), "review.json"), record);
     }
     return record;
+  });
+}
+
+/** Runtime location is discoverable without changing the user's edit timestamp. */
+export function recordViewer(id: string, generation: string, viewer: ReviewRecord["viewer"]) {
+  return withReviewLock(id, () => {
+    const record = readReview(id);
+    if (record.generation !== generation) throw new Error("The review session changed during viewer startup.");
+    record.viewer = viewer;
+    atomicJson(path.join(reviewDirectory(id), "review.json"), record);
+  });
+}
+export function listReviews(): ReviewRecord[] {
+  const directory = path.join(reviewHome(), "reviews");
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory).filter((id) => /^[a-f0-9]{64}$/.test(id)).flatMap((id) => {
+    try { return [readReview(id)]; }
+    catch (error) {
+      if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return [];
+      throw error;
+    }
   });
 }
