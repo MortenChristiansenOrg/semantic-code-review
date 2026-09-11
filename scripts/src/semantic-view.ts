@@ -1589,6 +1589,11 @@ function serveViewer({
 }) {
   const review = assertReviewContext(context);
   let server = null;
+  let management = null;
+  const manage = (method, args) => {
+    if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
+    return management.call(method, args);
+  };
   const requestHandler = async (request, response) => {
     const url = new URL(request.url, `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
@@ -1645,15 +1650,15 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Managing review data requires a same-origin request.");
         const payload = JSON.parse(await readRequestBody(request));
-        if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: inspectReviewStorage(payload.reviewId, payload.generation) });
-        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...deleteReviewData(payload.reviewId, payload.generation, payload.fingerprint) });
-        else sendJson(response, 200, { ok: true, ...cleanUnusedReviewFiles(payload.reviewId, payload.generation, payload.fingerprint) });
+        if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: await manage("inspectStorage", [payload.reviewId, payload.generation]) });
+        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...await manage("deleteStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
+        else sendJson(response, 200, { ok: true, ...await manage("cleanStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/reviews") {
-      try { sendJson(response, 200, { ok: true, reviews: registeredReviews() }); }
+      try { sendJson(response, 200, { ok: true, reviews: await manage("listReviews", []) }); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
@@ -1661,7 +1666,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Changing completion requires a same-origin request.");
         const payload = JSON.parse(await readRequestBody(request));
-        setReviewCompleted(payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt);
+        await manage("setCompleted", [payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt]);
         sendJson(response, 200, { ok: true });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
@@ -1857,6 +1862,7 @@ function serveViewer({
   };
 
   server = http.createServer(requestHandler);
+  server.once("close", () => { if (management) void management.close(); });
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, VIEWER_HOST, () => {
@@ -1872,8 +1878,8 @@ function serveViewer({
   });
 }
 
-function createViewerWorker(repoRoot, context: ReviewContext) {
-  const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot, context } });
+function createViewerWorker(repoRoot, context: ReviewContext, management = false) {
+  const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot, context, management } });
   const pending = new Map();
   const reads = new Map();
   let sequence = 0;
@@ -1916,10 +1922,22 @@ function createViewerWorker(repoRoot, context: ReviewContext) {
 if (!isMainThread && workerData?.repoRoot) {
   const root = workerData.repoRoot;
   const context: ReviewContext = Object.freeze(workerData.context);
-  const source = createViewerDataSource(root);
+  const source = workerData.management ? null : createViewerDataSource(root);
   const feedbackCli = locateFeedbackCli();
   parentPort.on("message", async ({ id, method, args }) => {
     try {
+      if (workerData.management) {
+        // Management survives retirement of the launching review. Every job uses
+        // its explicitly selected target; no repository command is allowed here.
+        let result;
+        if (method === "inspectStorage") result = inspectReviewStorage(args[0], args[1]);
+        else if (method === "deleteStorage") result = deleteReviewData(args[0], args[1], args[2]);
+        else if (method === "cleanStorage") result = cleanUnusedReviewFiles(args[0], args[1], args[2]);
+        else if (method === "listReviews") result = registeredReviews();
+        else if (method === "setCompleted") result = setReviewCompleted(args[0], args[1], args[2], args[3]);
+        else throw new Error("Unknown review management operation.");
+        parentPort.postMessage({ id, result }); return;
+      }
       const localState = ["readReview", "patchReviewState"].includes(method);
       if (localState) {
         if (args[1] !== context.reviewId || readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");

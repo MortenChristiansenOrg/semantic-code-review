@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { feedbackDirectory } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -78,11 +78,7 @@ export function createRepository(t, prefix = "semantic-flow-") {
     return execution;
   }
 
-  const privateFeedbackPath = (...parts) => {
-    const manifest = JSON.parse(fs.readFileSync(path.join(root, '.semantic-review', 'manifest.json'), 'utf8'));
-    const id = createHash('sha256').update(JSON.stringify([fs.realpathSync(root), manifest.implementationId])).digest('hex');
-    return path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews', id, 'feedback', ...parts);
-  };
+  const privateFeedbackPath = (...parts) => path.join(feedbackDirectory(root), ...parts);
   const repository = {
     feedbackPath: privateFeedbackPath,
     root,

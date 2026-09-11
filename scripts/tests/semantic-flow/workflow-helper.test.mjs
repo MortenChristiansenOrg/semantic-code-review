@@ -732,6 +732,17 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.equal(a.exists(a.feedbackPath("manifest.json")), false);
   assert.equal(b.exists(b.feedbackPath("manifest.json")), false);
   const module = await import(pathToFileURL(path.join(scriptsDirectory, "semantic-view.mjs")).href);
+  // A management request waiting on B's lock must not block A's HTTP loop.
+  const heldLock = path.join(process.env.SEMANTIC_FLOW_HOME, "locks", third.reviewId + ".lock");
+  fs.mkdirSync(heldLock);
+  fs.writeFileSync(path.join(heldLock, "owner-00000000-0000-4000-8000-000000000000.json"), JSON.stringify({ pid: process.pid }));
+  const blockedStorage = request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation });
+  try {
+    await delay(150);
+    const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
+    assert.equal(responsive.status, 200);
+  } finally { fs.rmSync(heldLock, { recursive: true }); }
+  assert.equal((await blockedStorage).status, 200);
   const linkedFeedback = module.feedbackDirectory(linked);
   assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);
   const context = module.captureReviewContext(third.reviewId);

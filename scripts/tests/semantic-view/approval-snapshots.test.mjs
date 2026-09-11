@@ -78,3 +78,24 @@ test('saving approval removal releases only unreferenced snapshots and rejects m
   patchReviewState(review.id, review.generation, [change('two', undefined, record)]); assert.equal(fs.existsSync(file), false);
   assert.throws(() => patchReviewState(review.id, review.generation, [change('one', record)]), /Approved content is unavailable/);
 });
+
+
+test('oversized approved and current blobs retain identity without storing misleading content hashes', (t) => {
+  const { repo, context } = setup(t);
+  repo.commitFile('code.txt', 'small\n', 'Small content');
+  const small = captureApprovalSnapshot(context, endpoint(repo));
+  const size = 20 * 1024 * 1024 + 1;
+  repo.commitFile('code.txt', Buffer.alloc(size, 65), 'Oversized content');
+  const largeEndpoint = endpoint(repo), large = captureApprovalSnapshot(context, largeEndpoint);
+  const file = path.join(reviewDirectory(context.reviewId), 'snapshots', large.snapshotId + '.json');
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(fs.statSync(file).size < 2000); assert.equal(saved.content.bytes, '');
+  assert.equal(saved.content.size, size); assert.equal(saved.content.sha256, null);
+  assert.equal(saved.content.objectId, repo.git('rev-parse', 'HEAD:code.txt'));
+  const currentLarge = compareApprovalSnapshot(context, small.snapshotId, largeEndpoint);
+  assert.match(currentLarge.unsupported, /20 MiB/); assert.equal(currentLarge.current.sha256, null);
+  repo.commitFile('code.txt', 'small again\n', 'Small again');
+  const approvedLarge = compareApprovalSnapshot(context, large.snapshotId, endpoint(repo));
+  assert.match(approvedLarge.unsupported, /20 MiB/); assert.equal(approvedLarge.approved.size, size);
+  assert.equal(approvedLarge.approved.sha256, null); assert.match(approvedLarge.current.sha256, /^[a-f0-9]{64}$/);
+});

@@ -67,7 +67,7 @@ test('failed owner metadata writes release the lock for the next operation', (t)
   const write = fs.writeFileSync;
   const failure = Object.assign(new Error('Disk full'), { code: 'ENOSPC' });
   const mocked = t.mock.method(fs, 'writeFileSync', (file, ...args) => {
-    if (path.basename(String(file)) === 'owner.json') throw failure;
+    if (/^owner-[a-f0-9-]+\.json$/.test(path.basename(String(file)))) throw failure;
     return write(file, ...args);
   });
   assert.throws(() => registerReview(path.join(root, 'a'), 'id', 'Review'), (error) => error === failure);
@@ -166,4 +166,31 @@ test('lock cleanup retires its directory before removal and tolerates transient 
   const review = registerReview(path.join(root, 'a'), 'locking', 'Locking');
   patchReviewState(review.id, review.generation, [change(['draft'], 'saved')]);
   assert.equal(readReview(review.id).state.draft, 'saved'); assert.equal(retired, 2); assert.ok(retries >= 3);
+});
+
+
+test('locks publish initialized owners and recover abandoned claims and dead public owners', async (t) => {
+  const root = setup(t), directory = path.join(root, 'user-data', 'locks');
+  const id = createHash('sha256').update(JSON.stringify([fs.realpathSync(path.join(root, 'a')), 'crash'])).digest('hex');
+  const lock = path.join(directory, id + '.lock');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.mkdirSync(lock + '.claim-abandoned'); // Process death before publication cannot block.
+  const child = await promisify(execFile)(process.execPath, ['-e', 'console.log(process.pid)']);
+  const deadPid = Number(child.stdout.trim());
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner-00000000-0000-4000-8000-000000000000.json'), JSON.stringify({ pid: deadPid }));
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(to) === lock) {
+      const entries = fs.readdirSync(from);
+      assert.equal(entries.length, 1); assert.match(entries[0], /^owner-/);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(from, entries[0]), 'utf8')).pid, process.pid);
+    }
+    return rename(from, to);
+  });
+  const review = registerReview(path.join(root, 'a'), 'crash', 'Recovered');
+  assert.equal(review.id, id); assert.equal(fs.existsSync(lock), false);
+  fs.mkdirSync(lock); // Reaper death after unlinking the dead marker also recovers.
+  patchReviewState(review.id, review.generation, [change(['draft'], 'recovered')]);
+  assert.equal(readReview(review.id).state.draft, 'recovered');
 });

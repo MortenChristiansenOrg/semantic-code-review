@@ -41,7 +41,7 @@ export function atomicJson(file: string, value: unknown) {
   } finally { fs.rmSync(temporary, { force: true }); }
 }
 /** Release the public lock name before removing files. Windows may defer a directory
- * deletion while a waiter briefly has owner.json open; retries must never target
+ * deletion while a waiter briefly has the owner marker open; retries must never target
  * a newly acquired lock at the same public path. */
 function retireLock(lock: string) {
   const retired = lock + ".retired-" + randomUUID();
@@ -60,36 +60,41 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
   fs.mkdirSync(locks, { recursive: true, mode: 0o700 });
   const lock = path.join(locks, path.basename(reviewDirectory(id)) + ".lock");
   const deadline = Date.now() + 10_000;
-  while (true) {
-    let acquired = false;
-    try {
-      fs.mkdirSync(lock);
-      acquired = true;
-      fs.writeFileSync(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid }));
-      break;
-    } catch (error) {
-      if (acquired) {
-        // Initialization failed before the normal release path was installed.
-        try { retireLock(lock); } catch { /* Preserve the original write error. */ }
-        throw error;
+  // Publish a fully initialized, nonempty directory so a crash can never leave
+  // a public lock whose owner is unknown. Private abandoned claims do not block.
+  const claim = fs.mkdtempSync(lock + ".claim-");
+  const owner = `owner-${randomUUID()}.json`;
+  let published = false;
+  try {
+    fs.writeFileSync(path.join(claim, owner), JSON.stringify({ pid: process.pid }));
+    while (true) {
+      try { fs.renameSync(claim, lock); published = true; break; }
+      catch (error) {
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code) || !fs.existsSync(lock)) throw error;
+        try {
+          const entries = fs.readdirSync(lock);
+          if (!entries.length) fs.rmdirSync(lock); // A reaper died after removing its owner marker.
+          else if (entries.length === 1 && /^owner-[a-f0-9-]{36}\.json$/.test(entries[0])) {
+            const marker = path.join(lock, entries[0]);
+            const { pid } = JSON.parse(fs.readFileSync(marker, "utf8"));
+            if (Number.isInteger(pid) && pid > 0) {
+              try { process.kill(pid, 0); }
+              catch (error) {
+                if (error.code === "ESRCH") {
+                  // A unique marker prevents a delayed reaper from removing a
+                  // replacement owner. rmdir can only remove an empty directory.
+                  fs.unlinkSync(marker); fs.rmdirSync(lock);
+                }
+              }
+            }
+          }
+        } catch { /* Another owner/reaper progressed, or a temporary read failed. */ }
+        if (Date.now() >= deadline) throw new Error("Review data is busy. Retry the operation.");
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       }
-      if (error.code !== "EEXIST") throw error;
-      // Serialize crash recovery too: two waiters must not both remove a
-      // dead owner's directory after one of them has acquired the new lock.
-      const reaper = lock + ".reap";
-      let reaping = false;
-      try {
-        fs.mkdirSync(reaper); reaping = true;
-        const { pid } = JSON.parse(fs.readFileSync(path.join(lock, "owner.json"), "utf8"));
-        if (Number.isInteger(pid) && pid > 0) {
-          try { process.kill(pid, 0); }
-          catch (e) { if (e.code === "ESRCH") retireLock(lock); }
-        }
-      } catch { /* Another reaper or an owner still initializing: retry. */ }
-      finally { if (reaping) fs.rmdirSync(reaper); }
-      if (Date.now() >= deadline) throw new Error("Review data is busy. Retry the operation.");
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
+  } finally {
+    if (!published) fs.rmSync(claim, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   }
   try { return operation(); }
   finally { retireLock(lock); }

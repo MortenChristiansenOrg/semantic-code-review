@@ -10,8 +10,9 @@ export type FileEndpoint = {
   stageId: string; nodeId: string; path: string; previousPath?: string;
   baseRevision: string; headRevision: string; fileRevision: string; ownership: any;
 };
-type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string };
+type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string | null };
 type Snapshot = { id: string; endpoint: FileEndpoint; createdAt: string; content: Content };
+const MAX_APPROVED_BYTES = 20 * 1024 * 1024;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 export function approvalSnapshotPath(reviewId: string, snapshotId: string) {
   if (!/^[a-f0-9]{32}$/.test(snapshotId)) throw new Error("Invalid approval snapshot identity.");
@@ -26,6 +27,12 @@ function readContent(context: ReviewContext, endpoint: FileEndpoint): Content {
   const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === endpoint.path);
   const [mode, type, objectId] = record ? record.slice(0, record.indexOf("\t")).split(" ") : [];
   const unsupported = record && type !== "blob" ? "Git submodules do not have file content to compare." : "";
+  if (record && !unsupported) {
+    const size = Number(git(context, ["cat-file", "-s", objectId]).toString("utf8").trim());
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid Git blob size.");
+    if (size > MAX_APPROVED_BYTES) return { exists: true, mode, objectId, binary: false, bytes: "", size, sha256: null,
+      unsupported: "File content exceeds the 20 MiB approval snapshot limit. Size and Git object identity are retained; a line comparison is unavailable." };
+  }
   const bytes = record && !unsupported ? git(context, ["cat-file", "blob", objectId]) : Buffer.alloc(0);
   const text = bytes.toString("utf8");
   return { exists: Boolean(record), mode: mode || null, objectId: objectId || null, unsupported,
@@ -52,7 +59,7 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       approvals[`m:${JSON.stringify([current.stageId, current.nodeId, filePath])}`]?.snapshotId === snapshotId);
     if (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
-    if (snapshot.id !== snapshotId || digest(Buffer.from(before.bytes, "base64")) !== before.sha256) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
+    if (snapshot.id !== snapshotId || (before.sha256 === null ? !before.unsupported || before.bytes !== "" : digest(Buffer.from(before.bytes, "base64")) !== before.sha256)) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
     const info = {
       approved: { ...snapshot.endpoint, at: snapshot.createdAt, size: before.size, sha256: before.sha256, exists: before.exists, mode: before.mode, objectId: before.objectId },
       current: { ...current, size: after.size, sha256: after.sha256, exists: after.exists, mode: after.mode, objectId: after.objectId },

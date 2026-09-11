@@ -1214,13 +1214,21 @@
     return null;
   }
   function uploadFiles(files, attachments) {
-    if (!attachments || !files.length || uploadStatus.get(attachments)?.busy) return;
+    if (!attachments || !files.length) return;
+    if (uploadStatus.get(attachments)?.busy) {
+      const status = uploadStatus.get(attachments);
+      for (const file of files) status.errors.set(file.name, `${file.name}: wait for the current upload, then attach this file again.`);
+      status.error = [...status.errors.values()].join(" "); render(); return;
+    }
     const status = uploadStatus.get(attachments) || { busy: false, error: "", errors: new Map() };
     status.busy = true; uploadStatus.set(attachments, status);
     const operation = Promise.resolve().then(async () => {
       for (const file of files) {
         try {
           if (file.size > 20 * 1024 * 1024) throw new Error(`${file.name}: files must be 20 MiB or smaller.`);
+          // Reject new files before uploading at capacity. A matching name/size
+          // may be an idempotent retry; let the server resolve its stable ID.
+          if (attachments.length >= 10 && !attachments.some((item) => item.filename === file.name && item.size === file.size)) throw new Error("Use at most 10 files per message.");
           const bytes = new Uint8Array(await file.arrayBuffer()); let binary = "";
           for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
           const response = await fetch("/api/attachments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) }) });
@@ -1658,7 +1666,7 @@
     const info = `<div class="comparison-info"><p>${endpoint("Approved", comparison.approved)} → ${endpoint("Current", comparison.current)}</p>
       <p>Full file comparison. Use Current stage diff to add line comments.</p>
       ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
-    if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256)}<br>Current SHA-256: ${esc(comparison.current.sha256)}</p></div>`;
+    if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
     if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
     const rows = []; let previousNew = 0;
     for (const row of comparison.lines) {

@@ -789,3 +789,32 @@ test('unused-file cleanup keeps the review and its saved messages', async ({ pag
   await expect(page.locator('[data-review="browser-review"]')).toHaveCount(1);
   await expect(page.getByRole('heading', { name: 'Review fixes', exact: true })).toBeVisible();
 });
+
+
+test('uploads attempted while busy remain visible and retryable', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  let release; const pending = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/attachments?*', async (route) => { await pending; await route.fallback(); });
+  const file = (name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from(name) });
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('first.log'));
+  await expect(page.getByRole('status')).toContainText('Uploading');
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('second.log'));
+  await expect(page.locator('.note-compose [role="alert"]')).toContainText('second.log: wait');
+  release(); await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
+  await expect(page.locator('.note-compose [role="alert"]')).toContainText('second.log: wait');
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('second.log'));
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(2);
+  await expect(page.locator('.note-compose [role="alert"]')).toHaveCount(0);
+});
+
+test('full attachment lists reject new files before upload but allow duplicate retries', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  let uploads = 0; page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/attachments') uploads++; });
+  const file = (name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from(name) });
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(Array.from({ length: 11 }, (_, i) => file(`${i}.log`)));
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
+  await expect(page.locator('.note-compose [role="alert"]')).toContainText('at most 10'); expect(uploads).toBe(10);
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('0.log'));
+  await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
+  expect(uploads).toBe(11); await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
+});

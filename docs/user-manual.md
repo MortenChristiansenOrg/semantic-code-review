@@ -499,6 +499,11 @@ and revisions and reports changed ownership, stage bases, existence, and file
 modes. Binary content shows hashes and sizes instead of a line diff; unavailable
 content produces an explicit error.
 
+Approval snapshots retain file content up to 20 MiB per endpoint. Larger files
+retain their actual size and Git object identity, with an explicit unavailable
+comparison and no claimed SHA-256 content hash. This limit does not prevent
+recording a personal approval.
+
 Snapshots survive restacking and Git garbage collection. Reapproval captures a
 new snapshot; saving reapproval or removing approval releases the previous
 snapshot when no approval references it. Failed or abandoned captures remain
