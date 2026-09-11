@@ -1827,3 +1827,13 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .comparison-info { padding: 10px 14px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
 .comparison-info p { margin: 4px 0; }
 .is-approved-comparison .diff-empty { overflow-wrap: anywhere; }
+
+.attachments { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0; }
+.attachment { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; max-width: 280px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.attachment img { grid-column: 1 / -1; max-width: 100%; max-height: 180px; object-fit: contain; }
+.attachment a { overflow-wrap: anywhere; color: inherit; }
+.attachment small, .attachment-help { opacity: .7; font-size: 11px; }
+.attach-files { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; }
+.attach-files input { max-width: 100%; font: inherit; }
+.attachment button, .attach-files input::file-selector-button { border: 1px solid var(--line); border-radius: 5px; background: transparent; color: inherit; font: inherit; padding: 4px 9px; cursor: pointer; }
+.attachment button { grid-column: 2; justify-self: end; }

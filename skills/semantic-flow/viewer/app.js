@@ -34,6 +34,8 @@
   let reviewList = [];
   let reviewListError = "";
   let reviewListBusy = false;
+  const uploadOps = new Set();
+  const uploadStatus = new WeakMap();
   const approvalOps = new Map();
   const approvalComparisons = new Map();
   const approvalErrors = new Map();
@@ -337,6 +339,7 @@
   let state = load();
   let compose = state.editor?.compose || null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
   let replyTo = state.editor?.replyTo || null;              // artifact thread id currently being replied to
+  let replyAttachments = state.editor?.replyAttachments || [];
   let replyDraft = state.editor?.replyDraft || "";             // unsent text of the open reply, kept across re-renders
   let replyEditId = state.editor?.replyEditId || null;          // id of the pending reply draft being edited (if any)
   let replyDirty = false;
@@ -423,7 +426,7 @@
     return changes;
   }
   function captureEditor() {
-    state.editor = { compose, replyTo, replyDraft, replyEditId };
+    state.editor = { compose, replyTo, replyDraft, replyEditId, replyAttachments: replyTo ? replyAttachments : [] };
     for (const note of [...state.comments, compose].filter(Boolean)) {
       const snapshot = draftSnapshots.get(note);
       if (snapshot) note.snapshot = snapshot;
@@ -466,12 +469,13 @@
     if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
   }
   async function flushReviewState() {
-    await Promise.all([...approvalOps.values()]);
+    await Promise.all([...uploadOps, ...approvalOps.values()]);
     clearTimeout(saveTimer);
     await saveState();
     if (saveError) throw new Error(saveError);
     captureEditor();
-    while (stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) {
+    while (uploadOps.size || approvalOps.size || stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) {
+      await Promise.all([...uploadOps, ...approvalOps.values()]);
       await saveState();
       if (saveError) throw new Error(saveError);
       captureEditor();
@@ -481,7 +485,7 @@
 
   window.addEventListener("beforeunload", (event) => {
     captureEditor();
-    if (approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
+    if (uploadOps.size || approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
   });
 
   /* ---- helpers ---------------------------------------------------------- */
@@ -1039,7 +1043,7 @@
         const stamp = fmtTime(cm.createdAt);
         return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
           <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
-          <p class="comment-body">${formatCommentBody(cm.body)}</p>
+          <p class="comment-body">${formatCommentBody(cm.body)}</p>${attachmentList(cm.attachments)}
         </div>`;
       })
       .join("");
@@ -1101,7 +1105,7 @@
               <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
             </span>
           </div>
-          <p class="comment-body">${formatCommentBody(r.body)}</p>
+          <p class="comment-body">${formatCommentBody(r.body)}</p>${attachmentList(r.attachments)}
         </div>`)
       .join("");
     const actionable = t.status === "open" || t.status === "resolved";
@@ -1116,8 +1120,8 @@
     const editing = replyTo === t.id && replyEditId != null;
     const replyForm = replyTo === t.id && Boolean(withLabel) === state.notesOpen
       ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
-          <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>
-          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit">${editing ? "Update reply" : "Save reply"}</button></div>
+          <textarea name="reply-body" rows="3" placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>${attachmentEditor(replyAttachments)}
+          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${editing ? "Update reply" : "Save reply"}</button></div>
         </form>`
       : "";
     return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
@@ -1165,11 +1169,73 @@
         </div>
         ${missing}
         <div class="tmsg tmsg-user ${mode === "feedback" && !sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${esc(fmtTime(c.createdAt))}</time>${acts}</div>
-        <p class="comment-body">${formatCommentBody(c.body)}</p></div>
+        <p class="comment-body">${formatCommentBody(c.body)}</p>${attachmentList(c.attachments)}</div>
       </article>`;
   }
   // Inline note composer, rendered directly in the element's own thread so the
   // reviewer can keep looking at what they are commenting on while they write.
+  function attachmentUrl(id, preview = false) {
+    const url = new URL(`/api/attachments/${encodeURIComponent(id)}`, window.location.href);
+    url.searchParams.set("review", requestReviewId); url.searchParams.set("generation", requestGeneration);
+    if (preview) url.searchParams.set("preview", "1");
+    return url.href;
+  }
+  function attachmentList(attachments = [], editable = false) {
+    return `<div class="attachments">${attachments.map((file) => `<div class="attachment">
+      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : ""}
+      <a href="${esc(attachmentUrl(file.id))}" download>${esc(file.filename)}</a><small>${(file.size / 1024).toFixed(1)} KiB</small>
+      ${editable ? `<button type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}">×</button>` : ""}</div>`).join("")}</div>`;
+  }
+  function attachmentEditor(attachments) {
+    const status = uploadStatus.get(attachments);
+    return `${attachmentList(attachments, true)}<label class="attach-files">Attach files<input type="file" multiple data-attachment-input aria-label="Attach files"></label>
+      <small class="attachment-help">Drop files here or paste an image · 20 MiB per file · 10 files per message</small>
+      ${status?.busy ? `<p role="status">Uploading files…</p>` : ""}${status?.error ? `<p class="tthread-err" role="alert">${esc(status.error)}</p>` : ""}`;
+  }
+  function editorAttachments(form) {
+    if (form?.matches("[data-note-form]") && compose) return compose.attachments ||= [];
+    if (form?.matches("[data-reply-form]") && replyTo === form.dataset.id) return replyAttachments;
+    return null;
+  }
+  function uploadFiles(files, attachments) {
+    if (!attachments || !files.length || uploadStatus.get(attachments)?.busy) return;
+    const status = uploadStatus.get(attachments) || { busy: false, error: "", errors: new Map() };
+    status.busy = true; uploadStatus.set(attachments, status);
+    const operation = Promise.resolve().then(async () => {
+      for (const file of files) {
+        try {
+          if (file.size > 20 * 1024 * 1024) throw new Error(`${file.name}: files must be 20 MiB or smaller.`);
+          const bytes = new Uint8Array(await file.arrayBuffer()); let binary = "";
+          for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+          const response = await fetch("/api/attachments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) }) });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || `Could not upload ${file.name}.`);
+          if (!attachments.some((item) => item.id === result.attachment.id)) {
+            if (attachments.length >= 10) throw new Error("Use at most 10 files per message.");
+            attachments.push(result.attachment);
+          }
+          status.errors.delete(file.name); status.error = [...status.errors.values()].join(" ");
+          persist();
+        } catch (error) { status.errors.set(file.name, error.message); status.error = [...status.errors.values()].join(" "); }
+      }
+    }).finally(() => { status.busy = false; uploadOps.delete(operation); render(); });
+    uploadOps.add(operation); render();
+  }
+  document.addEventListener("change", (event) => {
+    if (event.target.matches("[data-attachment-input]")) uploadFiles([...event.target.files], editorAttachments(event.target.closest("form")));
+  });
+  document.addEventListener("dragover", (event) => {
+    if (event.target.closest?.("[data-note-form], [data-reply-form]") && [...event.dataTransfer.types].includes("Files")) event.preventDefault();
+  });
+  document.addEventListener("drop", (event) => {
+    const form = event.target.closest?.("[data-note-form], [data-reply-form]");
+    if (form && event.dataTransfer.files.length) { event.preventDefault(); uploadFiles([...event.dataTransfer.files], editorAttachments(form)); }
+  });
+  document.addEventListener("paste", (event) => {
+    const form = event.target.closest?.("[data-note-form], [data-reply-form]");
+    const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
+    if (form && files.length) { event.preventDefault(); uploadFiles(files, editorAttachments(form)); }
+  });
   function renderComposer(ctx) {
     const mode = ctx.mode === "feedback" ? "feedback" : "personal";
     return `<form class="note-compose mode-${mode}" data-note-form>
@@ -1177,10 +1243,10 @@
         <label class="nc-opt"><input type="radio" name="nc-mode" value="personal" ${mode !== "feedback" ? "checked" : ""}><span><b>Personal</b><small>Just for you.</small></span></label>
         <label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>
       </div>
-      <textarea name="nc-body" rows="3" required placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>
+      <textarea name="nc-body" rows="3" placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>${attachmentEditor(ctx.attachments ||= [])}
       <div class="nc-actions">
         <button type="button" data-action="compose-cancel">Cancel</button>
-        <button class="nc-save" type="submit">${ctx.editIndex != null ? "Save note" : "Add note"}</button>
+        <button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${ctx.editIndex != null ? "Save note" : "Add note"}</button>
       </div>
     </form>`;
   }
@@ -2264,6 +2330,10 @@
     }
     else if (a === "export-feedback") {
       exportFeedback();
+    } else if (a === "remove-attachment") {
+      const attachments = editorAttachments(btn.closest("form"));
+      const index = attachments?.findIndex((file) => file.id === btn.dataset.id);
+      if (index >= 0) { attachments.splice(index, 1); persist(); render(); }
     } else if (a === "compose-cancel") {
       compose = null; persist(); render();
     } else if (a === "jump-to") {
@@ -2271,7 +2341,7 @@
     } else if (a === "thread-reply") {
       compose = null;
       replyTo = btn.dataset.id;
-      replyDraft = "";
+      replyDraft = ""; replyAttachments = [];
       replyEditId = null;
       replyDirty = false;
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
@@ -2283,14 +2353,15 @@
       replyTo = btn.dataset.id;
       replyEditId = draft.id;
       replyDraft = draft.body;
+      replyAttachments = structuredClone(draft.attachments || []);
       replyDirty = false;
       render(); focusComposer();
     } else if (a === "reply-del") {
       state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
-      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyDirty = false; }
+      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyAttachments = []; replyDirty = false; }
       persist(); render();
     } else if (a === "reply-cancel") {
-      replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; persist(); render();
+      replyTo = null; replyDraft = ""; replyAttachments = []; replyEditId = null; replyDirty = false; persist(); render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -2414,17 +2485,18 @@
     if (!Array.isArray(state.replyDrafts)) state.replyDrafts = [];
     if (replyEditId != null) {
       const draft = state.replyDrafts.find((r) => r.id === replyEditId);
-      if (draft) draft.body = body;
+      if (draft) { draft.body = body; draft.attachments = structuredClone(replyAttachments); }
     } else {
       state.replyDrafts.push({
         id: `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
         threadId,
         body,
+        attachments: structuredClone(replyAttachments),
         createdAt: Date.now(),
       });
     }
     replyTo = null;
-    replyDraft = "";
+    replyDraft = ""; replyAttachments = [];
     replyEditId = null;
     replyDirty = false;
     persist();
@@ -2448,6 +2520,7 @@
             ref: draft.id,
             threadId: draft.threadId,
             body: draft.body,
+            attachments: draft.attachments || [],
           })),
         }),
       });
@@ -2570,7 +2643,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
+            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
           })
         });
         let out = {};
@@ -2786,6 +2859,7 @@
       editIndex: index,
       mode: c.mode || "personal",
       body: c.body,
+      attachments: structuredClone(c.attachments || []),
       dirty: false,
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
@@ -2835,12 +2909,13 @@
       e.preventDefault();
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nc-mode"]:checked')?.value || "personal";
-      if (body && compose) {
+      if (uploadOps.size || !compose || (!body && !compose.attachments?.length)) return;
+      if (compose) {
         if (compose.editIndex != null) {
           const c = state.comments[compose.editIndex];
-          if (c && !c.exported) { c.body = body; c.mode = mode; }
+          if (c && !c.exported) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); }
         } else {
-          const note = { kind: compose.kind, id: compose.id, body, mode, createdAt: Date.now() };
+          const note = { kind: compose.kind, id: compose.id, body, mode, attachments: structuredClone(compose.attachments || []), createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
           if (compose.nodeId) note.nodeId = compose.nodeId;
           const snapshot = draftSnapshots.get(compose);
@@ -2857,7 +2932,7 @@
     if (e.target.matches("[data-reply-form]")) {
       e.preventDefault();
       const body = e.target.querySelector("textarea").value.trim();
-      if (body) saveReplyDraft(e.target.dataset.id, body);
+      if (!uploadOps.size && (body || replyAttachments.length)) saveReplyDraft(e.target.dataset.id, body);
       return;
     }
   });
@@ -2865,7 +2940,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.ctrlKey && !e.isComposing && !e.repeat && e.target instanceof Element && e.target.matches('textarea[name="nc-body"], textarea[name="reply-body"]')) {
       e.preventDefault();
-      if (e.target.value.trim()) e.target.form?.requestSubmit();
+      e.target.form?.requestSubmit();
       return;
     }
     if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
@@ -2878,7 +2953,7 @@
     }
     if (e.key === "Escape") {
       if (compose) { compose = null; persist(); render(); return; }
-      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; persist(); render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; replyAttachments = []; replyEditId = null; replyDirty = false; persist(); render(); return; }
       if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }

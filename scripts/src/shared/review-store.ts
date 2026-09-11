@@ -180,7 +180,8 @@ export function listReviews(): ReviewRecord[] {
 /** View preferences and opening an empty editor do not count as review edits. */
 function reviewActivity(state: Record<string, any>) {
   return { approvals: state.approvals || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
-    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "" };
+    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "",
+    messageAttachments: state.editor?.compose?.attachments || [], replyAttachments: state.editor?.replyAttachments || [] };
 }
 export function setReviewCompleted(id: string, generation: string, completed: boolean, expectedCompletedAt: string | null) {
   if (typeof completed !== "boolean" || (expectedCompletedAt !== null && typeof expectedCompletedAt !== "string")) throw new Error("Invalid review lifecycle change.");

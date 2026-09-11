@@ -347,7 +347,9 @@ export interface AddFeedbackThreadOptions {
     /** Stable identifier for the opening user comment. */
     "comment-id": string;
     /** Opening change instruction or question. */
-    body: string;
+    body?: string;
+    /** Managed attachment IDs from `attachment add`; repeat the option for multiple files. */
+    attachments?: string[];
     /** Human-readable label for the anchor. */
     label: string;
     /** Anchor shape, which determines the required conditional fields. */
@@ -412,7 +414,9 @@ export interface ReplyFeedbackThreadOptions {
     /** Stable identifier for the new comment. */
     "comment-id": string;
     /** Comment text. */
-    body: string;
+    body?: string;
+    /** Managed attachment IDs from `attachment add`; repeat the option for multiple files. */
+    attachments?: string[];
     /** Comment author; defaults to `user`. Implementation agents reply with `agent`. */
     author?: "user" | "agent";
 }
@@ -472,6 +476,26 @@ export interface ValidateFeedbackOptions {
  * @command validate
  */
 export declare function validateFeedback(options?: ValidateFeedbackOptions): void;
+export interface AddAttachmentOptions {
+    /** Local file to copy into this review (maximum 20 MiB). */
+    file: string;
+    /** Media type; defaults to application/octet-stream; raster images are detected. */
+    "media-type"?: string;
+}
+/** Stores a local context file and emits its metadata and resolvable localPath as JSON.
+ * @cli review-feedback.mjs
+ * @command attachment add
+ */
+export declare function addAttachment(options: AddAttachmentOptions): void;
+export interface ShowAttachmentOptions {
+    /** Managed attachment identity within this review. */
+    id: string;
+}
+/** Resolves a managed attachment to metadata and a localPath for agent access.
+ * @cli review-feedback.mjs
+ * @command attachment show
+ */
+export declare function showAttachment(options: ShowAttachmentOptions): void;
 export interface SelectSemanticFlowImplementationOptions {
     /** Repository or worktree used to discover linked semantic implementation artifacts. */
     project?: string;

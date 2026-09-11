@@ -66,3 +66,18 @@ local branch preparation are separate implementation-artifact operations.
 
 Feedback remains independent from the implementation artifact and is not
 committed on stage branches.
+
+## Local message attachments
+
+Feedback v0.1 comments may include `attachments`, with up to ten managed file
+references. Each reference records `id`, original `filename`, `mediaType`, byte
+`size`, `sha256`, and a review-relative `path` of
+`attachments/<id>/content.bin`. The comment must have nonblank `body` text or at
+least one attachment. An empty body is valid for attachment-only context.
+
+Bytes are stored unchanged in the owning review under `~/.semantic-flow`, never
+in implementation metadata or stage branches. IDs derive from the filename,
+normalized media type, and content hash, making upload retries idempotent.
+References are validated against the managed metadata and contained file.
+CLI feedback output adds an absolute `localPath` for agent access; that path is
+not persisted in the feedback artifact. Experimental v0.1 changes in place.

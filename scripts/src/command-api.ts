@@ -179,12 +179,15 @@ export const reviewFeedbackApi: CliSignature = {
   globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     { command: "init" },
+    { command: "attachment add", options: [option("file", "<local-file>", { required: true }), option("media-type", "<type>")] },
+    { command: "attachment show", options: [option("id", "<attachment-id>", { required: true })] },
     {
       command: "thread add",
       options: [
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>", { required: true }),
-        option("body", "<text>", { required: true }),
+        option("body", "<text>"),
+        option("attachments", "<attachment-id>", { repeatable: true }),
         option("label", "<text>", { required: true }),
         option(
           "target-kind",
@@ -216,7 +219,8 @@ export const reviewFeedbackApi: CliSignature = {
       options: [
         option("id", "<thread-id>", { required: true }),
         option("comment-id", "<comment-id>", { required: true }),
-        option("body", "<text>", { required: true }),
+        option("body", "<text>"),
+        option("attachments", "<attachment-id>", { repeatable: true }),
         option("author", "<user|agent>"),
       ],
     },
