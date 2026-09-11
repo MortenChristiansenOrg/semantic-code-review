@@ -117,6 +117,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("This review session was replaced. Reopen the review.");
     const previousActivity = structuredClone(reviewActivity(record.state));
+    const previousSnapshots = approvalSnapshotIds(record.state);
     for (const change of changes) {
       if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid state change path.");
       validateValue(change.before); validateValue(change.after);
@@ -134,12 +135,25 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (change.after.present) Object.defineProperty(target, key, { value: change.after.value, enumerable: true, configurable: true, writable: true });
       else delete target[key];
     }
+    const snapshots = approvalSnapshotIds(record.state);
+    for (const snapshotId of snapshots) {
+      if (!previousSnapshots.has(snapshotId) && !fs.existsSync(path.join(reviewDirectory(id), "snapshots", snapshotId + ".json"))) throw new Error("Approved content is unavailable. Re-approve the file before saving.");
+    }
     if (changes.length) {
       if (!isDeepStrictEqual(previousActivity, reviewActivity(record.state))) record.updatedAt = new Date().toISOString();
       atomicJson(path.join(reviewDirectory(id), "review.json"), record);
+      for (const snapshotId of previousSnapshots) {
+        if (!snapshots.has(snapshotId)) {
+          try { fs.rmSync(path.join(reviewDirectory(id), "snapshots", snapshotId + ".json"), { force: true }); }
+          catch { /* The owned orphan remains reclaimable during review cleanup. */ }
+        }
+      }
     }
     return record;
   });
+}
+function approvalSnapshotIds(state: Record<string, any>): Set<string> {
+  return new Set(Object.values(state.approvals || {}).map((record: any) => record?.snapshotId).filter((id) => typeof id === "string" && /^[a-f0-9]{32}$/.test(id)));
 }
 
 /** Runtime location is discoverable without changing the user's edit timestamp. */
