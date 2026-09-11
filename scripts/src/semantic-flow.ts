@@ -1343,7 +1343,8 @@ async function updateFromSource(options: Options): Promise<void> {
     catch (restartError) { throw new AggregateError([updateError, restartError], "Skill update failed; viewer restart also failed."); }
     throw updateError;
   }
-  await restartViewers(viewers);
+  try { await restartViewers(viewers); }
+  catch (error) { fail(`Installed ${installedVersion}, but some viewers could not restart. Run review to reopen them. ${String(error)}`); }
   console.log(`Updated semantic-flow ${previousVersion} -> ${installedVersion}.`);
   console.log(`Source: ${branch ?? "(detached)"} ${sourceCommit}`);
   console.log(`Installed at: ${skillDirectory}`);

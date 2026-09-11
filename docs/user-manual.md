@@ -453,8 +453,9 @@ Use Ctrl+Enter in a note or reply input to submit it; ordinary Enter adds a line
 
 Concurrent reviews use separate localhost services. Opening a different review
 keeps existing viewers available; reopening the same review reuses its healthy
-service. The preferred `SEMANTIC_VIEW_PORT` is used when available, otherwise the
-viewer chooses another port and records it in the user store. A service restart
+service. A review first tries its recorded port. With no recorded port it tries
+`SEMANTIC_VIEW_PORT` (29180 by default). If that port is occupied by another
+review or application, it chooses and records another port. A service restart
 retains review state, and a skill update restarts matching registered services
 for the current repository's worktrees.
 

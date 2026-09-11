@@ -673,6 +673,8 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
 });
 
 test("concurrent review services isolate commands and reopen registered worktrees", async (t) => {
+  const viewers = [];
+  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId); });
   const { repository: a } = createImplementationWithStages(t);
   const b = createRepository(t, "concurrent-review-b-");
   initializeImplementation(b); // Deliberately the same implementation ID.
@@ -681,8 +683,6 @@ test("concurrent review services isolate commands and reopen registered worktree
   fs.cpSync(a.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
-  const viewers = [];
-  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId); });
   const start = async (root) => {
     const child = spawn(process.execPath, [path.join(scriptsDirectory, "semantic-view.mjs"), "review", root], {
       cwd: a.root, stdio: ["ignore", "ignore", "pipe", "ipc"],
@@ -712,11 +712,14 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);
   const context = module.captureReviewContext(third.reviewId);
   const oldGit = process.env.GIT_DIR;
+  const oldLowerGit = process.env.git_dir;
+  process.env.git_dir = a.path(".git");
   process.env.GIT_DIR = a.path(".git");
   try {
+    assert.equal(module.runReviewCommand(context, process.execPath, ["-e", "console.log(process.env.git_dir || process.env.GIT_DIR || 'clear')"]).trim(), "clear");
     assert.equal(module.runReviewCommand(context, "git", ["rev-parse", "--show-toplevel"]).trim(), linked.replaceAll("\\", "/"));
     assert.throws(() => module.runReviewCommand(context, "git", ["status"], { workingWorktree: b.root }), /another repository/);
-  } finally { if (oldGit === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGit; }
+  } finally { if (oldLowerGit === undefined) delete process.env.git_dir; else process.env.git_dir = oldLowerGit; if (oldGit === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGit; }
   const opened = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
   assert.equal(opened.url, third.url);
   await stopViewer(third.port, third.processId);
