@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-cleanup-')), previous = process.env.SEMANTIC_FLOW_HOME;
   process.env.SEMANTIC_FLOW_HOME = path.join(root, 'data');
@@ -122,4 +122,19 @@ test('cleanup includes retained snapshots without deleting referenced snapshots 
     deleteReviewData(review.id, review.generation, preview(review).fingerprint);
     assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'outside');
   }
+});
+
+
+test('temporary read errors do not classify a live review as deleted', (t) => {
+  const { review } = setup(t), context = { reviewId: review.id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId };
+  assert.equal(reviewSessionUnavailable(context), false);
+  const read = fs.readFileSync;
+  const mock = t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (String(file) === path.join(reviewDirectory(review.id), 'review.json')) throw Object.assign(new Error('Temporarily denied'), { code: 'EACCES' });
+    return read(file, ...args);
+  });
+  assert.equal(reviewSessionUnavailable(context), false);
+  assert.throws(() => readReview(review.id), (error) => error.code === 'EACCES'); mock.mock.restore();
+  deleteReviewData(review.id, review.generation, preview(review).fingerprint);
+  assert.equal(reviewSessionUnavailable(context), true);
 });

@@ -1553,8 +1553,9 @@ export async function openRegisteredReview(id: string, generation: string): Prom
   } finally { child.unref(); }
 }
 
-function reviewSessionAvailable(context: ReviewContext) {
-  try { return readReview(context.reviewId).generation === context.generation; } catch { return false; }
+export function reviewSessionUnavailable(context: ReviewContext) {
+  try { return readReview(context.reviewId).generation !== context.generation; }
+  catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
 }
 function serveViewer({
   viewerDir,
@@ -1579,7 +1580,7 @@ function serveViewer({
         sendJson(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
-      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: !reviewSessionAvailable(context) }); return; }
+      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
     }
 
     if (pathname === "/api/attachments" && request.method === "POST") {
@@ -1665,7 +1666,7 @@ function serveViewer({
           record = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
         } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
         sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: !reviewSessionAvailable(context) }); }
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
     }
 
@@ -1841,7 +1842,7 @@ function serveViewer({
       try { original = identity(); } catch { original = null; }
       const retirement = setInterval(() => {
         let current;
-        try { current = identity(); } catch { current = null; }
+        try { current = identity(); } catch (error) { if (error.code !== "ENOENT") return; current = null; }
         if (!current || current !== original || fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) {
           clearInterval(retirement); review.state = {}; void dataSource.close();
         }

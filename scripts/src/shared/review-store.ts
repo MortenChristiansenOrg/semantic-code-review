@@ -121,10 +121,10 @@ export function attachmentIds(state: any): Set<string> {
 export function readReview(id: string): ReviewRecord {
   try {
     const record = JSON.parse(fs.readFileSync(path.join(reviewDirectory(id), "review.json"), "utf8"));
-    if (fs.existsSync(reviewDeletionPath(id, record.generation))) throw new Error("Review data was deleted; file cleanup is pending. Retry deletion from Saved reviews.");
+    if (fs.existsSync(reviewDeletionPath(id, record.generation))) throw Object.assign(new Error("Review data was deleted; file cleanup is pending. Retry deletion from Saved reviews."), { code: "REVIEW_UNAVAILABLE" });
     return record;
   }
-  catch (error) { if (error.code === "ENOENT") throw new Error("Review data is unavailable or was deleted. Reopen the review explicitly."); throw error; }
+  catch (error) { if (error.code === "ENOENT") throw Object.assign(new Error("Review data is unavailable or was deleted. Reopen the review explicitly."), { code: "REVIEW_UNAVAILABLE" }); throw error; }
 }
 export function registerReview(root: string, implementationId: string, title: string): ReviewRecord {
   root = fs.realpathSync(root);
