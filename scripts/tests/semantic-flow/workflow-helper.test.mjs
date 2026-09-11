@@ -276,7 +276,7 @@ test("feedback does not restack an implementation already landed on target", (t)
 
 test("feedback rejects incomplete feedback state", (t) => {
   const { repository } = createImplementationWithStages(t);
-  repository.write(repository.feedbackPath("orphan.json"), "{}\n");
+  repository.writeAbsolute(repository.feedbackPath("orphan.json"), "{}\n");
 
   const result = repository.result(process.execPath, [
     flowCli,
@@ -729,8 +729,8 @@ test("concurrent review services isolate commands and reopen registered worktree
   const payload = { implementationId: third.implementationId, notes: [{ ref: 0, kind: "stage", id: "implementation", body: "Only linked worktree", attachments: [attached.attachment], clientId: "concurrent-context" }] };
   const exports = await Promise.all([request(third, "api/feedback/export", payload), request(third, "api/feedback/export", payload)]);
   for (const result of exports) assert.equal(result.status, 200, await result.text());
-  assert.equal(a.exists(a.feedbackPath("manifest.json")), false);
-  assert.equal(b.exists(b.feedbackPath("manifest.json")), false);
+  assert.equal(a.existsAbsolute(a.feedbackPath("manifest.json")), false);
+  assert.equal(b.existsAbsolute(b.feedbackPath("manifest.json")), false);
   const module = await import(pathToFileURL(path.join(scriptsDirectory, "semantic-view.mjs")).href);
   // A management request waiting on B's lock must not block A's HTTP loop.
   const heldLock = path.join(process.env.SEMANTIC_FLOW_HOME, "locks", third.reviewId + ".lock");

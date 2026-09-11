@@ -938,7 +938,7 @@ test("concurrent first submissions initialize shared feedback once and deduplica
     console.log(JSON.stringify(result));`;
   const results = await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, repository.root, feedbackCli])));
   for (const result of results) assert.equal(JSON.parse(result.stdout).ok, true);
-  const manifest = repository.readJson(repository.feedbackPath("manifest.json"));
+  const manifest = repository.readAbsoluteJson(repository.feedbackPath("manifest.json"));
   assert.equal(manifest.threads.length, 1);
   assert.equal(readFeedbackThread(repository.root, manifest.threads[0]).comments.length, 1);
 });

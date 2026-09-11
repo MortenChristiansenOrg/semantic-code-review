@@ -1215,21 +1215,25 @@
   }
   function uploadFiles(files, attachments) {
     if (!attachments || !files.length) return;
-    if (uploadStatus.get(attachments)?.busy) {
-      const status = uploadStatus.get(attachments);
-      for (const file of files) status.errors.set(file.name, `${file.name}: wait for the current upload, then attach this file again.`);
-      status.error = [...status.errors.values()].join(" "); render(); return;
-    }
-    const status = uploadStatus.get(attachments) || { busy: false, error: "", errors: new Map() };
-    status.busy = true; uploadStatus.set(attachments, status);
+    const status = uploadStatus.get(attachments) || { busy: false, error: "", errors: new Map(), pending: [] };
+    status.pending.push(...files); uploadStatus.set(attachments, status);
+    if (status.busy) { render(); return; }
+    status.busy = true;
     const operation = Promise.resolve().then(async () => {
-      for (const file of files) {
+      while (status.pending.length) {
+        const file = status.pending.shift();
+        let errorKey = JSON.stringify(["oversize", file.name, file.type, file.size]);
         try {
           if (file.size > 20 * 1024 * 1024) throw new Error(`${file.name}: files must be 20 MiB or smaller.`);
-          // Reject new files before uploading at capacity. A matching name/size
-          // may be an idempotent retry; let the server resolve its stable ID.
-          if (attachments.length >= 10 && !attachments.some((item) => item.filename === file.name && item.size === file.size)) throw new Error("Use at most 10 files per message.");
-          const bytes = new Uint8Array(await file.arrayBuffer()); let binary = "";
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
+          errorKey = JSON.stringify([file.name, file.type, sha256]);
+          if (attachments.length >= 10) {
+            if (!attachments.some((item) => item.filename === file.name && item.size === file.size && item.sha256 === sha256)) throw new Error("Use at most 10 files per message.");
+            // The exact content is already retained by this draft; no transfer is needed.
+            status.errors.delete(errorKey); status.error = [...status.errors.values()].join(" "); continue;
+          }
+          let binary = "";
           for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
           const response = await fetch("/api/attachments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) }) });
           const result = await response.json();
@@ -1238,9 +1242,9 @@
             if (attachments.length >= 10) throw new Error("Use at most 10 files per message.");
             attachments.push(result.attachment);
           }
-          status.errors.delete(file.name); status.error = [...status.errors.values()].join(" ");
+          status.errors.delete(errorKey); status.error = [...status.errors.values()].join(" ");
           persist();
-        } catch (error) { status.errors.set(file.name, error.message); status.error = [...status.errors.values()].join(" "); }
+        } catch (error) { status.errors.set(errorKey, error.message); status.error = [...status.errors.values()].join(" "); }
       }
     }).finally(() => { status.busy = false; uploadOps.delete(operation); render(); });
     uploadOps.add(operation); render();

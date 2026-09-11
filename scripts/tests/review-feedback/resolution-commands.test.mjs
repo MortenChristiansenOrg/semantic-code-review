@@ -84,7 +84,7 @@ test("reviewers resolve threads without rewrite bookkeeping", (t) => {
   repository.feedback("validate", "--require-resolved");
   repository.flow("validate", "--publish");
   assert.equal(repository.feedback("next"), "No open feedback remains.");
-  const thread = repository.readJson(
+  const thread = repository.readAbsoluteJson(
     repository.feedbackPath("threads/second-comment.json"),
   );
   assert.equal(thread.status, "resolved");
@@ -127,7 +127,7 @@ test("answer-only threads use the same resolution flow", (t) => {
   );
   repository.feedback("thread", "resolve", "--id", "why-this-way");
 
-  const thread = repository.readJson(
+  const thread = repository.readAbsoluteJson(
     repository.feedbackPath("threads/why-this-way.json"),
   );
   assert.equal(thread.status, "resolved");
@@ -167,13 +167,13 @@ test("thread reply-batch validates and writes one atomic batch", (t) => {
     "reply-batch.json",
   );
   assert.equal(
-    repository.readJson(
+    repository.readAbsoluteJson(
       repository.feedbackPath("threads/batch-first.json"),
     ).comments.at(-1).body,
     "First reply.",
   );
   assert.equal(
-    repository.readJson(
+    repository.readAbsoluteJson(
       repository.feedbackPath("threads/batch-second.json"),
     ).comments.at(-1).body,
     "Second reply.",
@@ -204,7 +204,7 @@ test("thread reply-batch validates and writes one atomic batch", (t) => {
     "invalid-reply-batch.json",
   );
   assert.equal(
-    repository.readJson(
+    repository.readAbsoluteJson(
       repository.feedbackPath("threads/batch-first.json"),
     ).comments.some((comment) => comment.id === "batch-first-not-kept"),
     false,
@@ -241,7 +241,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
     ["needs-reply"],
   );
   assert.equal(
-    repository.readJson(
+    repository.readAbsoluteJson(
       repository.feedbackPath("threads/already-answered.json"),
     ).status,
     "open",
@@ -326,7 +326,7 @@ test("next lists only open threads awaiting an agent reply", (t) => {
   assert.equal(stageThread.reanchored, true);
   assert.equal(lineThread.stale, true);
   assert.equal("reanchored" in lineThread, false);
-  const storedStageThread = repository.readJson(
+  const storedStageThread = repository.readAbsoluteJson(
     repository.feedbackPath("threads/already-answered.json"),
   );
   const currentStage = repository.readJson(
@@ -358,10 +358,10 @@ test("reviewers reopen and continue resolved threads", (t) => {
     "agent",
   );
   repository.feedback("thread", "resolve", "--id", "chat");
-  assert.equal(repository.readJson(threadPath).status, "resolved");
+  assert.equal(repository.readAbsoluteJson(threadPath).status, "resolved");
 
   repository.feedback("thread", "reopen", "--id", "chat");
-  let thread = repository.readJson(threadPath);
+  let thread = repository.readAbsoluteJson(threadPath);
   assert.equal(thread.status, "open");
   assert.equal(thread.resolvedAt, undefined);
 
@@ -376,7 +376,7 @@ test("reviewers reopen and continue resolved threads", (t) => {
     "--body",
     "Follow-up.",
   );
-  thread = repository.readJson(threadPath);
+  thread = repository.readAbsoluteJson(threadPath);
   assert.equal(thread.status, "open");
   assert.equal(thread.resolvedAt, undefined);
   assert.equal(thread.comments.at(-1).author, "user");

@@ -35,7 +35,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
   const deleted = new Set();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.route('http://viewer.test/**', async (route) => {
+  await page.route('http://localhost/**', async (route) => {
     const url = new URL(route.request().url());
     const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || url.pathname.slice(1))) || data;
     const currentId = currentData.reviewId || currentData.implementationId;
@@ -55,7 +55,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
       return json({ ok: true, deleted: true, cleanupPending: false });
     }
     if (deleted.has(currentId) && ['/api/review-state', '/api/revision', '/api/attachments'].includes(url.pathname)) return route.fulfill({ status: 409, json: { ok: false, reviewUnavailable: true, error: 'Review data was deleted.' } });
-    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://viewer.test/${route.request().postDataJSON().reviewId}` });
+    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}` });
     if (url.pathname === '/api/reviews/completion') {
       const payload = route.request().postDataJSON();
       records.find((r) => r.id === payload.reviewId).completedAt = payload.completed ? '2026-09-11T11:00:00Z' : null;
@@ -77,7 +77,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
     if (url.pathname === '/api/attachments' && route.request().method() === 'POST') {
       const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
       const id = createHash('sha256').update(JSON.stringify(input)).digest('hex');
-      const attachment = { id, filename: input.filename, mediaType: input.mediaType, size: bytes.length, sha256: id, path: `attachments/${id}/content.bin` };
+      const attachment = { id, filename: input.filename, mediaType: input.mediaType, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), path: `attachments/${id}/content.bin` };
       attachments.set(`${currentId}:${id}`, { attachment, bytes }); return json({ ok: true, attachment });
     }
     if (url.pathname.startsWith('/api/attachments/')) {
@@ -99,7 +99,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
     return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/app.js"></script>` });
   });
-  await page.goto('http://viewer.test/');
+  await page.goto('http://localhost/');
   await expect(page.locator('.stage')).toHaveCount(2);
   expect(errors).toEqual([]);
   return errors;
@@ -447,7 +447,7 @@ test('review switching saves drafts and pins subsequent commands to the selected
   await page.locator('textarea[name="nc-body"]').fill('Keep draft in A');
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="worktree-b"]').getByRole('button', { name: 'Open review', exact: true }).click();
-  await expect(page).toHaveURL('http://viewer.test/worktree-b');
+  await expect(page).toHaveURL('http://localhost/worktree-b');
   await expect(page.locator('h1')).toHaveText('Worktree B');
   await openFile(page);
   await page.locator('.file-notes .thread-add').click();
@@ -486,7 +486,7 @@ test('failed saves prevent switching and unavailable reviews stay visible', asyn
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.locator('#review-list [role="alert"]')).toContainText('Conflicting draft');
-  await expect(page).toHaveURL('http://viewer.test/');
+  await expect(page).toHaveURL('http://localhost/');
   await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Do not lose me');
   await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: [{ id: 'missing', generation: 'test', title: 'Old review', implementationId: 'old', repositoryRoot: '/missing', updatedAt: new Date().toISOString(), available: false, unavailableReason: 'The worktree was removed.' }] } }));
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
@@ -587,9 +587,9 @@ test('switching waits for an in-flight approval capture and its state save', asy
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.locator('#review-list [role="status"]')).toContainText('Loading review');
-  await expect(page).toHaveURL('http://viewer.test/');
+  await expect(page).toHaveURL('http://localhost/');
   release();
-  await expect(page).toHaveURL('http://viewer.test/b');
+  await expect(page).toHaveURL('http://localhost/b');
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-approved/);
@@ -692,8 +692,8 @@ test('review switching waits for uploads and retains files in the initiating rev
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'only-a.log', mimeType: 'text/plain', buffer: Buffer.from('A') });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
-  await expect(page).toHaveURL('http://viewer.test/'); release();
-  await expect(page).toHaveURL('http://viewer.test/b');
+  await expect(page).toHaveURL('http://localhost/'); release();
+  await expect(page).toHaveURL('http://localhost/b');
   await expect(page.locator('.attachment')).toHaveCount(0);
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
@@ -719,7 +719,7 @@ test('review deletion previews data, requires confirmation, and leaves other rev
   await expect(page.locator('[data-review="a"]')).toHaveCount(0); expect(deletions).toBe(1);
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Review B', exact: true })).toBeVisible();
-  await page.goto('http://viewer.test/a');
+  await page.goto('http://localhost/a');
   await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
   await expect(page.locator('[data-review="b"]')).toBeVisible(); expect(errors).toEqual([]);
   await expect(page.locator('#review-list [data-action="toggle-reviews"]')).toHaveCount(0);
@@ -791,19 +791,15 @@ test('unused-file cleanup keeps the review and its saved messages', async ({ pag
 });
 
 
-test('uploads attempted while busy remain visible and retryable', async ({ page }) => {
+test('uploads selected while busy are queued even when filenames match', async ({ page }) => {
   await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
   let release; const pending = new Promise((resolve) => { release = resolve; });
   await page.route('**/api/attachments?*', async (route) => { await pending; await route.fallback(); });
-  const file = (name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from(name) });
-  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('first.log'));
+  const file = (body) => ({ name: 'same.log', mimeType: 'text/plain', buffer: Buffer.from(body) });
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('first'));
   await expect(page.locator('.note-compose').getByRole('status')).toContainText('Uploading');
-  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('second.log'));
-  await expect(page.locator('.note-compose [role="alert"]')).toContainText('second.log: wait');
-  release(); await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
-  await expect(page.locator('.note-compose [role="alert"]')).toContainText('second.log: wait');
-  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('second.log'));
-  await expect(page.locator('.note-compose .attachment')).toHaveCount(2);
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('other'));
+  release(); await expect(page.locator('.note-compose .attachment')).toHaveCount(2);
   await expect(page.locator('.note-compose [role="alert"]')).toHaveCount(0);
 });
 
@@ -816,5 +812,8 @@ test('full attachment lists reject new files before upload but allow duplicate r
   await expect(page.locator('.note-compose [role="alert"]')).toContainText('at most 10'); expect(uploads).toBe(10);
   await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('0.log'));
   await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
-  expect(uploads).toBe(11); await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
+  expect(uploads).toBe(10); await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles({ ...file('0.log'), buffer: Buffer.from('other') });
+  await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
+  expect(uploads).toBe(10); await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
 });
