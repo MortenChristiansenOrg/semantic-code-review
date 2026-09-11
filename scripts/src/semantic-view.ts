@@ -1891,7 +1891,7 @@ async function main() {
     try {
       server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
-      if (error.code !== "EADDRINUSE") throw error;
+      if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw error;
       const occupant = await probeViewer(port);
       if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion) {
         await dataSource.close();
@@ -1906,7 +1906,9 @@ async function main() {
       } else {
         // A different review (or another application) keeps its port. Stable
         // fallback candidates also let concurrent launches of this review meet.
-        port = ((fallback - 20000 + attempt) % 40000) + 20000;
+        // Windows reserves contiguous port ranges: spread retries across the
+        // range instead of exhausting all attempts in the same reserved block.
+        port = ((fallback - 20000 + attempt * 9973) % 40000) + 20000;
       }
     }
   }

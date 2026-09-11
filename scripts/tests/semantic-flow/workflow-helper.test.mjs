@@ -683,10 +683,12 @@ test("concurrent review services isolate commands and reopen registered worktree
   fs.cpSync(a.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
-  const start = async (root) => {
+  const deniedPortHook = a.path("denied-port.cjs");
+  fs.writeFileSync(deniedPortHook, `const net = require('node:net'); const listen = net.Server.prototype.listen; let denied = 0; net.Server.prototype.listen = function(...args) { if (typeof args[0] === 'number' && denied++ < 2) { process.nextTick(() => this.emit('error', Object.assign(new Error('Reserved port'), { code: 'EACCES' }))); return this; } return listen.apply(this, args); };`);
+  const start = async (root, denyPorts = false) => {
     const child = spawn(process.execPath, [path.join(scriptsDirectory, "semantic-view.mjs"), "review", root], {
       cwd: a.root, stdio: ["ignore", "ignore", "pipe", "ipc"],
-      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port), GIT_DIR: a.path(".git") },
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port), GIT_DIR: a.path(".git"), ...(denyPorts ? { NODE_OPTIONS: `--import=${pathToFileURL(deniedPortHook).href}` } : {}) },
     });
     const [message] = await once(child, "message");
     assert.equal(message.type, "ready", JSON.stringify(message));
@@ -694,7 +696,7 @@ test("concurrent review services isolate commands and reopen registered worktree
     viewers.push(identity); child.unref();
     return { ...identity, url: message.url };
   };
-  const first = await start(a.root), second = await start(b.root), third = await start(linked);
+  const first = await start(a.root), second = await start(b.root), third = await start(linked, true);
   assert.equal(new Set([first.port, second.port, third.port]).size, 3);
   assert.equal(new Set([first.reviewId, second.reviewId, third.reviewId]).size, 3);
   const request = (viewer, route, body, review = viewer.reviewId) => fetch(new URL(`${route}?review=${review}&generation=${viewer.generation}`, viewer.url), {
