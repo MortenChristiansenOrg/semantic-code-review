@@ -33,13 +33,41 @@
           ]
         },
         "body": {
-          "$ref": "#/$defs/nonEmptyString"
+          "type": "string"
         },
         "createdAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "attachments": {
+          "type": "array",
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/attachment"
+          }
         }
-      }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "body": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        },
+        {
+          "required": [
+            "attachments"
+          ],
+          "properties": {
+            "attachments": {
+              "minItems": 1,
+              "type": "array"
+            }
+          }
+        }
+      ]
     },
     "sha1": {
       "type": "string",
@@ -263,6 +291,47 @@
           }
         }
       ]
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "filename",
+        "mediaType",
+        "size",
+        "sha256",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+        },
+        "mediaType": {
+          "type": "string",
+          "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20971520
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^attachments/[a-f0-9]{64}/content\\.bin$"
+        }
+      }
     }
   }
 }

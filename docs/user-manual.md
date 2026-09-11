@@ -505,3 +505,26 @@ snapshot when no approval references it. Failed or abandoned captures remain
 owned by the review for cleanup. Historical comparisons have no line-comment
 controls. Jumping to a line note restores the current stage diff, preserving its
 actual feedback anchor.
+
+### Attach context to messages
+
+Use **Attach files**, drop files into an open message editor, or paste an image.
+New messages, personal notes, and replies support up to ten files of 20 MiB each,
+with or without text. Uploads and drafts survive reloads and review switches.
+Supported raster images show previews; other files download without execution.
+Saving a message keeps it local until you prepare feedback.
+
+The CLI can register context too:
+
+```text
+<review-feedback> init
+<review-feedback> attachment add --file <local-file>
+<review-feedback> thread reply --id <thread-id> --comment-id <comment-id> --attachments <attachment-id>
+<review-feedback> attachment show --id <attachment-id>
+```
+
+`attachment add` and `attachment show` print metadata and `localPath` as JSON.
+Repeat `--attachments` for multiple IDs, or supply an array through JSON input.
+Feedback commands include these local paths so an agent can read the files.
+Only local uploads are supported. Cancelled drafts and failed sends leave files
+owned by the review for explicit cleanup; retries reuse the same managed file.

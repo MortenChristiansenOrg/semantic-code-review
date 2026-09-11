@@ -106,7 +106,7 @@ test("thread add-batch validates and writes one atomic batch", (t) => {
     })}\n`,
   );
   repository.expectFeedbackFailure(
-    "Missing required option --body",
+    "requires text or at least one attachment",
     "thread",
     "add-batch",
     "--input",
@@ -397,4 +397,35 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     /implementation \(semantic-flow\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   repository.feedback("validate");
+});
+
+test('managed attachments reach agents in attachment-only messages and replies with idempotent retries', (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback('init'); repository.write('context.log', 'original log bytes\n');
+  const first = JSON.parse(repository.feedback('attachment', 'add', '--file', 'context.log'));
+  const again = JSON.parse(repository.feedback('attachment', 'add', '--file', 'context.log'));
+  assert.deepEqual(again, first);
+  assert.equal(repository.read(first.localPath), 'original log bytes\n');
+  const input = { threads: [{ id: 'with-file', 'comment-id': 'first-file', label: 'Stage', 'target-kind': 'stage', stage: 'implementation', attachments: [first.id] }] };
+  repository.write('attachment-input.json', JSON.stringify(input));
+  const send = () => JSON.parse(repository.feedback('thread', 'add-batch', '--partial', '--input', 'attachment-input.json'));
+  assert.equal(send().accepted.length, 1); assert.equal(send().accepted.length, 1);
+  let next = JSON.parse(repository.feedback('next', '--json', '--compact'));
+  assert.equal(next[0].threads[0].comments[0].body, '');
+  assert.equal(next[0].threads[0].comments[0].attachments[0].localPath, first.localPath);
+  repository.feedback('thread', 'reply', '--id', 'with-file', '--comment-id', 'file-reply', '--attachments', first.id);
+  const stored = repository.readJson(repository.feedbackPath('threads/with-file.json'));
+  assert.equal(stored.comments.length, 2); assert.equal(stored.comments[1].attachments[0].path, first.path);
+  assert.equal('localPath' in stored.comments[1].attachments[0], false);
+  repository.feedback('validate');
+  input.threads[0].attachments = ['f'.repeat(64)]; repository.write('attachment-input.json', JSON.stringify(input));
+  assert.equal(send().rejected.length, 1);
+});
+
+
+test('single-comment JSON input accepts attachment arrays, including an empty list with text', (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  repository.write('comment.json', JSON.stringify({ id: 'no-files', 'comment-id': 'first', body: 'Text only', attachments: [], label: 'Stage', 'target-kind': 'stage', stage: 'implementation' }));
+  repository.feedback('thread', 'add', '--input', 'comment.json');
+  repository.feedback('validate');
 });

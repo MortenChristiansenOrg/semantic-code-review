@@ -40,6 +40,21 @@ export function atomicJson(file: string, value: unknown) {
     fs.renameSync(temporary, file);
   } finally { fs.rmSync(temporary, { force: true }); }
 }
+/** Release the public lock name before removing files. Windows may defer a directory
+ * deletion while a waiter briefly has owner.json open; retries must never target
+ * a newly acquired lock at the same public path. */
+function retireLock(lock: string) {
+  const retired = lock + ".retired-" + randomUUID();
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(lock, retired); break; }
+    catch (error) {
+      if (attempt >= 10 || !["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(error.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  try { fs.rmSync(retired, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
+  catch { /* A retired directory cannot block or interfere with subsequent writers. */ }
+}
 export function withReviewLock<T>(id: string, operation: () => T): T {
   const locks = path.join(reviewHome(), "locks");
   fs.mkdirSync(locks, { recursive: true, mode: 0o700 });
@@ -55,7 +70,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
     } catch (error) {
       if (acquired) {
         // Initialization failed before the normal release path was installed.
-        try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* Preserve the original write error. */ }
+        try { retireLock(lock); } catch { /* Preserve the original write error. */ }
         throw error;
       }
       if (error.code !== "EEXIST") throw error;
@@ -68,7 +83,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
         const { pid } = JSON.parse(fs.readFileSync(path.join(lock, "owner.json"), "utf8"));
         if (Number.isInteger(pid) && pid > 0) {
           try { process.kill(pid, 0); }
-          catch (e) { if (e.code === "ESRCH") fs.rmSync(lock, { recursive: true, force: true }); }
+          catch (e) { if (e.code === "ESRCH") retireLock(lock); }
         }
       } catch { /* Another reaper or an owner still initializing: retry. */ }
       finally { if (reaping) fs.rmdirSync(reaper); }
@@ -77,7 +92,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
     }
   }
   try { return operation(); }
-  finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  finally { retireLock(lock); }
 }
 export type ReviewRecord = {
   id: string; generation: string; repositoryRoot: string; implementationId: string;
@@ -180,7 +195,8 @@ export function listReviews(): ReviewRecord[] {
 /** View preferences and opening an empty editor do not count as review edits. */
 function reviewActivity(state: Record<string, any>) {
   return { approvals: state.approvals || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
-    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "" };
+    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "",
+    messageAttachments: state.editor?.compose?.attachments || [], replyAttachments: state.editor?.replyAttachments || [] };
 }
 export function setReviewCompleted(id: string, generation: string, completed: boolean, expectedCompletedAt: string | null) {
   if (typeof completed !== "boolean" || (expectedCompletedAt !== null && typeof expectedCompletedAt !== "string")) throw new Error("Invalid review lifecycle change.");

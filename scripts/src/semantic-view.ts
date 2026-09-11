@@ -34,6 +34,8 @@ import { registerReview, readReview, patchReviewState, feedbackDirectory, review
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
 
+export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
+import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
@@ -997,6 +999,7 @@ function buildFeedbackThreads(repoRoot, stages, implementationId) {
         id: c.id,
         author: c.author,
         body: c.body,
+        attachments: c.attachments || [],
         createdAt: c.createdAt,
       })),
       assignedStageId: thread.assignedStageId,
@@ -1164,7 +1167,7 @@ function cliErrorMessage(error) {
 // partial or orphaned draft batch behind.
 export function planFeedbackThreads(notes, implementation) {
   const skipped: Array<{ ref: number; reason: string }> = [];
-  const planned: Array<{ ref: number; body: string; target: Record<string, any>; clientId?: string }> =
+  const planned: Array<{ ref: number; body: string; attachments: string[]; target: Record<string, any>; clientId?: string }> =
     [];
   if (!Array.isArray(notes)) return { planned, skipped };
   notes.forEach((note, index) => {
@@ -1174,7 +1177,8 @@ export function planFeedbackThreads(notes, implementation) {
       return;
     }
     const body = typeof note.body === "string" ? note.body.trim() : "";
-    if (!body) {
+    const attachments = Array.isArray(note.attachments) ? note.attachments.map((item) => item?.id) : [];
+    if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
@@ -1191,7 +1195,7 @@ export function planFeedbackThreads(notes, implementation) {
       skipped.push({ ref, reason: error.message });
       return;
     }
-    planned.push({ ref, body, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
+    planned.push({ ref, body, attachments, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
   });
   return { planned, skipped };
 }
@@ -1217,7 +1221,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
   const exportId = `viewer-${Date.now().toString(36)}`;
   const batch = planned.map((thread, index) => {
     const threadId = thread.clientId
-      ? `viewer-${createHash("sha256").update(JSON.stringify([implementation.implementationId, thread.clientId, thread.target, thread.body])).digest("hex").slice(0, 32)}`
+      ? `viewer-${createHash("sha256").update(JSON.stringify([implementation.implementationId, thread.clientId, thread.target, thread.body, thread.attachments])).digest("hex").slice(0, 32)}`
       : `${exportId}-t${String(index).padStart(3, "0")}`;
     const commentId = `${threadId}-c000`;
     return {
@@ -1227,6 +1231,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
         id: threadId,
         "comment-id": commentId,
         body: thread.body,
+        ...(thread.attachments.length ? { attachments: thread.attachments } : {}),
         ...thread.target,
       },
     };
@@ -1261,11 +1266,12 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null },
       skipped.push({ ref, reason: "thread no longer exists" });
       return;
     }
-    if (!body) {
+    const attachments = Array.isArray(draft.attachments) ? draft.attachments.map((item) => item?.id) : [];
+    if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
-    const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body])).digest("hex").slice(0, 32)}`;
+    const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body, attachments])).digest("hex").slice(0, 32)}`;
     batch.push({
       ref,
       threadId,
@@ -1275,6 +1281,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null },
         "comment-id": commentId,
         author: "user",
         body,
+        ...(attachments.length ? { attachments } : {}),
       },
     });
   });
@@ -1469,19 +1476,11 @@ async function handleThreadAction(request, response, context, action) {
     }
     try {
       if (action === "reply") {
-        const body = typeof payload.body === "string" ? payload.body.trim() : "";
-        if (!body) {
-          sendJson(response, 400, { ok: false, error: "A reply body is required." });
-          return;
-        }
-        const commentId = `reply-${Date.now().toString(36)}`;
-        await context.jobs.call("feedbackCli", [context.implementationId, [
-          "thread", "reply",
-          "--id", threadId,
-          "--comment-id", commentId,
-          "--author", "user",
-          "--body", body,
-        ]]);
+        const result = await context.jobs.call("exportFeedbackReplies", [context.implementationId, [{
+          ref: payload.clientId || createHash("sha256").update(JSON.stringify([threadId, payload.body, payload.attachments])).digest("hex"),
+          threadId, body: payload.body, attachments: payload.attachments,
+        }]]);
+        if (!result.ok) throw new Error(result.error || result.skipped?.[0]?.reason || "Reply could not be sent.");
       } else if (action === "resolve") {
         await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "resolve", "--id", threadId]]);
       } else if (action === "reopen") {
@@ -1576,6 +1575,34 @@ function serveViewer({
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); return; }
+    }
+
+    if (pathname === "/api/attachments" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request, 29 * 1024 * 1024));
+        if (typeof payload.data !== "string" || payload.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || Buffer.from(payload.data, "base64").toString("base64") !== payload.data) throw new Error("Invalid attachment bytes or file larger than 20 MiB.");
+        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, payload.filename, payload.mediaType, Buffer.from(payload.data, "base64")));
+        sendJson(response, 200, { ok: true, attachment });
+      } catch (error) { sendJson(response, 400, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+    if (pathname.startsWith("/api/attachments/") && request.method === "GET") {
+      try {
+        const { attachment, bytes } = withReviewLock(context.reviewId, () => {
+          if (readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+          const attachment = resolveAttachment(context.reviewId, pathname.slice("/api/attachments/".length));
+          const bytes = fs.readFileSync(attachment.localPath);
+          if (createHash("sha256").update(bytes).digest("hex") !== attachment.sha256) throw new Error("Attachment content is damaged.");
+          return { attachment, bytes };
+        });
+        const preview = url.searchParams.get("preview") === "1" && imageMediaType(bytes);
+        response.writeHead(200, { "content-type": preview || "application/octet-stream", "content-length": bytes.length,
+          "content-disposition": `${preview ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+          "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox", "cache-control": "no-store" });
+        response.end(bytes);
+      } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
+      return;
     }
 
     if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {

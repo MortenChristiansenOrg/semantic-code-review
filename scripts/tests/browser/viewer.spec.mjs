@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('app.js', viewer), 'utf8');
@@ -30,6 +31,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
+  const attachments = new Map();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://viewer.test/**', async (route) => {
@@ -56,6 +58,17 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
         }
       }
       return json({ ok: true, reviewId: currentId, generation: 'test', state });
+    }
+    if (url.pathname === '/api/attachments' && route.request().method() === 'POST') {
+      const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
+      const id = createHash('sha256').update(JSON.stringify(input)).digest('hex');
+      const attachment = { id, filename: input.filename, mediaType: input.mediaType, size: bytes.length, sha256: id, path: `attachments/${id}/content.bin` };
+      attachments.set(`${currentId}:${id}`, { attachment, bytes }); return json({ ok: true, attachment });
+    }
+    if (url.pathname.startsWith('/api/attachments/')) {
+      const saved = attachments.get(`${currentId}:${url.pathname.split('/').at(-1)}`);
+      if (!saved) return route.fulfill({ status: 404 });
+      return route.fulfill({ contentType: saved?.attachment.mediaType || 'application/octet-stream', body: saved?.bytes || Buffer.alloc(0) });
     }
     if (url.pathname === '/api/approval-snapshots') return json({ ok: true, snapshotId: 'a'.repeat(32), capturedAt: new Date().toISOString() });
     if (url.pathname === '/api/feedback/export') return json({ ok: true, exported: route.request().postDataJSON().notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })), skipped: [] });
@@ -598,4 +611,78 @@ test('failed approvals follow renamed files and clear when the retry succeeds', 
   await one.locator('.mini-approve').click();
   await expect(one.locator('.frow')).toHaveClass(/is-approved/);
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
+});
+
+
+test('attachment-only notes survive reloads, preview images, and export managed references', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9X8AAAAASUVORK5CYII=', 'base64');
+  await saveAction(page, () => page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png }), (state) => state.editor?.compose?.attachments?.length === 1);
+  await expect(page.locator('.note-compose .attachment img')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.note-compose .attachment a')).toHaveText('context.png');
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png });
+  await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await expect(page.locator('.note-compose')).toHaveCount(0);
+  await showNotes(page);
+  const request = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/feedback/export');
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  const note = (await request).postDataJSON().notes[0];
+  expect(note.body).toBe(''); expect(note.attachments[0].filename).toBe('context.png');
+  expect(note.attachments[0].path).toMatch(/^attachments\/[a-f0-9]{64}\/content.bin$/);
+});
+
+test('message editors accept dropped files and pasted images, including replies', async ({ page }) => {
+  const data = fixture(); data.feedback = [thread('files-reply')];
+  await mount(page, data); await showNotes(page);
+  await page.locator('.side.notes [data-action="thread-reply"]').click();
+  await page.locator('[data-reply-form]').evaluate((form) => {
+    const transfer = new DataTransfer(); transfer.items.add(new File(['log content'], 'debug.log', { type: 'text/plain' }));
+    form.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  });
+  await expect(page.locator('[data-reply-form] .attachment a')).toHaveText('debug.log');
+  await expect(page.getByRole('button', { name: 'Save reply', exact: true })).toBeEnabled();
+  await page.locator('textarea[name="reply-body"]').evaluate((input) => {
+    const transfer = new DataTransfer(); transfer.items.add(new File(['image bytes'], 'pasted.png', { type: 'image/png' }));
+    input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer }));
+  });
+  await expect(page.locator('[data-reply-form] .attachment')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Save reply', exact: true })).toBeEnabled();
+  await saveAction(page, () => page.getByRole('button', { name: 'Save reply', exact: true }).click(), (state) => state.replyDrafts?.[0]?.attachments?.length === 2);
+  await page.reload();
+  await expect(page.locator('.side.notes .tmsg-draft .attachment')).toHaveCount(2);
+  await page.locator('.side.notes [data-action="reply-edit"]').click();
+  await page.getByRole('button', { name: 'Remove debug.log', exact: true }).click();
+  await expect(page.locator('[data-reply-form] .attachment')).toHaveCount(1);
+});
+
+test('rejected attachment uploads keep the message editable with a visible error', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await page.route('**/api/attachments?*', (route) => route.fulfill({ status: 400, json: { ok: false, error: 'Attachment rejected' } }));
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'bad.log', mimeType: 'text/plain', buffer: Buffer.from('bad') });
+  await expect(page.locator('.note-compose [role="alert"]')).toContainText('Attachment rejected');
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
+});
+
+
+test('review switching waits for uploads and retains files in the initiating review', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  let release; const pending = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/attachments?*', async (route) => { await pending; await route.fallback(); });
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'only-a.log', mimeType: 'text/plain', buffer: Buffer.from('A') });
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page).toHaveURL('http://viewer.test/'); release();
+  await expect(page).toHaveURL('http://viewer.test/b');
+  await expect(page.locator('.attachment')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page.locator('.note-compose .attachment a')).toHaveText('only-a.log');
+  const attachmentUrl = await page.locator('.note-compose .attachment a').getAttribute('href');
+  expect(await page.evaluate(async (url) => { const other = new URL(url); other.searchParams.set('review', 'b'); return (await fetch(other)).status; }, attachmentUrl)).toBe(404);
 });

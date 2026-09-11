@@ -76,7 +76,7 @@ interface PendingFeedbackStage {
     stale: boolean;
     reanchored?: boolean;
     restacked?: boolean;
-    comments: Array<{ author: string; body: string }>;
+    comments: Array<{ author: string; body: string; attachments?: Array<import("./shared/review-attachments.js").Attachment & { localPath: string }> }>;
     target: { label: string };
   }>;
 }
@@ -864,6 +864,7 @@ function feedback(options: Options): void {
       );
       for (const comment of thread.comments) {
         console.log(`    ${comment.author}: ${comment.body}`);
+        for (const attachment of comment.attachments || []) console.log(`      ${attachment.filename}: ${attachment.localPath}`);
       }
     }
   }
