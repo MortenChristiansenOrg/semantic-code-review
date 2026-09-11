@@ -797,7 +797,7 @@ test('uploads attempted while busy remain visible and retryable', async ({ page 
   await page.route('**/api/attachments?*', async (route) => { await pending; await route.fallback(); });
   const file = (name) => ({ name, mimeType: 'text/plain', buffer: Buffer.from(name) });
   await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('first.log'));
-  await expect(page.getByRole('status')).toContainText('Uploading');
+  await expect(page.locator('.note-compose').getByRole('status')).toContainText('Uploading');
   await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('second.log'));
   await expect(page.locator('.note-compose [role="alert"]')).toContainText('second.log: wait');
   release(); await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
