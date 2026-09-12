@@ -194,3 +194,23 @@ test('locks publish initialized owners and recover abandoned claims and dead pub
   patchReviewState(review.id, review.generation, [change(['draft'], 'recovered')]);
   assert.equal(readReview(review.id).state.draft, 'recovered');
 });
+
+test('lock acquisition retries when a competing owner retires before the contention check', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  const rename = fs.renameSync;
+  let contended = false;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (!contended && String(to).endsWith('.lock')) {
+      contended = true;
+      // Windows reports EPERM for an occupied destination. The other owner may
+      // have already retired it by the time this process handles that error.
+      assert.equal(fs.existsSync(to), false);
+      throw Object.assign(new Error('Lock destination was occupied'), { code: 'EPERM' });
+    }
+    return rename(from, to);
+  });
+  patchReviewState(review.id, review.generation, [change(['draft'], 'Retained after contention')]);
+  assert.equal(contended, true);
+  assert.equal(readReview(review.id).state.draft, 'Retained after contention');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'user-data', 'locks')), []);
+});

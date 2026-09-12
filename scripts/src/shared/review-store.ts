@@ -70,7 +70,9 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
     while (true) {
       try { fs.renameSync(claim, lock); published = true; break; }
       catch (error) {
-        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code) || !fs.existsSync(lock)) throw error;
+        // The owner can retire the destination after a contended rename. Its
+        // absence here is a reason to retry, not evidence of a fatal error.
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
         try {
           const entries = fs.readdirSync(lock);
           if (!entries.length) fs.rmdirSync(lock); // A reaper died after removing its owner marker.
