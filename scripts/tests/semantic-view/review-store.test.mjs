@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-store-'));
@@ -28,6 +28,32 @@ test('review identities isolate worktrees and persist across reopening', (t) => 
   assert.deepEqual(readReview(b.id).state, {});
   assert.equal(registerReview(path.join(root, 'a'), 'same-id', 'Review').updatedAt, readReview(a.id).updatedAt);
   assert.ok(fs.existsSync(path.join(reviewDirectory(a.id), 'snapshots')));
+});
+
+test('review folder names are readable, bounded and retain the full unique identity', (t) => {
+  const root = setup(t), worktree = path.join(root, 'a');
+  const a = registerReview(worktree, 'Order Cancellation', 'An editable title');
+  const digest = createHash('sha256').update(JSON.stringify([fs.realpathSync(worktree), 'Order Cancellation'])).digest('hex');
+  assert.equal(path.basename(reviewDirectory(a.id)), `a--order-cancellation--${digest}`);
+  assert.equal(reviewId(worktree, 'Order Cancellation'), a.id);
+  const alias = path.join(root, 'alias'); fs.symlinkSync(worktree, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(reviewId(alias, 'Order Cancellation'), a.id);
+  assert.equal(feedbackDirectory(worktree, 'Order Cancellation'), path.join(reviewDirectory(a.id), 'feedback'));
+  assert.equal(registerReview(worktree, 'Order Cancellation', 'A changed title').id, a.id);
+  const collision = registerReview(worktree, 'Order/Cancellation', 'Same readable name');
+  assert.ok(collision.id.startsWith('a--order-cancellation--')); assert.notEqual(collision.id, a.id);
+  const duplicateName = path.join(root, 'b', 'a'); fs.mkdirSync(duplicateName);
+  const other = registerReview(duplicateName, 'Order Cancellation', 'Another worktree');
+  assert.ok(other.id.startsWith('a--order-cancellation--')); assert.notEqual(other.id, a.id);
+  const longRoot = path.join(root, 'Long Worktree Name '.repeat(3).trim()); fs.mkdirSync(longRoot);
+  const long = registerReview(longRoot, 'Long Implementation Name '.repeat(20), 'Long');
+  assert.ok(long.id.length <= 132);
+  assert.match(registerReview(worktree, '日本語', 'Unicode').id, /^a--review--[a-f0-9]{64}$/);
+  assert.match(registerReview(worktree, '../Café: cancel?!', 'Escaped').id, /^a--cafe-cancel--[a-f0-9]{64}$/);
+  assert.equal(listReviews().length, 6);
+  for (const invalid of [digest, '../' + a.id, a.id + '/child', a.id.toUpperCase(), a.id + '.']) {
+    assert.throws(() => reviewDirectory(invalid), /Invalid review identity/);
+  }
 });
 
 test('independent tab edits merge, retries are idempotent, conflicts are atomic', (t) => {
@@ -171,7 +197,7 @@ test('lock cleanup retires its directory before removal and tolerates transient 
 
 test('locks publish initialized owners and recover abandoned claims and dead public owners', async (t) => {
   const root = setup(t), directory = path.join(root, 'user-data', 'locks');
-  const id = createHash('sha256').update(JSON.stringify([fs.realpathSync(path.join(root, 'a')), 'crash'])).digest('hex');
+  const id = reviewId(path.join(root, 'a'), 'crash');
   const lock = path.join(directory, id + '.lock');
   fs.mkdirSync(directory, { recursive: true });
   fs.mkdirSync(lock + '.claim-abandoned'); // Process death before publication cannot block.

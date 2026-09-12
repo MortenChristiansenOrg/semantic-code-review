@@ -2027,7 +2027,7 @@ async function main() {
 
   let port = registered.viewer?.port || viewerPort();
   let server = null;
-  const fallback = 20000 + (Number.parseInt(context.reviewId.slice(0, 8), 16) % 40000);
+  const fallback = 20000 + (Number.parseInt(context.reviewId.slice(-64, -56), 16) % 40000);
   const matching = (occupant) => occupant && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {

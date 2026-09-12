@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, attachmentIds, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
+import { atomicJson, attachmentIds, isReviewId, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
 
 const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -32,7 +32,10 @@ function rawTicket(id: string, generation: string): Ticket | null {
 export function pendingReviewDeletions() {
   const directory = path.join(reviewHome(), "deletions");
   if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory).filter((file) => /^[a-f0-9]{64}\.[a-f0-9-]{36}\.json$/.test(file)).map((file) => {
+  return fs.readdirSync(directory).filter((file) => {
+    const parts = /^(.+)\.([a-f0-9-]{36})\.json$/.exec(file);
+    return parts && isReviewId(parts[1]);
+  }).map((file) => {
     const ticket: Ticket = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8"));
     if (path.basename(reviewDeletionPath(ticket.review.id, ticket.review.generation)) !== file) throw new Error("Invalid pending deletion identity.");
     return { ...ticket.review, available: false, deletionPending: true, unavailableReason: ticket.error || "File removal is pending." };

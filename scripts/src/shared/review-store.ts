@@ -11,12 +11,21 @@ export function reviewHome() {
   if (configured && !path.isAbsolute(configured)) throw new Error("SEMANTIC_FLOW_HOME must be an absolute path so all commands use the same user store.");
   return path.resolve(configured || path.join(os.homedir(), ".semantic-flow"));
 }
+export function isReviewId(id: string) {
+  return typeof id === "string" && /^[a-z0-9-]{1,24}--[a-z0-9-]{1,40}--[a-f0-9]{64}$/.test(id);
+}
 export function reviewDirectory(id: string) {
-  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid review identity.");
+  if (!isReviewId(id)) throw new Error("Invalid review identity.");
   return path.join(reviewHome(), "reviews", id);
 }
 export function reviewId(root: string, implementationId: string) {
-  return createHash("sha256").update(JSON.stringify([fs.realpathSync(root), implementationId])).digest("hex");
+  const canonicalRoot = fs.realpathSync(root);
+  const slug = (value: string, limit: number, fallback: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, limit).replace(/-+$/g, "") || fallback;
+  const hash = createHash("sha256").update(JSON.stringify([canonicalRoot, implementationId])).digest("hex");
+  // Stable labels aid manual browsing; the complete hash still distinguishes
+  // worktrees and implementation IDs that normalize to the same readable name.
+  return `${slug(path.basename(canonicalRoot), 24, "repository")}--${slug(implementationId, 40, "review")}--${hash}`;
 }
 /** Resolves private feedback without registering a review or creating files. */
 export function feedbackDirectory(root: string, implementationId?: string) {
@@ -217,7 +226,7 @@ export function recordViewer(id: string, generation: string, viewer: ReviewRecor
 export function listReviews(): ReviewRecord[] {
   const directory = path.join(reviewHome(), "reviews");
   if (!fs.existsSync(directory)) return [];
-  return fs.readdirSync(directory).filter((id) => /^[a-f0-9]{64}$/.test(id)).flatMap((id) => {
+  return fs.readdirSync(directory).filter(isReviewId).flatMap((id) => {
     if (hasPendingDeletion(id)) return [];
     try { return [readReview(id)]; }
     catch (error) {

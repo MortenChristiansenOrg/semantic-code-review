@@ -21,7 +21,12 @@ as a collapsible folder.
 The viewer stores review progress, drafts, personal notes, and preferences under
 `~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
 data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
-implementation ID, independently of browser ports. Moving a worktree creates a new
+implementation ID, independently of browser ports. Folder names use
+`<worktree>--<implementation>--<sha256>`, for example
+`my-project--order-cancellation--<64 hex characters>`. The readable parts are
+normalized and capped at 24 and 40 characters; the full hash preserves uniqueness
+even when names collide or are shortened. Changing the display title does not
+rename the folder. Moving a worktree creates a new
 review identity; the old data remains available for cleanup. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
 the same field or draft list fail visibly rather than overwrite another tab.
