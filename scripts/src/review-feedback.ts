@@ -17,12 +17,31 @@ import {
   flag,
   option,
   parseArguments,
+  repeatedOption,
   type Options,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
-import { readJson, writeJson } from "./shared/json.js";
+import { readJson } from "./shared/json.js";
+import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
+
+import { isDeepStrictEqual } from "node:util";
+import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+
+function commentAttachments(paths, options) { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
+function commentInput(paths, options) {
+  const body = option(options, "body") || "", attachments = commentAttachments(paths, options);
+  if (!body.trim() && !attachments.length) fail("A message requires text or at least one attachment.");
+  return { body, attachments };
+}
+function agentComments(paths, comments) { return comments.map((comment) => ({ ...comment, attachments: (comment.attachments || []).map((attachment) => resolveAttachment(paths.reviewId, attachment.id)) })); }
+let feedbackWritten = false;
+function writeJson(file: string, value: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  atomicJson(file, value);
+  feedbackWritten = true;
+}
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
@@ -43,74 +62,32 @@ function repositoryRoot() {
 }
 
 function pathsFor(root) {
-  const feedback = path.join(root, ".semantic-review-feedback");
-  const gitLock = git(
-    ["rev-parse", "--git-path", "semantic-review-feedback.lock"],
-    { cwd: root },
-  );
+  const manifestPath = path.join(root, ".semantic-review", "manifest.json");
+  if (!fs.existsSync(manifestPath)) fail("No active .semantic-review artifact exists.");
+  const manifest = readJson(manifestPath);
+  const feedback = feedbackDirectory(root, manifest.implementationId);
   return {
     root,
+    implementationId: manifest.implementationId,
+    reviewId: reviewId(root, manifest.implementationId),
     semantic: path.join(root, ".semantic-review"),
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
     threads: path.join(feedback, "threads"),
-    lock: path.isAbsolute(gitLock) ? gitLock : path.resolve(root, gitLock),
   };
 }
 
-function sleep(milliseconds) {
-  Atomics.wait(
-    new Int32Array(new SharedArrayBuffer(4)),
-    0,
-    0,
-    milliseconds,
-  );
-}
-
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
-  }
-}
-
-function withFeedbackLock(paths, action) {
-  const lock = paths.lock;
-  const owner = path.join(lock, "owner.json");
-  const deadline = Date.now() + 10_000;
-  while (true) {
-    try {
-      fs.mkdirSync(lock);
-      writeJson(owner, {
-        pid: process.pid,
-        createdAt: new Date().toISOString(),
-      });
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      let stale = false;
-      try {
-        stale = !processIsAlive(readJson(owner).pid);
-      } catch {
-        stale = Date.now() - fs.statSync(lock).mtimeMs > 10_000;
-      }
-      if (stale) {
-        fs.rmSync(lock, { recursive: true, force: true });
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        fail("Timed out waiting for another feedback mutation to finish.");
-      }
-      sleep(25);
-    }
-  }
-  try {
-    return action();
-  } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
-  }
+function withFeedbackLock<T>(paths, action: () => T): T {
+  const recordFile = path.join(reviewDirectory(paths.reviewId), "review.json");
+  const generation = fs.existsSync(recordFile) ? readReview(paths.reviewId).generation : null;
+  return withReviewLock(paths.reviewId, () => {
+    if (process.env.SEMANTIC_FLOW_REVIEW_ID && (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION)) fail("The initiating review was deleted or replaced.");
+    if (generation && readReview(paths.reviewId).generation !== generation) fail("The review session changed. Retry from the current review.");
+    feedbackWritten = false;
+    const result = action();
+    if (feedbackWritten && fs.existsSync(recordFile)) touchReview(paths.reviewId);
+    return result;
+  });
 }
 
 /** Keeps the reviewed feedback state stable through a workflow's final mutation. */
@@ -140,6 +117,7 @@ function semanticArtifact(paths) {
     fail("No active .semantic-review artifact exists.");
   }
   const manifest = readJson(path.join(paths.semantic, "manifest.json"));
+  if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
   const requirements = new Map<string, any>(
     manifest.requirements.map((id) => [
       id,
@@ -195,7 +173,7 @@ function validateDocument(ajv, value, file) {
 
 function loadFeedback(paths, { required = true } = {}) {
   if (!fs.existsSync(paths.feedbackManifest)) {
-    if (required) fail("No .semantic-review-feedback manifest exists.");
+    if (required) fail("No feedback manifest exists for this review.");
     return null;
   }
   const manifest = readJson(paths.feedbackManifest);
@@ -389,6 +367,7 @@ function validateFeedback(
         fail(`Feedback thread ${id} repeats comment ID ${comment.id}.`);
       }
       commentIds.add(comment.id);
+      validateAttachmentReferences(paths.reviewId, comment.attachments);
     }
     validateTarget(thread.target, semantic, paths.root);
     if (!semantic.stages.has(thread.assignedStageId)) {
@@ -415,20 +394,6 @@ function validateFeedback(
   return { semantic, feedback };
 }
 
-function ensureExcluded(root) {
-  const exclude = git(["rev-parse", "--git-path", "info/exclude"], { cwd: root });
-  const resolved = path.isAbsolute(exclude) ? exclude : path.resolve(root, exclude);
-  const content = fs.existsSync(resolved) ? fs.readFileSync(resolved, "utf8") : "";
-  if (!content.split(/\r?\n/).includes(".semantic-review-feedback/")) {
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.appendFileSync(
-      resolved,
-      `${content && !content.endsWith("\n") ? "\n" : ""}.semantic-review-feedback/\n`,
-      "utf8",
-    );
-  }
-}
-
 function initialize(paths, options) {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "init"));
   if (fs.existsSync(paths.feedbackManifest)) fail("Feedback state already exists.");
@@ -438,7 +403,6 @@ function initialize(paths, options) {
     );
   }
   const semantic = semanticArtifact(paths);
-  ensureExcluded(paths.root);
   try {
     writeJson(paths.feedbackManifest, {
       $schema: MANIFEST_SCHEMA,
@@ -518,7 +482,7 @@ function createThread(paths, options, semantic, knownIds, ajv) {
       {
         id: option(options, "comment-id", { required: true }),
         author: "user",
-        body: option(options, "body", { required: true }),
+        ...commentInput(paths, options),
         createdAt: now,
       },
     ],
@@ -571,7 +535,9 @@ function batchThreadOptions(value, index): Options {
   }
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
-    if (typeof item === "string") {
+    if (name === "attachments" && Array.isArray(item) && item.every((id) => typeof id === "string")) {
+      options.set(name, item);
+    } else if (typeof item === "string") {
       options.set(name, [item]);
     } else if (typeof item === "number" && Number.isFinite(item)) {
       options.set(name, [String(item)]);
@@ -760,10 +726,7 @@ function nextFeedback(paths, options) {
                         targetHead !== targetStage.change.headRevision,
                     ),
                   ...(reanchored.has(thread.id) ? { reanchored: true } : {}),
-                  comments: thread.comments.map(({ author, body }) => ({
-                    author,
-                    body,
-                  })),
+                  comments: agentComments(paths, thread.comments).map(({ author, body, attachments }) => ({ author, body, ...(attachments.length ? { attachments } : {}) })),
                   target,
                 };
               }),
@@ -775,7 +738,7 @@ function nextFeedback(paths, options) {
               threads: threads.map((thread) => ({
                 id: thread.id,
                 stageHead: thread.stageHead,
-                comments: thread.comments,
+                comments: agentComments(paths, thread.comments),
                 target: thread.target,
               })),
             },
@@ -796,6 +759,7 @@ function nextFeedback(paths, options) {
       console.log(`  ${thread.id}:`);
       for (const comment of thread.comments) {
         console.log(`    ${comment.author}: ${comment.body}`);
+        for (const attachment of comment.attachments || []) console.log(`      ${attachment.filename}: ${attachment.localPath}`);
       }
     }
   }
@@ -810,7 +774,7 @@ function replyThread(paths, options) {
   console.log(`Added reply ${commentId} to feedback thread ${id}.`);
 }
 
-function applyReply(options, feedback) {
+function applyReply(paths, options, feedback) {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply"),
@@ -829,7 +793,7 @@ function applyReply(options, feedback) {
   thread.comments.push({
     id: commentId,
     author,
-    body: option(options, "body", { required: true }),
+    ...commentInput(paths, options),
     createdAt: new Date().toISOString(),
   });
   if (thread.status === "resolved") {
@@ -849,7 +813,7 @@ function replyThreads(paths, optionSets: Options[]) {
       originals.set(id, structuredClone(thread));
     }
   }
-  const replies = optionSets.map((options) => applyReply(options, feedback));
+  const replies = optionSets.map((options) => applyReply(paths, options, feedback));
   try {
     for (const id of originals.keys()) {
       writeThread(paths, feedback.threads.get(id));
@@ -868,7 +832,9 @@ function batchReplyOptions(value, index): Options {
   }
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
-    if (typeof item === "string") {
+    if (name === "attachments" && Array.isArray(item) && item.every((id) => typeof id === "string")) {
+      options.set(name, item);
+    } else if (typeof item === "string") {
       options.set(name, [item]);
     } else {
       fail(
@@ -933,11 +899,12 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
         const existing = before.comments.find((comment) => comment.id === commentId);
         if (existing) {
           const author = mode === "add" ? "user" : option(options, "author") || "user";
-          const body = option(options, "body", { required: true });
+          const body = option(options, "body") || "";
+          const attachments = commentAttachments(paths, options);
           const target = mode === "add" ? buildTarget(options, semantic, paths.root) : undefined;
           const sameTarget = !target || JSON.stringify(before.target) === JSON.stringify(target);
           const sameAssignment = !target || before.assignedStageId === (option(options, "assigned-stage") ?? target.stageId);
-          if (existing.author !== author || existing.body !== body || !sameTarget || !sameAssignment) fail(`Comment ${commentId} already exists with different input.`);
+          if (existing.author !== author || existing.body !== body || !isDeepStrictEqual(existing.attachments || [], attachments) || !sameTarget || !sameAssignment) fail(`Comment ${commentId} already exists with different input.`);
           accepted.push({ index, id, commentId });
           continue;
         }
@@ -947,7 +914,7 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
         feedback.threads.set(id, thread);
         feedback.manifest.threads.push(id);
       } else {
-        const reply = applyReply(options, feedback);
+        const reply = applyReply(paths, options, feedback);
         validateDocument(ajv, reply.thread, "Feedback reply input");
       }
       changed.add(id);
@@ -1058,6 +1025,15 @@ function dispatch(paths, positionals, options) {
   if (command === "thread" && subcommand === "reply-batch") {
     return replyThreadBatch(paths, options);
   }
+  if (command === "attachment" && subcommand === "add") {
+    const file = path.resolve(process.cwd(), option(options, "file", { required: true }));
+    if (!fs.statSync(file).isFile() || fs.statSync(file).size > MAX_ATTACHMENT_BYTES) fail("Choose a local file of 20 MiB or smaller.");
+    const attachment = storeAttachment(paths.reviewId, readReview(paths.reviewId).generation, path.basename(file), option(options, "media-type") || "application/octet-stream", fs.readFileSync(file));
+    console.log(JSON.stringify(resolveAttachment(paths.reviewId, attachment.id), null, 2)); return;
+  }
+  if (command === "attachment" && subcommand === "show") {
+    console.log(JSON.stringify(resolveAttachment(paths.reviewId, option(options, "id", { required: true })), null, 2)); return;
+  }
   if (command === "thread" && subcommand === "resolve") {
     return resolveThread(paths, options);
   }
@@ -1084,17 +1060,24 @@ try {
     process.argv.slice(2),
   );
   const options = expandInputOptions(parsedOptions, process.cwd());
-  const paths = pathsFor(repositoryRoot());
-  const readOnly =
-    positionals.length === 0 ||
-    positionals[0] === "help" ||
-    options.has("help") ||
-    positionals[0] === "validate";
-  if (readOnly) {
-    withValidationContext(() => dispatch(paths, positionals, options));
-  } else {
-    withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
+  const command = positionals.join(" ");
+  if (!positionals.length || positionals[0] === "help" || options.has("help")) {
+    dispatch(null, positionals, options);
+    return;
   }
+  if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
+  assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, command));
+  const paths = pathsFor(repositoryRoot());
+  if (process.env.SEMANTIC_FLOW_REVIEW_ID) {
+    if (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION) fail("The initiating review session changed. Reopen the viewer.");
+  }
+  if (command === "init" && !process.env.SEMANTIC_FLOW_REVIEW_ID) {
+    const { manifest } = semanticArtifact(paths);
+    registerReview(paths.root, manifest.implementationId, manifest.title);
+  }
+  // Validation also holds the shared lock so it never observes a partial batch.
+  withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
+
 } catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);

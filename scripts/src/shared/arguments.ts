@@ -24,6 +24,7 @@ function inputOptionName(name: string): string {
 
 function inputOptionValues(name: string, value: unknown): OptionValue[] {
   const structuredOptions = new Set(["threads", "replies", "items"]);
+  if (name === "attachments" && Array.isArray(value) && value.every((id) => typeof id === "string")) return value;
   if (value === true) {
     return [true];
   }

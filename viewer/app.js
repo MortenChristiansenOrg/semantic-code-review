@@ -1,12 +1,50 @@
 /* Semantic Flow review viewer — Cinema.
    Renders a semantic implementation artifact (window.SEMANTIC_IMPLEMENTATION) as a full-bleed
    inline-diff reading experience. */
-(function () {
+(async function () {
   "use strict";
 
   const data = window.SEMANTIC_IMPLEMENTATION;
   const app = document.querySelector("#app");
-  const storeKey = `semantic-view:${data.implementationId}`;
+  const requestReviewId = window.SEMANTIC_REVIEW_CONTEXT?.reviewId || data.reviewId;
+  const requestGeneration = window.SEMANTIC_REVIEW_CONTEXT?.generation;
+  const fetch = (input, options) => {
+    const url = new URL(input, window.location.href);
+    if (requestReviewId && url.pathname.startsWith("/api/")) {
+      url.searchParams.set("review", requestReviewId);
+      url.searchParams.set("generation", requestGeneration || "");
+    }
+    return window.fetch(url.href, options);
+  };
+  let reviewDeleted = false;
+  let deletedElsewhere = false;
+  let savedReview;
+  try {
+    const response = await fetch("/api/review-state", { cache: "no-store" });
+    savedReview = await response.json();
+    if (!response.ok || !savedReview.ok) {
+      if (savedReview.reviewUnavailable) { reviewDeleted = true; savedReview = { reviewId: requestReviewId, generation: requestGeneration, state: {} }; }
+      else throw new Error(savedReview.error || "Review data could not be loaded.");
+    }
+  } catch (error) {
+    app.textContent = `${error.message} Reload to retry.`;
+    return;
+  }
+  let persistedState = structuredClone(savedReview.state);
+  let savingState = false;
+  let saveError = "";
+  let saveTimer;
+  let saveOperation = null;
+  let reviewsOpen = reviewDeleted;
+  let reviewList = [];
+  let reviewListError = "";
+  let reviewListBusy = false;
+  const uploadOps = new Set();
+  const uploadStatus = new WeakMap();
+  const approvalOps = new Map();
+  const approvalComparisons = new Map();
+  const approvalErrors = new Map();
+
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
   function adoptViewerSnapshot(snapshot) {
@@ -19,20 +57,24 @@
   const draftSnapshots = new WeakMap();
 
   async function pollViewerRevision() {
-    if (polling || document.hidden) return;
+    if (reviewDeleted || polling || document.hidden) return;
     polling = true;
     try {
       const response = await fetch("/api/revision", { cache: "no-store" });
-      if (!response.ok) return;
+      if (!response.ok) {
+        const failure = await response.json();
+        if (failure.reviewUnavailable) markReviewDeleted(true);
+        return;
+      }
       const snapshot = await response.json();
       if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
       // Let local feedback writes finish before adopting a server snapshot.
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
       if (!nextResponse.ok) return;
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
-      if (exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
+      if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const selection = window.getSelection();
       const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
       refreshNotice = "Review updated";
@@ -107,6 +149,19 @@
 
   /* ---- ids & lookups ---------------------------------------------------- */
   const fileKey = (stageId, path) => `f:${stageId}:${path}`;
+  const fileApprovalKey = (stageId, nodeId, path) => `m:${JSON.stringify([stageId, nodeId, path])}`;
+  function approvalEntry(id) {
+    if (!id.startsWith("m:")) return null;
+    try {
+      const [stageId, nodeId, path] = JSON.parse(id.slice(2));
+      const entry = fileById.get(fileKey(stageId, path));
+      const membership = entry?.file.memberships?.find((item) => item.nodeId === nodeId);
+      return membership ? { ...entry, nodeId, membership } : null;
+    } catch { return null; }
+  }
+  function stageFileApprovals(stage) {
+    return stage.nodes.flatMap((node) => nodeFileList(stage, node).map((file) => fileApprovalKey(stage.id, node.id, file.path)));
+  }
   const insightKey = (stageId, collection, itemId) =>
     `i:${stageId}:${collection}:${itemId}`;
   // A line thread's element id carries everything needed to resolve a feedback
@@ -212,25 +267,23 @@
     return stage.files.filter((file) => file.memberships.some((m) => m.nodeId === node.id));
   }
   function selectedNodeForFile(activeValue, file) {
-    if (typeof activeValue === "string") return activeValue;
-    if (!activeValue) return null;
-    return (file.memberships || [])[0]?.nodeId || null;
+    return typeof activeValue === "string" && file.memberships?.some((m) => m.nodeId === activeValue) ? activeValue : null;
   }
   function activeFileNodeId(id) {
     const entry = fileById.get(id);
     return entry ? selectedNodeForFile(state.activeFiles[id], entry.file) : null;
   }
-  function fileRowElement(id, nodeId = activeFileNodeId(id)) {
+  function fileRowElement(id, nodeId = activeFileNodeId(id), root = app) {
     const entry = fileById.get(id);
     if (entry && nodeId) {
       const selector =
         `.stage[data-stage="${cssEsc(entry.stage.id)}"] ` +
         `details.node[data-node="${cssEsc(nodeId)}"] ` +
         `.frow[data-file="${cssEsc(id)}"]`;
-      const row = app.querySelector(selector);
+      const row = root.querySelector(selector);
       if (row) return row;
     }
-    return app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+    return root.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
   }
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
@@ -293,10 +346,11 @@
 
   /* ---- state ------------------------------------------------------------ */
   let state = load();
-  let compose = null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
-  let replyTo = null;              // artifact thread id currently being replied to
-  let replyDraft = "";             // unsent text of the open reply, kept across re-renders
-  let replyEditId = null;          // id of the pending reply draft being edited (if any)
+  let compose = state.editor?.compose || null;              // inline note composer: {kind,id,stageId,editIndex,mode,body}
+  let replyTo = state.editor?.replyTo || null;              // artifact thread id currently being replied to
+  let replyAttachments = state.editor?.replyAttachments || [];
+  let replyDraft = state.editor?.replyDraft || "";             // unsent text of the open reply, kept across re-renders
+  let replyEditId = state.editor?.replyEditId || null;          // id of the pending reply draft being edited (if any)
   let replyDirty = false;
   let pendingLazyJump = null;
   function resumePendingLazyJump() {
@@ -361,22 +415,94 @@
       threadCollapsed: {},
       openLineThreads: {},
       activeFiles: {},
+      approvalComparisons: {},
       notesFilter: "active",
       replyDrafts: []
     };
   }
   function load() {
-    try {
-      const merged = { ...defaults(), ...JSON.parse(localStorage.getItem(storeKey) || "{}") };
-      // Invalid experimental UI preferences reset; old formats are not migrated.
-      for (const key of ["specificationOpen", "activeFiles", "approvals"]) {
-        if (!merged[key] || typeof merged[key] !== "object" || Array.isArray(merged[key])) merged[key] = {};
-      }
-      return merged;
-    }
-    catch { return defaults(); }
+    return { ...defaults(), ...savedReview.state };
   }
-  function persist() { localStorage.setItem(storeKey, JSON.stringify(state)); }
+  function stateChanges(before, after, prefix = []) {
+    const changes = [];
+    for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+      const a = before[key], b = after[key];
+      if (JSON.stringify(a) === JSON.stringify(b)) continue;
+      const object = (value) => value && typeof value === "object" && !Array.isArray(value);
+      if ((a === undefined || object(a)) && object(b)) changes.push(...stateChanges(a || {}, b, [...prefix, key]));
+      else changes.push({ path: [...prefix, key], before: key in before ? { present: true, value: a } : { present: false }, after: key in after ? { present: true, value: b } : { present: false } });
+    }
+    return changes;
+  }
+  function captureEditor() {
+    state.editor = { compose, replyTo, replyDraft, replyEditId, replyAttachments: replyTo ? replyAttachments : [] };
+    for (const note of [...state.comments, compose].filter(Boolean)) {
+      const snapshot = draftSnapshots.get(note);
+      if (snapshot) note.snapshot = snapshot;
+    }
+  }
+  function persist() {
+    if (reviewDeleted) return;
+    captureEditor();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveState, 50);
+  }
+  function showSaveStatus() {
+    let notice = document.querySelector("#save-status");
+    if (!notice) { notice = document.createElement("div"); notice.id = "save-status"; notice.setAttribute("role", "status"); document.body.append(notice); }
+    notice.className = "save-status";
+    notice.hidden = !saveError && !savingState;
+    notice.textContent = saveError ? `Review changes are not saved: ${saveError}` : "Saving review…";
+  }
+  function saveState() {
+    if (saveOperation) return saveOperation;
+    saveOperation = writeState().finally(() => { saveOperation = null; });
+    return saveOperation;
+  }
+  async function writeState() {
+    if (reviewDeleted) return;
+    captureEditor();
+    const next = JSON.parse(JSON.stringify(state));
+    const changes = stateChanges(persistedState, next);
+    if (!changes.length) return;
+    savingState = true; showSaveStatus();
+    try {
+      const response = await fetch("/api/review-state", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        if (payload.reviewUnavailable) markReviewDeleted(true);
+        throw new Error(payload.error || "Save failed. Make another edit to retry.");
+      }
+      persistedState = next;
+      saveError = "";
+    } catch (error) { saveError = error.message; }
+    finally { savingState = false; showSaveStatus(); }
+    if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
+  }
+  async function flushReviewState() {
+    if (reviewDeleted) return;
+    await Promise.all([...uploadOps, ...approvalOps.values()]);
+    clearTimeout(saveTimer);
+    await saveState();
+    if (saveError) throw new Error(saveError);
+    captureEditor();
+    while (uploadOps.size || approvalOps.size || stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) {
+      await Promise.all([...uploadOps, ...approvalOps.values()]);
+      await saveState();
+      if (saveError) throw new Error(saveError);
+      captureEditor();
+    }
+    clearTimeout(saveTimer);
+  }
+
+  window.addEventListener("beforeunload", (event) => {
+    if (reviewDeleted) return;
+    captureEditor();
+    if (uploadOps.size || approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
+  });
 
   /* ---- helpers ---------------------------------------------------------- */
   function esc(v) {
@@ -387,29 +513,80 @@
   function formatCommentBody(v) {
     return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
   }
-  /* File approvals carry an eager revision so staleness is known before their
-     diffs load. Stage approvals have no revision. Unsupported approval records are ignored. */
+  /* File approvals are scoped to a node and observe the complete file plus its ownership.
+     Changes outside owned ranges conservatively make that approval stale too. */
   function revisionFor(id) {
-    return fileById.get(id)?.file.revision || null;
+    const entry = approvalEntry(id);
+    if (!entry?.file.revision) return null;
+    const m = entry.membership;
+    return JSON.stringify([entry.file.revision, entry.stage.baseRevision, m.classification, m.hunks || null, m.lineRanges || null]);
   }
-  // A renamed file's approval was recorded under its pre-rename element id. Map
-  // to that id so the sign-off is not lost when the path changes.
+  function approvalEndpoint(entry) {
+    return { stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
+      baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
+  }
+  function changeApproval(id, kind) {
+    if (approvalOps.has(id)) return;
+    const stage = kind === "stage" ? stageById.get(id) : null;
+    if (stage && !stageNodesApproved(stage)) return;
+    const entry = approvalEntry(id), rev = revisionFor(id), previousId = previousApprovalId(id);
+    if (!stage && !rev) return;
+    const remove = approvalState(id) === "approved";
+    const operation = Promise.resolve().then(async () => {
+      try {
+        let retained = {};
+        if (entry && !remove) {
+          const response = await fetch("/api/approval-snapshots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(approvalEndpoint(entry)) });
+          retained = await response.json();
+          if (!response.ok || !retained.ok) throw new Error(retained.error || "Could not retain approved content.");
+        }
+        if (previousId) delete state.approvals[previousId];
+        if (remove) delete state.approvals[id];
+        else {
+          state.approvals[id] = { rev, at: Date.now(), ...(entry ? {
+            ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
+          } : {}) };
+          delete state.approvalComparisons[id];
+        }
+        approvalErrors.delete(id);
+        if (previousId) approvalErrors.delete(previousId);
+        persist();
+      } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
+      finally { approvalOps.delete(id); render(); }
+    });
+    approvalOps.set(id, operation); render();
+    return operation;
+  }
+  // Retain each observed rename edge by moving the reference, never the captured endpoint.
+  function retainApprovalRenames() {
+    let changed = false;
+    for (const { stage, file } of flatFiles) for (const membership of file.memberships || []) {
+      const id = fileApprovalKey(stage.id, membership.nodeId, file.path), previousId = previousApprovalId(id);
+      if (previousId && approvalErrors.has(previousId)) {
+        if (!approvalErrors.has(id)) approvalErrors.set(id, approvalErrors.get(previousId));
+        approvalErrors.delete(previousId);
+      }
+      if (!approvalRecord(id) && previousId && approvalRecord(previousId)) {
+        state.approvals[id] = state.approvals[previousId]; delete state.approvals[previousId]; changed = true;
+      }
+    }
+    if (changed) persist();
+  }
   function previousApprovalId(id) {
-    const entry = fileById.get(id);
-    if (entry && entry.file.kind === "renamed" && entry.file.previousPath)
-      return fileKey(entry.stage.id, entry.file.previousPath);
-    return null;
+    const entry = approvalEntry(id);
+    return entry?.file.kind === "renamed" && entry.file.previousPath
+      ? fileApprovalKey(entry.stage.id, entry.nodeId, entry.file.previousPath) : null;
   }
   function approvalRecord(id) {
     const rec = state.approvals[id];
     if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
-    if (id.startsWith("f:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
+    if (id.startsWith("m:")) return typeof rec.rev === "string" && rec.rev.length > 0 ? rec : null;
     return stageById.has(id) && rec.rev === null ? rec : null;
   }
   function approvalState(id) {
     const rec = approvalRecord(id);
     if (rec) {
-      if (id.startsWith("f:")) return rec.rev === revisionFor(id) ? "approved" : "stale";
+      if (id.startsWith("m:")) return rec.rev === revisionFor(id) && rec.path === approvalEntry(id)?.file.path ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file
@@ -426,7 +603,7 @@
   }
   function nodeApprovalState(stage, node) {
     return aggregateApprovalState(
-      nodeFileList(stage, node).map((file) => approvalState(fileKey(stage.id, file.path))),
+      nodeFileList(stage, node).map((file) => approvalState(fileApprovalKey(stage.id, node.id, file.path))),
     );
   }
   function stageNodesApproved(stage) {
@@ -643,7 +820,7 @@
 
   function reviewable() {
     let n = 0;
-    data.stages.forEach((s) => { n += 1 + s.nodes.length + s.files.length; });
+    data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
     return n;
   }
   function approvedCount() {
@@ -651,7 +828,7 @@
     data.stages.forEach((s) => {
       if (stageApproved(s)) n += 1;
       s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
-      s.files.forEach((file) => { if (approved(fileKey(s.id, file.path))) n += 1; });
+      stageFileApprovals(s).forEach((key) => { if (approved(key)) n += 1; });
     });
     return n;
   }
@@ -750,18 +927,18 @@
   /* ---- approvals / comments UI ----------------------------------------- */
   function approveBtn(kind, id, size = "") {
     const stage = kind === "stage" ? stageById.get(id) : null;
-    const blocked = stage && !stageNodesApproved(stage);
+    const blocked = approvalOps.has(id) || (stage ? !stageNodesApproved(stage) : !revisionFor(id));
     const st = stage ? stageApprovalState(stage) : approvalState(id);
     if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" disabled title="Approve every step before approving the stage">
+      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
         <span class="check"></span>Approve</button>`;
     }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
         <span class="check">!</span>Re-approve</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${id}" type="button" aria-pressed="${on}">
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="${on}">
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
   }
   function commentBtn(kind, id, stageId) {
@@ -882,7 +1059,7 @@
         const stamp = fmtTime(cm.createdAt);
         return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
           <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
-          <p class="comment-body">${formatCommentBody(cm.body)}</p>
+          <p class="comment-body">${formatCommentBody(cm.body)}</p>${attachmentList(cm.attachments)}
         </div>`;
       })
       .join("");
@@ -944,7 +1121,7 @@
               <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
             </span>
           </div>
-          <p class="comment-body">${formatCommentBody(r.body)}</p>
+          <p class="comment-body">${formatCommentBody(r.body)}</p>${attachmentList(r.attachments)}
         </div>`)
       .join("");
     const actionable = t.status === "open" || t.status === "resolved";
@@ -959,8 +1136,8 @@
     const editing = replyTo === t.id && replyEditId != null;
     const replyForm = replyTo === t.id && Boolean(withLabel) === state.notesOpen
       ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
-          <textarea name="reply-body" rows="3" required placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>
-          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit">${editing ? "Update reply" : "Save reply"}</button></div>
+          <textarea name="reply-body" rows="3" placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>${attachmentEditor(replyAttachments)}
+          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${editing ? "Update reply" : "Save reply"}</button></div>
         </form>`
       : "";
     return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
@@ -1000,7 +1177,7 @@
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
           <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
         </div>`;
-    return `<article class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
+    return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
@@ -1008,11 +1185,108 @@
         </div>
         ${missing}
         <div class="tmsg tmsg-user ${mode === "feedback" && !sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${esc(fmtTime(c.createdAt))}</time>${acts}</div>
-        <p class="comment-body">${formatCommentBody(c.body)}</p></div>
+        <p class="comment-body">${formatCommentBody(c.body)}</p>${attachmentList(c.attachments)}</div>
       </article>`;
   }
   // Inline note composer, rendered directly in the element's own thread so the
   // reviewer can keep looking at what they are commenting on while they write.
+  function attachmentUrl(id, preview = false) {
+    const url = new URL(`/api/attachments/${encodeURIComponent(id)}`, window.location.href);
+    url.searchParams.set("review", requestReviewId); url.searchParams.set("generation", requestGeneration);
+    if (preview) url.searchParams.set("preview", "1");
+    return url.href;
+  }
+  const attachmentIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>`;
+  const paperclipIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9a1 1 0 0 0 2 2l8-8"/></svg>`;
+  function attachmentList(attachments = [], editable = false) {
+    if (!attachments.length) return "";
+    return `<div class="attachments">${attachments.map((file) => `<div class="attachment" data-render-key="${esc(file.id)}">
+      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
+      <span class="attachment-name" title="${esc(file.filename)}">${esc(file.filename)}</span><small>${(file.size / 1024).toFixed(1)} KiB</small>
+      ${editable ? `<button class="attachment-remove" type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>` : ""}</div>`).join("")}</div>`;
+  }
+  function attachmentEditor(attachments) {
+    const status = uploadStatus.get(attachments);
+    return `${attachmentList(attachments, true)}<div class="attachment-tools"><label class="attach-files">${paperclipIcon}<span>Attach files</span><input type="file" multiple data-attachment-input aria-label="Attach files"></label>
+      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop into the text field / paste an image</span></div>
+      ${status?.busy ? `<p role="status">Uploading files…</p>` : ""}${status?.error ? `<p class="tthread-err" role="alert">${esc(status.error)}</p>` : ""}`;
+  }
+  function editorAttachments(form) {
+    if (form?.matches("[data-note-form]") && compose) return compose.attachments ||= [];
+    if (form?.matches("[data-reply-form]") && replyTo === form.dataset.id) return replyAttachments;
+    return null;
+  }
+  function uploadFiles(files, attachments) {
+    if (!attachments || !files.length) return;
+    const status = uploadStatus.get(attachments) || { busy: false, error: "", errors: new Map(), pending: [] };
+    status.pending.push(...files); uploadStatus.set(attachments, status);
+    if (status.busy) { render(); return; }
+    status.busy = true;
+    const operation = Promise.resolve().then(async () => {
+      while (status.pending.length) {
+        const file = status.pending.shift();
+        let errorKey = JSON.stringify(["oversize", file.name, file.type, file.size]);
+        try {
+          if (file.size > 20 * 1024 * 1024) throw new Error(`${file.name}: files must be 20 MiB or smaller.`);
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join("");
+          errorKey = JSON.stringify([file.name, file.type, sha256]);
+          if (attachments.length >= 10) {
+            if (!attachments.some((item) => item.filename === file.name && item.size === file.size && item.sha256 === sha256)) throw new Error("Use at most 10 files per message.");
+            // The exact content is already retained by this draft; no transfer is needed.
+            status.errors.delete(errorKey); status.error = [...status.errors.values()].join(" "); continue;
+          }
+          let binary = "";
+          for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+          const response = await fetch("/api/attachments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) }) });
+          const result = await response.json();
+          if (!response.ok || !result.ok) throw new Error(result.error || `Could not upload ${file.name}.`);
+          if (!attachments.some((item) => item.id === result.attachment.id)) {
+            if (attachments.length >= 10) throw new Error("Use at most 10 files per message.");
+            attachments.push(result.attachment);
+          }
+          status.errors.delete(errorKey); status.error = [...status.errors.values()].join(" ");
+          persist();
+        } catch (error) { status.errors.set(errorKey, error.message); status.error = [...status.errors.values()].join(" "); }
+      }
+    }).finally(() => { status.busy = false; uploadOps.delete(operation); render(); });
+    uploadOps.add(operation); render();
+  }
+  document.addEventListener("change", (event) => {
+    if (event.target.matches("[data-attachment-input]")) {
+      const files = [...event.target.files];
+      event.target.value = ""; // The persistent input must allow selecting the same file again.
+      uploadFiles(files, editorAttachments(event.target.closest("form")));
+    }
+  });
+  let fileDropTarget = null;
+  function clearFileDropTarget() { fileDropTarget?.classList.remove("is-file-drop-target"); fileDropTarget = null; }
+  function messageDropTarget(target) {
+    return target instanceof HTMLTextAreaElement && target.matches('textarea[name="nc-body"], textarea[name="reply-body"]') && target.closest("[data-note-form], [data-reply-form]") ? target : null;
+  }
+  document.addEventListener("dragover", (event) => {
+    if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
+    event.preventDefault();
+    const target = messageDropTarget(event.target);
+    event.dataTransfer.dropEffect = target ? "copy" : "none";
+    if (target !== fileDropTarget) { clearFileDropTarget(); fileDropTarget = target; }
+    target?.classList.add("is-file-drop-target");
+  });
+  document.addEventListener("dragleave", (event) => { if (event.target === fileDropTarget) clearFileDropTarget(); });
+  document.addEventListener("dragend", clearFileDropTarget);
+  window.addEventListener("blur", clearFileDropTarget);
+  document.addEventListener("drop", (event) => {
+    clearFileDropTarget();
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault(); // Rejected file drops must not navigate away from the review.
+    const target = messageDropTarget(event.target);
+    if (target) uploadFiles([...event.dataTransfer.files], editorAttachments(target.form));
+  });
+  document.addEventListener("paste", (event) => {
+    const form = event.target.closest?.("[data-note-form], [data-reply-form]");
+    const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
+    if (form && files.length) { event.preventDefault(); uploadFiles(files, editorAttachments(form)); }
+  });
   function renderComposer(ctx) {
     const mode = ctx.mode === "feedback" ? "feedback" : "personal";
     return `<form class="note-compose mode-${mode}" data-note-form>
@@ -1020,10 +1294,10 @@
         <label class="nc-opt"><input type="radio" name="nc-mode" value="personal" ${mode !== "feedback" ? "checked" : ""}><span><b>Personal</b><small>Just for you.</small></span></label>
         <label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>
       </div>
-      <textarea name="nc-body" rows="3" required placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>
+      <textarea name="nc-body" rows="3" placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>${attachmentEditor(ctx.attachments ||= [])}
       <div class="nc-actions">
         <button type="button" data-action="compose-cancel">Cancel</button>
-        <button class="nc-save" type="submit">${ctx.editIndex != null ? "Save note" : "Add note"}</button>
+        <button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${ctx.editIndex != null ? "Save note" : "Add note"}</button>
       </div>
     </form>`;
   }
@@ -1054,6 +1328,7 @@
   }
   function fileRow(stage, node, file) {
     const id = fileKey(stage.id, file.path);
+    const approvalId = fileApprovalKey(stage.id, node.id, file.path);
     const cls = classificationFor(file, node.id);
     const { name } = splitPath(file.path);
     const dir = dirShort(splitPath(file.path).dir);
@@ -1062,7 +1337,7 @@
     const sharedChip = hint
       ? `<span class="cls cls-shared" title="Split across steps — this step owns ${esc(hint)}.">shared</span>`
       : "";
-    const st = approvalState(id);
+    const st = approvalState(approvalId);
     const isOn = st === "approved";
     const isStale = st === "stale";
     const isActive = activeFileNodeId(id) === node.id;
@@ -1071,18 +1346,15 @@
     const lineN = counts.line;
     const noteN = counts.personal;
     const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
-    const threadBadge = threadN
-      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} file comment${threadN === 1 ? "" : "s"}" aria-label="${threadN} file comment${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
+    const notesOpen = isActive && state.openThreads[id] !== false;
+    const combinedLabel = `${threadN} file comment${threadN === 1 ? "" : "s"}, ${noteN} personal note${noteN === 1 ? "" : "s"}`;
+    const threadBadge = threadN || noteN
+      ? `<button class="mini-count mini-threads ${notesOpen ? "is-open" : ""}" data-action="toggle-file-notes" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${notesOpen}" title="${combinedLabel}" aria-label="${combinedLabel}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
       : "";
     const lineBadge = lineN
       ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
       : "";
-    const noteBadge = noteN
-      ? `<button class="mini-count mini-notes ${isActive ? "is-open" : ""}" ${openAttrs} title="${noteN} personal note${noteN === 1 ? "" : "s"}" aria-label="${noteN} personal note${noteN === 1 ? "" : "s"}">${noteGlyph()}<b>${noteN}</b></button>`
-      : "";
-    // A file's diff and its notes open and close together as one unit, so the
-    // thread badge opens the file just like the filename does.
-    return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
+    return `<div data-render-key="${esc(id)}" class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" data-node-id="${node.id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
@@ -1091,30 +1363,29 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${threadBadge}${lineBadge}${noteBadge}
-          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${id}" type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
+          ${threadBadge}${lineBadge}
+          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
       </div>
     </div>`;
   }
-  // The notes block shown inside an open file's diff unit — always present while
-  // the file is open so content and notes collapse/expand together.
+  // File notes can be hidden independently of the open diff.
   function fileNotesBlock(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
     const arts = artifactThreadsForElement("file", id);
     const locals = localVisibleForElement(id);
-    const rows =
+    const rows = state.openThreads[id] === false ? "" :
       arts.map((t) => renderArtifactThread(t, false)).join("") +
       locals.map((ln) => renderLocalNote(ln)).join("");
     const footer = composingNew
       ? renderComposer(compose)
       : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${id}" type="button">＋ Add note</button>`;
-    return `<div class="thread file-notes" data-thread="${id}">${rows}${footer}</div>`;
+    return `<div class="thread file-notes" data-thread="${id}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
   }
   function nodeFilesPanel(stage, node) {
     const files = nodeFileList(stage, node);
     const total = files.length;
-    const done = files.filter((f) => approved(fileKey(stage.id, f.path))).length;
+    const done = files.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
 
     // Group by owning .NET project (convention-based) for a quick overview.
     const groups = new Map();
@@ -1124,7 +1395,7 @@
       groups.get(k).push(f);
     });
     const groupHtml = [...groups.entries()].map(([proj, gfiles]) => {
-      const gd = gfiles.filter((f) => approved(fileKey(stage.id, f.path))).length;
+      const gd = gfiles.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
       const rows = gfiles.map((f) => fileRow(stage, node, f)).join("");
       return `<div class="fgroup ${gd === gfiles.length ? "all-done" : ""}">
         <div class="fgroup-h">
@@ -1272,8 +1543,7 @@
           ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
           : " own-mark";
         if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner) {
-          ownershipNotice = `<div class="ownership-notice">Dimmed lines belong to ${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)}.
-            <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}">Open this step here ${arrowRight()}</button></div>`;
+          ownershipNotice = `<div class="ownership-notice">Edited in <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}" title="Show change node">${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)} ${arrowRight()}</button></div>`;
         }
         ctx.previousOwner = owner;
       } else ctx.previousOwner = null;
@@ -1352,15 +1622,17 @@
   function hideRemovedToggle(id) {
     const on = Boolean(state.hideDeleted[id]);
     return `<div class="view-toggle" role="group" aria-label="Removed lines">
-      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${id}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
+      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${esc(id)}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
     </div>`;
   }
   // Diff view controls: mode toggle + hide-removed. Added/deleted files render
   // their full contents once, so neither control applies to them.
+  function sinceApprovalEnabled(id) { return approvalState(id) === "stale" && state.approvalComparisons[id] !== false; }
   function diffControls(entry) {
-    const k = entry.file.kind;
-    if (k === "added" || k === "deleted") return "";
-    return `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}`;
+    const k = entry.file.kind, id = fileApprovalKey(entry.stage.id, activeFileNodeId(entry.id), entry.file.path);
+    const stale = approvalState(id) === "stale", since = sinceApprovalEnabled(id);
+    const comparison = stale ? `<div class="view-toggle"><button class="vt ${since ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(id)}" aria-pressed="${since}">Since approval</button></div>` : "";
+    return `${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
@@ -1378,12 +1650,59 @@
       <div class="diff-actions">
         ${diffControls(entry)}
         ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
-        ${approveBtn("file", id, "sm")}
+        ${approveBtn("file", fileApprovalKey(stage.id, opts.nodeId || activeFileNodeId(id), file.path), "sm")}
         ${commentBtn("file", id)}
         ${opts.close ? `<button class="diff-close" data-action="${opts.close}" type="button" aria-label="Close">×</button>` : ""}
       </div>
     </header>`;
   }
+  function retainedApproval(id) {
+    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
+  }
+  function comparisonKey(id, entry) {
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
+  }
+  async function loadApprovalComparison(id, entry, offset = 0) {
+    const approval = retainedApproval(id);
+    if (!approval?.snapshotId) return;
+    const key = comparisonKey(id, entry), mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
+    if (approvalComparisons.get(key)?.loading) return;
+    approvalComparisons.set(key, { loading: true, offset }); render();
+    try {
+      await flushReviewState();
+      const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
+      approvalComparisons.set(key, result);
+    } catch (error) { approvalComparisons.set(key, { error: error.message, offset }); }
+    while (approvalComparisons.size > 32) approvalComparisons.delete(approvalComparisons.keys().next().value);
+    render();
+  }
+  function approvalComparisonBody(id, entry) {
+    const approval = retainedApproval(id);
+    if (!approval?.snapshotId) return '<div class="diff-empty">Approved content is unavailable. Re-approve the current file to retain a snapshot.</div>';
+    const key = comparisonKey(id, entry), comparison = approvalComparisons.get(key);
+    if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
+    if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
+    if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
+    const info = `<div class="comparison-info"><p>Comparison with the approved file. Turn off Since approval to add line comments.</p>
+      ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
+    if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
+    if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
+    const rows = []; let previousNew = 0;
+    for (const row of comparison.lines) {
+      if (previousNew && row.n > previousNew + 1) rows.push(gapHtml(row.n - previousNew - 1));
+      rows.push(drowHtml(row, langFor(entry.file.path), null));
+      if (row.n) previousNew = row.n;
+    }
+    const pager = comparison.offset || comparison.nextOffset != null ? `<div class="diff-pages">
+      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${Math.max(0, comparison.offset - 900)}" ${comparison.offset ? "" : "disabled"}>Previous page</button>
+      <span>Rows ${comparison.offset + 1}–${comparison.offset + comparison.lines.length}</span>
+      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${comparison.nextOffset || 0}" ${comparison.nextOffset == null ? "disabled" : ""}>Next page</button></div>` : "";
+    return `${info}<div class="diff-scroll${state.hideDeleted[entry.id] ? " hide-removed" : ""}"><div class="diff-grid">${rows.join("")}${pager}</div></div>`;
+  }
+
   function diffPanel(entry, opts = {}) {
     if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
     const ctx = {
@@ -1392,9 +1711,12 @@
       ownership: membershipOwnership(entry.file),
       focusNodeId: opts.focusNodeId || null,
     };
-    return `<section class="diff-panel ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
+    const approvalId = fileApprovalKey(entry.stage.id, opts.focusNodeId || activeFileNodeId(entry.id), entry.file.path);
+    const sinceApproval = sinceApprovalEnabled(approvalId);
+    const comparisonEntry = approvalEntry(approvalId);
+    return `<section class="diff-panel ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
+      ${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
     </section>`;
   }
   function diffToolbar(entry) {
@@ -1415,12 +1737,172 @@
           <div><strong>Implementation</strong><span>${esc(data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
+          <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
           <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${activeNoteCount()}</b></button>
         </div>
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
     </div>`;
+  }
+
+  function markReviewDeleted(external = false) {
+    reviewDeleted = true; deletedElsewhere = external; reviewsOpen = true;
+    clearTimeout(saveTimer); saveError = ""; showSaveStatus(); render(); void refreshReviews();
+  }
+  function deletedReviewPage() {
+    const text = deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
+    return `<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in the original worktree to start a fresh session.</p>
+      ${text ? `<label>Copy any unsent text you want to keep<textarea readonly rows="6">${esc(text)}</textarea></label>` : ""}</section>`;
+  }
+  const storageSize = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
+  async function manageReviewData(id) {
+    const review = reviewList.find((item) => item.id === id);
+    if (!review || reviewListBusy || document.querySelector(".review-cleanup")) return;
+    const target = { reviewId: review.id, generation: review.generation };
+    const dialog = document.createElement("dialog"); dialog.className = "review-cleanup"; dialog.setAttribute("aria-labelledby", "cleanup-title");
+    let storage = null, busy = false, error = "", message = "";
+    function paint() {
+      dialog.innerHTML = `<h2 id="cleanup-title">Review data</h2><strong>${esc(review.title)}</strong><p class="review-location">${esc(review.repositoryRoot)}</p>
+        <p class="review-location">${esc(review.id)} · ${storage?.deletionPending || review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}</p>
+        ${storage ? `<p class="review-location">Stored in ${esc(storage.storageDirectory)}</p><p><strong>${storageSize(storage.bytes)}</strong> total</p>
+          <table><thead><tr><th>Data</th><th>Size</th><th>Contents</th></tr></thead><tbody>${storage.categories.map((item) => `<tr><td>${esc(item.label)}</td><td>${storageSize(item.bytes)}</td><td>${esc(item.detail)}</td></tr>`).join("")}</tbody></table>
+          ${storage.drafts || storage.unresolved ? `<p class="cleanup-warning">This review has ${storage.drafts} unsent draft${storage.drafts === 1 ? "" : "s"} and ${storage.unresolved} unresolved feedback thread${storage.unresolved === 1 ? "" : "s"}.</p>` : ""}
+          <p>Deletion removes this review’s local data. Source files, branches, implementation artifacts, published metadata, and archives are preserved.</p>
+          ${!storage.deletionPending ? `<p>${storageSize(storage.unusedBytes)} in ${storage.unused.length} unused files or folders can be cleaned separately. Cleanup keeps files referenced by messages, drafts, or approvals, and skips uploads and snapshots less than an hour old. Nothing is deleted automatically.</p>` : ""}
+          ${storage.referenceError ? `<p role="alert">${esc(storage.referenceError)}</p>` : ""}` : ""}
+        ${busy ? '<p role="status">Working…</p>' : ""}${message ? `<p role="status">${esc(message)}</p>` : ""}${error ? `<p role="alert">${esc(error)}</p>` : ""}
+        <div class="cleanup-actions"><button class="tb-btn" type="button" data-cleanup="cancel" autofocus ${busy ? "disabled" : ""}>Cancel</button>
+          <button class="tb-btn" type="button" data-cleanup="refresh" ${busy ? "disabled" : ""}>Refresh details</button>
+          ${storage && !storage.deletionPending ? `<button class="tb-btn" type="button" data-cleanup="unused" ${busy || !storage.unused.length || storage.referenceError ? "disabled" : ""}>Clean unused files</button>` : ""}
+          <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ${busy || !storage ? "disabled" : ""}>${storage?.deletionPending ? "Retry file removal" : "Delete review data"}</button></div>`;
+    }
+    async function details() {
+      const response = await fetch("/api/reviews/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) });
+      const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not inspect review storage.");
+      storage = result.storage;
+    }
+    dialog.addEventListener("close", () => dialog.remove());
+    dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
+    dialog.addEventListener("click", async (event) => {
+      const action = event.target.closest("[data-cleanup]")?.dataset.cleanup;
+      if (!action || busy) return;
+      if (action === "cancel") { dialog.close(); return; }
+      busy = true; error = ""; message = ""; paint();
+      try {
+        if (action === "refresh") await details();
+        else {
+          const response = await fetch(action === "delete" ? "/api/reviews/delete" : "/api/reviews/clean-unused", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...target, fingerprint: storage.fingerprint }) });
+          const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not clean review data.");
+          if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && !reviewDeleted) markReviewDeleted();
+          if (result.deleted && !result.cleanupPending) { dialog.close(); await refreshReviews(true); return; }
+          if (result.cleanupPending) error = result.error;
+          else { message = `Reclaimed ${storageSize(result.reclaimedBytes)}.`; error = (result.failures || []).join(" "); }
+          await details(); await refreshReviews(true);
+        }
+      } catch (failure) { error = failure.message; }
+      finally { busy = false; if (dialog.isConnected) paint(); }
+    });
+    document.body.append(dialog); busy = true; paint(); dialog.showModal();
+    try { if (id === savedReview.reviewId) await flushReviewState(); await details(); }
+    catch (failure) { error = failure.message; }
+    finally { busy = false; paint(); }
+  }
+  const isCurrentReview = (review) => !reviewDeleted && review.id === savedReview.reviewId && review.generation === savedReview.generation;
+  function reviewsPanel() {
+    return `${reviewDeleted ? deletedReviewPage() : ""}
+      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button>${reviewDeleted ? "" : `<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
+      ${reviewListError ? `<p role="alert">${esc(reviewListError)}</p>` : ""}
+      ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
+      ${!reviewList.length && !reviewListBusy ? '<p>No saved reviews.</p>' : ""}
+      ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${isCurrentReview(review) ? 'aria-current="true"' : ""}>
+        <div><strong>${esc(review.title)}</strong> <span>${review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}${isCurrentReview(review) ? " · Current" : ""}</span>
+        <p>${esc(review.implementationId)}</p><p class="review-location">${esc(review.repositoryRoot)}</p>
+        <p>Last edited <time datetime="${esc(review.updatedAt)}">${esc(new Date(review.updatedAt).toLocaleString())}</time></p>
+        ${!review.available ? `<p class="review-unavailable">Unavailable: ${esc(review.unavailableReason)}</p>` : ""}</div>
+        <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || isCurrentReview(review) ? "disabled" : ""}>Open review</button>
+        <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy || review.deletionPending ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button>
+        <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.deletionPending ? "Retry deletion…" : "Delete data…"}</button></div>
+      </article>`).join("")}
+    `;
+  }
+  let reviewsDialog = null, reviewsCloseTimer;
+  function setReviewsOpen(open) {
+    if (!open && reviewDeleted) return;
+    clearTimeout(reviewsCloseTimer);
+    reviewsOpen = open;
+    document.querySelector('.topbar [data-action="toggle-reviews"]')?.setAttribute("aria-expanded", String(open));
+    forceHidePop();
+    if (open) {
+      clearTimeout(reviewsCloseTimer);
+      if (!reviewsDialog) {
+        reviewsDialog = document.createElement("dialog");
+        reviewsDialog.id = "review-list"; reviewsDialog.className = "review-list";
+        reviewsDialog.setAttribute("aria-label", "Saved reviews");
+        reviewsDialog.addEventListener("cancel", (event) => { event.preventDefault(); setReviewsOpen(false); });
+        reviewsDialog.addEventListener("click", (event) => {
+          if (event.target !== reviewsDialog) return;
+          const box = reviewsDialog.getBoundingClientRect();
+          if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) setReviewsOpen(false);
+        });
+        document.body.append(reviewsDialog); updateReviewList();
+      }
+      reviewsDialog.classList.remove("is-closing");
+      if (!reviewsDialog.open) reviewsDialog.showModal();
+    } else if (reviewsDialog) {
+      reviewsDialog.classList.add("is-closing");
+      reviewsCloseTimer = setTimeout(() => {
+        reviewsDialog.close(); reviewsDialog.remove(); reviewsDialog = null;
+        if (!reviewDeleted) document.querySelector('.topbar [data-action="toggle-reviews"]')?.focus({ preventScroll: true });
+      }, reduced() ? 0 : 180);
+    }
+  }
+  function updateReviewList() {
+    if (!reviewsDialog) return;
+    const active = reviewsDialog.contains(document.activeElement) ? document.activeElement : null;
+    const action = active?.dataset.action, reviewId = active?.dataset.reviewId;
+    const top = reviewsDialog.scrollTop;
+    reviewsDialog.innerHTML = reviewsPanel(); enhanceTooltips(reviewsDialog);
+    reviewsDialog.scrollTop = top;
+    if (action) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
+    if (reviewsDialog.open && !document.querySelector(".review-cleanup[open]") && !reviewsDialog.contains(document.activeElement)) {
+      reviewsDialog.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+    }
+  }
+  async function refreshReviews(force = false) {
+    if (reviewListBusy && !force) return;
+    reviewListBusy = true; reviewListError = ""; updateReviewList();
+    try {
+      const response = await fetch("/api/reviews", { cache: "no-store" });
+      const result = await response.json();
+      if (!response.ok || !result.ok || !Array.isArray(result.reviews)) throw new Error(result.error || "Could not load saved reviews.");
+      reviewList = result.reviews;
+    } catch (error) { reviewListError = error.message; }
+    finally { reviewListBusy = false; updateReviewList(); }
+  }
+  async function changeReview(id, complete = false) {
+    if (reviewListBusy) return;
+    const review = reviewList.find((item) => item.id === id);
+    if (!review) return;
+    // Capture the selected target before any await; another selection cannot redirect it.
+    const target = { reviewId: review.id, generation: review.generation, completed: !review.completedAt, expectedCompletedAt: review.completedAt };
+    reviewListBusy = true; reviewListError = ""; updateReviewList();
+    try {
+      await flushReviewState();
+      const response = await fetch(complete ? "/api/reviews/completion" : "/api/reviews/open", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not open the selected review.");
+      if (complete) await refreshReviews(true);
+      else {
+        // Save edits made while the service was starting. A full navigation also
+        // discards old responses, listeners, and caches instead of retargeting them.
+        await flushReviewState();
+        window.location.assign(result.url);
+      }
+    } catch (error) { reviewListError = error.message; }
+    finally { reviewListBusy = false; updateReviewList(); }
   }
 
   function hero() {
@@ -1510,7 +1992,8 @@
 
   function stageSection(stage, i) {
     const open = Boolean(state.openStages[stage.id]);
-    const filesDone = stage.files.filter((f) => approved(fileKey(stage.id, f.path))).length;
+    const fileApprovals = stageFileApprovals(stage);
+    const filesDone = fileApprovals.filter(approved).length;
     const nodesDone = stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length;
     const done = stageApproved(stage);
     const acIds = stageAcceptanceRefs(stage);
@@ -1538,7 +2021,7 @@
           <p class="rationale"><span class="rationale-label">Why this stage</span>${esc(stage.rationale)}</p>
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
-            <span>${filesDone}/${stage.files.length} files</span>
+            <span>${filesDone}/${fileApprovals.length} file reviews</span>
             ${depsMeta}
             ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
@@ -1562,7 +2045,7 @@
       </div>
       <footer class="story-end">
         <span class="eyebrow">End of review</span>
-        <p>${approvedCount() === reviewable() ? "Every stage, step, and file has your approval." : `${reviewable() - approvedCount()} of ${reviewable()} items still await your review.`}</p>
+        <p>${approvedCount() === reviewable() ? "Every stage, step, and file review has your approval." : `${reviewable() - approvedCount()} of ${reviewable()} items still await your review.`}</p>
       </footer>
     </div>`;
   }
@@ -1571,22 +2054,23 @@
   function coveragePanel() {
     const rows = data.stages.map((s, i) => {
       const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
-      const fd = s.files.filter((f) => approved(fileKey(s.id, f.path))).length;
+      const fileApprovals = stageFileApprovals(s);
+      const fd = fileApprovals.filter(approved).length;
       const stageDone = stageApproved(s);
       return `<div class="cov-stage ${stageDone ? "is-approved" : ""}">
         <div class="cov-h"><span>${stageDone ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
         <div class="cov-bars">
           <span class="cov-bar" title="${nd}/${s.nodes.length} steps"><i style="width:${Math.round(nd / s.nodes.length * 100)}%"></i></span>
-          <span class="cov-bar files" title="${fd}/${s.files.length} files"><i style="width:${Math.round(fd / s.files.length * 100)}%"></i></span>
+          <span class="cov-bar files" title="${fd}/${fileApprovals.length} file reviews"><i style="width:${Math.round(fd / fileApprovals.length * 100)}%"></i></span>
         </div>
-        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${s.files.length} files</small>
+        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${fileApprovals.length} file reviews</small>
       </div>`;
     }).join("");
     return `<aside class="side coverage ${state.coverageOpen ? "is-open" : ""}" aria-hidden="${!state.coverageOpen}" ${state.coverageOpen ? "" : "inert"}>
       <div class="side-head"><div><span class="eyebrow">At a glance</span><h2>Review coverage</h2></div><button data-action="toggle-coverage" aria-label="Close" type="button">×</button></div>
       <div class="cov-score"><strong>${pct()}%</strong><span>${approvedCount()} of ${reviewable()} approved</span><div class="mini-bar"><i style="width:${pct()}%"></i></div></div>
       <div class="cov-list">${rows}</div>
-      <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>Files</span></div>
+      <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>File reviews</span></div>
     </aside>`;
   }
   function localNoteRef(c) {
@@ -1724,14 +2208,88 @@
     return { text: t, title: t };
   }
   /* ---- render ----------------------------------------------------------- */
+  // Keep the last requested markup separate from the live DOM. Unchanged
+  // subtrees retain scroll, selection, image state and running animations;
+  // browser-managed details/form state is not overwritten by unrelated edits.
+  const renderedNodes = new WeakMap();
+  function renderKey(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return String(node.nodeType);
+    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "name", "value"];
+    return JSON.stringify([node.tagName, (node.getAttribute("class") || "").split(/\s+/)[0], ...identity.map((key) => node.getAttribute(key))]);
+  }
+  function rememberRendered(node, template) {
+    if (node.nodeType === Node.ELEMENT_NODE) renderedNodes.set(node, renderSnapshot(template));
+    Array.from(node.childNodes).forEach((child, index) => rememberRendered(child, template.childNodes[index]));
+  }
+  function renderSnapshot(node) {
+    // Store values, not detached nodes whose parent links would keep entire
+    // obsolete page trees alive for every independently updated component.
+    return { markup: node.outerHTML, attributes: new Map(Array.from(node.attributes, attr => [attr.name, attr.value])) };
+  }
+  function patchChildren(parent, next) {
+    const available = new Map();
+    for (const node of parent.childNodes) {
+      const key = renderKey(node);
+      if (!available.has(key)) available.set(key, []);
+      available.get(key).push(node);
+    }
+    const matches = Array.from(next.childNodes, desired => ({ desired, existing: available.get(renderKey(desired))?.shift() }));
+    // Remove obsolete siblings first: otherwise their surviving neighbours
+    // would be needlessly moved, restarting animations and losing focus.
+    for (const nodes of available.values()) for (const node of nodes) node.remove();
+    let cursor = parent.firstChild;
+    for (const { desired, existing } of matches) {
+      const node = existing || desired.cloneNode(true);
+      if (!existing) rememberRendered(node, desired);
+      else if (node.nodeType === Node.ELEMENT_NODE) patchElement(node, desired);
+      else if (node.nodeValue !== desired.nodeValue) node.nodeValue = desired.nodeValue;
+      if (node !== cursor) parent.insertBefore(node, cursor);
+      cursor = node.nextSibling;
+    }
+  }
+  function patchElement(node, next) {
+    const previous = renderedNodes.get(node);
+    const snapshot = renderSnapshot(next);
+    if (previous?.markup === snapshot.markup) return;
+    for (const name of (previous?.attributes || renderSnapshot(node).attributes).keys()) {
+      if (!next.hasAttribute(name)) node.removeAttribute(name);
+    }
+    for (const attr of next.attributes) {
+      if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
+    }
+    if (node instanceof HTMLTextAreaElement) {
+      if (node.value !== next.value) node.value = next.value;
+    } else {
+      patchChildren(node, next);
+      if (node instanceof HTMLInputElement && node.type !== "file") {
+        if (node.value !== next.value) node.value = next.value;
+        node.checked = next.checked;
+      }
+    }
+    renderedNodes.set(node, snapshot);
+  }
   function render() {
-    app.innerHTML = `${topbar()}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    if (reviewDeleted) { app.innerHTML = ""; setReviewsOpen(true); updateReviewList(); return; }
+    const next = document.createElement("div");
+    next.innerHTML = `${topbar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
       ${coveragePanel()}${notesPanel()}
       <div class="scrim ${state.coverageOpen || state.notesOpen ? "is-on" : ""}" data-action="close-panels"></div>`;
+    for (const id of Object.keys(state.activeFiles)) {
+      const nodeId = activeFileNodeId(id), entry = fileById.get(id);
+      const row = nodeId && fileRowElement(id, nodeId, next);
+      if (!row || !entry) continue;
+      row.classList.add("is-open");
+      const holder = document.createElement("div");
+      holder.className = "cinema-diff";
+      holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: nodeId }) + fileNotesBlock(id);
+      row.after(holder);
+    }
+    patchChildren(app, next);
     enhance();
+    if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
 
   function enhance() {
@@ -1745,8 +2303,11 @@
 
   /* ---- animated <details> ---------------------------------------------- */
   const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const animatedSummaries = new WeakSet();
   function animateDetails() {
     app.querySelectorAll("details > summary").forEach((summary) => {
+      if (animatedSummaries.has(summary)) return;
+      animatedSummaries.add(summary);
       summary.addEventListener("click", (e) => {
         if (e.target.closest("button:not(.stage-title), a, [data-action]") || reduced()) return;
         e.preventDefault();
@@ -1786,7 +2347,11 @@
     root.querySelectorAll("[title]").forEach((el) => {
       const title = el.getAttribute("title");
       el.removeAttribute("title");
+      delete el.dataset.tooltip;
       if (!title) return;
+      const normalized = (value) => value.replace(/\s+/g, " ").trim();
+      const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
+      if (labels.some((label) => normalized(title) === normalized(label.textContent) && label.scrollWidth <= label.clientWidth)) return;
       el.dataset.tooltip = title;
       const owner = el.parentElement?.closest('button, a, summary, [role="button"], [data-tooltip-focus]');
       if (owner) {
@@ -1816,7 +2381,7 @@
     const d = btn.dataset;
     if (d.tooltip) {
       const el = ensurePop();
-      el.className = "tag-pop-float";
+      el.className = "tag-pop-float is-tooltip";
       el.innerHTML = `<strong>${esc(d.tooltip)}</strong>`;
       return;
     }
@@ -1908,30 +2473,31 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "approve") {
-      const id = btn.dataset.id;
-      const stage = btn.dataset.kind === "stage" ? stageById.get(id) : null;
-      if (stage && !stageNodesApproved(stage)) return;
-      const st = approvalState(id);
-      // A rename carried its old approval forward as stale; clear that orphaned
-      // record so acting on the file now writes a single canonical entry.
-      const prevId = previousApprovalId(id);
-      if (prevId) delete state.approvals[prevId];
-      if (st === "approved") delete state.approvals[id];
-      else {
-        state.approvals[id] = { rev: revisionFor(id), at: Date.now() };
-        // Approving a file means you're done with it — close its open diff.
-        if (state.activeFiles[id]) delete state.activeFiles[id];
-      }
+    if (a === "toggle-reviews") {
+      setReviewsOpen(!reviewsOpen);
+      if (reviewsOpen) void refreshReviews();
+    } else if (a === "manage-review-data") {
+      void manageReviewData(btn.dataset.reviewId);
+    } else if (a === "refresh-reviews") {
+      if (!reviewListBusy) void refreshReviews();
+    } else if (a === "open-review" || a === "complete-review") {
+      void changeReview(btn.dataset.reviewId, a === "complete-review");
+    } else if (a === "approve") {
+      void changeApproval(btn.dataset.id, btn.dataset.kind);
+    } else if (a === "approval-comparison") {
+      state.approvalComparisons[btn.dataset.id] = !sinceApprovalEnabled(btn.dataset.id);
       persist(); render();
+    } else if (a === "approval-page") {
+      const entry = approvalEntry(btn.dataset.id);
+      if (entry) void loadApprovalComparison(btn.dataset.id, entry, Number(btn.dataset.offset));
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
-      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); applyPanelState();
+      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); render();
     } else if (a === "toggle-notes") {
-      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); applyPanelState();
+      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); render();
     } else if (a === "close-panels") {
-      state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState();
+      state.coverageOpen = false; state.notesOpen = false; persist(); render();
     } else if (a === "comment") {
       openComment(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
     } else if (a === "line-note") {
@@ -1947,6 +2513,14 @@
       } else {
         openComment("line", id);
       }
+    } else if (a === "toggle-file-notes") {
+      const id = btn.dataset.id, nodeId = btn.dataset.nodeId;
+      const opening = activeFileNodeId(id) !== nodeId || state.openThreads[id] === false;
+      state.activeFiles[id] = nodeId;
+      state.openThreads[id] = opening;
+      persist();
+      if (opening) render();
+      else collapseThenRender(cinemaHolder(id, nodeId)?.querySelector(".file-note-threads"));
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
       const key = threadStateKey(btn.dataset.kind, id, btn.dataset.stage);
@@ -1968,11 +2542,7 @@
       const id = btn.dataset.id;
       state.hideDeleted[id] = !state.hideDeleted[id];
       persist();
-      for (const toggle of app.querySelectorAll(`[data-action="toggle-hide-removed"][data-id="${cssEsc(id)}"]`)) {
-        toggle.classList.toggle("is-on", Boolean(state.hideDeleted[id]));
-        toggle.setAttribute("aria-pressed", String(Boolean(state.hideDeleted[id])));
-        toggle.closest(".diff-panel")?.querySelector(".diff-scroll")?.classList.toggle("hide-removed", Boolean(state.hideDeleted[id]));
-      }
+      render();
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
@@ -1991,14 +2561,18 @@
     }
     else if (a === "export-feedback") {
       exportFeedback();
+    } else if (a === "remove-attachment") {
+      const attachments = editorAttachments(btn.closest("form"));
+      const index = attachments?.findIndex((file) => file.id === btn.dataset.id);
+      if (index >= 0) { attachments.splice(index, 1); persist(); render(); }
     } else if (a === "compose-cancel") {
-      compose = null; render();
+      compose = null; persist(); render();
     } else if (a === "jump-to") {
       jumpToElement(btn.dataset.kind, btn.dataset.id, btn.dataset.stage, btn.dataset.nodeId);
     } else if (a === "thread-reply") {
       compose = null;
       replyTo = btn.dataset.id;
-      replyDraft = "";
+      replyDraft = ""; replyAttachments = [];
       replyEditId = null;
       replyDirty = false;
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
@@ -2010,14 +2584,15 @@
       replyTo = btn.dataset.id;
       replyEditId = draft.id;
       replyDraft = draft.body;
+      replyAttachments = structuredClone(draft.attachments || []);
       replyDirty = false;
       render(); focusComposer();
     } else if (a === "reply-del") {
       state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
-      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyDirty = false; }
+      if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyAttachments = []; replyDirty = false; }
       persist(); render();
     } else if (a === "reply-cancel") {
-      replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render();
+      replyTo = null; replyDraft = ""; replyAttachments = []; replyEditId = null; replyDirty = false; persist(); render();
     } else if (a === "thread-resolve") {
       threadAction(btn.dataset.id, "resolve");
     } else if (a === "thread-reopen") {
@@ -2047,7 +2622,7 @@
       if (entry) {
         const membership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[id] = membership?.nodeId || true;
+        state.activeFiles[id] = membership?.nodeId || null;
       }
     } else if (kind === "line") {
       const p = parseLineId(id);
@@ -2058,7 +2633,8 @@
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
         state.openStages[entry.stage.id] = true;
-        state.activeFiles[entry.id] = lineMembership?.nodeId || true;
+        state.activeFiles[entry.id] = lineMembership?.nodeId || null;
+        if (lineMembership) state.approvalComparisons[fileApprovalKey(entry.stage.id, lineMembership.nodeId, entry.file.path)] = false;
       }
     } else if (kind === "stage") {
       state.openStages[id] = true;
@@ -2140,17 +2716,18 @@
     if (!Array.isArray(state.replyDrafts)) state.replyDrafts = [];
     if (replyEditId != null) {
       const draft = state.replyDrafts.find((r) => r.id === replyEditId);
-      if (draft) draft.body = body;
+      if (draft) { draft.body = body; draft.attachments = structuredClone(replyAttachments); }
     } else {
       state.replyDrafts.push({
         id: `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
         threadId,
         body,
+        attachments: structuredClone(replyAttachments),
         createdAt: Date.now(),
       });
     }
     replyTo = null;
-    replyDraft = "";
+    replyDraft = ""; replyAttachments = [];
     replyEditId = null;
     replyDirty = false;
     persist();
@@ -2174,6 +2751,7 @@
             ref: draft.id,
             threadId: draft.threadId,
             body: draft.body,
+            attachments: draft.attachments || [],
           })),
         }),
       });
@@ -2261,14 +2839,7 @@
       const tmp = document.createElement("div");
       tmp.innerHTML = renderArtifactThread(t, withLabel, collapsed);
       const fresh = tmp.firstElementChild;
-      if (fresh) { el.replaceWith(fresh); enhanceTooltips(fresh); }
-    });
-  }
-  function setThreadCollapsed(id, collapsed) {
-    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(id)}"]`).forEach((el) => {
-      el.classList.toggle("is-collapsed", collapsed);
-      const h = el.querySelector(".tthread-h");
-      if (h) h.setAttribute("aria-expanded", String(!collapsed));
+      if (fresh) { patchElement(el, fresh); enhanceTooltips(el); }
     });
   }
   function toggleThreadCollapse(id) {
@@ -2278,7 +2849,7 @@
     const collapsed = !threadCollapsed(t);
     state.threadCollapsed[id] = collapsed;
     persist();
-    setThreadCollapsed(id, collapsed);
+    render();
   }
   async function exportFeedback() {
     if (exportState.phase === "working") return;
@@ -2296,7 +2867,7 @@
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
+            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
           })
         });
         let out = {};
@@ -2351,22 +2922,25 @@
   // The file row that should fade its orange highlight in on the next render.
   // Shared files need the node id too because they appear more than once.
   let pendingHighlight = null;
+  const fileHighlights = new WeakMap();
 
   // Fade the file-row highlight (orange background + inset border) in or out.
-  // The app re-renders wholesale, so a freshly rendered .is-active row starts
-  // already-orange and a CSS transition never fires — animate it explicitly.
+  // Animate the highlight when explicitly opening or closing a file.
   function fadeFileHighlight(id, dir, nodeId) {
     if (id == null || motionReduced()) return;
     const row = fileRowElement(id, nodeId);
     if (!row) return;
+    fileHighlights.get(row)?.cancel();
     const on = { background: "rgba(255, 106, 69, .13)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, .35)" };
     const off = { background: "rgba(255, 106, 69, 0)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, 0)" };
     const frames = dir === "in" ? [off, on] : [on, off];
-    row.animate(frames, {
+    const animation = row.animate(frames, {
       duration: dir === "in" ? 260 : 200,
       easing: ANIM_EASE,
       fill: dir === "in" ? "none" : "forwards",
     });
+    fileHighlights.set(row, animation);
+    return animation;
   }
 
   // Run `cb` once when the animation ends, with a safety timeout so a stuck or
@@ -2376,30 +2950,6 @@
     const run = () => { if (done) return; done = true; cb(); };
     anim.finished.catch(() => {}).then(run);
     setTimeout(run, (ms || 0) + 80);
-  }
-
-  // Slide the side panels via CSS transition on the persistent DOM (a full
-  // re-render would recreate them already-open and skip the transition).
-  function applyPanelState() {
-    forceHidePop();
-    const cov = app.querySelector(".side.coverage");
-    const notes = app.querySelector(".side.notes");
-    const scrim = app.querySelector(".scrim");
-    const covBtn = app.querySelector('.tb-btn[data-action="toggle-coverage"]');
-    const notesBtn = app.querySelector('.tb-btn[data-action="toggle-notes"]');
-    const setSide = (el, open) => {
-      if (!el) return;
-      el.classList.toggle("is-open", open);
-      el.setAttribute("aria-hidden", String(!open));
-      if (open) el.removeAttribute("inert"); else el.setAttribute("inert", "");
-    };
-    setSide(cov, state.coverageOpen);
-    setSide(notes, state.notesOpen);
-    // Lock page scroll behind the notes panel so only its list scrolls.
-    document.body.classList.toggle("no-scroll", state.notesOpen);
-    if (scrim) scrim.classList.toggle("is-on", state.coverageOpen || state.notesOpen);
-    if (covBtn) { covBtn.classList.toggle("is-on", state.coverageOpen); covBtn.setAttribute("aria-expanded", String(state.coverageOpen)); }
-    if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
   }
 
   function applyNotesFilter() {
@@ -2418,9 +2968,9 @@
     const body = stageEl && stageEl.querySelector(".stage-body");
     if (!stageEl) { render(); return; }
     stageEl.querySelectorAll('[data-action="toggle-stage"]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
-    if (motionReduced() || !body) { stageEl.classList.toggle("is-open", open); return; }
+    if (motionReduced() || !body) { render(); return; }
     const start = body.getBoundingClientRect().height;
-    stageEl.classList.toggle("is-open", open);
+    render();
     const end = body.getBoundingClientRect().height;
     body.style.overflow = "hidden";
     const anim = body.animate([{ height: `${start}px` }, { height: `${end}px` }],
@@ -2436,7 +2986,7 @@
     el.style.overflow = "hidden";
     const anim = el.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration: dur || 200, easing: ANIM_EASE });
-    afterAnim(anim, dur || 200, () => render());
+    afterAnim(anim, dur || 200, () => { el.style.removeProperty("overflow"); render(); });
   }
 
   function toggleCinema(id, nodeId) {
@@ -2447,7 +2997,7 @@
     // Open in place — never auto-scroll, so the file stays where the reviewer
     // clicked it (jumping from the notes list handles its own scrolling).
     if (entry) delete entry.file._diffError;
-    state.activeFiles[id] = targetNodeId || true;
+    state.activeFiles[id] = targetNodeId || null;
     persist();
     pendingHighlight = { id, nodeId: targetNodeId };
     render();
@@ -2464,12 +3014,17 @@
     const holder = cinemaHolder(id, nodeId);
     delete state.activeFiles[id]; persist();
     if (!holder || motionReduced()) { render(); return; }
-    fadeFileHighlight(id, "out", nodeId);
+    const highlight = fadeFileHighlight(id, "out", nodeId);
     const start = holder.getBoundingClientRect().height;
     holder.style.overflow = "hidden";
     const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration: 210, easing: ANIM_EASE });
-    afterAnim(anim, 210, () => render());
+    afterAnim(anim, 210, () => {
+      holder.style.removeProperty("overflow"); render();
+      // Rows survive rendering; release the closing fill so CSS can highlight
+      // an open or hovered row again. A newer opening animation is independent.
+      highlight?.cancel();
+    });
   }
 
   function openComment(kind, id, stageId) {
@@ -2491,7 +3046,7 @@
     if (kind === "file") {
       const entry = fileById.get(id);
       if (!state.activeFiles[id])
-        state.activeFiles[id] = (entry?.file.memberships || [])[0]?.nodeId || true;
+        state.activeFiles[id] = (entry?.file.memberships || [])[0]?.nodeId || null;
       pendingHighlight = { id, nodeId: activeFileNodeId(id) };
     }
     persist();
@@ -2512,6 +3067,7 @@
       editIndex: index,
       mode: c.mode || "personal",
       body: c.body,
+      attachments: structuredClone(c.attachments || []),
       dirty: false,
     };
     if (c.kind === "line") state.openLineThreads[c.id] = true;
@@ -2534,16 +3090,17 @@
     });
   }
 
-  // Keep unsent editor text in state so a re-render (which fully rebuilds the
-  // DOM) never drops what the reviewer is typing.
+  // Keep unsent editor text in state for persistence and live updates.
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (compose && t.matches('.note-compose textarea[name="nc-body"]')) {
       compose.body = t.value;
       compose.dirty = true;
+      persist();
     } else if (t.matches('.tthread-reply textarea[name="reply-body"]')) {
       replyDraft = t.value;
       replyDirty = true;
+      persist();
     }
   });
   document.addEventListener("change", (e) => {
@@ -2551,6 +3108,7 @@
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
+      persist();
     }
   });
   document.addEventListener("submit", (e) => {
@@ -2558,12 +3116,13 @@
       e.preventDefault();
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nc-mode"]:checked')?.value || "personal";
-      if (body && compose) {
+      if (uploadOps.size || !compose || (!body && !compose.attachments?.length)) return;
+      if (compose) {
         if (compose.editIndex != null) {
           const c = state.comments[compose.editIndex];
-          if (c && !c.exported) { c.body = body; c.mode = mode; }
+          if (c && !c.exported) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); }
         } else {
-          const note = { kind: compose.kind, id: compose.id, body, mode, createdAt: Date.now() };
+          const note = { kind: compose.kind, id: compose.id, body, mode, attachments: structuredClone(compose.attachments || []), createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
           if (compose.nodeId) note.nodeId = compose.nodeId;
           const snapshot = draftSnapshots.get(compose);
@@ -2580,7 +3139,7 @@
     if (e.target.matches("[data-reply-form]")) {
       e.preventDefault();
       const body = e.target.querySelector("textarea").value.trim();
-      if (body) saveReplyDraft(e.target.dataset.id, body);
+      if (!uploadOps.size && (body || replyAttachments.length)) saveReplyDraft(e.target.dataset.id, body);
       return;
     }
   });
@@ -2588,9 +3147,12 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.ctrlKey && !e.isComposing && !e.repeat && e.target instanceof Element && e.target.matches('textarea[name="nc-body"], textarea[name="reply-body"]')) {
       e.preventDefault();
-      if (e.target.value.trim()) e.target.form?.requestSubmit();
+      e.target.form?.requestSubmit();
       return;
     }
+    if (e.key === "Escape") clearFileDropTarget();
+    // Let the topmost native dialog handle Escape without touching a background draft.
+    if (e.key === "Escape" && document.querySelector("dialog[open]")) return;
     if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
       e.preventDefault(); toggleCinema(e.target.dataset.id, e.target.dataset.nodeId); return;
@@ -2600,9 +3162,9 @@
       if (h && !e.target.closest("button, a")) { e.preventDefault(); toggleThreadCollapse(h.dataset.id); return; }
     }
     if (e.key === "Escape") {
-      if (compose) { compose = null; render(); return; }
-      if (replyTo) { replyTo = null; replyDraft = ""; replyEditId = null; replyDirty = false; render(); return; }
-      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
+      if (compose) { compose = null; persist(); render(); return; }
+      if (replyTo) { replyTo = null; replyDraft = ""; replyAttachments = []; replyEditId = null; replyDirty = false; persist(); render(); return; }
+      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); render(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
   });
@@ -2676,7 +3238,7 @@
     app.querySelectorAll(".diff-grid").forEach(clearSelHits);
   });
 
-  // cinema inline diff injection + open-disclosure preservation across renders.
+  // Preserve disclosures and scroll when live artifact updates change the layout.
   function captureOpen() {
     const keys = new Set();
     app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`));
@@ -2707,6 +3269,7 @@
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
     const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    retainApprovalRenames();
     revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.
@@ -2719,7 +3282,7 @@
     const diffScrolls = {};
     const pendingDiffs = [];
     Object.keys(state.activeFiles).forEach((fid) => {
-      if (!state.activeFiles[fid]) return;
+      if (!activeFileNodeId(fid)) return;
       const holder = fileRowElement(fid)?.nextElementSibling;
       const scroller = holder && holder.classList.contains("cinema-diff")
         ? holder.querySelector(".diff-scroll")
@@ -2729,21 +3292,17 @@
     _render();
     restoreOpen(open);
     Object.keys(state.activeFiles).forEach((fid) => {
-      if (!state.activeFiles[fid]) return;
+      if (!activeFileNodeId(fid)) return;
       const row = fileRowElement(fid);
       const entry = fileById.get(fid);
       if (row && entry) {
         row.classList.add("is-open");
-        const holder = document.createElement("div");
-        holder.className = "cinema-diff";
-        const focusNodeId = activeFileNodeId(fid);
-        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId }) + fileNotesBlock(fid);
-        row.after(holder);
+        const holder = cinemaHolder(fid);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
           pendingDiffs.push(entry);
         const saved = diffScrolls[fid];
         if (saved) {
-          const scroller = holder.querySelector(".diff-scroll");
+          const scroller = holder?.querySelector(".diff-scroll");
           if (scroller) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
         }
       }
@@ -2753,7 +3312,7 @@
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
-    if (focusName || focusSelector) {
+    if (!focused?.isConnected && (focusName || focusSelector)) {
       const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
       const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
@@ -2763,7 +3322,17 @@
     resumePendingLazyJump();
   };
 
+  for (const note of [...state.comments, compose].filter(Boolean)) {
+    if (note.snapshot) draftSnapshots.set(note, note.snapshot);
+  }
+  const recoveredStage = compose && noteStage(compose);
+  if (recoveredStage) state.openStages[recoveredStage.id] = true;
   render();
+  if (compose?.nodeId && recoveredStage) {
+    const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);
+    if (node) node.open = true;
+  }
+  if (reviewDeleted) void refreshReviews();
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
 })();

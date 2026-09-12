@@ -1,9 +1,14 @@
+import { feedbackDirectory } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+const testReviewHome = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-test-user-data-"));
+process.env.SEMANTIC_FLOW_HOME = testReviewHome;
+process.on("exit", () => fs.rmSync(testReviewHome, { recursive: true, force: true }));
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const scriptsDirectory = path.resolve(
@@ -73,7 +78,21 @@ export function createRepository(t, prefix = "semantic-flow-") {
     return execution;
   }
 
+  const privateFeedbackPath = (...parts) => path.join(feedbackDirectory(root), ...parts);
+  function repositoryPath(relativePath) {
+    assert.equal(path.isAbsolute(relativePath), false, "Repository helpers require relative paths");
+    const file = path.resolve(root, relativePath), relative = path.relative(root, file);
+    assert.ok(relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative), "Repository path escapes the fixture");
+    return file;
+  }
+  function absoluteFeedbackPath(file) {
+    assert.ok(path.isAbsolute(file), "Feedback helpers require absolute paths");
+    const relative = path.relative(privateFeedbackPath(), file);
+    assert.ok(relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative), "Feedback path escapes this review");
+    return file;
+  }
   const repository = {
+    feedbackPath: privateFeedbackPath,
     root,
     run,
     result,
@@ -108,27 +127,33 @@ export function createRepository(t, prefix = "semantic-flow-") {
           },
         );
       }),
-    path: (...parts) => path.join(root, ...parts),
+    path: (...parts) => path.resolve(root, ...parts),
     write(relativePath, contents) {
-      const file = path.join(root, relativePath);
+      const file = repositoryPath(relativePath);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, contents, "utf8");
     },
     read(relativePath) {
-      return fs.readFileSync(path.join(root, relativePath), "utf8");
+      return fs.readFileSync(repositoryPath(relativePath), "utf8");
     },
     readJson(relativePath) {
-      return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
+      return JSON.parse(fs.readFileSync(repositoryPath(relativePath), "utf8"));
     },
     exists(relativePath) {
-      return fs.existsSync(path.join(root, relativePath));
+      return fs.existsSync(repositoryPath(relativePath));
     },
     remove(relativePath) {
-      fs.rmSync(path.join(root, relativePath), {
+      fs.rmSync(repositoryPath(relativePath), {
         recursive: true,
         force: true,
       });
     },
+    readAbsoluteJson(file) { return JSON.parse(fs.readFileSync(absoluteFeedbackPath(file), "utf8")); },
+    writeAbsolute(file, contents) {
+      absoluteFeedbackPath(file); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents, "utf8");
+    },
+    existsAbsolute(file) { return fs.existsSync(absoluteFeedbackPath(file)); },
+    removeAbsolute(file) { fs.rmSync(absoluteFeedbackPath(file), { recursive: true, force: true }); },
     commitFile(relativePath, contents, message) {
       repository.write(relativePath, contents);
       repository.git("add", relativePath);

@@ -44,16 +44,16 @@ test('partial feedback batches report invalid items, keep valid items atomic, an
   const reassigned = JSON.parse(repo.feedback('thread', 'add-batch', '--partial', '--threads', JSON.stringify([{ ...items[0], 'assigned-stage': 'missing-stage' }])));
   assert.equal(reassigned.accepted.length, 0);
   assert.match(reassigned.rejected[0].error, /different input/);
-  assert.equal(repo.readJson('.semantic-review-feedback/manifest.json').threads.length, 2);
+  assert.equal(repo.readAbsoluteJson(repo.feedbackPath('manifest.json')).threads.length, 2);
   const replies = [{ id: 'thread-0', 'comment-id': 'reply', body: 'Valid', author: 'agent' }, { id: 'valid-2', 'comment-id': 'bad-reply', body: '', author: 'user' }, { id: 'missing', 'comment-id': 'missing', body: 'Skip' }];
   const replied = JSON.parse(repo.feedback('thread', 'reply-batch', '--partial', '--replies', JSON.stringify(replies)));
   assert.equal(replied.accepted.length, 1);
   assert.equal(replied.rejected.length, 2);
-  assert.equal(repo.readJson('.semantic-review-feedback/threads/valid-2.json').comments.length, 1);
+  assert.equal(repo.readAbsoluteJson(repo.feedbackPath('threads/valid-2.json')).comments.length, 1);
   repo.feedback('thread', 'reply-batch', '--partial', '--replies', JSON.stringify(replies));
-  assert.equal(repo.readJson('.semantic-review-feedback/threads/thread-0.json').comments.length, 2);
-  const invalid = repo.readJson('.semantic-review-feedback/threads/valid-2.json'); invalid.comments[0].body = '';
-  repo.write('.semantic-review-feedback/threads/valid-2.json', JSON.stringify(invalid));
+  assert.equal(repo.readAbsoluteJson(repo.feedbackPath('threads/thread-0.json')).comments.length, 2);
+  const invalid = repo.readAbsoluteJson(repo.feedbackPath('threads/valid-2.json')); invalid.comments[0].body = '';
+  repo.writeAbsolute(repo.feedbackPath('threads/valid-2.json'), JSON.stringify(invalid));
   repo.expectFeedbackFailure(/must NOT have fewer|invalid|schema/i, 'thread', 'reply-batch', '--partial', '--replies', JSON.stringify(replies));
 });
 
@@ -112,7 +112,7 @@ test('viewer snapshot reads unchanged documents only on fallback and sees extern
   repo.feedback('thread', 'reply', '--id', 'thread-0', '--comment-id', 'done', '--author', 'agent', '--body', 'Done');
   assert.equal(snapshot().awaitingAgentReplies, 0);
   const beforeScan = reads; now = 10001; snapshot(); assert.ok(reads > beforeScan);
-  repo.remove('.semantic-review-feedback'); assert.equal(snapshot().revision, initial.revision);
+  repo.removeAbsolute(repo.feedbackPath()); assert.equal(snapshot().revision, initial.revision);
 });
 
 test('large file pages preserve changes, full context, distant line targets and immutable revisions', async (t) => {
@@ -144,10 +144,10 @@ test('viewer sends a failed batch once and deterministic retries do not duplicat
   const notes = [{ ref: 0, clientId: 'draft-1', kind: 'stage', id: 'implementation', body: 'Review once' }, { ref: 1, kind: 'file', id: 'f:implementation:absent', body: 'Invalid' }];
   const first = exportFeedback(context, notes); const second = exportFeedback(context, notes);
   assert.deepEqual(first.exported, second.exported);
-  assert.equal(repo.readJson('.semantic-review-feedback/manifest.json').threads.length, 1);
+  assert.equal(repo.readAbsoluteJson(repo.feedbackPath('manifest.json')).threads.length, 1);
   const drafts = [{ ref: 'reply-draft', threadId: first.exported[0].threadId, body: 'One reply' }];
   exportFeedbackReplies(context, drafts); exportFeedbackReplies(context, drafts);
-  assert.equal(repo.readJson(`.semantic-review-feedback/threads/${first.exported[0].threadId}.json`).comments.length, 2);
+  assert.equal(repo.readAbsoluteJson(repo.feedbackPath(`threads/${first.exported[0].threadId}.json`)).comments.length, 2);
 });
 
 test('snapshot read failure does not publish or retain a partially refreshed snapshot', (t) => {

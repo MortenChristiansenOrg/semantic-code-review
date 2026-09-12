@@ -126,7 +126,7 @@ test("review leaves a detached viewer running after the command exits", async (t
   const reused = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(reused.processId, identity.processId);
   assert.match(reused.viewerVersion, /^[0-9a-f]{64}$/);
-  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation`).then((response) => response.json());
+  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation?review=${identity.reviewId}&generation=${identity.generation}`).then((response) => response.json());
   assert.equal(payload.ok, true);
   assert.equal(payload.implementation.implementationId, "persistent-review");
 
@@ -276,7 +276,7 @@ test("feedback does not restack an implementation already landed on target", (t)
 
 test("feedback rejects incomplete feedback state", (t) => {
   const { repository } = createImplementationWithStages(t);
-  repository.write(".semantic-review-feedback/orphan.json", "{}\n");
+  repository.writeAbsolute(repository.feedbackPath("orphan.json"), "{}\n");
 
   const result = repository.result(process.execPath, [
     flowCli,
@@ -670,4 +670,145 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
   viewerPid = current.processId;
   assert.ok(previous.messages.includes("shutdown"));
   assert.equal(current.skillDirectory, fs.realpathSync.native(fixture.installedSkill));
+});
+
+test("concurrent review services isolate commands and reopen registered worktrees", async (t) => {
+  const viewers = [];
+  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId); });
+  const { repository: a } = createImplementationWithStages(t);
+  const b = createRepository(t, "concurrent-review-b-");
+  initializeImplementation(b); // Deliberately the same implementation ID.
+  const linked = a.path("../", path.basename(a.root) + "-linked");
+  a.git("worktree", "add", "--detach", linked, "HEAD");
+  fs.cpSync(a.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  const port = await reserveViewerPort();
+  const deniedPortHook = a.path("denied-port.cjs");
+  fs.writeFileSync(deniedPortHook, `const net = require('node:net'); const listen = net.Server.prototype.listen; let denied = 0; net.Server.prototype.listen = function(...args) { if (typeof args[0] === 'number' && denied++ < 2) { process.nextTick(() => this.emit('error', Object.assign(new Error('Reserved port'), { code: 'EACCES' }))); return this; } return listen.apply(this, args); };`);
+  const start = async (root, denyPorts = false) => {
+    const child = spawn(process.execPath, [path.join(scriptsDirectory, "semantic-view.mjs"), "review", root], {
+      cwd: a.root, stdio: ["ignore", "ignore", "pipe", "ipc"],
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port), GIT_DIR: a.path(".git"), ...(denyPorts ? { NODE_OPTIONS: `--import=${pathToFileURL(deniedPortHook).href}` } : {}) },
+    });
+    const [message] = await once(child, "message");
+    assert.equal(message.type, "ready", JSON.stringify(message));
+    const identity = await fetch(new URL("api/whoami", message.url)).then((r) => r.json());
+    viewers.push(identity); child.unref();
+    return { ...identity, url: message.url };
+  };
+  const first = await start(a.root), second = await start(b.root), third = await start(linked, true);
+  assert.equal(new Set([first.port, second.port, third.port]).size, 3);
+  assert.equal(new Set([first.reviewId, second.reviewId, third.reviewId]).size, 3);
+  const request = (viewer, route, body, review = viewer.reviewId) => fetch(new URL(`${route}?review=${review}&generation=${viewer.generation}`, viewer.url), {
+    ...(body ? { method: "POST", headers: { "content-type": "application/json", origin: new URL(viewer.url).origin }, body: JSON.stringify(body) } : {}),
+  });
+  assert.equal((await request(first, "api/implementation", null, third.reviewId)).status, 409);
+  assert.equal((await request({ ...third, generation: "previous-session" }, "api/implementation")).status, 409);
+  const implementation = await request(third, "api/implementation").then((r) => r.json());
+  const stage = implementation.implementation.stages[0], file = stage.files[0];
+  const approval = { stageId: stage.id, nodeId: file.memberships[0].nodeId, path: file.path, baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
+  const snapshot = await request(third, "api/approval-snapshots", approval).then((r) => r.json());
+  assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+  const comparison = await request(third, "api/approval-comparison", { ...approval, snapshotId: snapshot.snapshotId }).then((r) => r.json());
+  assert.equal(comparison.ok, true, JSON.stringify(comparison)); assert.deepEqual(comparison.lines, []);
+  assert.equal((await request(third, "api/approval-snapshots", { ...approval, fileRevision: 'outdated' })).status, 409);
+  assert.equal((await request(third, "api/approval-snapshots", { ...approval, ownership: {} })).status, 409);
+  const upload = { filename: "screenshot.png", mediaType: "image/png", data: Buffer.from([137,80,78,71,13,10,26,10]).toString("base64") };
+  const attached = await request(third, "api/attachments", upload).then((r) => r.json());
+  assert.equal(attached.ok, true, JSON.stringify(attached));
+  assert.deepEqual((await request(third, "api/attachments", upload).then((r) => r.json())).attachment, attached.attachment);
+  const download = await request(third, `api/attachments/${attached.attachment.id}`);
+  assert.match(download.headers.get("content-disposition"), /^attachment/);
+  assert.equal(Buffer.from(await download.arrayBuffer()).toString("base64"), upload.data);
+  const previewUrl = new URL(`api/attachments/${attached.attachment.id}?review=${third.reviewId}&generation=${third.generation}&preview=1`, third.url);
+  const preview = await fetch(previewUrl); assert.equal(preview.headers.get("content-type"), "image/png");
+  assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
+  assert.equal((await request(first, `api/attachments/${attached.attachment.id}`)).status, 404);
+  assert.equal((await request(third, "api/attachments", { ...upload, filename: "../escape" })).status, 400);
+  assert.equal((await request(third, "api/attachments", { ...upload, data: "https://example.test/image.png" })).status, 400);
+  const payload = { implementationId: third.implementationId, notes: [{ ref: 0, kind: "stage", id: "implementation", body: "Only linked worktree", attachments: [attached.attachment], clientId: "concurrent-context" }] };
+  const exports = await Promise.all([request(third, "api/feedback/export", payload), request(third, "api/feedback/export", payload)]);
+  for (const result of exports) assert.equal(result.status, 200, await result.text());
+  assert.equal(a.existsAbsolute(a.feedbackPath("manifest.json")), false);
+  assert.equal(b.existsAbsolute(b.feedbackPath("manifest.json")), false);
+  const module = await import(pathToFileURL(path.join(scriptsDirectory, "semantic-view.mjs")).href);
+  // A management request waiting on B's lock must not block A's HTTP loop.
+  const heldLock = path.join(process.env.SEMANTIC_FLOW_HOME, "locks", third.reviewId + ".lock");
+  fs.mkdirSync(heldLock);
+  fs.writeFileSync(path.join(heldLock, "owner-00000000-0000-4000-8000-000000000000.json"), JSON.stringify({ pid: process.pid }));
+  const blockedStorage = request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation });
+  try {
+    await delay(150);
+    const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
+    assert.equal(responsive.status, 200);
+  } finally { fs.rmSync(heldLock, { recursive: true }); }
+  assert.equal((await blockedStorage).status, 200);
+  const linkedFeedback = module.feedbackDirectory(linked);
+  assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);
+  const context = module.captureReviewContext(third.reviewId);
+  const oldGit = process.env.GIT_DIR;
+  const oldLowerGit = process.env.git_dir;
+  process.env.git_dir = a.path(".git");
+  process.env.GIT_DIR = a.path(".git");
+  try {
+    assert.equal(module.runReviewCommand(context, process.execPath, ["-e", "console.log(process.env.git_dir || process.env.GIT_DIR || 'clear')"]).trim(), "clear");
+    assert.equal(module.runReviewCommand(context, "git", ["rev-parse", "--show-toplevel"]).trim(), linked.replaceAll("\\", "/"));
+    assert.throws(() => module.runReviewCommand(context, "git", ["status"], { workingWorktree: b.root }), /another repository/);
+  } finally { if (oldLowerGit === undefined) delete process.env.git_dir; else process.env.git_dir = oldLowerGit; if (oldGit === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGit; }
+  const opened = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(opened.url, third.url);
+  await stopViewer(third.port, third.processId);
+  viewers.pop();
+  const restarted = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(restarted.ok, true, JSON.stringify(restarted));
+  const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
+  assert.equal(recovered.reviewId, third.reviewId);
+  assert.notEqual(recovered.processId, third.processId);
+  const manifestPath = path.join(linked, ".semantic-review", "manifest.json"), originalManifest = fs.readFileSync(manifestPath);
+  fs.writeFileSync(manifestPath, '{broken JSON');
+  const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
+  fs.writeFileSync(manifestPath, originalManifest);
+  assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
+  fs.rmSync(path.join(linked, ".semantic-review"), { recursive: true });
+  const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
+  assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
+  assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
+  assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
+  assert.equal((await request(first, "api/implementation")).status, 200);
+  const missingViewer = { ...recovered, url: restarted.url };
+  const saved = await request(missingViewer, "api/review-state", { reviewId: recovered.reviewId, generation: recovered.generation, changes: [{ path: ['draft'], before: { present: false }, after: { present: true, value: 'Retain after removal' } }] });
+  assert.equal(saved.status, 200, await saved.text());
+  const list = await request(missingViewer, "api/reviews").then((r) => r.json());
+  assert.equal(list.reviews.find((r) => r.id === recovered.reviewId).available, false);
+  assert.equal((await request(missingViewer, "api/reviews/open", { reviewId: first.reviewId, generation: first.generation })).status, 200);
+  const storage = await request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
+  assert.equal(storage.ok, true, JSON.stringify(storage)); assert.ok(storage.storage.bytes > 0);
+  const deleted = await request(first, "api/reviews/delete", { reviewId: third.reviewId, generation: third.generation, fingerprint: storage.storage.fingerprint }).then((r) => r.json());
+  assert.equal(deleted.deleted, true); assert.equal(deleted.cleanupPending, false);
+  assert.equal((await request(missingViewer, "api/review-state")).status, 409);
+  assert.equal((await request(missingViewer, "api/attachments", upload)).status, 409);
+  assert.equal((await request(missingViewer, "api/review-state", { reviewId: third.reviewId, generation: third.generation, changes: [] })).status, 409);
+  assert.equal((await request(missingViewer, "api/reviews")).status, 200);
+  const bootstrap = await fetch(new URL("implementation-data.js", missingViewer.url)).then((r) => r.text());
+  assert.match(bootstrap, /SEMANTIC_REVIEW_CONTEXT/); assert.match(bootstrap, /"stages":\[\]/);
+  await delay(1200);
+  assert.equal((await fetch(new URL("api/whoami", missingViewer.url)).then((r) => r.json())).healthy, false);
+  assert.equal((await request(first, "api/implementation")).status, 200);
+
+});
+
+
+test('a viewer-triggered feedback init cannot recreate data deleted after its initial generation check', async (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  const module = await import(pathToFileURL(path.join(scriptsDirectory, 'semantic-view.mjs')).href);
+  const manifest = repository.readJson('.semantic-review/manifest.json');
+  const id = module.reviewId(repository.root, manifest.implementationId), review = module.readReview(id);
+  const record = path.join(module.reviewDirectory(id), 'review.json');
+  const preload = repository.path('delete-during-read.mjs');
+  fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path'; const read = fs.readFileSync; let removed = false; fs.readFileSync = function(file, ...args) { const value = read.call(this, file, ...args); if (!removed && String(file) === ${JSON.stringify(record)}) { removed = true; fs.rmSync(path.dirname(String(file)), { recursive: true, force: true }); } return value; };`);
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, path.join(scriptsDirectory, 'review-feedback.mjs'), 'init'], { cwd: repository.root, env: { ...process.env, SEMANTIC_FLOW_REVIEW_ID: id, SEMANTIC_FLOW_REVIEW_GENERATION: review.generation }, encoding: 'utf8' });
+  assert.notEqual(result.status, 0); assert.match(result.stderr, /deleted|unavailable/);
+  assert.equal(fs.existsSync(module.reviewDirectory(id)), false);
+  repository.feedback('init'); assert.notEqual(module.readReview(id).generation, review.generation);
 });

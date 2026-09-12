@@ -75,7 +75,9 @@ Run artifact and feedback commands from the resolved artifact worktree root.
 ## Mutation and Git safety
 
 - Use the bundled CLI for every `.semantic-review/` and
-  `.semantic-review-feedback/` mutation. Never hand-edit generated state.
+  private feedback mutation. Resolve its user-local directory from
+  `semantic-flow inspect --json` (`selected.feedbackDirectory`); never infer it
+  from the current working directory or hand-edit generated state.
 - Preserve unrelated user changes. Never stash, discard, absorb, or revert
   them to satisfy the workflow.
 - Require a clean worktree before commands that switch branches, create

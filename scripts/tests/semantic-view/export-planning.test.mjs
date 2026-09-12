@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
   createRepository,
   feedbackCli,
+  flowCli,
   initializeImplementation,
   organizeStage,
   scriptsDirectory,
@@ -27,6 +29,7 @@ const {
   mapNoteTarget,
   readFeedbackThread,
   viewerSnapshot,
+  feedbackDirectory,
 } = await import(moduleUrl);
 
 const implementation = {
@@ -686,150 +689,6 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.doesNotMatch(styles, /\.drow code \{/);
 });
 
-test("viewer client ignores obsolete approvals without hiding current feedback", () => {
-  const source = fs.readFileSync(
-    path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
-    "utf8",
-  );
-  const app = {
-    innerHTML: "",
-    querySelector: () => null,
-    querySelectorAll: () => [],
-  };
-  const classList = { toggle() {}, add() {}, remove() {} };
-  const windowObject = {
-    SEMANTIC_IMPLEMENTATION: {
-      implementationId: "client-test",
-      title: "Client test",
-      summary: "Render metadata without loading diffs.",
-      targetBranch: "main",
-      baseRevision: "0123456789abcdef",
-      requirements: [],
-      stages: [{
-        id: "implementation",
-        title: "Implementation",
-        summary: "Summary",
-        rationale: "Rationale",
-        dependsOn: [],
-        specificationRefs: [],
-        baseRevision: "base",
-        headRevision: "head",
-        nodes: [{
-          id: "configure-settings",
-          title: "Configure settings",
-          description: "Update application settings.",
-        }],
-        files: [{
-          path: "appsettings.json",
-          kind: "modified",
-          project: "Client",
-          memberships: [{
-            nodeId: "configure-settings",
-            classification: "configuration",
-          }],
-          additions: 1,
-          deletions: 0,
-          binary: false,
-          revision: "current-file-revision",
-        }],
-        insights: [],
-      }],
-      feedback: [{
-        id: "resolved-stage-thread",
-        status: "resolved",
-        target: {
-          kind: "stage",
-          stageId: "implementation",
-          label: "Implementation",
-        },
-        comments: [{
-          id: "resolved-stage-comment",
-          author: "user",
-          body: "Resolved feedback.",
-        }],
-      }, {
-        id: "resolved-node-thread",
-        status: "resolved",
-        target: {
-          kind: "node",
-          stageId: "implementation",
-          nodeId: "configure-settings",
-          label: "Configure settings",
-        },
-        comments: [{
-          id: "resolved-node-comment",
-          author: "user",
-          body: "Resolved node feedback.",
-        }],
-      }],
-      awaitingAgentReplies: 0,
-    },
-    addEventListener() {},
-    matchMedia: () => ({ matches: true }),
-    setInterval() {},
-    scrollX: 0,
-    scrollY: 0,
-    scrollTo() {},
-  };
-  const documentObject = {
-    querySelector: () => app,
-    querySelectorAll: () => [],
-    addEventListener() {},
-    body: { classList },
-    documentElement: { style: {} },
-  };
-  const storage = {
-    getItem: () => JSON.stringify({
-      openThreads: { implementation: true, "configure-settings": true },
-      approvals: {
-        implementation: true,
-        "f:implementation:appsettings.json": {
-          fp: "legacy-diff-fingerprint",
-          at: 1,
-        },
-      },
-    }),
-    setItem() {},
-  };
-
-  new Function(
-    "window",
-    "document",
-    "localStorage",
-    "CSS",
-    "fetch",
-    "requestAnimationFrame",
-    source,
-  )(
-    windowObject,
-    documentObject,
-    storage,
-    { escape: (value) => String(value) },
-    () => Promise.reject(new Error("unexpected fetch")),
-    (callback) => callback(),
-  );
-
-  assert.match(app.innerHTML, /Client test/);
-  assert.match(app.innerHTML, /data-thread-id="resolved-node-thread"/);
-  assert.match(
-    app.innerHTML,
-    /class="node(?![^"]*is-approved|[^"]*is-stale)[^"]*" data-node="configure-settings"/,
-  );
-  assert.match(
-    app.innerHTML,
-    /class="frow(?![^"]*is-approved|[^"]*is-stale)[^"]*" data-file="f:implementation:appsettings\.json"/,
-  );
-  assert.match(
-    app.innerHTML,
-    /class="stage(?![^"]*is-approved)[^"]*" data-stage="implementation"/,
-  );
-  assert.match(
-    app.innerHTML,
-    /class="notes-toggle is-open all-resolved"[^>]*data-id="implementation"[^>]*title="1 thread, all resolved"/,
-  );
-  assert.match(app.innerHTML, /data-thread="implementation"/);
-});
-
 test("feedback target stays present when it leaves the current stage diff", (t) => {
   const { repository, commits } = createImplementationWithStages(t);
   repository.feedback("init");
@@ -916,4 +775,61 @@ test("readFeedbackThread reloads one thread without rebuilding implementation da
     "resolved",
   );
   assert.equal(readFeedbackThread(repository.root, "missing"), null);
+});
+
+
+test("viewer and CLI feedback use the selected worktree across identical implementation IDs", (t) => {
+  const { repository: first } = createImplementationWithStages(t);
+  const { repository: otherRepo } = createImplementationWithStages(t);
+  const linked = first.root + "-linked";
+  first.git("worktree", "add", "--detach", linked, "HEAD");
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  fs.cpSync(first.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  const roots = [first.root, linked, otherRepo.root];
+  const ids = roots.map((repoRoot) => {
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli },
+      [{ kind: "stage", id: "implementation", body: "Same message", clientId: "same-client" }]);
+    assert.equal(result.ok, true);
+    assert.equal(fs.existsSync(path.join(repoRoot, ".semantic-review-feedback")), false);
+    return result.exported[0].threadId;
+  });
+  assert.equal(new Set(roots.map((root) => feedbackDirectory(root))).size, 3);
+  assert.equal(new Set(ids).size, 1); // Same IDs remain isolated by review identity.
+  const before = fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8");
+  const replies = exportFeedbackReplies({ repoRoot: linked, feedbackCli }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
+  assert.equal(replies.ok, true);
+  assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
+  const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
+  assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(linked));
+  assert.notEqual(fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8"), before);
+});
+
+test("concurrent first submissions initialize shared feedback once and deduplicate retries", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const source = `import { exportFeedback, buildFeedbackTargetData } from ${JSON.stringify(moduleUrl)};
+    const repoRoot = process.argv[1];
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli: process.argv[2] }, [{ kind: "stage", id: "implementation", body: "Concurrent message", clientId: "retry" }]);
+    console.log(JSON.stringify(result));`;
+  const results = await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, repository.root, feedbackCli])));
+  for (const result of results) assert.equal(JSON.parse(result.stdout).ok, true);
+  const manifest = repository.readAbsoluteJson(repository.feedbackPath("manifest.json"));
+  assert.equal(manifest.threads.length, 1);
+  assert.equal(readFeedbackThread(repository.root, manifest.threads[0]).comments.length, 1);
+});
+
+
+test("snapshot reads reject an implementation switch instead of changing feedback stores", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const manifestPath = repository.path(".semantic-review", "manifest.json");
+  const originalRead = fs.readFileSync;
+  const initial = JSON.parse(originalRead(manifestPath, "utf8"));
+  let reads = 0;
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (String(file) === manifestPath) {
+      reads++;
+      return JSON.stringify({ ...initial, implementationId: reads === 1 ? initial.implementationId : "replacement" });
+    }
+    return originalRead(file, ...args);
+  });
+  assert.throws(() => viewerSnapshot(repository.root), /active implementation changed/);
 });

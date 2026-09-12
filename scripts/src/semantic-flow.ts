@@ -32,6 +32,7 @@ import {
   stopViewerAndWait,
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
+import { feedbackDirectory, listReviews } from "./shared/review-store.js";
 import { withCheckedFeedback } from "./review-feedback.js";
 import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
 
@@ -58,6 +59,7 @@ interface ArtifactCandidate {
   finalizedStageIds: string[];
   workingStageIds: string[];
   feedbackExists: boolean;
+  feedbackDirectory: string;
 }
 
 interface Inspection {
@@ -74,7 +76,7 @@ interface PendingFeedbackStage {
     stale: boolean;
     reanchored?: boolean;
     restacked?: boolean;
-    comments: Array<{ author: string; body: string }>;
+    comments: Array<{ author: string; body: string; attachments?: Array<import("./shared/review-attachments.js").Attachment & { localPath: string }> }>;
     target: { label: string };
   }>;
 }
@@ -170,8 +172,9 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
       }) ?? null,
     finalizedStageIds: [...(manifest.stages ?? [])],
     workingStageIds: workingStageIds(root),
+    feedbackDirectory: feedbackDirectory(root, manifest.implementationId),
     feedbackExists: fs.existsSync(
-      path.join(root, ".semantic-review-feedback", "manifest.json"),
+      path.join(feedbackDirectory(root, manifest.implementationId), "manifest.json"),
     ),
   };
 }
@@ -370,10 +373,7 @@ function status(options: Options): void {
     (stage) => stage.validation ?? [],
   );
 
-  const feedbackRoot = path.join(
-    candidate.worktree,
-    ".semantic-review-feedback",
-  );
+  const feedbackRoot = candidate.feedbackDirectory;
   let feedback = {
     exists: false,
     threads: {},
@@ -656,10 +656,7 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
 
   const replayedThreadIds: string[] = [];
   if (candidate.feedbackExists) {
-    const feedbackRoot = path.join(
-      candidate.worktree,
-      ".semantic-review-feedback",
-    );
+    const feedbackRoot = candidate.feedbackDirectory;
     const feedbackManifest = readJson(path.join(feedbackRoot, "manifest.json"));
     for (const id of feedbackManifest.threads ?? []) {
       const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
@@ -781,10 +778,7 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
   const worktreeChanges = worktreeStatus
     ? worktreeStatus.split(/\r?\n/).filter(Boolean)
     : [];
-  const feedbackRoot = path.join(
-    candidate.worktree,
-    ".semantic-review-feedback",
-  );
+  const feedbackRoot = candidate.feedbackDirectory;
   if (
     !candidate.feedbackExists &&
     fs.existsSync(feedbackRoot) &&
@@ -870,6 +864,7 @@ function feedback(options: Options): void {
       );
       for (const comment of thread.comments) {
         console.log(`    ${comment.author}: ${comment.body}`);
+        for (const attachment of comment.attachments || []) console.log(`      ${attachment.filename}: ${attachment.localPath}`);
       }
     }
   }
@@ -1227,21 +1222,51 @@ function replaceInstalledSkill(
 
 async function viewerForUpdate(
   targetRoot: string,
-): Promise<(ViewerIdentity & { repositoryRoot: string }) | null> {
-  const viewer = await probeViewer();
-  if (!viewer || typeof viewer.repositoryRoot !== "string") return null;
-  const viewerRoot = viewer.repositoryRoot;
-  if (!worktreeRoots(targetRoot).some((root) => samePath(root, viewerRoot))) {
-    return null;
+): Promise<Array<ViewerIdentity & { repositoryRoot: string }>> {
+  const roots = worktreeRoots(targetRoot);
+  const ports = new Set(listReviews().filter((r) => roots.some((root) => samePath(root, r.repositoryRoot))).map((r) => r.viewer?.port).filter((port): port is number => Boolean(port)));
+  const candidates = await Promise.all([probeViewer(), ...Array.from(ports, (port) => probeViewer(port))]);
+  const found: Array<ViewerIdentity & { repositoryRoot: string }> = [];
+  for (const viewer of candidates) {
+    if (!viewer || typeof viewer.repositoryRoot !== "string" || found.some((item) => item.port === viewer.port)) continue;
+    const viewerRoot = viewer.repositoryRoot;
+    if (!roots.some((root) => samePath(root, viewerRoot))) {
+      continue;
+    }
+    // Older viewers identify their repository but not their skill installation.
+    if (viewer.skillDirectory !== undefined &&
+        (typeof viewer.skillDirectory !== "string" ||
+         !samePath(viewer.skillDirectory, skillDirectory))) continue;
+    const manifest = path.join(viewerRoot, ".semantic-review", "manifest.json");
+    if (!fs.existsSync(manifest) ||
+        readJson(manifest).implementationId !== viewer.implementationId) continue;
+    found.push({ ...viewer, repositoryRoot: viewerRoot });
   }
-  // Older viewers identify their repository but not their skill installation.
-  if (viewer.skillDirectory !== undefined &&
-      (typeof viewer.skillDirectory !== "string" ||
-       !samePath(viewer.skillDirectory, skillDirectory))) return null;
-  const manifest = path.join(viewerRoot, ".semantic-review", "manifest.json");
-  if (!fs.existsSync(manifest) ||
-      readJson(manifest).implementationId !== viewer.implementationId) return null;
-  return { ...viewer, repositoryRoot: viewerRoot };
+  return found;
+}
+
+async function restartViewers(viewers: Array<ViewerIdentity & { repositoryRoot: string }>) {
+  const failures: unknown[] = [];
+  for (const viewer of viewers) {
+    try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+    catch (error) { failures.push(error); }
+  }
+  if (failures.length) throw new AggregateError(failures, "Some review services could not restart. Reopen them from the review list.");
+}
+
+async function stopViewersForUpdate(viewers: Array<ViewerIdentity & { repositoryRoot: string }>) {
+  const stopped: typeof viewers = [];
+  try {
+    for (const viewer of viewers) { await stopViewerAndWait(viewer); stopped.push(viewer); }
+  } catch (error) {
+    const failures: unknown[] = [error];
+    for (const viewer of stopped) {
+      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+      catch (restartError) { failures.push(restartError); }
+    }
+    if (failures.length > 1) throw new AggregateError(failures, "Stopping viewers failed; some stopped viewers could not restart.");
+    throw error;
+  }
 }
 
 async function updateFromSource(options: Options): Promise<void> {
@@ -1305,10 +1330,8 @@ async function updateFromSource(options: Options): Promise<void> {
   const builtSkill = path.join(sourceRoot, "skills", "semantic-flow");
   const requiredFiles = verifySkill(builtSkill);
 
-  const viewer = await viewerForUpdate(targetRoot);
-  if (viewer) {
-    await stopViewerAndWait(viewer);
-  }
+  const viewers = await viewerForUpdate(targetRoot);
+  await stopViewersForUpdate(viewers);
   let installedVersion: string;
   try {
     if (!samePath(builtSkill, skillDirectory)) {
@@ -1317,21 +1340,12 @@ async function updateFromSource(options: Options): Promise<void> {
     installedVersion = readVersion(skillDirectory);
     compareSkillFiles(builtSkill, skillDirectory, requiredFiles);
   } catch (updateError) {
-    if (viewer) {
-      try {
-        await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false });
-      } catch (restartError) {
-        throw new AggregateError(
-          [updateError, restartError],
-          `Skill update failed (${String(updateError)}); viewer restart also failed (${String(restartError)}).`,
-        );
-      }
-    }
+    try { await restartViewers(viewers); }
+    catch (restartError) { throw new AggregateError([updateError, restartError], "Skill update failed; viewer restart also failed."); }
     throw updateError;
   }
-  if (viewer) {
-    await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false });
-  }
+  try { await restartViewers(viewers); }
+  catch (error) { fail(`Installed ${installedVersion}, but some viewers could not restart. Run review to reopen them. ${String(error)}`); }
   console.log(`Updated semantic-flow ${previousVersion} -> ${installedVersion}.`);
   console.log(`Source: ${branch ?? "(detached)"} ${sourceCommit}`);
   console.log(`Installed at: ${skillDirectory}`);
@@ -1371,21 +1385,17 @@ async function update(options: Options): Promise<void> {
     const staged = path.join(temporary, "semantic-flow");
     const metadata = await unpackDistribution(await downloadRelease(release), staged, targetVersion);
     const required = verifySkill(staged);
-    const viewer = await viewerForUpdate(targetRoot);
-    if (viewer) await stopViewerAndWait(viewer);
+    const viewers = await viewerForUpdate(targetRoot);
+    await stopViewersForUpdate(viewers);
     try {
       replaceInstalledSkill(staged, skillDirectory, required);
     } catch (error) {
-      if (viewer) {
-        try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
-        catch (restartError) { throw new AggregateError([error, restartError], "Update failed; restoring the old viewer also failed."); }
-      }
+      try { await restartViewers(viewers); }
+      catch (restartError) { throw new AggregateError([error, restartError], "Update failed; restoring the old viewers also failed."); }
       throw error;
     }
-    if (viewer) {
-      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
-      catch (error) { fail(`Installed ${targetVersion}, but the viewer could not restart. Run review to reopen it. ${String(error)}`); }
-    }
+    try { await restartViewers(viewers); }
+    catch (error) { fail(`Installed ${targetVersion}, but some viewers could not restart. Run review to reopen them. ${String(error)}`); }
     console.log(`Updated semantic-flow ${previousVersion} -> ${targetVersion}.`);
     console.log(`Source commit: ${metadata.sourceCommit}`);
     console.log(`Installed at: ${skillDirectory}`);

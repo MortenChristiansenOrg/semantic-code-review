@@ -11,14 +11,29 @@ branch immediately below it.
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
 | `semantic-flow/<implementation-id>/<NN>-<stage-id>` | Cumulative stage branch |
-| `.semantic-review-feedback/` | Local open and resolved feedback threads |
+| `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
 | `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
 
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
 
-The viewer stores review-progress approvals in browser-local state. Approvals can be recorded for the
+The viewer stores review progress, drafts, personal notes, and preferences under
+`~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
+data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
+implementation ID, independently of browser ports. Folder names use
+`<worktree>--<implementation>--<sha256>`, for example
+`my-project--order-cancellation--<64 hex characters>`. The readable parts are
+normalized and capped at 24 and 40 characters; the full hash preserves uniqueness
+even when names collide or are shortened. Changing the display title does not
+rename the folder. Moving a worktree creates a new
+review identity; the old data remains available for cleanup. There is no migration
+from browser storage. Simultaneous independent edits merge; conflicting edits to
+the same field or draft list fail visibly rather than overwrite another tab.
+Unfinished composers are shared review state; preserve conflicting text before
+reloading. Wait for the saving indicator to clear before closing the viewer.
+
+Approvals remain personal sign-offs. Approvals can be recorded for the
 complete change set, a stage, a change node, or a file within one stage.
 Approving a parent visually approves its descendants and makes their controls
 read-only; removing that parent approval restores each descendant's explicit
@@ -440,3 +455,121 @@ Dimmed shared-file sections explain their owning step and provide a jump to that
 step at the same line. File rows show file and line feedback counts separately,
 with personal notes in their own badge.
 Use Ctrl+Enter in a note or reply input to submit it; ordinary Enter adds a line.
+
+Concurrent reviews use separate localhost services. Opening a different review
+keeps existing viewers available; reopening the same review reuses its healthy
+service. A review first tries its recorded port. With no recorded port it tries
+`SEMANTIC_VIEW_PORT` (29180 by default). If that port is occupied by another
+review or application, it chooses and records another port. A service restart
+retains review state, and a skill update restarts matching registered services
+for the current repository's worktrees.
+
+Every viewer command belongs to the review that initiated it. The server resolves
+that review's registry identity to its artifact worktree and retains the context
+through queued work and subprocesses. It never uses the launching directory as a
+fallback. A removed worktree, changed implementation, or deleted session produces
+an explicit error. Future viewer command handlers must use the shared review
+command runner and explicitly validate any associated working worktree.
+
+Use **Reviews** in the viewer toolbar to revisit any saved review without asking
+an agent to run another review command. The list shows each implementation's
+title and ID, repository/worktree path, last edit, and availability. The animated
+picker dims and blocks the page behind it; Close, Escape, or clicking outside
+dismisses it without rebuilding the page or losing an unfinished message. Switching
+saves the current draft, starts or reuses the selected review's service, and
+opens its page. If saving or opening fails, the current page and draft remain.
+A removed or changed worktree remains listed with an explanation; its stored
+review data is never silently reassigned to another worktree.
+
+**Mark complete** and **Reopen review** change only the local review's lifecycle.
+Completion does not approve files, land an implementation, stop its service, or
+delete data. Opening an already completed review leaves it completed. Last edit
+tracks comments, feedback, approvals, typed draft text, and lifecycle changes;
+opening a page or changing navigation preferences does not update it.
+
+File approvals belong to a particular stage and change node. When a file appears
+in two nodes, approve each appearance separately. Node and stage summaries and
+coverage count those individual file reviews; unapproving one does not revoke
+another node's sign-off on the same file.
+
+A file review becomes stale if the full file diff changes, the stage base changes,
+or that node's classification or owned hunks/line ranges change. Changes outside
+the node's owned range also invalidate its approval because the sign-off records
+the whole file state. A rename retains a stale indicator only in the same node.
+Approvals remain personal review notes and do not gate CLI workflows.
+
+Approving a file retains its complete head content under that review's local
+`snapshots/` directory. A stale file opens with **Since approval** enabled in
+the normal diff toolbar, beside **Hide removed**. Turn it off for the normal
+stage base-to-head diff. **Changes**, **Full file**, and **Hide removed** work in
+either comparison. Reapproving the file removes the comparison toggle until
+the approval becomes stale again. The comparison reports changed ownership and
+stage bases. Binary content shows hashes instead of a line diff; unavailable
+content produces an explicit error. Approving or unapproving a file keeps its
+diff open. The combined file-comment and personal-note counts toggle the notes
+without closing the diff. The **Add note** footer stays visible when existing
+comments are collapsed.
+
+Approval snapshots retain file content up to 20 MiB per endpoint. Larger files
+retain their actual size and Git object identity, with an explicit unavailable
+comparison and no claimed SHA-256 content hash. This limit does not prevent
+recording a personal approval.
+
+Snapshots survive restacking and Git garbage collection. Reapproval captures a
+new snapshot; saving reapproval or removing approval releases the previous
+snapshot when no approval references it. Failed or abandoned captures remain
+owned by the review for cleanup. Historical comparisons have no line-comment
+controls. Jumping to a line note restores the current stage diff, preserving its
+actual feedback anchor.
+
+### Attach context to messages
+
+Use **Attach files**, drop files onto the highlighted message text field, or
+paste an image. Other parts of the editor do not accept file drops.
+New messages, personal notes, and replies support up to ten files of 20 MiB each,
+with or without text. Uploads and drafts survive reloads and review switches.
+Attachments appear as compact rows with image thumbnails where supported.
+The viewer does not offer file downloads; agents access the managed local files
+through feedback commands.
+Saving a message keeps it local until you prepare feedback.
+
+The CLI can register context too:
+
+```text
+<review-feedback> init
+<review-feedback> attachment add --file <local-file>
+<review-feedback> thread reply --id <thread-id> --comment-id <comment-id> --attachments <attachment-id>
+<review-feedback> attachment show --id <attachment-id>
+```
+
+`attachment add` and `attachment show` print metadata and `localPath` as JSON.
+Repeat `--attachments` for multiple IDs, or supply an array through JSON input.
+Feedback commands include these local paths so an agent can read the files.
+Only local uploads are supported. Cancelled drafts and failed sends leave files
+owned by the review for explicit cleanup; retries reuse the same managed file.
+
+### Delete review data or clean unused files
+
+Open **Reviews → Delete data…** to inspect a review's location, lifecycle status,
+storage size, drafts, personal notes, approvals, feedback, attachments, and saved
+snapshots. **Delete review data** confirms removal of that review's local data.
+Unsent drafts and unresolved feedback are highlighted before confirmation.
+Completion never deletes data automatically; unavailable worktrees can be cleaned
+too. Source files, branches, implementation artifacts, publications, and archives
+are preserved.
+
+**Clean unused files** reclaims unreferenced uploads and snapshots separately.
+Files referenced by saved messages, drafts, feedback, or approvals are retained.
+Recent uploads and snapshots have a one-hour grace period to protect in-flight
+work; uploading the same file again renews that protection. Cleanup runs only
+when requested, not automatically when that hour expires. Deleting a whole
+review removes its data regardless of age. If another process
+changes the data after the preview, refresh the details before confirming.
+
+Deletion invalidates the old session before removing files. Stale tabs and CLI
+requests cannot recreate it. If a file is locked or removal is interrupted,
+**Retry deletion…** remains in Saved reviews. You can still open other reviews
+after deleting the current one, including after a page reload. A tab whose data
+was deleted elsewhere keeps unsent text visible for copying. Running review
+explicitly again in the original worktree starts a fresh session once pending
+removal is complete.

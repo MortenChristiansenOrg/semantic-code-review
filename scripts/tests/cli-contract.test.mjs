@@ -415,7 +415,6 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
   assert.match(viewerApp, /data-node-id="\$\{node\.id\}"/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);
-  assert.match(viewerApp, /const focusNodeId = activeFileNodeId\(fid\)/);
   const selectedNodeStart = viewerApp.indexOf("function selectedNodeForFile(activeValue, file)");
   const selectedNodeEnd = viewerApp.indexOf("\n  function activeFileNodeId", selectedNodeStart);
   assert.notEqual(selectedNodeStart, -1);
@@ -427,7 +426,8 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     memberships: [{ nodeId: "first-node" }, { nodeId: "clicked-node" }],
   };
   assert.equal(selectedNodeForFile("clicked-node", sharedFile), "clicked-node");
-  assert.equal(selectedNodeForFile(true, sharedFile), "first-node");
+  assert.equal(selectedNodeForFile(true, sharedFile), null);
+  assert.equal(selectedNodeForFile("removed-node", sharedFile), null);
   assert.equal(selectedNodeForFile(false, sharedFile), null);
   const aggregateStart = viewerApp.indexOf("function aggregateApprovalState(states)");
   const aggregateEnd = viewerApp.indexOf("\n  function nodeApprovalState", aggregateStart);

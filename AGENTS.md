@@ -132,7 +132,7 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
 ### Feedback
 
 - **Feedback artifact**: The mutable local review workflow state under
-  `.semantic-review-feedback/`, independent from the artifact and never
+  `~/.semantic-flow/reviews/<review-id>/feedback/`, independent from the artifact and never
   committed on stage branches.
 - **Thread**: A single review conversation opened by the user and continued by
   the agent or user, anchored to a target and stage head.

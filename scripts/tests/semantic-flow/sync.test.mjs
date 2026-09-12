@@ -49,7 +49,7 @@ test("sync fetches the target upstream, restacks all stages, and refreshes feedb
   repository.feedback("thread", "add", "--id", "pending-line", "--comment-id", "line-note",
     "--body", "Review this line", "--label", "Behavior line", "--target-kind", "line", "--stage", "behavior",
     "--path", "behavior.txt", "--side", "new", "--line", "1");
-  const lineBefore = repository.readJson(".semantic-review-feedback/threads/pending-line.json");
+  const lineBefore = repository.readAbsoluteJson(repository.feedbackPath("threads/pending-line.json"));
   const before = snapshot(repository);
   const target = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
   assert.notEqual(repository.git("rev-parse", "upstream/main"), target);
@@ -69,8 +69,8 @@ test("sync fetches the target upstream, restacks all stages, and refreshes feedb
   assert.equal(stageThread.reanchored, true);
   assert.equal(stageThread.stale, false);
   assert.equal(result.stages[0].threads.find((thread) => thread.id === "pending-line").stale, true);
-  assert.deepEqual(repository.readJson(".semantic-review-feedback/threads/pending-line.json"), lineBefore);
-  const thread = repository.readJson(".semantic-review-feedback/threads/pending.json");
+  assert.deepEqual(repository.readAbsoluteJson(repository.feedbackPath("threads/pending-line.json")), lineBefore);
+  const thread = repository.readAbsoluteJson(repository.feedbackPath("threads/pending.json"));
   assert.equal(thread.comments.length, 1);
   assert.equal(thread.status, "open");
   repository.semantic("validate", "--publish");

@@ -13,6 +13,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -21,11 +22,24 @@ import { fileURLToPath } from "node:url";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import {
   probeViewer,
-  requestViewerShutdown,
+  stopViewerAndWait,
   VIEWER_APP_ID,
   VIEWER_HOST,
   viewerPort,
 } from "./shared/viewer-lifecycle.js";
+
+export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+
+export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
+import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
+
+export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
+import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
+export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
+import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
+import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -73,6 +87,7 @@ function resolveRepositoryRoot(args) {
 function gitCapture(cwd, args) {
   return execFileSync("git", args, {
     cwd,
+    env: reviewEnvironment(),
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
@@ -136,8 +151,18 @@ function listJsonDocuments(directory) {
 }
 
 export function viewerSnapshot(repoRoot) {
+  const implementationId = activeImplementationId(repoRoot);
+  return withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
+    const snapshot = readViewerSnapshot(repoRoot, implementationId);
+    requireImplementation(repoRoot, implementationId);
+    return snapshot;
+  });
+}
+
+function readViewerSnapshot(repoRoot, implementationId) {
   const semanticRoot = path.join(repoRoot, ".semantic-review");
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const files = [
     path.join(semanticRoot, "manifest.json"),
     ...listJsonDocuments(path.join(semanticRoot, "requirements")),
@@ -194,10 +219,11 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
       return nextDocuments.get(file).value;
     };
     const semantic = path.join(repoRoot, ".semantic-review");
-    const feedback = path.join(repoRoot, ".semantic-review-feedback");
-    read(path.join(semantic, "manifest.json"));
+    const artifact = read(path.join(semantic, "manifest.json"));
+    const feedback = feedbackDirectory(repoRoot, artifact.implementationId);
     for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
     let awaitingAgentReplies = 0;
+    withReviewLock(reviewId(repoRoot, artifact.implementationId), () => {
     if (fs.existsSync(path.join(feedback, "manifest.json"))) {
       const manifest = read(path.join(feedback, "manifest.json"));
       for (const id of manifest.threads || []) {
@@ -205,6 +231,7 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
         if (thread.status === "open" && thread.comments?.at(-1)?.author !== "agent") awaitingAgentReplies++;
       }
     }
+    });
     for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
     if (changed) {
       const hash = createHash("sha256");
@@ -215,6 +242,10 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
     if (scan) lastScan = now();
     return previous;
   };
+}
+
+function requireImplementation(repoRoot, implementationId) {
+  if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
 }
 
 function activeImplementationId(repoRoot) {
@@ -533,6 +564,7 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
 async function* gitLines(repoRoot, args) {
   const child = spawn("git", args, {
     cwd: repoRoot,
+    env: reviewEnvironment(),
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -795,9 +827,10 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     })),
   }));
 
-  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages));
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
   return {
     implementationId: manifest.implementationId,
+    reviewId: reviewId(repoRoot, manifest.implementationId),
     title: manifest.title,
     summary: manifest.summary,
     targetBranch: manifest.targetBranch,
@@ -917,22 +950,19 @@ export function createImplementationDataScript(repoRoot) {
 
 // Load open and resolved feedback threads from the local feedback store. A
 // thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot, stages) {
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
-  const manifestPath = path.join(feedbackRoot, "manifest.json");
-  if (!fs.existsSync(manifestPath)) return [];
-  const manifest = readJson(manifestPath);
-  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
-    throw new Error(
-      "this feedback workspace uses an unsupported v0.1 layout",
-    );
-  }
+function buildFeedbackThreads(repoRoot, stages, implementationId) {
+  const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
+  const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), () => {
+    requireImplementation(repoRoot, implementationId);
+    const manifestPath = path.join(feedbackRoot, "manifest.json");
+    if (!fs.existsSync(manifestPath)) return [];
+    const manifest = readJson(manifestPath);
+    if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) throw new Error("Invalid feedback manifest.");
+    return manifest.threads.map((id) => readJson(path.join(feedbackRoot, "threads", `${id}.json`)));
+  });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
   const threads: Array<Record<string, any>> = [];
-  for (const threadId of manifest.threads || []) {
-    const thread = readJson(
-      path.join(feedbackRoot, "threads", `${threadId}.json`),
-    );
+  for (const thread of storedThreads) {
     const currentHead = currentHeads.get(thread.target?.stageId);
     const targetHead = thread.target?.stageHead;
     let targetState = null;
@@ -971,6 +1001,7 @@ function buildFeedbackThreads(repoRoot, stages) {
         id: c.id,
         author: c.author,
         body: c.body,
+        attachments: c.attachments || [],
         createdAt: c.createdAt,
       })),
       assignedStageId: thread.assignedStageId,
@@ -1109,14 +1140,20 @@ export function buildFeedbackTargetData(repoRoot) {
   };
 }
 
-function runFeedbackCli(feedbackCli, repoRoot, args, input?: string) {
-  return execFileSync(process.execPath, [feedbackCli, ...args], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    input,
-    windowsHide: true,
-    maxBuffer: 16 * 1024 * 1024,
-  });
+function runFeedbackCli(feedbackCli, context: ReviewContext, args, input?: string) {
+  return runReviewCommand(context, process.execPath, [feedbackCli, ...args], { input });
+}
+
+function feedbackContext(repoRoot, context: ReviewContext | null, initialize = false): ReviewContext {
+  const implementation = implementationSummary(repoRoot);
+  const id = reviewId(repoRoot, implementation.implementationId);
+  if (context) {
+    assertReviewContext(context);
+    if (context.reviewId !== id) throw new Error("The feedback command belongs to another review.");
+    return context;
+  }
+  if (initialize) registerReview(repoRoot, implementation.implementationId, implementation.title);
+  return captureReviewContext(id);
 }
 
 function cliErrorMessage(error) {
@@ -1132,7 +1169,7 @@ function cliErrorMessage(error) {
 // partial or orphaned draft batch behind.
 export function planFeedbackThreads(notes, implementation) {
   const skipped: Array<{ ref: number; reason: string }> = [];
-  const planned: Array<{ ref: number; body: string; target: Record<string, any>; clientId?: string }> =
+  const planned: Array<{ ref: number; body: string; attachments: string[]; target: Record<string, any>; clientId?: string }> =
     [];
   if (!Array.isArray(notes)) return { planned, skipped };
   notes.forEach((note, index) => {
@@ -1142,7 +1179,8 @@ export function planFeedbackThreads(notes, implementation) {
       return;
     }
     const body = typeof note.body === "string" ? note.body.trim() : "";
-    if (!body) {
+    const attachments = Array.isArray(note.attachments) ? note.attachments.map((item) => item?.id) : [];
+    if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
@@ -1159,12 +1197,13 @@ export function planFeedbackThreads(notes, implementation) {
       skipped.push({ ref, reason: error.message });
       return;
     }
-    planned.push({ ref, body, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
+    planned.push({ ref, body, attachments, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
   });
   return { planned, skipped };
 }
 
-export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes) {
+export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }, notes) {
+  context = feedbackContext(repoRoot, context, true);
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1176,14 +1215,15 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
     return { ok: false, error: "No notes could be exported.", skipped };
   }
 
-  const manifest = path.join(repoRoot, ".semantic-review-feedback", "manifest.json");
+  const manifest = path.join(feedbackDirectory(repoRoot), "manifest.json");
   if (!fs.existsSync(manifest)) {
-    runFeedbackCli(feedbackCli, repoRoot, ["init"]);
+    try { runFeedbackCli(feedbackCli, context, ["init"]); }
+    catch (error) { if (!fs.existsSync(manifest)) throw error; } // Another viewer may have initialized it first.
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
   const batch = planned.map((thread, index) => {
     const threadId = thread.clientId
-      ? `viewer-${createHash("sha256").update(JSON.stringify([implementation.implementationId, thread.clientId, thread.target, thread.body])).digest("hex").slice(0, 32)}`
+      ? `viewer-${createHash("sha256").update(JSON.stringify([implementation.implementationId, thread.clientId, thread.target, thread.body, thread.attachments])).digest("hex").slice(0, 32)}`
       : `${exportId}-t${String(index).padStart(3, "0")}`;
     const commentId = `${threadId}-c000`;
     return {
@@ -1193,12 +1233,13 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
         id: threadId,
         "comment-id": commentId,
         body: thread.body,
+        ...(thread.attachments.length ? { attachments: thread.attachments } : {}),
         ...thread.target,
       },
     };
   });
   const result = JSON.parse(runFeedbackCli(
-    feedbackCli, repoRoot, ["thread", "add-batch", "--partial", "--input", "-"],
+    feedbackCli, context, ["thread", "add-batch", "--partial", "--input", "-"],
     JSON.stringify({ threads: batch.map((entry) => entry.input) }),
   ));
   const exported = result.accepted.map(({ index }) => ({ ref: batch[index].ref, threadId: batch[index].threadId }));
@@ -1207,7 +1248,8 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli }, notes)
 
 }
 
-export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
+export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }, drafts) {
+  context = feedbackContext(repoRoot, context);
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1226,11 +1268,12 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
       skipped.push({ ref, reason: "thread no longer exists" });
       return;
     }
-    if (!body) {
+    const attachments = Array.isArray(draft.attachments) ? draft.attachments.map((item) => item?.id) : [];
+    if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
-    const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body])).digest("hex").slice(0, 32)}`;
+    const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body, attachments])).digest("hex").slice(0, 32)}`;
     batch.push({
       ref,
       threadId,
@@ -1240,6 +1283,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
         "comment-id": commentId,
         author: "user",
         body,
+        ...(attachments.length ? { attachments } : {}),
       },
     });
   });
@@ -1259,7 +1303,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli }, drafts) {
   };
 
   const result = JSON.parse(runFeedbackCli(
-    feedbackCli, repoRoot, ["thread", "reply-batch", "--partial", "--input", "-"],
+    feedbackCli, context, ["thread", "reply-batch", "--partial", "--input", "-"],
     JSON.stringify({ replies: batch.map((entry) => entry.input) }),
   ));
   const replied = result.accepted.map(({ index }) => resultFor(batch[index]));
@@ -1371,7 +1415,7 @@ async function handleFeedbackReplyBatch(request, response, context) {
 }
 
 export function readFeedbackThread(repoRoot, threadId) {
-  const feedbackRoot = path.join(repoRoot, ".semantic-review-feedback");
+  const feedbackRoot = feedbackDirectory(repoRoot);
   const manifestPath = path.join(feedbackRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) return null;
 
@@ -1434,19 +1478,11 @@ async function handleThreadAction(request, response, context, action) {
     }
     try {
       if (action === "reply") {
-        const body = typeof payload.body === "string" ? payload.body.trim() : "";
-        if (!body) {
-          sendJson(response, 400, { ok: false, error: "A reply body is required." });
-          return;
-        }
-        const commentId = `reply-${Date.now().toString(36)}`;
-        await context.jobs.call("feedbackCli", [context.implementationId, [
-          "thread", "reply",
-          "--id", threadId,
-          "--comment-id", commentId,
-          "--author", "user",
-          "--body", body,
-        ]]);
+        const result = await context.jobs.call("exportFeedbackReplies", [context.implementationId, [{
+          ref: payload.clientId || createHash("sha256").update(JSON.stringify([threadId, payload.body, payload.attachments])).digest("hex"),
+          threadId, body: payload.body, attachments: payload.attachments,
+        }]]);
+        if (!result.ok) throw new Error(result.error || result.skipped?.[0]?.reason || "Reply could not be sent.");
       } else if (action === "resolve") {
         await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "resolve", "--id", threadId]]);
       } else if (action === "reopen") {
@@ -1474,6 +1510,73 @@ async function handleThreadAction(request, response, context, action) {
   }
 }
 
+function approvedFileEndpoint(input, script: string): FileEndpoint {
+  const data = JSON.parse(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
+  const stage = data.stages.find((stage) => stage.id === input.stageId);
+  const file = stage?.files.find((file) => file.path === input.path);
+  const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
+  if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
+  if (stage.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath,
+    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+}
+
+export function registeredReviews() {
+  return [...listReviews().map((record) => {
+    let unavailableReason = "";
+    try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
+    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt } = record;
+    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, available: !unavailableReason, unavailableReason };
+  }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+}
+
+/** Reopen using a registry identity, with no caller-supplied path or command. */
+export async function openRegisteredReview(id: string, generation: string): Promise<string> {
+  const context = captureReviewContext(id);
+  if (context.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
+  const child = spawnReviewCommand(context, process.execPath, [fileURLToPath(import.meta.url), "review", context.repositoryRoot], {
+    detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" },
+  });
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => { child.kill(); reject(new Error("The review service did not start within 15 seconds.")); }, 15_000);
+      const fail = (error: Error) => { clearTimeout(timer); reject(error); };
+      child.once("error", fail);
+      child.once("exit", (code) => fail(new Error(`The review service exited before opening (${code}).`)));
+      child.once("message", (message: any) => {
+        clearTimeout(timer);
+        if (message?.type !== "ready" || message.reviewId !== id || typeof message.url !== "string") {
+          child.kill(); reject(new Error(message?.message || "Invalid review service startup response."));
+        } else resolve(message.url);
+      });
+    });
+  } finally { child.unref(); }
+}
+
+export function reviewSessionUnavailable(context: ReviewContext) {
+  try { return readReview(context.reviewId).generation !== context.generation; }
+  catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+}
+/** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
+export function reviewRetirementCheck(context: ReviewContext) {
+  const directory = reviewDirectory(context.reviewId);
+  const identity = () => { const stat = fs.statSync(directory, { bigint: true }); return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`; };
+  let original: string | null | undefined;
+  try { original = identity(); } catch (error) { if (error.code === "ENOENT") original = null; }
+  return () => {
+    if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
+    let current: string;
+    try { current = identity(); } catch (error) { return error.code === "ENOENT"; }
+    if (original === null) return true;
+    if (original === undefined) {
+      // A new generation may have appeared while the initial identity was unreadable.
+      try { if (readReview(context.reviewId).generation !== context.generation) return true; }
+      catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+      original = current;
+    }
+    return current !== original;
+  };
+}
 function serveViewer({
   viewerDir,
   port,
@@ -1482,11 +1585,115 @@ function serveViewer({
   implementationId,
   dataSource,
   viewerVersion,
+  context,
 }) {
+  const review = assertReviewContext(context);
   let server = null;
+  let management = null;
+  const manage = (method, args) => {
+    if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
+    return management.call(method, args);
+  };
   const requestHandler = async (request, response) => {
     const url = new URL(request.url, `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+
+    // Every review API request is explicitly scoped, even on a dedicated server.
+    // Management/probing routes do not execute commands against the launch repo.
+    if (pathname.startsWith("/api/") && !["/api/whoami", "/api/shutdown"].includes(pathname)) {
+      if ((url.searchParams.get("review") !== context.reviewId || url.searchParams.get("generation") !== context.generation)) {
+        sendJson(response, 409, { ok: false, error: "This request belongs to another review." }); return;
+      }
+      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
+      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+    }
+
+    if (pathname === "/api/attachments" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request, 29 * 1024 * 1024));
+        if (typeof payload.data !== "string" || payload.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || Buffer.from(payload.data, "base64").toString("base64") !== payload.data) throw new Error("Invalid attachment bytes or file larger than 20 MiB.");
+        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, payload.filename, payload.mediaType, Buffer.from(payload.data, "base64")));
+        sendJson(response, 200, { ok: true, attachment });
+      } catch (error) { sendJson(response, 400, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+    if (pathname.startsWith("/api/attachments/") && request.method === "GET") {
+      try {
+        const { attachment, bytes } = withReviewLock(context.reviewId, () => {
+          if (readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+          const attachment = resolveAttachment(context.reviewId, pathname.slice("/api/attachments/".length));
+          const bytes = fs.readFileSync(attachment.localPath);
+          if (createHash("sha256").update(bytes).digest("hex") !== attachment.sha256) throw new Error("Attachment content is damaged.");
+          return { attachment, bytes };
+        });
+        const preview = url.searchParams.get("preview") === "1" && imageMediaType(bytes);
+        response.writeHead(200, { "content-type": preview || "application/octet-stream", "content-length": bytes.length,
+          "content-disposition": `${preview ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+          "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox", "cache-control": "no-store" });
+        response.end(bytes);
+      } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
+    if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        const method = pathname === "/api/approval-snapshots" ? "captureApproval" : "compareApproval";
+        sendJson(response, 200, { ok: true, ...await dataSource.call(method, [implementationId, payload]) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
+    if (request.method === "POST" && ["/api/reviews/storage", "/api/reviews/delete", "/api/reviews/clean-unused"].includes(pathname)) {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Managing review data requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: await manage("inspectStorage", [payload.reviewId, payload.generation]) });
+        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...await manage("deleteStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
+        else sendJson(response, 200, { ok: true, ...await manage("cleanStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/reviews") {
+      try { sendJson(response, 200, { ok: true, reviews: await manage("listReviews", []) }); }
+      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+    if (request.method === "POST" && pathname === "/api/reviews/completion") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Changing completion requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        await manage("setCompleted", [payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt]);
+        sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/reviews/open") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Opening a review requires a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        sendJson(response, 200, { ok: true, url: await openRegisteredReview(payload.reviewId, payload.generation) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
+    if (pathname === "/api/review-state") {
+      try {
+        let record;
+        if (request.method === "GET") record = await dataSource.call("readReview", [implementationId, review.id]);
+        else if (request.method === "POST" && isTrustedRequest(request, port)) {
+          const payload = JSON.parse(await readRequestBody(request));
+          if (payload.reviewId !== review.id) throw new Error("This request belongs to another review.");
+          record = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
+        } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
+        sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); }
+      return;
+    }
 
     if (request.method === "GET" && pathname === "/api/whoami") {
       sendJson(response, 200, {
@@ -1494,6 +1701,10 @@ function serveViewer({
         app: VIEWER_APP_ID,
         implementationId,
         repositoryRoot: repoRoot,
+        reviewId: context.reviewId,
+        generation: context.generation,
+        reviewHome: reviewHome(),
+        port,
         skillDirectory: path.resolve(scriptDir, ".."),
         processId: process.pid,
         viewerVersion,
@@ -1545,8 +1756,7 @@ function serveViewer({
       return;
     }
 
-    // Lets a fresh launch reclaim the fixed port by asking the previous viewer
-    // to exit, instead of drifting to a new port (which strands localStorage).
+    // Controlled lifecycle shutdown; launching another review never uses this.
     if (request.method === "POST" && pathname === "/api/shutdown") {
       if (!isTrustedRequest(request, port)) {
         sendJson(response, 403, {
@@ -1610,22 +1820,20 @@ function serveViewer({
     }
 
     if (pathname === "/implementation-data.js") {
-      try {
-        const body = Buffer.from(await dataSource.call("implementationDataScript", []), "utf8");
-        response.writeHead(200, {
-          "content-type": "text/javascript; charset=utf-8",
-          "content-length": body.length,
-          "cache-control": "no-store",
-        });
-        response.end(body);
-      } catch (error) {
-        response.writeHead(500, {
-          "content-type": "text/plain; charset=utf-8",
-          "cache-control": "no-store",
-        });
-        response.end(`Failed to refresh implementation data: ${cliErrorMessage(error)}`);
+      let script;
+      try { script = await dataSource.call("implementationDataScript", []); }
+      catch (error) {
+        if (error.code !== "REVIEW_UNAVAILABLE" && error.code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
+          response.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+          response.end(cliErrorMessage(error)); return;
+        }
+        // The saved-review manager remains usable after deletion or worktree removal.
+        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title,
+          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" })};`;
       }
-      return;
+      const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify({ reviewId: context.reviewId, generation: context.generation })};\n`, "utf8");
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "content-length": body.length, "cache-control": "no-store" });
+      response.end(body); return;
     }
 
     const safe = path
@@ -1654,14 +1862,24 @@ function serveViewer({
   };
 
   server = http.createServer(requestHandler);
+  server.once("close", () => { if (management) void management.close(); });
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, VIEWER_HOST, () => resolve(server));
+    server.listen(port, VIEWER_HOST, () => {
+      const shouldRetire = reviewRetirementCheck(context);
+      const retirement = setInterval(() => {
+        if (shouldRetire()) {
+          clearInterval(retirement); review.state = {}; void dataSource.close();
+        }
+      }, 1000);
+      retirement.unref(); server.once("close", () => clearInterval(retirement));
+      resolve(server);
+    });
   });
 }
 
-function createViewerWorker(repoRoot) {
-  const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot } });
+function createViewerWorker(repoRoot, context: ReviewContext, management = false) {
+  const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot, context, management } });
   const pending = new Map();
   const reads = new Map();
   let sequence = 0;
@@ -1673,11 +1891,11 @@ function createViewerWorker(repoRoot) {
   };
   worker.on("error", rejectAll);
   worker.on("exit", () => rejectAll(new Error("Viewer worker stopped; reopen the viewer.")));
-  worker.on("message", ({ id, result, error }) => {
+  worker.on("message", ({ id, result, error, code }) => {
     const request = pending.get(id);
     if (!request) return;
     pending.delete(id);
-    if (error) request.reject(new Error(error)); else request.resolve(result);
+    if (error) request.reject(Object.assign(new Error(error), { code })); else request.resolve(result);
   });
   return {
     get healthy() { return !stopped; },
@@ -1703,21 +1921,42 @@ function createViewerWorker(repoRoot) {
 
 if (!isMainThread && workerData?.repoRoot) {
   const root = workerData.repoRoot;
-  const source = createViewerDataSource(root);
+  const context: ReviewContext = Object.freeze(workerData.context);
+  const source = workerData.management ? null : createViewerDataSource(root);
   const feedbackCli = locateFeedbackCli();
   parentPort.on("message", async ({ id, method, args }) => {
     try {
+      if (workerData.management) {
+        // Management survives retirement of the launching review. Every job uses
+        // its explicitly selected target; no repository command is allowed here.
+        let result;
+        if (method === "inspectStorage") result = inspectReviewStorage(args[0], args[1]);
+        else if (method === "deleteStorage") result = deleteReviewData(args[0], args[1], args[2]);
+        else if (method === "cleanStorage") result = cleanUnusedReviewFiles(args[0], args[1], args[2]);
+        else if (method === "listReviews") result = registeredReviews();
+        else if (method === "setCompleted") result = setReviewCompleted(args[0], args[1], args[2], args[3]);
+        else throw new Error("Unknown review management operation.");
+        parentPort.postMessage({ id, result }); return;
+      }
+      const localState = ["readReview", "patchReviewState"].includes(method);
+      if (localState) {
+        if (args[1] !== context.reviewId || readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+      } else assertReviewContext(context); // Includes queued repository reads and commands.
       let result;
-      if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      if (method === "readReview") result = readReview(context.reviewId);
+      else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
+      else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-        if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root) }, args[1]);
-        else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli }, args[1]);
-        else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, root, args[1]);
+        if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
+        else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
+        else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
+        else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
+        else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, context, args[1]);
         else throw new Error("Unknown viewer operation.");
       }
       parentPort.postMessage({ id, result });
-    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error) }); }
+    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error), code: error.code }); }
   });
 }
 
@@ -1772,7 +2011,12 @@ async function main() {
   const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
   const viewerDir = locateViewerDir();
   const implementation = implementationSummary(repoRoot);
-  const dataSource = createViewerWorker(repoRoot);
+  const registered = process.env.SEMANTIC_FLOW_REVIEW_ID
+    ? readReview(process.env.SEMANTIC_FLOW_REVIEW_ID)
+    : registerReview(repoRoot, implementation.implementationId, implementation.title);
+  const context = captureReviewContext(registered.id);
+  if (process.env.SEMANTIC_FLOW_REVIEW_ID && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_ID !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_GENERATION !== context.generation)) throw new Error("The requested review session changed before startup.");
+  const dataSource = createViewerWorker(repoRoot, context);
   startupWorker = dataSource;
   const feedbackCli = locateFeedbackCli();
   const fingerprint = createHash("sha256");
@@ -1781,66 +2025,37 @@ async function main() {
   }
   const viewerVersion = fingerprint.digest("hex");
 
-  const port = viewerPort();
+  let port = registered.viewer?.port || viewerPort();
   let server = null;
-  try {
-    server = await serveViewer({
-      viewerDir,
-      port,
-      repoRoot,
-      feedbackCli,
-      implementationId: implementation.implementationId,
-      dataSource,
-      viewerVersion,
-    });
-  } catch (error) {
-    if (!error || error.code !== "EADDRINUSE") { await dataSource.close(); throw error; }
-    // The port is taken. Reclaim it only if our own viewer is holding it;
-    // never kill an unrelated app that happens to use this port.
-    const occupant = await probeViewer(port);
-    if (!occupant) {
-      await dataSource.close();
-      fail(
-        `Port ${port} is in use by another application. Stop it (or free the port) and try again.`,
-      );
-    }
-    if (occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.implementationId === implementation.implementationId &&
-      occupant.repositoryRoot && fs.realpathSync(occupant.repositoryRoot) === fs.realpathSync(repoRoot)) {
-      await dataSource.close();
-      const url = `http://${VIEWER_HOST}:${port}/`;
-      notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, processId: occupant.processId,
-        implementation, feedbackEnabled: Boolean(feedbackCli) });
-      console.log(`Reusing semantic review viewer: ${url}`);
-      openBrowser(url);
-      return;
-    }
-    if (process.env.SEMANTIC_VIEW_NO_REPLACE) {
-      await dataSource.close();
-      fail(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
-    }
-    console.log(`A semantic review viewer is already running on port ${port}; restarting it…`);
-    await requestViewerShutdown(port);
-    for (let attempt = 0; attempt < 40 && !server; attempt += 1) {
-      await delay(100);
-      try {
-        server = await serveViewer({
-          viewerDir,
-          port,
-          repoRoot,
-          feedbackCli,
-          implementationId: implementation.implementationId,
-          dataSource,
-          viewerVersion,
-        });
-      } catch (retryError) {
-        if (!retryError || retryError.code !== "EADDRINUSE") throw retryError;
+  const fallback = 20000 + (Number.parseInt(context.reviewId.slice(-64, -56), 16) % 40000);
+  const matching = (occupant) => occupant && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
+  for (let attempt = 0; attempt < 40 && !server; attempt++) {
+    try {
+      server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
+    } catch (error) {
+      if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw error;
+      const occupant = await probeViewer(port);
+      if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion) {
+        await dataSource.close();
+        const url = `http://${VIEWER_HOST}:${port}/`;
+        notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation, feedbackEnabled: Boolean(feedbackCli) });
+        console.log(`Reusing semantic review viewer: ${url}`);
+        openBrowser(url); return;
+      }
+      if (process.env.SEMANTIC_VIEW_NO_REPLACE) throw new Error(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
+      if (matching(occupant)) {
+        await stopViewerAndWait(occupant, port);
+      } else {
+        // A different review (or another application) keeps its port. Stable
+        // fallback candidates also let concurrent launches of this review meet.
+        // Windows reserves contiguous port ranges: spread retries across the
+        // range instead of exhausting all attempts in the same reserved block.
+        port = ((fallback - 20000 + attempt * 9973) % 40000) + 20000;
       }
     }
-    if (!server) {
-      await dataSource.close();
-      fail(`Port ${port} is still busy after asking the existing viewer to stop.`);
-    }
   }
+  if (!server) throw new Error("No viewer port could be allocated. Try launching the review again.");
+  recordViewer(context.reviewId, context.generation, { port, processId: process.pid, viewerVersion, skillDirectory: path.resolve(scriptDir, "..") });
   const url = `http://${VIEWER_HOST}:${port}/`;
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);
@@ -1858,6 +2073,7 @@ async function main() {
     url,
     repositoryRoot: repoRoot,
     processId: process.pid,
+    reviewId: context.reviewId,
     implementation,
     feedbackEnabled: Boolean(feedbackCli),
   });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 import {
   beginStage,
   createRepository,
@@ -78,8 +79,8 @@ test("thread add-batch validates and writes one atomic batch", (t) => {
     "--input",
     "feedback-batch.json",
   );
-  const manifest = repository.readJson(
-    ".semantic-review-feedback/manifest.json",
+  const manifest = repository.readAbsoluteJson(
+    repository.feedbackPath("manifest.json"),
   );
   assert.deepEqual(manifest.threads, ["batch-one", "batch-two"]);
 
@@ -106,20 +107,20 @@ test("thread add-batch validates and writes one atomic batch", (t) => {
     })}\n`,
   );
   repository.expectFeedbackFailure(
-    "Missing required option --body",
+    "requires text or at least one attachment",
     "thread",
     "add-batch",
     "--input",
     "invalid-feedback-batch.json",
   );
   assert.equal(
-    repository.exists(
-      ".semantic-review-feedback/threads/batch-not-kept.json",
+    repository.existsAbsolute(
+      repository.feedbackPath("threads/batch-not-kept.json"),
     ),
     false,
   );
   assert.deepEqual(
-    repository.readJson(".semantic-review-feedback/manifest.json").threads,
+    repository.readAbsoluteJson(repository.feedbackPath("manifest.json")).threads,
     ["batch-one", "batch-two"],
   );
 });
@@ -146,15 +147,15 @@ test("Windows-reserved feedback identifiers are rejected before mutation", (t) =
     "implementation",
   );
   assert.equal(
-    repository.exists(".semantic-review-feedback/threads/lpt1.json"),
+    repository.existsAbsolute(repository.feedbackPath("threads/lpt1.json")),
     false,
   );
 });
 
 test("feedback init does not strand a manifest among pre-existing files", (t) => {
   const { repository } = createImplementationWithStages(t);
-  repository.write(
-    ".semantic-review-feedback/threads/orphan.json",
+  repository.writeAbsolute(
+    repository.feedbackPath("threads/orphan.json"),
     "{}\n",
   );
 
@@ -163,11 +164,11 @@ test("feedback init does not strand a manifest among pre-existing files", (t) =>
     "init",
   );
   assert.equal(
-    repository.exists(".semantic-review-feedback/manifest.json"),
+    repository.existsAbsolute(repository.feedbackPath("manifest.json")),
     false,
   );
 
-  repository.remove(".semantic-review-feedback");
+  repository.removeAbsolute(repository.feedbackPath());
   repository.feedback("init");
   repository.feedback("validate");
 });
@@ -379,8 +380,8 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     ),
   ]);
 
-  const manifest = repository.readJson(
-    ".semantic-review-feedback/manifest.json",
+  const manifest = repository.readAbsoluteJson(
+    repository.feedbackPath("manifest.json"),
   );
   assert.ok(manifest.threads.includes("concurrent-one"));
   assert.ok(manifest.threads.includes("concurrent-two"));
@@ -397,4 +398,35 @@ test("thread add supports every target kind and concurrent mutation", async (t) 
     /implementation \(semantic-flow\/42-feedback\/01-implementation @ [0-9a-f]{40}\):/,
   );
   repository.feedback("validate");
+});
+
+test('managed attachments reach agents in attachment-only messages and replies with idempotent retries', (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback('init'); repository.write('context.log', 'original log bytes\n');
+  const first = JSON.parse(repository.feedback('attachment', 'add', '--file', 'context.log'));
+  const again = JSON.parse(repository.feedback('attachment', 'add', '--file', 'context.log'));
+  assert.deepEqual(again, first);
+  assert.equal(fs.readFileSync(first.localPath, 'utf8'), 'original log bytes\n');
+  const input = { threads: [{ id: 'with-file', 'comment-id': 'first-file', label: 'Stage', 'target-kind': 'stage', stage: 'implementation', attachments: [first.id] }] };
+  repository.write('attachment-input.json', JSON.stringify(input));
+  const send = () => JSON.parse(repository.feedback('thread', 'add-batch', '--partial', '--input', 'attachment-input.json'));
+  assert.equal(send().accepted.length, 1); assert.equal(send().accepted.length, 1);
+  let next = JSON.parse(repository.feedback('next', '--json', '--compact'));
+  assert.equal(next[0].threads[0].comments[0].body, '');
+  assert.equal(next[0].threads[0].comments[0].attachments[0].localPath, first.localPath);
+  repository.feedback('thread', 'reply', '--id', 'with-file', '--comment-id', 'file-reply', '--attachments', first.id);
+  const stored = repository.readAbsoluteJson(repository.feedbackPath('threads/with-file.json'));
+  assert.equal(stored.comments.length, 2); assert.equal(stored.comments[1].attachments[0].path, first.path);
+  assert.equal('localPath' in stored.comments[1].attachments[0], false);
+  repository.feedback('validate');
+  input.threads[0].attachments = ['f'.repeat(64)]; repository.write('attachment-input.json', JSON.stringify(input));
+  assert.equal(send().rejected.length, 1);
+});
+
+
+test('single-comment JSON input accepts attachment arrays, including an empty list with text', (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  repository.write('comment.json', JSON.stringify({ id: 'no-files', 'comment-id': 'first', body: 'Text only', attachments: [], label: 'Stage', 'target-kind': 'stage', stage: 'implementation' }));
+  repository.feedback('thread', 'add', '--input', 'comment.json');
+  repository.feedback('validate');
 });
