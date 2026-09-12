@@ -996,3 +996,31 @@ test('stored disclosures restore resolved feedback without implying approval', a
   await expect(page.locator('.stage-approve .notes-toggle[data-id="first"]')).toHaveAttribute('aria-expanded', 'true');
   await expect(page.locator('.stage-approve .notes-toggle[data-id="first"]')).toHaveClass(/all-resolved/);
 });
+
+test('file highlights and hover styles survive repeated and interrupted close animations', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await mount(page); await openFile(page);
+  const row = page.locator('details[data-node="first-one"] .frow');
+  const toggle = row.locator('.frow-open');
+  const holder = page.locator('details[data-node="first-one"] .cinema-diff');
+  const finishRowMotion = () => row.evaluate(async el => { await Promise.all(el.getAnimations().map(animation => animation.finished.catch(() => {}))); });
+  await finishRowMotion();
+  const activeBackground = await row.evaluate(el => getComputedStyle(el).backgroundColor);
+  const activeShadow = await row.evaluate(el => getComputedStyle(el).boxShadow);
+  for (let i = 0; i < 2; i++) {
+    await toggle.click(); await expect(holder).toHaveCount(0);
+    await page.mouse.move(0, 0); await finishRowMotion();
+    const idleBackground = await row.evaluate(el => getComputedStyle(el).backgroundColor);
+    await row.hover(); await finishRowMotion();
+    expect(await row.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(idleBackground);
+    await toggle.click(); await expect(holder).toBeVisible(); await finishRowMotion();
+    await expect(row).toHaveCSS('background-color', activeBackground);
+    await expect(row).toHaveCSS('box-shadow', activeShadow);
+  }
+  // Reopen while closing still owns a filled animation on this same row.
+  await toggle.evaluate(el => { el.click(); el.click(); });
+  await expect(holder).toBeVisible(); await finishRowMotion();
+  await expect(row).toHaveCSS('background-color', activeBackground);
+  await expect(row).toHaveCSS('box-shadow', activeShadow);
+  expect(await row.evaluate(el => el.getAnimations().filter(animation => animation.effect.getTiming().fill === 'forwards').length)).toBe(0);
+});

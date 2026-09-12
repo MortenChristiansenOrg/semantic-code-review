@@ -2923,6 +2923,7 @@
   // The file row that should fade its orange highlight in on the next render.
   // Shared files need the node id too because they appear more than once.
   let pendingHighlight = null;
+  const fileHighlights = new WeakMap();
 
   // Fade the file-row highlight (orange background + inset border) in or out.
   // Animate the highlight when explicitly opening or closing a file.
@@ -2930,14 +2931,17 @@
     if (id == null || motionReduced()) return;
     const row = fileRowElement(id, nodeId);
     if (!row) return;
+    fileHighlights.get(row)?.cancel();
     const on = { background: "rgba(255, 106, 69, .13)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, .35)" };
     const off = { background: "rgba(255, 106, 69, 0)", boxShadow: "inset 0 0 0 1px rgba(255, 106, 69, 0)" };
     const frames = dir === "in" ? [off, on] : [on, off];
-    row.animate(frames, {
+    const animation = row.animate(frames, {
       duration: dir === "in" ? 260 : 200,
       easing: ANIM_EASE,
       fill: dir === "in" ? "none" : "forwards",
     });
+    fileHighlights.set(row, animation);
+    return animation;
   }
 
   // Run `cb` once when the animation ends, with a safety timeout so a stuck or
@@ -3011,12 +3015,17 @@
     const holder = cinemaHolder(id, nodeId);
     delete state.activeFiles[id]; persist();
     if (!holder || motionReduced()) { render(); return; }
-    fadeFileHighlight(id, "out", nodeId);
+    const highlight = fadeFileHighlight(id, "out", nodeId);
     const start = holder.getBoundingClientRect().height;
     holder.style.overflow = "hidden";
     const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration: 210, easing: ANIM_EASE });
-    afterAnim(anim, 210, () => { holder.style.removeProperty("overflow"); render(); });
+    afterAnim(anim, 210, () => {
+      holder.style.removeProperty("overflow"); render();
+      // Rows survive rendering; release the closing fill so CSS can highlight
+      // an open or hovered row again. A newer opening animation is independent.
+      highlight?.cancel();
+    });
   }
 
   function openComment(kind, id, stageId) {
