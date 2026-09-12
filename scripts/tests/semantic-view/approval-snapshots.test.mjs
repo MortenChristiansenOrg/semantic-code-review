@@ -99,3 +99,17 @@ test('oversized approved and current blobs retain identity without storing misle
   assert.match(approvedLarge.unsupported, /20 MiB/); assert.equal(approvedLarge.approved.size, size);
   assert.equal(approvedLarge.approved.sha256, null); assert.match(approvedLarge.current.sha256, /^[a-f0-9]{64}$/);
 });
+
+test('full-file approval comparisons include unchanged context and reject unknown modes', (t) => {
+  const {repo, context} = setup(t);
+  const lines = Array.from({length: 30}, (_, i) => `line ${i}`);
+  repo.commitFile('code.txt', lines.join('\n') + '\n', 'Before');
+  const saved = captureApprovalSnapshot(context, endpoint(repo));
+  assert.equal(compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), 0, 'full').lines.length, 30);
+  lines[15] = 'updated line'; repo.commitFile('code.txt', lines.join('\n') + '\n', 'After');
+  const changes = compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo));
+  assert.ok(!changes.lines.some(row => row.s === 'line 0'));
+  const full = compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), 0, 'full');
+  assert.equal(full.lines[0].s, 'line 0'); assert.equal(full.lines.at(-1).s, 'line 29');
+  assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), 0, 'unknown'), /Invalid comparison view/);
+});

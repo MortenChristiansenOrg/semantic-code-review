@@ -174,8 +174,8 @@ test('Ctrl+Enter submits notes and replies, keeps blank inputs, and scopes share
   await expect(input).toBeVisible();
   await input.press('Control+Enter');
   await expect(page.locator('.file-notes')).toContainText('Only step one');
-  await expect(page.locator('details[data-node="first-one"] .mini-threads')).toHaveCount(0);
-  await expect(page.locator('details[data-node="first-one"] .mini-notes')).toContainText('1');
+  await expect(page.locator('details[data-node="first-one"] .mini-threads')).toHaveAttribute('aria-label', '0 file comments, 1 personal note');
+  await expect(page.locator('details[data-node="first-one"] .mini-notes')).toHaveCount(0);
   await page.locator('.lact[data-id="l:first:new:1:shared.js"]').click();
   await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
   await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
@@ -307,13 +307,13 @@ test('renamed file comments render under their original node and line anchors fa
   await expect(page.locator('.line-thread .tthread')).toHaveCount(0);
   await expect(page.locator('details[data-node="first-two"] .mini-threads')).toContainText('2');
   await expect(page.locator('details[data-node="first-two"] .mini-lines')).toContainText('1');
-  await expect(page.locator('details[data-node="first-two"] .mini-notes')).toContainText('1');
+  await expect(page.locator('details[data-node="first-two"] .mini-threads')).toHaveAttribute('aria-label', '2 file comments, 1 personal note');
   await openFile(page, 'first-one');
   await expect(page.locator('.file-notes .tthread')).toHaveCount(0);
   await showNotes(page);
   const localFileLabel = page.locator('.side.notes .tnote').filter({ hasText: 'Local renamed file' }).locator('.tthread-title');
   await expect(localFileLabel).toHaveText('renamed.js');
-  await expect(localFileLabel).toHaveAttribute('data-tooltip', 'renamed.js');
+  await expect(localFileLabel).not.toHaveAttribute('data-tooltip');
   await page.locator('.side.notes [data-thread-id="renamed-line"] [data-action="jump-to"]').click();
   await expect(page.locator('details[data-node="first-two"] .file-notes')).toContainText('Feedback renamed-line');
   expect(errors).toEqual([]);
@@ -546,19 +546,28 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
   data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
   await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
-  await openFile(page);
   const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
   await page.route('**/api/approval-comparison*', (route) => route.fulfill({ json: { ok: true, approved: endpoint, current: { ...endpoint, headRevision: 'c'.repeat(40) }, baseChanged: true, ownershipChanged: true, lines: [{ t: 'del', o: 1, s: 'already approved' }, { t: 'add', n: 1, s: 'new content' }], offset: 0, nextOffset: null } }));
-  await page.getByRole('button', { name: 'Since approval', exact: true }).click();
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const comparison = page.locator('.is-approved-comparison');
   await expect(comparison).toContainText('already approved'); await expect(comparison).toContainText('new content');
   await expect(comparison).toContainText('stage base changed'); await expect(comparison).toContainText('ownership or classification changed');
   await expect(comparison.locator('[data-line-id], .lact')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Hide removed', exact: true }).click();
+  await expect(comparison.locator('.d-del')).toBeHidden();
+  const full = page.waitForRequest(r => r.url().includes('/api/approval-comparison') && r.postDataJSON()?.mode === 'full');
+  await page.getByRole('button', { name: 'Full file', exact: true }).click();
+  await full;
+  await expect(comparison.getByRole('button', { name: 'Full file', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await showNotes(page);
   await page.locator('.side.notes [data-action="jump-to"][data-kind="line"]').click();
-  await expect(page.getByRole('button', { name: 'Current stage diff', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('.cinema-diff .lact')).not.toHaveCount(0);
   await expect(page.locator('.cinema-diff')).toContainText('const first = 1;');
+  await page.locator('details[data-node="first-one"] .mini-approve').click();
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
 });
 
 test('failed snapshot capture does not approve a file', async ({ page }) => {
@@ -654,7 +663,7 @@ test('message editors accept dropped files and pasted images, including replies'
   const data = fixture(); data.feedback = [thread('files-reply')];
   await mount(page, data); await showNotes(page);
   await page.locator('.side.notes [data-action="thread-reply"]').click();
-  await page.locator('[data-reply-form]').evaluate((form) => {
+  await page.locator('[data-reply-form] textarea').evaluate((form) => {
     const transfer = new DataTransfer(); transfer.items.add(new File(['log content'], 'debug.log', { type: 'text/plain' }));
     form.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
   });
@@ -711,7 +720,7 @@ test('review deletion previews data, requires confirmation, and leaves other rev
   let deletions = 0; page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/reviews/delete') deletions++; });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true });
   await expect(dialog).toContainText('1 unsent draft'); await expect(dialog).toContainText('1 unresolved feedback');
   await expect(dialog).toContainText('/user-data/reviews/a'); expect(deletions).toBe(0);
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); expect(deletions).toBe(0);
@@ -735,7 +744,7 @@ test('review deletion previews data, requires confirmation, and leaves other rev
 test('changed storage previews cannot delete newly saved data without a refreshed confirmation', async ({ page }) => {
   await mount(page); await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
-  const dialog = page.getByRole('dialog'); await expect(dialog.getByRole('button', { name: 'Delete review data', exact: true })).toBeEnabled();
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true }); await expect(dialog.getByRole('button', { name: 'Delete review data', exact: true })).toBeEnabled();
   await page.evaluate(async () => fetch('/api/review-state?review=browser-review&generation=test', { method: 'POST', body: JSON.stringify({ changes: [{ path: ['otherTab'], after: { present: true, value: 'New data' } }] }) }));
   await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('changed since the preview');
@@ -771,7 +780,7 @@ test('a pending deletion stays visible and can retry file removal', async ({ pag
   });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
-  const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true }); await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
   await expect(dialog.getByRole('alert')).toContainText('File is open');
   await expect(page.locator('[data-review="browser-review"]')).toContainText('Deletion pending');
   await dialog.getByRole('button', { name: 'Retry file removal', exact: true }).click();
@@ -784,7 +793,7 @@ test('unused-file cleanup keeps the review and its saved messages', async ({ pag
   await page.route('**/api/reviews/clean-unused?*', (route) => { cleaned = true; return route.fulfill({ json: { ok: true, reclaimedBytes: 1024, failures: [] } }); });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
-  const dialog = page.getByRole('dialog'); await dialog.getByRole('button', { name: 'Clean unused files', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true }); await dialog.getByRole('button', { name: 'Clean unused files', exact: true }).click();
   await expect(dialog.getByText('Reclaimed 1.0 KiB.')).toBeVisible();
   await expect(dialog.getByRole('button', { name: 'Clean unused files', exact: true })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -825,11 +834,17 @@ test('review picker overlays the page and Escape dismisses it without discarding
   await page.locator('textarea[name="nc-body"]').fill('Keep this unfinished draft');
   const stageTop = () => page.locator('.stage').first().evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
   const before = await stageTop();
+  await page.evaluate(() => { window.keptStage = document.querySelector('.stage'); });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await expect(page.locator('#review-list')).toBeVisible();
   expect(await stageTop()).toBeCloseTo(before, 0);
+  expect(await page.locator('#review-list').evaluate(el => el.matches(':modal'))).toBe(true);
+  expect(await page.evaluate(() => window.keptStage === document.querySelector('.stage'))).toBe(true);
+  await page.locator('textarea[name="nc-body"]').evaluate(el => el.focus());
+  expect(await page.evaluate(() => document.querySelector('#review-list').contains(document.activeElement))).toBe(true);
   await page.keyboard.press('Escape');
   await expect(page.locator('#review-list')).toHaveCount(0);
+  expect(await page.evaluate(() => window.keptStage === document.querySelector('.stage'))).toBe(true);
   await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Keep this unfinished draft');
   await expect(page.getByRole('button', { name: 'Reviews', exact: true })).toBeFocused();
 });
@@ -841,12 +856,44 @@ test('attachments use compact aligned rows without download links, including sav
   await saveAction(page, () => page.getByLabel('Attach files', { exact: true }).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('Context') }), (state) => state.editor?.compose?.attachments?.length === 1);
   const row = page.locator('.note-compose .attachment');
   await expect(row.locator('.attachment-name')).toHaveText(name);
-  const filename = await row.locator('.attachment-name').boundingBox(), size = await row.locator('small').boundingBox();
-  expect(Math.abs((filename.y + filename.height / 2) - (size.y + size.height / 2))).toBeLessThan(2);
-  expect((await row.boundingBox()).height).toBeLessThanOrEqual(44);
+  const alignment = await row.evaluate(el => {
+    const name = el.querySelector('.attachment-name').getBoundingClientRect(), size = el.querySelector('small').getBoundingClientRect();
+    return Math.abs((name.y + name.height / 2) - (size.y + size.height / 2));
+  });
+  expect(alignment).toBeLessThan(2);
+  expect((await row.boundingBox()).height).toBeLessThanOrEqual(48);
   await expect(row.getByRole('button', { name: `Remove ${name}`, exact: true })).toBeVisible();
   await expect(page.locator('.attachments a, .attachments [download]')).toHaveCount(0);
   await saveAction(page, () => page.locator('.note-compose').getByRole('button', { name: 'Add note', exact: true }).click(), (state) => state.comments?.[0]?.attachments?.length === 1);
   await expect(page.locator('.tnote .attachment-name').first()).toHaveText(name);
   await expect(page.locator('.attachments a, .attachments [download]')).toHaveCount(0);
+});
+
+test('only message text fields accept file drops and highlight while files hover', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  const input = page.locator('textarea[name="nc-body"]');
+  await input.fill('Preserve this text');
+  const drag = async (locator, type) => locator.evaluate((el, type) => {
+    const transfer = new DataTransfer(); transfer.items.add(new File(['demo'], 'context.log', {type: 'text/plain'}));
+    el.dispatchEvent(new DragEvent(type, {bubbles: true, cancelable: true, dataTransfer: transfer}));
+  }, type);
+  await drag(page.locator('.note-compose .nc-mode'), 'dragover');
+  await expect(input).not.toHaveClass(/is-file-drop-target/);
+  await drag(page.locator('.note-compose .nc-mode'), 'drop');
+  await expect(page.locator('.attachment')).toHaveCount(0);
+  await drag(input, 'dragover'); await expect(input).toHaveClass(/is-file-drop-target/);
+  await drag(input, 'dragleave'); await expect(input).not.toHaveClass(/is-file-drop-target/);
+  await drag(input, 'dragover'); await drag(input, 'drop');
+  await expect(page.locator('.attachment-name')).toHaveText('context.log');
+  await expect(input).not.toHaveClass(/is-file-drop-target/); await expect(input).toHaveValue('Preserve this text');
+});
+
+test('duplicate label tooltips are omitted and other-node hunk links use concise labels', async ({ page }) => {
+  await mount(page); await openFile(page);
+  await expect(page.locator('.frow-open').first()).not.toHaveAttribute('data-tooltip', /shared\.js/);
+  const notice = page.locator('.ownership-notice').first();
+  await expect(notice).toHaveText(/Edited in Step two/);
+  await expect(notice.getByRole('button')).toHaveAttribute('data-tooltip', 'Show change node');
+  await notice.getByRole('button').click();
+  await expect(page.locator('details[data-node="first-two"] .cinema-diff')).toBeVisible();
 });

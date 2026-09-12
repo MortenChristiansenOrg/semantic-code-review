@@ -468,7 +468,9 @@ command runner and explicitly validate any associated working worktree.
 
 Use **Reviews** in the viewer toolbar to revisit any saved review without asking
 an agent to run another review command. The list shows each implementation's
-title and ID, repository/worktree path, last edit, and availability. Switching
+title and ID, repository/worktree path, last edit, and availability. The animated
+picker dims and blocks the page behind it; Close, Escape, or clicking outside
+dismisses it without rebuilding the page or losing an unfinished message. Switching
 saves the current draft, starts or reuses the selected review's service, and
 opens its page. If saving or opening fails, the current page and draft remain.
 A removed or changed worktree remains listed with an explanation; its stored
@@ -492,9 +494,11 @@ the whole file state. A rename retains a stale indicator only in the same node.
 Approvals remain personal review notes and do not gate CLI workflows.
 
 Approving a file retains its complete head content under that review's local
-`snapshots/` directory. Open an approved or stale file and choose **Since approval**
-to compare that retained content with the current head. **Current stage diff**
-keeps the normal stage base-to-head comparison. The comparison names both paths
+`snapshots/` directory. A stale file opens with **Since approval** enabled in
+the normal diff toolbar, beside **Hide removed**. Turn it off for the normal
+stage base-to-head diff. **Changes**, **Full file**, and **Hide removed** work in
+either comparison. Reapproving the file removes the comparison toggle until
+the approval becomes stale again. The comparison names both paths
 and revisions and reports changed ownership, stage bases, existence, and file
 modes. Binary content shows hashes and sizes instead of a line diff; unavailable
 content produces an explicit error.
@@ -513,7 +517,8 @@ actual feedback anchor.
 
 ### Attach context to messages
 
-Use **Attach files**, drop files into an open message editor, or paste an image.
+Use **Attach files**, drop files onto the highlighted message text field, or
+paste an image. Other parts of the editor do not accept file drops.
 New messages, personal notes, and replies support up to ten files of 20 MiB each,
 with or without text. Uploads and drafts survive reloads and review switches.
 Attachments appear as compact rows with image thumbnails where supported.

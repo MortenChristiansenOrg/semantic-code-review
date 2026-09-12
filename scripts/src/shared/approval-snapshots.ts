@@ -46,7 +46,8 @@ export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEn
     return { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
   });
 }
-export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0) {
+export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode = "changes") {
+  if (!["changes", "full"].includes(mode)) throw new Error("Invalid comparison view.");
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid comparison page.");
   return withReviewLock(context.reviewId, () => {
     assertReviewContext(context);
@@ -68,12 +69,19 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     };
     const unsupported = before.unsupported || after.unsupported || (before.binary || after.binary ? "Binary file comparison: content hashes and sizes are shown; a line diff is unavailable." : "");
     if (unsupported) return { ...info, unsupported, lines: [], offset, nextOffset: null };
+    if (mode === "full" && before.sha256 === after.sha256) {
+      const text = Buffer.from(after.bytes, "base64").toString("utf8");
+      const content = text ? text.split("\n") : [];
+      if (text.endsWith("\n")) content.pop();
+      const lines = content.slice(offset, offset + 900).map((s, i) => ({ t: "ctx", o: offset + i + 1, n: offset + i + 1, s }));
+      return { ...info, unsupported: "", lines, offset, nextOffset: offset + lines.length < content.length ? offset + lines.length : null };
+    }
     const temporary = fs.mkdtempSync(path.join(reviewDirectory(context.reviewId), "snapshots", ".compare-"));
     let patch: string;
     try {
       const oldFile = path.join(temporary, "approved"), newFile = path.join(temporary, "current");
       fs.writeFileSync(oldFile, Buffer.from(before.bytes, "base64")); fs.writeFileSync(newFile, Buffer.from(after.bytes, "base64"));
-      try { patch = git(context, ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--text", "-U3", "--", oldFile, newFile]).toString("utf8"); }
+      try { patch = git(context, ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile]).toString("utf8"); }
       catch (error) { if (error.status !== 1 || !error.stdout) throw error; patch = error.stdout.toString("utf8"); }
     } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
     const lines: Array<{ t: string; o?: number; n?: number; s: string }> = [];

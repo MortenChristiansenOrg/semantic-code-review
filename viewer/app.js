@@ -546,6 +546,7 @@
           state.approvals[id] = { rev, at: Date.now(), ...(entry ? {
             ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
           } : {}) };
+          delete state.approvalComparisons[id];
           if (entry && activeFileNodeId(entry.id) === entry.nodeId) delete state.activeFiles[entry.id];
         }
         approvalErrors.delete(id);
@@ -1208,7 +1209,7 @@
   function attachmentEditor(attachments) {
     const status = uploadStatus.get(attachments);
     return `${attachmentList(attachments, true)}<div class="attachment-tools"><label class="attach-files">${paperclipIcon}<span>Attach files</span><input type="file" multiple data-attachment-input aria-label="Attach files"></label>
-      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop files / paste an image</span></div>
+      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop into the text field / paste an image</span></div>
       ${status?.busy ? `<p role="status">Uploading files…</p>` : ""}${status?.error ? `<p class="tthread-err" role="alert">${esc(status.error)}</p>` : ""}`;
   }
   function editorAttachments(form) {
@@ -1255,12 +1256,28 @@
   document.addEventListener("change", (event) => {
     if (event.target.matches("[data-attachment-input]")) uploadFiles([...event.target.files], editorAttachments(event.target.closest("form")));
   });
+  let fileDropTarget = null;
+  function clearFileDropTarget() { fileDropTarget?.classList.remove("is-file-drop-target"); fileDropTarget = null; }
+  function messageDropTarget(target) {
+    return target instanceof HTMLTextAreaElement && target.matches('textarea[name="nc-body"], textarea[name="reply-body"]') && target.closest("[data-note-form], [data-reply-form]") ? target : null;
+  }
   document.addEventListener("dragover", (event) => {
-    if (event.target.closest?.("[data-note-form], [data-reply-form]") && [...event.dataTransfer.types].includes("Files")) event.preventDefault();
+    if (![...(event.dataTransfer?.types || [])].includes("Files")) return;
+    event.preventDefault();
+    const target = messageDropTarget(event.target);
+    event.dataTransfer.dropEffect = target ? "copy" : "none";
+    if (target !== fileDropTarget) { clearFileDropTarget(); fileDropTarget = target; }
+    target?.classList.add("is-file-drop-target");
   });
+  document.addEventListener("dragleave", (event) => { if (event.target === fileDropTarget) clearFileDropTarget(); });
+  document.addEventListener("dragend", clearFileDropTarget);
+  window.addEventListener("blur", clearFileDropTarget);
   document.addEventListener("drop", (event) => {
-    const form = event.target.closest?.("[data-note-form], [data-reply-form]");
-    if (form && event.dataTransfer.files.length) { event.preventDefault(); uploadFiles([...event.dataTransfer.files], editorAttachments(form)); }
+    clearFileDropTarget();
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault(); // Rejected file drops must not navigate away from the review.
+    const target = messageDropTarget(event.target);
+    if (target) uploadFiles([...event.dataTransfer.files], editorAttachments(target.form));
   });
   document.addEventListener("paste", (event) => {
     const form = event.target.closest?.("[data-note-form], [data-reply-form]");
@@ -1326,14 +1343,12 @@
     const lineN = counts.line;
     const noteN = counts.personal;
     const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
-    const threadBadge = threadN
-      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${threadN} file comment${threadN === 1 ? "" : "s"}" aria-label="${threadN} file comment${threadN === 1 ? "" : "s"}">${bubble()}<b>${threadN}</b></button>`
+    const combinedLabel = `${threadN} file comment${threadN === 1 ? "" : "s"}, ${noteN} personal note${noteN === 1 ? "" : "s"}`;
+    const threadBadge = threadN || noteN
+      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${combinedLabel}" aria-label="${combinedLabel}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
       : "";
     const lineBadge = lineN
       ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
-      : "";
-    const noteBadge = noteN
-      ? `<button class="mini-count mini-notes ${isActive ? "is-open" : ""}" ${openAttrs} title="${noteN} personal note${noteN === 1 ? "" : "s"}" aria-label="${noteN} personal note${noteN === 1 ? "" : "s"}">${noteGlyph()}<b>${noteN}</b></button>`
       : "";
     // A file's diff and its notes open and close together as one unit, so the
     // thread badge opens the file just like the filename does.
@@ -1346,7 +1361,7 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${threadBadge}${lineBadge}${noteBadge}
+          ${threadBadge}${lineBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
       </div>
@@ -1527,8 +1542,7 @@
           ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
           : " own-mark";
         if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner) {
-          ownershipNotice = `<div class="ownership-notice">Dimmed lines belong to ${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)}.
-            <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}">Open this step here ${arrowRight()}</button></div>`;
+          ownershipNotice = `<div class="ownership-notice">Edited in <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}" title="Show change node">${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)} ${arrowRight()}</button></div>`;
         }
         ctx.previousOwner = owner;
       } else ctx.previousOwner = null;
@@ -1612,10 +1626,12 @@
   }
   // Diff view controls: mode toggle + hide-removed. Added/deleted files render
   // their full contents once, so neither control applies to them.
+  function sinceApprovalEnabled(id) { return approvalState(id) === "stale" && state.approvalComparisons[id] !== false; }
   function diffControls(entry) {
-    const k = entry.file.kind;
-    if (k === "added" || k === "deleted") return "";
-    return `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}`;
+    const k = entry.file.kind, id = fileApprovalKey(entry.stage.id, activeFileNodeId(entry.id), entry.file.path);
+    const stale = approvalState(id) === "stale", since = sinceApprovalEnabled(id);
+    const comparison = stale ? `<div class="view-toggle"><button class="vt ${since ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(id)}" aria-pressed="${since}">Since approval</button></div>` : "";
+    return `${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
@@ -1643,18 +1659,18 @@
     return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
   }
   function comparisonKey(id, entry) {
-    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id)]);
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
   }
   async function loadApprovalComparison(id, entry, offset = 0) {
     const approval = retainedApproval(id);
     if (!approval?.snapshotId) return;
-    const key = comparisonKey(id, entry);
+    const key = comparisonKey(id, entry), mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
     if (approvalComparisons.get(key)?.loading) return;
     approvalComparisons.set(key, { loading: true, offset }); render();
     try {
       await flushReviewState();
       const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset }) });
+        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode }) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
       approvalComparisons.set(key, result);
@@ -1666,12 +1682,12 @@
     const approval = retainedApproval(id);
     if (!approval?.snapshotId) return '<div class="diff-empty">Approved content is unavailable. Re-approve the current file to retain a snapshot.</div>';
     const key = comparisonKey(id, entry), comparison = approvalComparisons.get(key);
-    if (!comparison) { queueMicrotask(() => { if (state.approvalComparisons[id]) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
+    if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
     if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
     if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
     const endpoint = (label, value) => `${label}: ${esc(value.path)} @ ${esc(value.headRevision.slice(0, 10))} (${value.exists ? `${value.size} bytes, mode ${esc(value.mode)}${value.mode === "160000" ? `, commit ${esc(value.objectId)}` : ""}` : "absent"})`;
     const info = `<div class="comparison-info"><p>${endpoint("Approved", comparison.approved)} → ${endpoint("Current", comparison.current)}</p>
-      <p>Full file comparison. Use Current stage diff to add line comments.</p>
+      <p>Comparison with the approved file. Turn off Since approval to add line comments.</p>
       ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
     if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
     if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
@@ -1685,7 +1701,7 @@
       <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${Math.max(0, comparison.offset - 900)}" ${comparison.offset ? "" : "disabled"}>Previous page</button>
       <span>Rows ${comparison.offset + 1}–${comparison.offset + comparison.lines.length}</span>
       <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${comparison.nextOffset || 0}" ${comparison.nextOffset == null ? "disabled" : ""}>Next page</button></div>` : "";
-    return `${info}<div class="diff-scroll"><div class="diff-grid">${rows.join("")}${pager}</div></div>`;
+    return `${info}<div class="diff-scroll${state.hideDeleted[entry.id] ? " hide-removed" : ""}"><div class="diff-grid">${rows.join("")}${pager}</div></div>`;
   }
 
   function diffPanel(entry, opts = {}) {
@@ -1697,14 +1713,10 @@
       focusNodeId: opts.focusNodeId || null,
     };
     const approvalId = fileApprovalKey(entry.stage.id, opts.focusNodeId || activeFileNodeId(entry.id), entry.file.path);
-    const sinceApproval = retainedApproval(approvalId) && state.approvalComparisons[approvalId];
+    const sinceApproval = sinceApprovalEnabled(approvalId);
     const comparisonEntry = approvalEntry(approvalId);
-    const comparisonToggle = retainedApproval(approvalId) ? `<div class="view-toggle comparison-toggle" role="group" aria-label="Comparison endpoints">
-      <button class="vt ${!sinceApproval ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(approvalId)}" data-mode="current" aria-pressed="${!sinceApproval}">Current stage diff</button>
-      <button class="vt ${sinceApproval ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(approvalId)}" data-mode="approved" aria-pressed="${Boolean(sinceApproval)}">Since approval</button></div>` : "";
     return `<section class="diff-panel ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
-      ${sinceApproval ? '<header class="diff-bar"><span class="diff-bar-hint">Changes since approval</span></header>' : opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${comparisonToggle}
+      ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
       ${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
     </section>`;
   }
@@ -1742,7 +1754,7 @@
   function deletedReviewPage() {
     const text = deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
     return `<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in the original worktree to start a fresh session.</p>
-      ${text ? `<label>Copy any unsent text you want to keep<textarea readonly rows="6">${esc(text)}</textarea></label>` : ""}</section>${reviewsPanel()}`;
+      ${text ? `<label>Copy any unsent text you want to keep<textarea readonly rows="6">${esc(text)}</textarea></label>` : ""}</section>`;
   }
   const storageSize = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
   async function manageReviewData(id) {
@@ -1799,8 +1811,7 @@
   }
   const isCurrentReview = (review) => !reviewDeleted && review.id === savedReview.reviewId && review.generation === savedReview.generation;
   function reviewsPanel() {
-    if (!reviewsOpen) return "";
-    return `<section id="review-list" class="review-list" aria-label="Saved reviews">
+    return `${reviewDeleted ? deletedReviewPage() : ""}
       <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button>${reviewDeleted ? "" : `<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
       ${reviewListError ? `<p role="alert">${esc(reviewListError)}</p>` : ""}
       ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
@@ -1814,11 +1825,50 @@
         <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy || review.deletionPending ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button>
         <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.deletionPending ? "Retry deletion…" : "Delete data…"}</button></div>
       </article>`).join("")}
-    </section>`;
+    `;
+  }
+  let reviewsDialog = null, reviewsCloseTimer;
+  function setReviewsOpen(open) {
+    if (!open && reviewDeleted) return;
+    clearTimeout(reviewsCloseTimer);
+    reviewsOpen = open;
+    document.querySelector('.topbar [data-action="toggle-reviews"]')?.setAttribute("aria-expanded", String(open));
+    forceHidePop();
+    if (open) {
+      clearTimeout(reviewsCloseTimer);
+      if (!reviewsDialog) {
+        reviewsDialog = document.createElement("dialog");
+        reviewsDialog.id = "review-list"; reviewsDialog.className = "review-list";
+        reviewsDialog.setAttribute("aria-label", "Saved reviews");
+        reviewsDialog.addEventListener("cancel", (event) => { event.preventDefault(); setReviewsOpen(false); });
+        reviewsDialog.addEventListener("click", (event) => {
+          if (event.target !== reviewsDialog) return;
+          const box = reviewsDialog.getBoundingClientRect();
+          if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) setReviewsOpen(false);
+        });
+        document.body.append(reviewsDialog); updateReviewList();
+      }
+      reviewsDialog.classList.remove("is-closing");
+      if (!reviewsDialog.open) reviewsDialog.showModal();
+    } else if (reviewsDialog) {
+      reviewsDialog.classList.add("is-closing");
+      reviewsCloseTimer = setTimeout(() => {
+        reviewsDialog.close(); reviewsDialog.remove(); reviewsDialog = null;
+        if (!reviewDeleted) document.querySelector('.topbar [data-action="toggle-reviews"]')?.focus({ preventScroll: true });
+      }, reduced() ? 0 : 180);
+    }
   }
   function updateReviewList() {
-    const existing = document.querySelector("#review-list");
-    if (existing) existing.outerHTML = reviewsPanel();
+    if (!reviewsDialog) return;
+    const active = reviewsDialog.contains(document.activeElement) ? document.activeElement : null;
+    const action = active?.dataset.action, reviewId = active?.dataset.reviewId;
+    const top = reviewsDialog.scrollTop;
+    reviewsDialog.innerHTML = reviewsPanel(); enhanceTooltips(reviewsDialog);
+    reviewsDialog.scrollTop = top;
+    if (action) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
+    if (reviewsDialog.open && !document.querySelector(".review-cleanup[open]") && !reviewsDialog.contains(document.activeElement)) {
+      reviewsDialog.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
+    }
   }
   async function refreshReviews(force = false) {
     if (reviewListBusy && !force) return;
@@ -2160,14 +2210,15 @@
   }
   /* ---- render ----------------------------------------------------------- */
   function render() {
-    if (reviewDeleted) { app.innerHTML = deletedReviewPage(); return; }
-    app.innerHTML = `${topbar()}${reviewsPanel()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    if (reviewDeleted) { app.innerHTML = ""; setReviewsOpen(true); updateReviewList(); return; }
+    app.innerHTML = `${topbar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
       ${coveragePanel()}${notesPanel()}
       <div class="scrim ${state.coverageOpen || state.notesOpen ? "is-on" : ""}" data-action="close-panels"></div>`;
     enhance();
+    if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
 
   function enhance() {
@@ -2223,6 +2274,9 @@
       const title = el.getAttribute("title");
       el.removeAttribute("title");
       if (!title) return;
+      const normalized = (value) => value.replace(/\s+/g, " ").trim();
+      const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
+      if (labels.some((label) => normalized(title) === normalized(label.textContent) && label.scrollWidth <= label.clientWidth)) return;
       el.dataset.tooltip = title;
       const owner = el.parentElement?.closest('button, a, summary, [role="button"], [data-tooltip-focus]');
       if (owner) {
@@ -2345,7 +2399,7 @@
     const a = btn.dataset.action;
 
     if (a === "toggle-reviews") {
-      reviewsOpen = !reviewsOpen; render();
+      setReviewsOpen(!reviewsOpen);
       if (reviewsOpen) void refreshReviews();
     } else if (a === "manage-review-data") {
       void manageReviewData(btn.dataset.reviewId);
@@ -2356,7 +2410,7 @@
     } else if (a === "approve") {
       void changeApproval(btn.dataset.id, btn.dataset.kind);
     } else if (a === "approval-comparison") {
-      state.approvalComparisons[btn.dataset.id] = btn.dataset.mode === "approved";
+      state.approvalComparisons[btn.dataset.id] = !sinceApprovalEnabled(btn.dataset.id);
       persist(); render();
     } else if (a === "approval-page") {
       const entry = approvalEntry(btn.dataset.id);
@@ -3041,10 +3095,9 @@
       e.target.form?.requestSubmit();
       return;
     }
-    if (e.key === "Escape" && reviewsOpen && !reviewDeleted && !document.querySelector(".review-cleanup")) {
-      e.preventDefault(); reviewsOpen = false; forceHidePop(); render();
-      document.querySelector('.topbar [data-action="toggle-reviews"]')?.focus(); return;
-    }
+    if (e.key === "Escape") clearFileDropTarget();
+    // Let the topmost native dialog handle Escape without touching a background draft.
+    if (e.key === "Escape" && document.querySelector("dialog[open]")) return;
     if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {
       e.preventDefault(); toggleCinema(e.target.dataset.id, e.target.dataset.nodeId); return;
