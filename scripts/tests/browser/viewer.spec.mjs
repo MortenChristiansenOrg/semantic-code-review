@@ -968,11 +968,15 @@ test('combined file counts toggle notes independently of the diff and retain tha
   await expect(toggle).toHaveAccessibleName('1 file comment, 1 personal note');
   await page.evaluate(() => { window.retainedGrid = document.querySelector('.cinema-diff .diff-grid'); });
   await saveAction(page, () => toggle.click(), state => state.openThreads?.[fileId] === false);
-  await expect(node.locator('.file-notes')).toHaveCount(0);
+  await expect(node.locator('.file-notes .tthread')).toHaveCount(0);
+  await expect(node.locator('.file-notes .thread-add')).toBeVisible();
+  await expect(node.locator('.file-notes')).toHaveCSS('border-bottom-width', '1px');
   await expect(node.locator('.cinema-diff')).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await page.reload(); await openFile(page);
-  await expect(node.locator('.file-notes')).toHaveCount(0);
+  await expect(node.locator('.file-notes .tthread')).toHaveCount(0);
+  await expect(node.locator('.file-notes .thread-add')).toBeVisible();
+  await expect(node.locator('.file-notes')).toHaveCSS('border-bottom-width', '1px');
   await page.evaluate(() => { window.retainedGrid = document.querySelector('.cinema-diff .diff-grid'); });
   await toggle.click();
   await expect(node.locator('.file-notes')).toContainText('Personal observation');
@@ -983,6 +987,9 @@ test('combined file counts toggle notes independently of the diff and retain tha
   await toggle.click();
   await expect(node.locator('.cinema-diff')).toBeVisible();
   await expect(node.locator('.file-notes')).toBeVisible();
+  await toggle.click();
+  await node.locator('.file-notes .thread-add').click();
+  await expect(node.locator('.file-notes textarea')).toBeVisible();
 });
 
 test('stored disclosures restore resolved feedback without implying approval', async ({ page }) => {

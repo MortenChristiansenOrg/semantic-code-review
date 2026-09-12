@@ -502,7 +502,8 @@ the approval becomes stale again. The comparison reports changed ownership and
 stage bases. Binary content shows hashes instead of a line diff; unavailable
 content produces an explicit error. Approving or unapproving a file keeps its
 diff open. The combined file-comment and personal-note counts toggle the notes
-without closing the diff.
+without closing the diff. The **Add note** footer stays visible when existing
+comments are collapsed.
 
 Approval snapshots retain file content up to 20 MiB per endpoint. Larger files
 retain their actual size and Git object identity, with an explicit unavailable

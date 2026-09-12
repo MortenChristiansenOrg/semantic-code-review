@@ -1372,16 +1372,15 @@
   // File notes can be hidden independently of the open diff.
   function fileNotesBlock(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
-    if (state.openThreads[id] === false) return "";
     const arts = artifactThreadsForElement("file", id);
     const locals = localVisibleForElement(id);
-    const rows =
+    const rows = state.openThreads[id] === false ? "" :
       arts.map((t) => renderArtifactThread(t, false)).join("") +
       locals.map((ln) => renderLocalNote(ln)).join("");
     const footer = composingNew
       ? renderComposer(compose)
       : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${id}" type="button">＋ Add note</button>`;
-    return `<div class="thread file-notes" data-thread="${id}">${rows}${footer}</div>`;
+    return `<div class="thread file-notes" data-thread="${id}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
   }
   function nodeFilesPanel(stage, node) {
     const files = nodeFileList(stage, node);
@@ -2521,7 +2520,7 @@
       state.openThreads[id] = opening;
       persist();
       if (opening) render();
-      else collapseThenRender(cinemaHolder(id, nodeId)?.querySelector(".file-notes"));
+      else collapseThenRender(cinemaHolder(id, nodeId)?.querySelector(".file-note-threads"));
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
       const key = threadStateKey(btn.dataset.kind, id, btn.dataset.stage);

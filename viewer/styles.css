@@ -1582,6 +1582,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border-radius: 0 0 var(--radius) var(--radius);
   border-top: 1px solid var(--line);
 }
+.file-note-threads { display: grid; gap: 8px; }
 .cinema-diff .diff-scroll { max-height: min(70vh, 680px); }
 .diff-bar {
   display: flex;
