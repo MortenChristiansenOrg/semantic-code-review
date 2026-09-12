@@ -516,7 +516,9 @@ actual feedback anchor.
 Use **Attach files**, drop files into an open message editor, or paste an image.
 New messages, personal notes, and replies support up to ten files of 20 MiB each,
 with or without text. Uploads and drafts survive reloads and review switches.
-Supported raster images show previews; other files download without execution.
+Attachments appear as compact rows with image thumbnails where supported.
+The viewer does not offer file downloads; agents access the managed local files
+through feedback commands.
 Saving a message keeps it local until you prepare feedback.
 
 The CLI can register context too:
@@ -547,7 +549,9 @@ are preserved.
 **Clean unused files** reclaims unreferenced uploads and snapshots separately.
 Files referenced by saved messages, drafts, feedback, or approvals are retained.
 Recent uploads and snapshots have a one-hour grace period to protect in-flight
-work; uploading the same file again renews that protection. If another process
+work; uploading the same file again renews that protection. Cleanup runs only
+when requested, not automatically when that hour expires. Deleting a whole
+review removes its data regardless of age. If another process
 changes the data after the preview, refresh the details before confirming.
 
 Deletion invalidates the old session before removing files. Stale tabs and CLI

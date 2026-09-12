@@ -1196,16 +1196,19 @@
     if (preview) url.searchParams.set("preview", "1");
     return url.href;
   }
+  const attachmentIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>`;
+  const paperclipIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9a1 1 0 0 0 2 2l8-8"/></svg>`;
   function attachmentList(attachments = [], editable = false) {
+    if (!attachments.length) return "";
     return `<div class="attachments">${attachments.map((file) => `<div class="attachment">
-      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : ""}
-      <a href="${esc(attachmentUrl(file.id))}" download>${esc(file.filename)}</a><small>${(file.size / 1024).toFixed(1)} KiB</small>
-      ${editable ? `<button type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}">×</button>` : ""}</div>`).join("")}</div>`;
+      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
+      <span class="attachment-name" title="${esc(file.filename)}">${esc(file.filename)}</span><small>${(file.size / 1024).toFixed(1)} KiB</small>
+      ${editable ? `<button class="attachment-remove" type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>` : ""}</div>`).join("")}</div>`;
   }
   function attachmentEditor(attachments) {
     const status = uploadStatus.get(attachments);
-    return `${attachmentList(attachments, true)}<label class="attach-files">Attach files<input type="file" multiple data-attachment-input aria-label="Attach files"></label>
-      <small class="attachment-help">Drop files here or paste an image · 20 MiB per file · 10 files per message</small>
+    return `${attachmentList(attachments, true)}<div class="attachment-tools"><label class="attach-files">${paperclipIcon}<span>Attach files</span><input type="file" multiple data-attachment-input aria-label="Attach files"></label>
+      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop files / paste an image</span></div>
       ${status?.busy ? `<p role="status">Uploading files…</p>` : ""}${status?.error ? `<p class="tthread-err" role="alert">${esc(status.error)}</p>` : ""}`;
   }
   function editorAttachments(form) {
@@ -1755,7 +1758,7 @@
           <table><thead><tr><th>Data</th><th>Size</th><th>Contents</th></tr></thead><tbody>${storage.categories.map((item) => `<tr><td>${esc(item.label)}</td><td>${storageSize(item.bytes)}</td><td>${esc(item.detail)}</td></tr>`).join("")}</tbody></table>
           ${storage.drafts || storage.unresolved ? `<p class="cleanup-warning">This review has ${storage.drafts} unsent draft${storage.drafts === 1 ? "" : "s"} and ${storage.unresolved} unresolved feedback thread${storage.unresolved === 1 ? "" : "s"}.</p>` : ""}
           <p>Deletion removes this review’s local data. Source files, branches, implementation artifacts, published metadata, and archives are preserved.</p>
-          ${!storage.deletionPending ? `<p>${storageSize(storage.unusedBytes)} in ${storage.unused.length} unused files or folders can be cleaned separately. Recent uploads and snapshots are protected for one hour.</p>` : ""}
+          ${!storage.deletionPending ? `<p>${storageSize(storage.unusedBytes)} in ${storage.unused.length} unused files or folders can be cleaned separately. Cleanup keeps files referenced by messages, drafts, or approvals, and skips uploads and snapshots less than an hour old. Nothing is deleted automatically.</p>` : ""}
           ${storage.referenceError ? `<p role="alert">${esc(storage.referenceError)}</p>` : ""}` : ""}
         ${busy ? '<p role="status">Working…</p>' : ""}${message ? `<p role="status">${esc(message)}</p>` : ""}${error ? `<p role="alert">${esc(error)}</p>` : ""}
         <div class="cleanup-actions"><button class="tb-btn" type="button" data-cleanup="cancel" autofocus ${busy ? "disabled" : ""}>Cancel</button>
@@ -2249,7 +2252,7 @@
     const d = btn.dataset;
     if (d.tooltip) {
       const el = ensurePop();
-      el.className = "tag-pop-float";
+      el.className = "tag-pop-float is-tooltip";
       el.innerHTML = `<strong>${esc(d.tooltip)}</strong>`;
       return;
     }
@@ -3037,6 +3040,10 @@
       e.preventDefault();
       e.target.form?.requestSubmit();
       return;
+    }
+    if (e.key === "Escape" && reviewsOpen && !reviewDeleted && !document.querySelector(".review-cleanup")) {
+      e.preventDefault(); reviewsOpen = false; forceHidePop(); render();
+      document.querySelector('.topbar [data-action="toggle-reviews"]')?.focus(); return;
     }
     if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element && e.target.matches('[data-action="open-file"]')) {

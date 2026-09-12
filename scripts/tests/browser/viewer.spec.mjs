@@ -636,7 +636,7 @@ test('attachment-only notes survive reloads, preview images, and export managed 
   await saveAction(page, () => page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png }), (state) => state.editor?.compose?.attachments?.length === 1);
   await expect(page.locator('.note-compose .attachment img')).toBeVisible();
   await page.reload();
-  await expect(page.locator('.note-compose .attachment a')).toHaveText('context.png');
+  await expect(page.locator('.note-compose .attachment-name')).toHaveText('context.png');
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
   await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
@@ -658,7 +658,7 @@ test('message editors accept dropped files and pasted images, including replies'
     const transfer = new DataTransfer(); transfer.items.add(new File(['log content'], 'debug.log', { type: 'text/plain' }));
     form.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
   });
-  await expect(page.locator('[data-reply-form] .attachment a')).toHaveText('debug.log');
+  await expect(page.locator('[data-reply-form] .attachment-name')).toHaveText('debug.log');
   await expect(page.getByRole('button', { name: 'Save reply', exact: true })).toBeEnabled();
   await page.locator('textarea[name="reply-body"]').evaluate((input) => {
     const transfer = new DataTransfer(); transfer.items.add(new File(['image bytes'], 'pasted.png', { type: 'image/png' }));
@@ -697,8 +697,10 @@ test('review switching waits for uploads and retains files in the initiating rev
   await expect(page.locator('.attachment')).toHaveCount(0);
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="a"]').getByRole('button', { name: 'Open review', exact: true }).click();
-  await expect(page.locator('.note-compose .attachment a')).toHaveText('only-a.log');
-  const attachmentUrl = await page.locator('.note-compose .attachment a').getAttribute('href');
+  await expect(page.locator('.note-compose .attachment-name')).toHaveText('only-a.log');
+  await expect(page.locator('.attachment a, .attachment [download]')).toHaveCount(0);
+  const id = await page.evaluate(async () => (await (await fetch('/api/review-state?review=a')).json()).state.editor.compose.attachments[0].id);
+  const attachmentUrl = `http://localhost/api/attachments/${id}?review=a&generation=test`;
   expect(await page.evaluate(async (url) => { const other = new URL(url); other.searchParams.set('review', 'b'); return (await fetch(other)).status; }, attachmentUrl)).toBe(404);
 });
 
@@ -816,4 +818,35 @@ test('full attachment lists reject new files before upload but allow duplicate r
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ ...file('0.log'), buffer: Buffer.from('other') });
   await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
   expect(uploads).toBe(10); await expect(page.locator('.note-compose .attachment')).toHaveCount(10);
+});
+
+test('review picker overlays the page and Escape dismisses it without discarding the composer', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await page.locator('textarea[name="nc-body"]').fill('Keep this unfinished draft');
+  const stageTop = () => page.locator('.stage').first().evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
+  const before = await stageTop();
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await expect(page.locator('#review-list')).toBeVisible();
+  expect(await stageTop()).toBeCloseTo(before, 0);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#review-list')).toHaveCount(0);
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Keep this unfinished draft');
+  await expect(page.getByRole('button', { name: 'Reviews', exact: true })).toBeFocused();
+});
+
+test('attachments use compact aligned rows without download links, including saved messages', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  const name = 'A very long attachment filename that needs to fit in a narrow message.txt';
+  await saveAction(page, () => page.getByLabel('Attach files', { exact: true }).setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from('Context') }), (state) => state.editor?.compose?.attachments?.length === 1);
+  const row = page.locator('.note-compose .attachment');
+  await expect(row.locator('.attachment-name')).toHaveText(name);
+  const filename = await row.locator('.attachment-name').boundingBox(), size = await row.locator('small').boundingBox();
+  expect(Math.abs((filename.y + filename.height / 2) - (size.y + size.height / 2))).toBeLessThan(2);
+  expect((await row.boundingBox()).height).toBeLessThanOrEqual(44);
+  await expect(row.getByRole('button', { name: `Remove ${name}`, exact: true })).toBeVisible();
+  await expect(page.locator('.attachments a, .attachments [download]')).toHaveCount(0);
+  await saveAction(page, () => page.locator('.note-compose').getByRole('button', { name: 'Add note', exact: true }).click(), (state) => state.comments?.[0]?.attachments?.length === 1);
+  await expect(page.locator('.tnote .attachment-name').first()).toHaveText(name);
+  await expect(page.locator('.attachments a, .attachments [download]')).toHaveCount(0);
 });
