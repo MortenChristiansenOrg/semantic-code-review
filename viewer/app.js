@@ -273,17 +273,17 @@
     const entry = fileById.get(id);
     return entry ? selectedNodeForFile(state.activeFiles[id], entry.file) : null;
   }
-  function fileRowElement(id, nodeId = activeFileNodeId(id)) {
+  function fileRowElement(id, nodeId = activeFileNodeId(id), root = app) {
     const entry = fileById.get(id);
     if (entry && nodeId) {
       const selector =
         `.stage[data-stage="${cssEsc(entry.stage.id)}"] ` +
         `details.node[data-node="${cssEsc(nodeId)}"] ` +
         `.frow[data-file="${cssEsc(id)}"]`;
-      const row = app.querySelector(selector);
+      const row = root.querySelector(selector);
       if (row) return row;
     }
-    return app.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
+    return root.querySelector(`.frow[data-file="${cssEsc(id)}"]`);
   }
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
@@ -547,7 +547,6 @@
             ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
           } : {}) };
           delete state.approvalComparisons[id];
-          if (entry && activeFileNodeId(entry.id) === entry.nodeId) delete state.activeFiles[entry.id];
         }
         approvalErrors.delete(id);
         if (previousId) approvalErrors.delete(previousId);
@@ -1178,7 +1177,7 @@
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
           <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
         </div>`;
-    return `<article class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
+    return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
@@ -1201,7 +1200,7 @@
   const paperclipIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9a1 1 0 0 0 2 2l8-8"/></svg>`;
   function attachmentList(attachments = [], editable = false) {
     if (!attachments.length) return "";
-    return `<div class="attachments">${attachments.map((file) => `<div class="attachment">
+    return `<div class="attachments">${attachments.map((file) => `<div class="attachment" data-render-key="${esc(file.id)}">
       ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
       <span class="attachment-name" title="${esc(file.filename)}">${esc(file.filename)}</span><small>${(file.size / 1024).toFixed(1)} KiB</small>
       ${editable ? `<button class="attachment-remove" type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>` : ""}</div>`).join("")}</div>`;
@@ -1254,7 +1253,11 @@
     uploadOps.add(operation); render();
   }
   document.addEventListener("change", (event) => {
-    if (event.target.matches("[data-attachment-input]")) uploadFiles([...event.target.files], editorAttachments(event.target.closest("form")));
+    if (event.target.matches("[data-attachment-input]")) {
+      const files = [...event.target.files];
+      event.target.value = ""; // The persistent input must allow selecting the same file again.
+      uploadFiles(files, editorAttachments(event.target.closest("form")));
+    }
   });
   let fileDropTarget = null;
   function clearFileDropTarget() { fileDropTarget?.classList.remove("is-file-drop-target"); fileDropTarget = null; }
@@ -1343,16 +1346,15 @@
     const lineN = counts.line;
     const noteN = counts.personal;
     const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
+    const notesOpen = isActive && state.openThreads[id] !== false;
     const combinedLabel = `${threadN} file comment${threadN === 1 ? "" : "s"}, ${noteN} personal note${noteN === 1 ? "" : "s"}`;
     const threadBadge = threadN || noteN
-      ? `<button class="mini-count mini-threads ${isActive ? "is-open" : ""}" ${openAttrs} title="${combinedLabel}" aria-label="${combinedLabel}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
+      ? `<button class="mini-count mini-threads ${notesOpen ? "is-open" : ""}" data-action="toggle-file-notes" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${notesOpen}" title="${combinedLabel}" aria-label="${combinedLabel}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
       : "";
     const lineBadge = lineN
       ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
       : "";
-    // A file's diff and its notes open and close together as one unit, so the
-    // thread badge opens the file just like the filename does.
-    return `<div class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
+    return `<div data-render-key="${esc(id)}" class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" data-node-id="${node.id}" role="button" tabindex="0" title="${esc(file.path)}">
           <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
@@ -1367,10 +1369,10 @@
       </div>
     </div>`;
   }
-  // The notes block shown inside an open file's diff unit — always present while
-  // the file is open so content and notes collapse/expand together.
+  // File notes can be hidden independently of the open diff.
   function fileNotesBlock(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
+    if (state.openThreads[id] === false) return "";
     const arts = artifactThreadsForElement("file", id);
     const locals = localVisibleForElement(id);
     const rows =
@@ -1685,9 +1687,7 @@
     if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
     if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
     if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
-    const endpoint = (label, value) => `${label}: ${esc(value.path)} @ ${esc(value.headRevision.slice(0, 10))} (${value.exists ? `${value.size} bytes, mode ${esc(value.mode)}${value.mode === "160000" ? `, commit ${esc(value.objectId)}` : ""}` : "absent"})`;
-    const info = `<div class="comparison-info"><p>${endpoint("Approved", comparison.approved)} → ${endpoint("Current", comparison.current)}</p>
-      <p>Comparison with the approved file. Turn off Since approval to add line comments.</p>
+    const info = `<div class="comparison-info"><p>Comparison with the approved file. Turn off Since approval to add line comments.</p>
       ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
     if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
     if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
@@ -2209,14 +2209,86 @@
     return { text: t, title: t };
   }
   /* ---- render ----------------------------------------------------------- */
+  // Keep the last requested markup separate from the live DOM. Unchanged
+  // subtrees retain scroll, selection, image state and running animations;
+  // browser-managed details/form state is not overwritten by unrelated edits.
+  const renderedNodes = new WeakMap();
+  function renderKey(node) {
+    if (node.nodeType !== Node.ELEMENT_NODE) return String(node.nodeType);
+    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "name", "value"];
+    return JSON.stringify([node.tagName, (node.getAttribute("class") || "").split(/\s+/)[0], ...identity.map((key) => node.getAttribute(key))]);
+  }
+  function rememberRendered(node, template) {
+    if (node.nodeType === Node.ELEMENT_NODE) renderedNodes.set(node, renderSnapshot(template));
+    Array.from(node.childNodes).forEach((child, index) => rememberRendered(child, template.childNodes[index]));
+  }
+  function renderSnapshot(node) {
+    // Store values, not detached nodes whose parent links would keep entire
+    // obsolete page trees alive for every independently updated component.
+    return { markup: node.outerHTML, attributes: new Map(Array.from(node.attributes, attr => [attr.name, attr.value])) };
+  }
+  function patchChildren(parent, next) {
+    const available = new Map();
+    for (const node of parent.childNodes) {
+      const key = renderKey(node);
+      if (!available.has(key)) available.set(key, []);
+      available.get(key).push(node);
+    }
+    const matches = Array.from(next.childNodes, desired => ({ desired, existing: available.get(renderKey(desired))?.shift() }));
+    // Remove obsolete siblings first: otherwise their surviving neighbours
+    // would be needlessly moved, restarting animations and losing focus.
+    for (const nodes of available.values()) for (const node of nodes) node.remove();
+    let cursor = parent.firstChild;
+    for (const { desired, existing } of matches) {
+      const node = existing || desired.cloneNode(true);
+      if (!existing) rememberRendered(node, desired);
+      else if (node.nodeType === Node.ELEMENT_NODE) patchElement(node, desired);
+      else if (node.nodeValue !== desired.nodeValue) node.nodeValue = desired.nodeValue;
+      if (node !== cursor) parent.insertBefore(node, cursor);
+      cursor = node.nextSibling;
+    }
+  }
+  function patchElement(node, next) {
+    const previous = renderedNodes.get(node);
+    const snapshot = renderSnapshot(next);
+    if (previous?.markup === snapshot.markup) return;
+    for (const name of (previous?.attributes || renderSnapshot(node).attributes).keys()) {
+      if (!next.hasAttribute(name)) node.removeAttribute(name);
+    }
+    for (const attr of next.attributes) {
+      if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
+    }
+    if (node instanceof HTMLTextAreaElement) {
+      if (node.value !== next.value) node.value = next.value;
+    } else {
+      patchChildren(node, next);
+      if (node instanceof HTMLInputElement && node.type !== "file") {
+        if (node.value !== next.value) node.value = next.value;
+        node.checked = next.checked;
+      }
+    }
+    renderedNodes.set(node, snapshot);
+  }
   function render() {
     if (reviewDeleted) { app.innerHTML = ""; setReviewsOpen(true); updateReviewList(); return; }
-    app.innerHTML = `${topbar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    const next = document.createElement("div");
+    next.innerHTML = `${topbar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
       ${coveragePanel()}${notesPanel()}
       <div class="scrim ${state.coverageOpen || state.notesOpen ? "is-on" : ""}" data-action="close-panels"></div>`;
+    for (const id of Object.keys(state.activeFiles)) {
+      const nodeId = activeFileNodeId(id), entry = fileById.get(id);
+      const row = nodeId && fileRowElement(id, nodeId, next);
+      if (!row || !entry) continue;
+      row.classList.add("is-open");
+      const holder = document.createElement("div");
+      holder.className = "cinema-diff";
+      holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: nodeId }) + fileNotesBlock(id);
+      row.after(holder);
+    }
+    patchChildren(app, next);
     enhance();
     if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
@@ -2232,8 +2304,11 @@
 
   /* ---- animated <details> ---------------------------------------------- */
   const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const animatedSummaries = new WeakSet();
   function animateDetails() {
     app.querySelectorAll("details > summary").forEach((summary) => {
+      if (animatedSummaries.has(summary)) return;
+      animatedSummaries.add(summary);
       summary.addEventListener("click", (e) => {
         if (e.target.closest("button:not(.stage-title), a, [data-action]") || reduced()) return;
         e.preventDefault();
@@ -2273,6 +2348,7 @@
     root.querySelectorAll("[title]").forEach((el) => {
       const title = el.getAttribute("title");
       el.removeAttribute("title");
+      delete el.dataset.tooltip;
       if (!title) return;
       const normalized = (value) => value.replace(/\s+/g, " ").trim();
       const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
@@ -2418,11 +2494,11 @@
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
-      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); applyPanelState();
+      state.coverageOpen = !state.coverageOpen; state.notesOpen = false; persist(); render();
     } else if (a === "toggle-notes") {
-      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); applyPanelState();
+      state.notesOpen = !state.notesOpen; state.coverageOpen = false; persist(); render();
     } else if (a === "close-panels") {
-      state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState();
+      state.coverageOpen = false; state.notesOpen = false; persist(); render();
     } else if (a === "comment") {
       openComment(btn.dataset.kind, btn.dataset.id, btn.dataset.stage);
     } else if (a === "line-note") {
@@ -2438,6 +2514,14 @@
       } else {
         openComment("line", id);
       }
+    } else if (a === "toggle-file-notes") {
+      const id = btn.dataset.id, nodeId = btn.dataset.nodeId;
+      const opening = activeFileNodeId(id) !== nodeId || state.openThreads[id] === false;
+      state.activeFiles[id] = nodeId;
+      state.openThreads[id] = opening;
+      persist();
+      if (opening) render();
+      else collapseThenRender(cinemaHolder(id, nodeId)?.querySelector(".file-notes"));
     } else if (a === "toggle-thread") {
       const id = btn.dataset.id;
       const key = threadStateKey(btn.dataset.kind, id, btn.dataset.stage);
@@ -2459,11 +2543,7 @@
       const id = btn.dataset.id;
       state.hideDeleted[id] = !state.hideDeleted[id];
       persist();
-      for (const toggle of app.querySelectorAll(`[data-action="toggle-hide-removed"][data-id="${cssEsc(id)}"]`)) {
-        toggle.classList.toggle("is-on", Boolean(state.hideDeleted[id]));
-        toggle.setAttribute("aria-pressed", String(Boolean(state.hideDeleted[id])));
-        toggle.closest(".diff-panel")?.querySelector(".diff-scroll")?.classList.toggle("hide-removed", Boolean(state.hideDeleted[id]));
-      }
+      render();
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
@@ -2760,14 +2840,7 @@
       const tmp = document.createElement("div");
       tmp.innerHTML = renderArtifactThread(t, withLabel, collapsed);
       const fresh = tmp.firstElementChild;
-      if (fresh) { el.replaceWith(fresh); enhanceTooltips(fresh); }
-    });
-  }
-  function setThreadCollapsed(id, collapsed) {
-    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(id)}"]`).forEach((el) => {
-      el.classList.toggle("is-collapsed", collapsed);
-      const h = el.querySelector(".tthread-h");
-      if (h) h.setAttribute("aria-expanded", String(!collapsed));
+      if (fresh) { patchElement(el, fresh); enhanceTooltips(el); }
     });
   }
   function toggleThreadCollapse(id) {
@@ -2777,7 +2850,7 @@
     const collapsed = !threadCollapsed(t);
     state.threadCollapsed[id] = collapsed;
     persist();
-    setThreadCollapsed(id, collapsed);
+    render();
   }
   async function exportFeedback() {
     if (exportState.phase === "working") return;
@@ -2852,8 +2925,7 @@
   let pendingHighlight = null;
 
   // Fade the file-row highlight (orange background + inset border) in or out.
-  // The app re-renders wholesale, so a freshly rendered .is-active row starts
-  // already-orange and a CSS transition never fires — animate it explicitly.
+  // Animate the highlight when explicitly opening or closing a file.
   function fadeFileHighlight(id, dir, nodeId) {
     if (id == null || motionReduced()) return;
     const row = fileRowElement(id, nodeId);
@@ -2877,30 +2949,6 @@
     setTimeout(run, (ms || 0) + 80);
   }
 
-  // Slide the side panels via CSS transition on the persistent DOM (a full
-  // re-render would recreate them already-open and skip the transition).
-  function applyPanelState() {
-    forceHidePop();
-    const cov = app.querySelector(".side.coverage");
-    const notes = app.querySelector(".side.notes");
-    const scrim = app.querySelector(".scrim");
-    const covBtn = app.querySelector('.tb-btn[data-action="toggle-coverage"]');
-    const notesBtn = app.querySelector('.tb-btn[data-action="toggle-notes"]');
-    const setSide = (el, open) => {
-      if (!el) return;
-      el.classList.toggle("is-open", open);
-      el.setAttribute("aria-hidden", String(!open));
-      if (open) el.removeAttribute("inert"); else el.setAttribute("inert", "");
-    };
-    setSide(cov, state.coverageOpen);
-    setSide(notes, state.notesOpen);
-    // Lock page scroll behind the notes panel so only its list scrolls.
-    document.body.classList.toggle("no-scroll", state.notesOpen);
-    if (scrim) scrim.classList.toggle("is-on", state.coverageOpen || state.notesOpen);
-    if (covBtn) { covBtn.classList.toggle("is-on", state.coverageOpen); covBtn.setAttribute("aria-expanded", String(state.coverageOpen)); }
-    if (notesBtn) { notesBtn.classList.toggle("is-on", state.notesOpen); notesBtn.setAttribute("aria-expanded", String(state.notesOpen)); }
-  }
-
   function applyNotesFilter() {
     // Each filter starts at its own content; the hidden list contributes no height.
     const list = app.querySelector(".notes-list");
@@ -2917,9 +2965,9 @@
     const body = stageEl && stageEl.querySelector(".stage-body");
     if (!stageEl) { render(); return; }
     stageEl.querySelectorAll('[data-action="toggle-stage"]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
-    if (motionReduced() || !body) { stageEl.classList.toggle("is-open", open); return; }
+    if (motionReduced() || !body) { render(); return; }
     const start = body.getBoundingClientRect().height;
-    stageEl.classList.toggle("is-open", open);
+    render();
     const end = body.getBoundingClientRect().height;
     body.style.overflow = "hidden";
     const anim = body.animate([{ height: `${start}px` }, { height: `${end}px` }],
@@ -2935,7 +2983,7 @@
     el.style.overflow = "hidden";
     const anim = el.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration: dur || 200, easing: ANIM_EASE });
-    afterAnim(anim, dur || 200, () => render());
+    afterAnim(anim, dur || 200, () => { el.style.removeProperty("overflow"); render(); });
   }
 
   function toggleCinema(id, nodeId) {
@@ -2968,7 +3016,7 @@
     holder.style.overflow = "hidden";
     const anim = holder.animate([{ height: `${start}px`, opacity: 1 }, { height: "0px", opacity: 0 }],
       { duration: 210, easing: ANIM_EASE });
-    afterAnim(anim, 210, () => render());
+    afterAnim(anim, 210, () => { holder.style.removeProperty("overflow"); render(); });
   }
 
   function openComment(kind, id, stageId) {
@@ -3034,8 +3082,7 @@
     });
   }
 
-  // Keep unsent editor text in state so a re-render (which fully rebuilds the
-  // DOM) never drops what the reviewer is typing.
+  // Keep unsent editor text in state for persistence and live updates.
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (compose && t.matches('.note-compose textarea[name="nc-body"]')) {
@@ -3109,7 +3156,7 @@
     if (e.key === "Escape") {
       if (compose) { compose = null; persist(); render(); return; }
       if (replyTo) { replyTo = null; replyDraft = ""; replyAttachments = []; replyEditId = null; replyDirty = false; persist(); render(); return; }
-      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); applyPanelState(); return; }
+      if (state.coverageOpen || state.notesOpen) { state.coverageOpen = false; state.notesOpen = false; persist(); render(); return; }
       if (Object.keys(state.activeFiles).length) { closeCinema(); return; }
     }
   });
@@ -3183,7 +3230,7 @@
     app.querySelectorAll(".diff-grid").forEach(clearSelHits);
   });
 
-  // cinema inline diff injection + open-disclosure preservation across renders.
+  // Preserve disclosures and scroll when live artifact updates change the layout.
   function captureOpen() {
     const keys = new Set();
     app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`));
@@ -3242,16 +3289,12 @@
       const entry = fileById.get(fid);
       if (row && entry) {
         row.classList.add("is-open");
-        const holder = document.createElement("div");
-        holder.className = "cinema-diff";
-        const focusNodeId = activeFileNodeId(fid);
-        holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId }) + fileNotesBlock(fid);
-        row.after(holder);
+        const holder = cinemaHolder(fid);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
           pendingDiffs.push(entry);
         const saved = diffScrolls[fid];
         if (saved) {
-          const scroller = holder.querySelector(".diff-scroll");
+          const scroller = holder?.querySelector(".diff-scroll");
           if (scroller) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
         }
       }
@@ -3261,7 +3304,7 @@
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
-    if (focusName || focusSelector) {
+    if (!focused?.isConnected && (focusName || focusSelector)) {
       const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
       const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }

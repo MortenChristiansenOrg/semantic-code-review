@@ -498,10 +498,11 @@ Approving a file retains its complete head content under that review's local
 the normal diff toolbar, beside **Hide removed**. Turn it off for the normal
 stage base-to-head diff. **Changes**, **Full file**, and **Hide removed** work in
 either comparison. Reapproving the file removes the comparison toggle until
-the approval becomes stale again. The comparison names both paths
-and revisions and reports changed ownership, stage bases, existence, and file
-modes. Binary content shows hashes and sizes instead of a line diff; unavailable
-content produces an explicit error.
+the approval becomes stale again. The comparison reports changed ownership and
+stage bases. Binary content shows hashes instead of a line diff; unavailable
+content produces an explicit error. Approving or unapproving a file keeps its
+diff open. The combined file-comment and personal-note counts toggle the notes
+without closing the diff.
 
 Approval snapshots retain file content up to 20 MiB per endpoint. Larger files
 retain their actual size and Git object identity, with an explicit unavailable

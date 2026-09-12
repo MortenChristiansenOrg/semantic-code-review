@@ -109,7 +109,7 @@ async function openFile(page, node = 'first-one') {
     await page.locator('.stage-title[data-id="first"]').click();
   const details = page.locator(`details[data-node="${node}"]`);
   if (!await details.evaluate((el) => el.open)) await details.locator('summary').click();
-  await details.locator('.frow-open').click();
+  if (!await details.locator('.cinema-diff').count()) await details.locator('.frow-open').click();
   await expect(details.locator('.cinema-diff')).toBeVisible();
 }
 async function saveAction(page, action, matches) {
@@ -230,7 +230,6 @@ test('resolve and reopen update global badge, lists, and inline thread immediate
   await expect(page.locator('.notes-col-active .notes-empty')).toBeVisible();
   await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
   await page.locator('.notes-col-resolved [data-action="toggle-thread-collapse"]').click();
-  await page.keyboard.press('Escape');
   await page.locator('.notes-col-resolved [data-action="thread-reopen"]').click();
   await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 1');
   await page.locator('.notes-switch-btn[data-filter="active"]').click();
@@ -544,14 +543,15 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await mount(page, data, { comments: [{ kind: "line", id: "l:first:new:1:shared.js", nodeId: "first-one", exported: true, threadId: "current-line", body: "Feedback current-line" }] });
   await openFile(page);
   await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
-  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
-  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
   const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
   await page.route('**/api/approval-comparison*', (route) => route.fulfill({ json: { ok: true, approved: endpoint, current: { ...endpoint, headRevision: 'c'.repeat(40) }, baseChanged: true, ownershipChanged: true, lines: [{ t: 'del', o: 1, s: 'already approved' }, { t: 'add', n: 1, s: 'new content' }], offset: 0, nextOffset: null } }));
+  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveAttribute('aria-pressed', 'true');
   const comparison = page.locator('.is-approved-comparison');
   await expect(comparison).toContainText('already approved'); await expect(comparison).toContainText('new content');
+  await expect(comparison.locator('.comparison-info')).not.toContainText('Approved:');
   await expect(comparison).toContainText('stage base changed'); await expect(comparison).toContainText('ownership or classification changed');
   await expect(comparison.locator('[data-line-id], .lact')).toHaveCount(0);
   await page.getByRole('button', { name: 'Hide removed', exact: true }).click();
@@ -896,4 +896,103 @@ test('duplicate label tooltips are omitted and other-node hunk links use concise
   await expect(notice.getByRole('button')).toHaveAttribute('data-tooltip', 'Show change node');
   await notice.getByRole('button').click();
   await expect(page.locator('details[data-node="first-two"] .cinema-diff')).toBeVisible();
+});
+
+test('approvals and attachment edits preserve open diffs, editor focus, selection and previews', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const errors = await mount(page, fixture(), { openStages: { first: true, second: true }, activeFiles: { [fileId]: 'first-one', 'f:second:shared.js': 'second-one' } });
+  await openFile(page);
+  await page.locator('details[data-node="second-one"] summary').click();
+  await page.locator('details[data-node="first-one"] .file-notes .thread-add').click();
+  const editor = page.locator('.note-compose textarea');
+  await editor.fill('Keep this draft and its caret');
+  await page.evaluate(() => {
+    window.retainedDiffs = [...document.querySelectorAll('.cinema-diff, .diff-scroll, .diff-grid, .drow')];
+    window.retainedEditor = document.querySelector('.note-compose textarea');
+    window.detachedDiffs = [];
+    new MutationObserver(records => {
+      for (const record of records) for (const removed of record.removedNodes) {
+        if (window.retainedDiffs.some(el => removed === el || removed.contains(el))) window.detachedDiffs.push(removed.nodeName);
+      }
+    }).observe(document.querySelector('#app'), { childList: true, subtree: true });
+  });
+  const expectRetained = async () => {
+    expect(await page.evaluate(() => window.retainedDiffs.every(el => el.isConnected) && window.retainedEditor === document.querySelector('.note-compose textarea'))).toBe(true);
+    expect(await page.evaluate(() => window.detachedDiffs)).toEqual([]);
+  };
+  const approval = page.locator('details[data-node="first-one"] .mini-approve');
+  await page.route('**/api/approval-snapshots*', route => route.fulfill({ status: 409, json: { ok: false, error: 'Capture failed' } }));
+  await approval.click();
+  await expect(page.locator('[role="alert"]')).toContainText('Capture failed');
+  await expectRetained();
+  await page.unroute('**/api/approval-snapshots*');
+  await saveAction(page, () => approval.click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await expectRetained();
+  await expect(page.locator('.cinema-diff')).toHaveCount(2);
+  await saveAction(page, () => approval.click(), state => !state.approvals?.[approvalKey('first', 'first-one')]);
+  await expectRetained();
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
+  await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png });
+  await expect(page.locator('.note-compose .attachment img')).toBeVisible();
+  expect(await page.getByLabel('Attach files', { exact: true }).evaluate(el => el.files.length)).toBe(0);
+  await expectRetained();
+  await editor.focus();
+  await editor.evaluate(el => { el.setSelectionRange(5, 9); window.retainedPreview = document.querySelector('.note-compose .attachment img'); });
+  await editor.evaluate(el => {
+    const transfer = new DataTransfer(); transfer.items.add(new File(['Details'], 'details.txt', { type: 'text/plain' }));
+    el.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: transfer }));
+  });
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(2);
+  await expect(editor).toBeFocused();
+  expect(await editor.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([5, 9]);
+  await expectRetained();
+  await page.getByRole('button', { name: 'Remove details.txt', exact: true }).click();
+  await expect(page.locator('.note-compose .attachment')).toHaveCount(1);
+  await expectRetained();
+  expect(await page.evaluate(() => window.retainedPreview === document.querySelector('.note-compose .attachment img'))).toBe(true);
+  await page.locator('.note-compose').getByRole('button', { name: 'Add note', exact: true }).click();
+  expect(await page.evaluate(() => window.retainedDiffs.every(el => el.isConnected))).toBe(true);
+  await expect(page.locator('.file-notes .comment-body')).toContainText('Keep this draft and its caret');
+  expect(await page.evaluate(() => window.detachedDiffs)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('combined file counts toggle notes independently of the diff and retain that choice', async ({ page }) => {
+  await mount(page, fixture(), { comments: [
+    { kind: 'file', id: fileId, nodeId: 'first-one', mode: 'personal', body: 'Personal observation', createdAt: 1 },
+    { kind: 'file', id: fileId, nodeId: 'first-one', mode: 'feedback', body: 'File feedback', createdAt: 2 },
+  ] });
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  const toggle = node.locator('.mini-threads');
+  await expect(toggle).toHaveAccessibleName('1 file comment, 1 personal note');
+  await page.evaluate(() => { window.retainedGrid = document.querySelector('.cinema-diff .diff-grid'); });
+  await saveAction(page, () => toggle.click(), state => state.openThreads?.[fileId] === false);
+  await expect(node.locator('.file-notes')).toHaveCount(0);
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.reload(); await openFile(page);
+  await expect(node.locator('.file-notes')).toHaveCount(0);
+  await page.evaluate(() => { window.retainedGrid = document.querySelector('.cinema-diff .diff-grid'); });
+  await toggle.click();
+  await expect(node.locator('.file-notes')).toContainText('Personal observation');
+  await expect(node.locator('.file-notes')).toContainText('File feedback');
+  expect(await page.evaluate(() => window.retainedGrid === document.querySelector('.cinema-diff .diff-grid'))).toBe(true);
+  await node.locator('.frow-open').click();
+  await expect(node.locator('.cinema-diff')).toHaveCount(0);
+  await toggle.click();
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  await expect(node.locator('.file-notes')).toBeVisible();
+});
+
+test('stored disclosures restore resolved feedback without implying approval', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('resolved-stage', 'resolved'), thread('resolved-node', 'resolved', { kind: 'node', stageId: 'first', nodeId: 'first-one', label: 'Step one' })];
+  await mount(page, data, { openStages: { first: true }, openThreads: { first: true, 'n:first:first-one': true } });
+  await page.locator('details[data-node="first-one"] summary').click();
+  await expect(page.locator('.stage [data-thread-id="resolved-stage"]')).toBeVisible();
+  await expect(page.locator('details[data-node="first-one"] [data-thread-id="resolved-node"]')).toBeVisible();
+  await expect(page.locator('.stage .is-approved, .stage.is-approved, .frow.is-stale')).toHaveCount(0);
+  await expect(page.locator('.stage-approve .notes-toggle[data-id="first"]')).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('.stage-approve .notes-toggle[data-id="first"]')).toHaveClass(/all-resolved/);
 });
