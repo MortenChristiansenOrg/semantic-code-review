@@ -1566,7 +1566,7 @@
     return codeRow("drow d-newline", "", num, "", code, ctx, side, lineNo);
   }
   function gapHtml(count) {
-    return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} ⋯</code></div>`;
+    return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} omitted ⋯</code></div>`;
   }
   function diffBody(file, mode, hideDel, ctx) {
     if (file._diffError)
@@ -1588,22 +1588,33 @@
       // contents once as neutral lines with a clear "deleted file" banner.
       out.push(`<div class="drow d-oldfile"><span class="ln"></span><span class="ln"></span><i>－</i><code>Deleted file — previous contents</code></div>`);
       lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "old")));
-    } else if (mode === "full") {
-      lines.forEach((r) => out.push(drowHtml(r, lang, ctx)));
     } else {
       const CTX = 3;
       const n = lines.length;
-      const keep = new Array(n).fill(false);
+      const keep = new Array(n).fill(mode === "full");
       for (let i = 0; i < n; i++) {
         if (lines[i].t !== "ctx") {
           for (let j = Math.max(0, i - CTX); j <= Math.min(n - 1, i + CTX); j++) keep[j] = true;
         }
       }
-      let i = 0;
-      while (i < n) {
-        if (keep[i]) { out.push(drowHtml(lines[i], lang, ctx)); i++; }
-        else { let j = i; while (j < n && !keep[j]) j++; out.push(gapHtml(j - i)); i = j; }
+      let oldNo = null, newNo = null, omitted = 0;
+      for (let i = 0; i < n; i++) {
+        const row = lines[i];
+        // Git omits context between hunks. Track each side independently so
+        // additions/deletions do not look like gaps when the other side resumes.
+        const oldGap = oldNo != null && row.o != null ? row.o - oldNo - 1 : 0;
+        const newGap = newNo != null && row.n != null ? row.n - newNo - 1 : 0;
+        const gap = Math.max(0, oldGap, newGap);
+        omitted += gap;
+        if (oldNo != null) oldNo += gap;
+        if (newNo != null) newNo += gap;
+        if (row.o != null) oldNo = row.o;
+        if (row.n != null) newNo = row.n;
+        if (!keep[i]) { omitted++; continue; }
+        if (omitted) { out.push(gapHtml(omitted)); omitted = 0; }
+        out.push(drowHtml(row, lang, ctx));
       }
+      if (omitted) out.push(gapHtml(omitted));
     }
     if (file.nextOffset != null || file._pageOffset > 0) out.push(`<div class="diff-pages">
       <button type="button" data-action="diff-page" data-id="${esc(fileKey(ctx.stageId, file.path))}" data-offset="${Math.max(0, (file._pageOffset || 0) - 900)}" ${file._pageOffset > 0 ? "" : "disabled"}>Previous page</button>
