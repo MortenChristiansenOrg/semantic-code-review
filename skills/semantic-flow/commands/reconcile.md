@@ -71,7 +71,9 @@ stages as needed.
 
 If ownership is materially ambiguous, the edit changes requirements or stage
 boundaries, or two plausible assignments produce different intermediate
-behavior, stop and ask the user. Do not guess.
+behavior, ask which independently working behavior or scope the user intends,
+under `../docs/user-decisions.md`. Do not ask the user to assign stage IDs or
+approve replay mechanics. Do not guess the intended behavior.
 
 ## Reconcile the stack
 
@@ -107,7 +109,9 @@ descendants whose existing node coverage no longer matches their diff.
 
 Resolve replay conflicts according to the captured final tree and the recorded
 stage intents. If that cannot be done without choosing new product behavior,
-stop and ask the user. Leave the recovery branch intact.
+ask about the concrete behavior under `../docs/user-decisions.md`. Follow
+`../docs/restack-conflicts.md` for the recovery mechanics without a separate
+approval. Leave the recovery branch intact while blocked.
 
 ## Verify and finish
 
