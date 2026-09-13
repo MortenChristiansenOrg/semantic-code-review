@@ -23,8 +23,17 @@ references are outside the review and must not block preparation.
 
 If stack or cumulative-branch output is not specified and cannot be inferred,
 ask whether the user wants the changes kept as separate review steps or combined
-into one branch for a conventional code review. Apply `../docs/user-decisions.md`
-and infer the branch name when possible. Then run exactly one helper:
+into one branch for a conventional code review. Apply `../docs/user-decisions.md`.
+
+For combined output, reuse the existing bound branch or the user's specified or
+inferred name, subject to the adoption/rebinding guards below. On first
+preparation, if no name is available, choose an unused name outside the stage
+branch prefix, such as `review/<implementation-id>` with a numeric suffix when
+needed. Pass the resulting name explicitly as `--branch <name>`; omitting it
+selects separate review steps. A routine choice of an unused name does not need
+a permission question. Report the chosen name with the prepared output.
+
+Then run exactly one helper:
 
 ```text
 <semantic-flow> prepare [--project <artifact-worktree-path>]
