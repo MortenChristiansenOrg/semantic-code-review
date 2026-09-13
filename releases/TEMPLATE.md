@@ -1,5 +1,7 @@
 # vX.Y.Z — YYYY-MM-DD
 
+<!-- The publisher omits the version/date heading above from the GitHub release body. -->
+
 ## Overview
 
 Describe the main benefit in one or two short sentences.

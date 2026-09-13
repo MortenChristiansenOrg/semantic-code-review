@@ -110,7 +110,10 @@ also requested. Do not use the Semantic Flow skill on this repository.
    Overview, Breaking changes (write “None” when appropriate), and Updating.
    Make specific breaking changes and upgrade actions prominent; include the
    experimental note during `0.x`. Generated GitHub notes are research input,
-   not the finished changelog. The reviewed file becomes the exact release body.
+   not the finished changelog. The publisher removes only the leading version/date
+   heading (and following blank space) from the reviewed file because GitHub
+   already displays the version as the release title. All note sections remain
+   intact, and publication verifies this exact rendered body.
 4. Run `npm ci --prefix scripts`, `npm test --prefix scripts`, install Chromium
    with `npm exec --prefix scripts -- playwright install chromium`, and run
    `npm run test:browser --prefix scripts`. Commit the version, notes, and built

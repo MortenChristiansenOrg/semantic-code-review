@@ -11,7 +11,7 @@ import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
 import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
-import { validateNotes } from '../src/release.ts';
+import { validateNotes, releaseBody } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
 
@@ -70,6 +70,18 @@ test('release selection ignores previews, drafts, and publication order; missing
   assert.match(notes, /Upgrade instructions for 0.9.0/);
   assert.match(notes, /Upgrade instructions for 0.10.0/);
   assert.doesNotMatch(notes, /Upgrade instructions for 0.1.0/);
+});
+
+test('published release body omits only the source title and retains every notes section', () => {
+  const notes = fs.readFileSync(new URL('../../releases/0.2.0.md', import.meta.url), 'utf8');
+  const body = releaseBody(notes, '0.2.0');
+  assert.equal(body, notes.split('\n').slice(2).join('\n'));
+  assert.match(body, /^## Overview\n/);
+  assert.doesNotMatch(body, /^# v/m);
+  for (const heading of ['Overview', 'Breaking changes', 'Improvements', 'Bug fixes', 'Updating', 'Known issues']) {
+    assert.ok(body.includes(`## ${heading}\n`));
+  }
+  assert.throws(() => releaseBody(notes, '0.3.0'));
 });
 
 test('release notes require matching version and meaningful required sections', () => {
@@ -225,14 +237,15 @@ test('publication rehearses draft upload/download, retries failures, and protect
   const artifact = { version: '0.2.0', sourceCommit: 'a'.repeat(40), archive: path.join(root, 'semantic-flow-0.2.0.zip'), checksum: path.join(root, 'semantic-flow-0.2.0.zip.sha256') };
   fs.writeFileSync(artifact.archive, await archive(distribution()));
   fs.writeFileSync(artifact.checksum, `${sha256(fs.readFileSync(artifact.archive))}  semantic-flow-0.2.0.zip\n`);
-  let state = null, corrupt = true, latest, wrongCommit = false;
+  let state = null, corrupt = true, corruptBody = false, latest, wrongCommit = false;
   const calls = [];
   const github = (...args) => {
     calls.push(args);
     if (args[0] === 'api' && args[1].includes('/git/ref/')) return JSON.stringify({ object: { type: 'tag', sha: 'b'.repeat(40) } });
     if (args[0] === 'api' && args[1].includes('/git/tags/')) return JSON.stringify({ object: { type: 'commit', sha: wrongCommit ? 'c'.repeat(40) : artifact.sourceCommit } });
     if (args[0] === 'api') return JSON.stringify([[...(state ? [state] : []), release('0.3.0')]]);
-    if (args[1] === 'create') { state = release('0.2.0', { draft: true, body: fs.readFileSync(notesFile, 'utf8') }); return ''; }
+    if (args[1] === 'create') { state = release('0.2.0', { draft: true, body: fs.readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8') }); return ''; }
+    if (args[1] === 'edit' && args.includes('--notes-file')) state.body = fs.readFileSync(args[args.indexOf('--notes-file') + 1], 'utf8');
     if (args[1] === 'upload') { assert.equal(state.draft, true); return ''; }
     if (args[1] === 'download') {
       const destination = args[args.indexOf('--dir') + 1];
@@ -240,7 +253,7 @@ test('publication rehearses draft upload/download, retries failures, and protect
       if (corrupt) fs.appendFileSync(path.join(destination, path.basename(artifact.archive)), 'bad');
       return '';
     }
-    if (args[1] === 'view') return JSON.stringify({ body: state.body, isDraft: state.draft, isPrerelease: false, url: state.html_url });
+    if (args[1] === 'view') return JSON.stringify({ body: corruptBody ? fs.readFileSync(notesFile, 'utf8') : state.body, isDraft: state.draft, isPrerelease: false, url: state.html_url });
     if (args[1] === 'edit') {
       if (args.includes('--draft=false')) { state.draft = false; latest = args.find((arg) => arg.startsWith('--latest=')); }
       return '';
@@ -250,7 +263,13 @@ test('publication rehearses draft upload/download, retries failures, and protect
   await assert.rejects(publishRelease(artifact, notesFile, github), /Uploaded release bytes differ/);
   assert.equal(state.draft, true);
   corrupt = false;
+  corruptBody = true;
+  await assert.rejects(publishRelease(artifact, notesFile, github), /Draft release notes do not match/);
+  assert.equal(state.draft, true);
+  corruptBody = false;
+  state.body = 'stale draft notes';
   assert.equal(await publishRelease(artifact, notesFile, github), state.html_url);
+  assert.equal(state.body, releaseBody(fs.readFileSync(notesFile, 'utf8'), '0.2.0'));
   assert.equal(latest, '--latest=false');
   assert.equal(calls.filter((args) => args[1] === 'create').length, 1);
   const uploads = calls.filter((args) => args[1] === 'upload').length;
