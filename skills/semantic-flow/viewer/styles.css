@@ -1122,7 +1122,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .d-add i { color: var(--add); }
 .d-del { background: var(--del-bg); }
 .d-del i { color: var(--del); }
-.d-gap { background: rgba(110, 168, 255, .045); }
+.d-gap { background: rgba(110, 168, 255, .07); border-block: 1px solid var(--line-soft); padding-block: 5px; }
 .d-gap > code { color: var(--faint); font-style: italic; }
 .d-gap .ln { border-right-color: transparent; }
 .d-cut > code { color: var(--faint); font-style: italic; }
