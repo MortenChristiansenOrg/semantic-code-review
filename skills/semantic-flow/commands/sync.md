@@ -30,8 +30,9 @@ stages onto the local target, restores the artifact checkout, validates the
 stack, and refreshes eligible pending non-line feedback anchors.
 
 Use `--local` when the user requests the current local target without fetching,
-or when completing the recovery below. With no configured upstream, ask for
-the intended upstream or whether to use the local target. Do not silently
+or when completing the recovery below. With no configured upstream, ask which
+repository branch should supply the latest changes, or whether the user wants
+only changes already available locally. Apply `../docs/user-decisions.md`. Do not silently
 substitute local history for a request for the latest remote changes. If the
 user names a branch or upstream that differs from the recorded configuration,
 clarify the intended source before running the helper; sync does not retarget
@@ -40,7 +41,9 @@ an implementation.
 Do not ask for approval for routine synchronization or clear conflict
 resolutions. Preserve unfinished work: do not stash, discard, finalize an
 incomplete stage, or absorb unrecorded commits merely to pass preflight.
-Report blocked state and the specific prerequisite. Never merge the target
+Report blocked state and the affected unfinished work under
+`../docs/user-decisions.md`. Ask only about intended behavior or which changes
+belong, never approval to bypass preflight. Never merge the target
 into a stage branch; merge commits in stage ranges are unsupported.
 
 ## Conflicts and validation failures

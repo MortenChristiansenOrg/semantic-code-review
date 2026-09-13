@@ -80,8 +80,11 @@ and begin a replacement merely to rename or reorder the stage. `stage discard`
 removes the generated stage branch when it still points at its creation head, so
 a clean discard frees the ordinal for reuse. If the branch already carries local
 commits, discard keeps it and reports that you must delete it manually before
-reusing the ordinal. If the immutable stage ID or order is wrong, stop and ask
-the user rather than creating another numbered branch.
+reusing the ordinal. If the immutable stage ID or order is wrong, preserve the
+existing work and stop the unsupported restructuring. Apply
+`../docs/user-decisions.md`: ask only if review order or independently working
+behavior needs a user choice; otherwise report the tooling limitation. Do not
+ask the user to choose IDs or create another numbered branch.
 
 ### Implement and capture insights
 

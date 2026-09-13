@@ -65,8 +65,9 @@ matching artifact.
 If several linked worktrees contain artifacts, use the implementation ID, title,
 specification source reference, checked-out semantic stage branch, current
 branch, and revisions only as clues. Select a candidate only when the
-relationship is clear. Otherwise list each candidate's path, implementation ID, title,
-target branch, and checked-out branch, then ask the user to choose.
+relationship is clear. Otherwise ask which piece of work the user means, using
+its title, scope, and repository path to distinguish candidates. Keep implementation
+IDs and branch revisions as optional diagnostics under `user-decisions.md`.
 If none contains an artifact, report that no active implementation was found. Do not
 initialize a replacement or copy an artifact during discovery.
 
@@ -85,7 +86,9 @@ Run artifact and feedback commands from the resolved artifact worktree root.
 - Treat numbered branches below the manifest's `branchPrefix` as CLI-owned
   stage refs. Never create, rename, copy, reset, force-move, or delete them
   with raw Git ref-management commands. `stage begin` creates stage refs and
-  `restack` rewrites them. Ordinary implementation and feedback commits may
+  `restack` rewrites them. The guarded update explicitly prescribed in
+  `restack-conflicts.md` is the sole raw-ref recovery exception; follow that
+  complete procedure without a separate approval. Ordinary implementation and feedback commits may
   advance only the recorded branch while it is checked out.
 - Treat refs below `refs/semantic-review/prepared/` as CLI-owned local
   preparation state. `prepare-branch` uses them to guard updates to a stable
@@ -148,9 +151,11 @@ repair/report path and report the concrete blocker; do not ask the user to
 choose CLI syntax or silently drop the insight.
 
 Ask for user input only for genuine product or design ambiguity, conflicting
-requirements, or a safety boundary such as unrelated changes or inconsistent
-stage refs. Do not bypass those boundaries or rewrite requirements to make a
-command pass.
+requirements, or a safety boundary that cannot be resolved through documented
+procedures. Apply `user-decisions.md`: explain the affected behavior or work,
+not inconsistent refs or CLI syntax as a choice. A tooling blocker without a
+user decision needs a blocker report. Do not bypass boundaries or rewrite
+requirements to make a command pass.
 
 ## Reuse within the session
 

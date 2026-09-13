@@ -55,8 +55,11 @@ Only when the user wants a local source build, run:
 The helper validates the explicit source, pulls a clean branch with an upstream
 using `--ff-only`, installs missing dependencies, builds, verifies, and replaces
 the skill. It does not run the source test suite. A dirty, detached, or source
-branch without an upstream stops the update. Explain the state and ask whether
-to use that checkout; only after explicit approval add `--use-current-source`.
+branch without an upstream stops the update. Under `../docs/user-decisions.md`,
+explain that this would install the checkout's current contents (including any
+uncommitted changes), rather than verified latest upstream contents. Ask whether
+that is the intended source only if not already authorized; then add
+`--use-current-source`. Do not present the flag itself as the user's choice.
 Existing authorization to use that checkout is sufficient. Source updates never
 discard changes and are never a fallback for failed release downloads.
 

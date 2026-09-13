@@ -19,8 +19,10 @@ Require:
   archive CLI.
 
 If another linked worktree already has the target branch checked out, do not
-copy the artifact or force branch movement. Explain the conflict and ask the
-user how to free the target branch for archival.
+copy the artifact or force branch movement. Inspect that checkout read-only and
+explain that archiving is blocked because it is in use, naming its path and any
+unfinished work. Apply `../docs/user-decisions.md`; do not ask the user to choose
+Git worktree mechanics or imply permission to disrupt another checkout.
 
 Run one helper, which validates the landed artifact and resolved feedback before
 archiving. Do not run ordinary pre-landing validation first:

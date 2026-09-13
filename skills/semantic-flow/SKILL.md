@@ -9,6 +9,19 @@ Route the request through this index. Read the selected command file completely
 before acting, along with every shared file it requires. Reuse guidance already
 present in the current context while the installed skill is unchanged.
 
+The CLI, artifact plumbing, branch choreography, and recovery commands are
+internal implementation details. A request authorizes the routine reversible
+mechanics needed to complete it. Handle those mechanics autonomously, including
+prescribed conflict recovery; do not ask users to approve CLI invocations,
+restacking, temporary branches, guarded stage-ref updates, or artifact repair.
+This applies to every command below, including continuation and error paths.
+
+Before any user-facing question or blocker report, apply
+[the communication rules](docs/user-decisions.md). Ask about desired behavior,
+scope, or an unresolved safety condition in plain language. Preserve all safety
+guards and existing authorization limits; stopping a write does not automatically
+require a user question.
+
 Some harnesses use `$semantic-flow` instead of `/semantic-flow` for skill
 commands. Treat them as equivalent. All examples use `/semantic-flow`.
 

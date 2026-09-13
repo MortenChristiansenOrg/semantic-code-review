@@ -22,7 +22,9 @@ references are outside the review and must not block preparation.
 ## Outputs
 
 If stack or cumulative-branch output is not specified and cannot be inferred,
-ask which local output the user wants. Then run exactly one helper:
+ask whether the user wants the changes kept as separate review steps or combined
+into one branch for a conventional code review. Apply `../docs/user-decisions.md`
+and infer the branch name when possible. Then run exactly one helper:
 
 ```text
 <semantic-flow> prepare [--project <artifact-worktree-path>]
@@ -55,7 +57,10 @@ merely because feedback rewrote the stage stack.
 
 `validate-stack --json` reports any existing cumulative branch binding. If
 `/semantic-flow prepare` does not specify stack or branch output and the choice
-is not already clear, ask the user which local output they want.
+is not already clear, use the same user-facing output choice above. If a guarded
+update is rejected, inspect the newly discovered work and explain what replacement
+would affect under `../docs/user-decisions.md`. Never offer `--adopt` or `--rebind`
+as an opaque permission question; preserve their explicit-authorization guards.
 
 Preparation must not switch the worktree, overwrite an unbound or externally
 moved branch without explicit adoption, push, create a hosted review, merge,

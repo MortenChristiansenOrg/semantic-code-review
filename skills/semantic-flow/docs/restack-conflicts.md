@@ -7,6 +7,10 @@ interrupted artifact write. Do not run `repair`, look for a rebase state,
 merge lower-stage commits into the conflicting stage, or ask the user merely
 because Git found conflicts.
 
+The steps below are prescribed reversible recovery within the active request.
+Run them without asking permission for their internal operations. Apply
+`user-decisions.md` if implementation intent or safe recovery is uncertain.
+
 Use the reported stage base, stage head, and new parent to resolve the stage's
 net patch:
 
@@ -47,8 +51,15 @@ outer helper (`sync --local` for synchronization) to validate and refresh
 pending feedback anchors. If validation reports invalid node selectors, use
 `stage organize --finalized` for the affected stages before rerunning it.
 
-Stop and ask the user only when resolving the net patch requires a product
-decision, stage ownership is unclear, a guarded ref update fails, or a branch
-moved after the conflict report. On failure, retain every recovery branch and
-report its name. After restacking and validation succeed, delete the recovery
-branches.
+If resolving the net patch requires a product or code-intent decision, or stage
+ownership changes the implementation, ask about that behavior in plain language
+under `user-decisions.md`. Preserve the unresolved work while awaiting the answer.
+
+If a guarded ref update fails or a branch moved after the conflict report, stop
+the write and inspect what changed. Follow `user-decisions.md` to determine
+whether documented safe recovery is still possible; never force the update or
+blindly retry with a new expected head. If blocked, explain the affected work and
+why continuing could overwrite or misapply it. Do not ask the user to approve a
+compare-and-swap retry. Retain every recovery branch on failure and include its
+name as diagnostic detail. After restacking and validation succeed, delete the
+recovery branches.
