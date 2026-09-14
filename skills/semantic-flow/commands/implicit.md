@@ -23,5 +23,7 @@ Natural-language usage remains a first-class interface. Never require the user
 to rewrite a clear implementation request as `/semantic-flow implement`.
 
 If the intent is genuinely ambiguous and different routes would mutate
-different state, ask the user to choose one route. Do not infer an unknown
+different state, ask which outcome the user wants under
+`../docs/user-decisions.md`, such as applying review comments or incorporating
+manual edits. Do not ask the user to select a command route or infer an unknown
 slash command.

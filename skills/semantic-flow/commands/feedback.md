@@ -10,8 +10,9 @@ unless a listed command fails with an error that this file does not explain.
 For an unexplained CLI error, read the relevant installed API module and command
 help, correct the invocation, and continue within the requested workflow. No
 extra user approval is needed for that inspection or a missing required argument.
-Ask only when the correction requires a user decision or crosses a safety
-boundary. A missing argument is not evidence of an artifact migration problem;
+Apply `../docs/user-decisions.md` if the correction reveals an unresolved
+behavior choice or safety condition. Stop unsafe writes without asking users
+to approve technical mechanics. A missing argument is not evidence of an artifact migration problem;
 do not update the skill, run `repair`, or hand-edit artifacts to address it.
 
 These placeholders mean `node` followed by the quoted script path under the
@@ -60,8 +61,9 @@ automatically refreshes pending non-line anchors when their exact target still
 exists; these threads are marked `reanchored: true`. Continue without asking
 when their feedback remains clear. A remaining `stale: true` means a line
 anchor moved or a non-line target could not be found. Inspect the current target
-and ask only when applying the feedback is ambiguous. Also stop for unclear or
-contradictory feedback, or when no responsible stage is clear. Do not guess.
+and ask about the desired behavior only when applying the feedback is ambiguous.
+For contradictory feedback or unclear ownership that affects the implementation,
+apply `../docs/user-decisions.md`. Do not guess the intended behavior.
 
 ## Address feedback
 
@@ -72,6 +74,8 @@ together:
 2. Answer questions directly. If the stage needs code changes, require
    `worktreeChanges` from preflight to be empty, then check out its recorded
    branch. Preserve unrelated user changes and stop if the worktree is dirty.
+   Explain the affected edits under `../docs/user-decisions.md`; do not ask
+   whether to bypass the clean-worktree check.
 3. Apply all requested code corrections for the
    stage as one coherent edit, then run relevant tests and commit.
 4. Update finalized insights only when the recorded reasoning changed. Do not
@@ -100,7 +104,10 @@ node coverage no longer matches their rewritten diff.
 
 If restack reports a conflict, read `../docs/restack-conflicts.md` completely
 and follow it. This is not an interrupted artifact write. Do not run `repair`
-or ask for permission merely because Git reported a conflict.
+or ask for permission merely because Git reported a conflict. The entire
+prescribed recovery is part of applying feedback, including its guarded update.
+Apply `../docs/user-decisions.md` to any remaining ambiguity or blocker; ask about
+the desired code behavior, never whether to run recovery commands.
 
 Do not create a new stage for corrections that belong in an existing stage.
 Question-only feedback needs no checkout, commit, organization, or restack.

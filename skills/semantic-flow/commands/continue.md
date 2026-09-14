@@ -28,7 +28,9 @@ approval. A metadata recording failure does not pause otherwise valid work.
    `feedback.md` rather than treating it as ordinary implementation.
 
 Do not discard or overwrite partial application changes. If unrelated changes
-prevent safe continuation, stop and identify them.
+prevent safe continuation, preserve them and explain which work blocks the
+requested changes. Apply `../docs/user-decisions.md`; ask only if their inclusion
+or intended behavior needs clarification.
 
 ## Resume from state
 
@@ -41,7 +43,9 @@ prevent safe continuation, stop and identify them.
   its branch before editing.
 - If a numbered branch below the implementation's branch prefix is not recorded as the
   active or finalized branch for its ordinal, stop and report the inconsistent
-  ref. Do not absorb its commits into another stage or create another branch
+  state: describe the unassigned work and the risk of incorporating it, with
+  the ref as diagnostic detail. Do not ask for approval of branch repair or
+  absorb its commits into another stage or create another branch
   with that ordinal.
 - If all stages are finalized, run the complete acceptance path and whole-stack
   validation described by `implement.md`.

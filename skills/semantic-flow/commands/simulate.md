@@ -21,7 +21,9 @@ implementation; no branch mode distinguishes those uses.
    `.semantic-review/manifest.json`. If it does, stop and direct the user to
    the command matching that active implementation.
 3. If `.semantic-review/` exists without a manifest and is not empty, stop and
-   ask the user to inspect or remove it. Do not reuse or overwrite it.
+   inspect it read-only. Explain that existing review data prevents starting a
+   new review safely under `../docs/user-decisions.md`. Do not reuse or overwrite
+   it, or ask permission for an opaque artifact cleanup.
 4. Require a clean working tree, including no staged, unstaged, or untracked
    files. Require the completed implementation to be committed.
 5. Record the source branch and immutable source `HEAD`. Do not move, rewrite,
@@ -60,7 +62,9 @@ The snapshot is the required final application tree. It is not a semantic
 stage and must not use a numbered branch name. If integration conflicts can be
 resolved mechanically without changing behavior, resolve them and inspect the
 result. If resolution requires a product or design choice, stop and ask the
-user. Keep the source branch and working directory unchanged.
+user about the desired behavior under `../docs/user-decisions.md`. Do not ask
+permission for the recovery mechanics. Keep the source branch and working
+directory unchanged.
 
 If no snapshot commit was created, abort the squash merge and remove the
 temporary branch and isolated worktree created by this command. If a snapshot

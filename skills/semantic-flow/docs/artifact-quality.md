@@ -21,10 +21,11 @@ not a story reconstructed afterward.
 - Keep all work that belongs to the active stage on its existing branch. If
   its scope changes, update its mutable metadata with `stage set`; do not
   create another numbered branch for the same stage position.
-- Do not use `stage discard` to rename or reorder a stage. It removes working
-  metadata but leaves the branch ref, so beginning a replacement can create
-  two branches claiming the same ordinal. Stop and ask the user if the
-  immutable stage ID or stage order must change.
+- Do not use `stage discard` to rename or reorder a stage. It keeps a branch
+  that carries commits; beginning a replacement would collide with that ordinal. If an immutable stage ID or order
+  must change, stop the unsupported restructuring and apply `user-decisions.md`.
+  Ask only about changes to scope or independently reviewable behavior; report
+  a tooling limitation when no such choice exists.
 - Commit only implementation content, then organize and finalize that branch
   head.
 - Prefer vertical behavior-oriented stages over file, directory, layer, or

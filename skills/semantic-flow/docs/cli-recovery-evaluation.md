@@ -25,3 +25,6 @@ The repository's artifact command regression scripts the category failure and
 successful retry through finalization. The instruction contract regression checks
 that both implementation and continuation include recovery guidance. Running
 these deterministic tests does not by itself demonstrate a model evaluation pass.
+
+For feedback conflicts and the code-intent boundary, use
+[the feedback recovery evaluation](feedback-recovery-evaluation.md).
