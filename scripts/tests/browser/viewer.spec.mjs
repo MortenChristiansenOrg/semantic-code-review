@@ -1031,3 +1031,68 @@ test('file highlights and hover styles survive repeated and interrupted close an
   await expect(row).toHaveCSS('box-shadow', activeShadow);
   expect(await row.evaluate(el => el.getAnimations().filter(animation => animation.effect.getTiming().fill === 'forwards').length)).toBe(0);
 });
+
+for (const change of ['add', 'del', 'replacement']) {
+  test(`diff separates omitted lines after ${change} changes`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    const changed = change === 'replacement'
+      ? [{ t: 'del', o: 4, s: 'old', h: 1 }, { t: 'add', n: 4, s: 'new', h: 1 }]
+      : [{ t: change, ...(change === 'add' ? { n: 4 } : { o: 4 }), s: 'changed', h: 1 }];
+    const oldOffset = change === 'add' ? -1 : 0;
+    const newOffset = change === 'del' ? -1 : 0;
+    file.lines = [
+      ...[1, 2, 3].map(n => ({ t: 'ctx', o: n, n, s: 'before' })),
+      ...changed,
+      ...[5, 6, 7, 21, 22, 23].map(n => ({ t: 'ctx', o: n + oldOffset, n: n + newOffset, s: 'context' })),
+      { t: 'add', n: 24 + newOffset, s: 'later', h: 2 },
+    ];
+    await mount(page, data);
+    await openFile(page);
+    const diff = page.locator('.cinema-diff');
+    await expect(diff.locator('.d-gap')).toHaveText('⋯ 13 unchanged lines omitted ⋯');
+    await expect(diff.locator('.d-gap [data-line-id], .d-gap button')).toHaveCount(0);
+    await expect(diff.locator('.d-gap + .drow .ln').last()).toHaveText(String(21 + newOffset));
+  });
+}
+
+test('adjacent diff sections and replacements do not invent omitted lines', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].lines = [
+    { t: 'del', o: 1, s: 'old', h: 1 },
+    { t: 'del', o: 2, s: 'old two', h: 1 },
+    { t: 'add', n: 1, s: 'new', h: 1 },
+    { t: 'ctx', o: 3, n: 2, s: 'context' },
+    { t: 'add', n: 3, s: 'adjacent', h: 2 },
+    { t: 'ctx', o: 4, n: 4, s: 'context' },
+  ];
+  await mount(page, data);
+  await openFile(page);
+  await expect(page.locator('.cinema-diff .d-gap')).toHaveCount(0);
+});
+
+test('diff combines collapsed context with omitted source lines', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].lines = [
+    { t: 'add', n: 1, s: 'first', h: 1 },
+    ...[2, 3, 4, 5, 7, 8, 9, 10].map(n => ({ t: 'ctx', o: n - 1, n, s: 'context' })),
+    { t: 'add', n: 11, s: 'last', h: 2 },
+  ];
+  await mount(page, data);
+  await openFile(page);
+  await expect(page.locator('.cinema-diff .d-gap')).toHaveText('⋯ 3 unchanged lines omitted ⋯');
+  await page.locator('.cinema-diff button[data-mode="full"]').click();
+  await expect(page.locator('.cinema-diff .d-gap')).toHaveText('⋯ 1 unchanged line omitted ⋯');
+});
+
+test('omitted lines between replacements are counted once across both sides', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].lines = [
+    { t: 'del', o: 1, s: 'old', h: 1 },
+    { t: 'add', n: 1, s: 'new', h: 1 },
+    { t: 'del', o: 5, s: 'old later', h: 2 },
+    { t: 'add', n: 5, s: 'new later', h: 2 },
+  ];
+  await mount(page, data);
+  await openFile(page);
+  await expect(page.locator('.cinema-diff .d-gap')).toHaveText('⋯ 3 unchanged lines omitted ⋯');
+});
