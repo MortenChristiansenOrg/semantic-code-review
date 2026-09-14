@@ -24,6 +24,12 @@ export function validateNotes(notes: string, version: string): void {
   if (version.startsWith("0.") && !/experimental/i.test(notes)) throw new Error("0.x notes must explain experimental compatibility.");
 }
 
+// Keep the version/date in standalone source notes; GitHub supplies the title.
+export function releaseBody(notes: string, version: string): string {
+  validateNotes(notes, version);
+  return notes.slice(notes.indexOf("\n") + 1).trimStart();
+}
+
 export async function packageRelease(output: string): Promise<{ archive: string; checksum: string; version: string; sourceCommit: string }> {
   if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("Commit the release changes before packaging; the worktree must be clean.");
   const pkg = json(manifestFile), version = pkg.version;
@@ -79,7 +85,7 @@ export async function publishRelease(
   const { version, sourceCommit } = artifact, tag = `v${version}`;
   parseVersion(version);
   const notes = fs.readFileSync(notesFile, "utf8");
-  validateNotes(notes, version);
+  const body = releaseBody(notes, version);
   const ref = JSON.parse(github("api", `repos/${RELEASE_REPOSITORY}/git/ref/tags/${tag}`));
   let object = ref.object;
   // Annotated tags point to a tag object; lightweight tags point straight to a commit.
@@ -94,18 +100,20 @@ export async function publishRelease(
     if (release.draft || release.prerelease) return false;
     try { return compareVersions(release.tag_name.replace(/^v/, ""), version) > 0; } catch { return false; }
   });
-  if (!existing) github("release", "create", tag, "--repo", RELEASE_REPOSITORY, "--verify-tag", "--draft", "--title", tag, "--notes-file", notesFile);
-  else github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--title", tag, "--notes-file", notesFile);
-  // Only drafts may have assets replaced on retry.
-  github("release", "upload", tag, artifact.archive, artifact.checksum, "--repo", RELEASE_REPOSITORY, "--clobber");
   const downloaded = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-published-"));
   try {
+    const bodyFile = path.join(downloaded, "release-notes.md");
+    fs.writeFileSync(bodyFile, body);
+    if (!existing) github("release", "create", tag, "--repo", RELEASE_REPOSITORY, "--verify-tag", "--draft", "--title", tag, "--notes-file", bodyFile);
+    else github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--title", tag, "--notes-file", bodyFile);
+    // Only drafts may have assets replaced on retry.
+    github("release", "upload", tag, artifact.archive, artifact.checksum, "--repo", RELEASE_REPOSITORY, "--clobber");
     github("release", "download", tag, "--repo", RELEASE_REPOSITORY, "--dir", downloaded, "--pattern", path.basename(artifact.archive), "--pattern", path.basename(artifact.checksum));
     for (const file of [artifact.archive, artifact.checksum]) {
       if (sha256(fs.readFileSync(file)) !== sha256(fs.readFileSync(path.join(downloaded, path.basename(file))))) throw new Error("Uploaded release bytes differ from the tested package.");
     }
     const draft = JSON.parse(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "body,isDraft"));
-    if (!draft.isDraft || draft.body !== notes) throw new Error("Draft release notes do not match the reviewed changelog.");
+    if (!draft.isDraft || draft.body !== body) throw new Error("Draft release notes do not match the reviewed changelog.");
     github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--draft=false", `--latest=${!newer}`);
     const published = JSON.parse(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,isPrerelease,url"));
     if (published.isDraft || published.isPrerelease) throw new Error("Release did not become eligible for updates.");
