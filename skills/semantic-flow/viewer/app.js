@@ -1926,6 +1926,7 @@
         <span><b>${data.stages.length}</b> stages</span>
         <span><b>${totalNodes}</b> steps</span>
         <span><b>${totalFiles}</b> files</span>
+        <span class="hero-skill-version">Skill version: ${esc(data.skillVersion || "Unknown")}</span>
         <span class="hero-target">${esc(data.targetBranch)} ← ${data.baseRevision.slice(0, 7)}</span>
       </div>
     </section>`;

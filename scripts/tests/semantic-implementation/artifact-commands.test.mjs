@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 import {
   beginStage,
   createRepository,
@@ -25,6 +26,7 @@ test("init and specification add create complete specification metadata", (t) =>
   const initial = repository.readJson(
     ".semantic-review/requirements/story.json",
   );
+  assert.equal(manifest.skillVersion, fs.readFileSync(new URL("../../../skills/semantic-flow/VERSION", import.meta.url), "utf8").trim());
   assert.equal(manifest.baseRevision, base);
   assert.equal(manifest.branchPrefix, "semantic-flow/42-orders");
   assert.deepEqual(manifest.requirements, ["story"]);

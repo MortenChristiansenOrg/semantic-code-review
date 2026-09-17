@@ -47,11 +47,12 @@ self-referential. A writer MAY publish it on a separate metadata branch.
 
 ## Manifest
 
-Required fields:
+Fields (required unless marked optional):
 
 | Field | Meaning |
 | --- | --- |
 | `formatVersion` | Exact value `0.1` |
+| `skillVersion` | Optional version of the Semantic Flow skill that initialized the implementation, read from its installed `VERSION` file. The Viewer displays “Unknown” when absent; later tooling updates do not rewrite this provenance. |
 | `implementationId` | Stable implementation identity |
 | `title`, `summary` | Complete work description |
 | `baseRevision` | Target branch head captured before stage 1 |

@@ -23,6 +23,10 @@
     "formatVersion": {
       "const": "0.1"
     },
+    "skillVersion": {
+      "description": "Version of the Semantic Flow skill that initialized this implementation; absent when unavailable.",
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
+    },
     "implementationId": {
       "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
     },

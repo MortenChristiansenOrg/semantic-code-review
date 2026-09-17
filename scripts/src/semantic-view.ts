@@ -832,6 +832,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     implementationId: manifest.implementationId,
     reviewId: reviewId(repoRoot, manifest.implementationId),
     title: manifest.title,
+    skillVersion: manifest.skillVersion ?? null,
     summary: manifest.summary,
     targetBranch: manifest.targetBranch,
     baseRevision: manifest.baseRevision,
