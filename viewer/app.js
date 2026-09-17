@@ -917,15 +917,15 @@
       </button>
     </span>`;
   }
-  function reasoningSummary(stage) {
-    const insights = stage.insights;
+  function reasoningSummary(stage, node) {
+    const insights = stage.insights.filter((i) => (i.nodeRefs || []).includes(node.id));
     if (!insights.length) return "";
     const counts = INSIGHT_ORDER
       .map((t) => ({ t, c: insights.filter((i) => i.type === t).length }))
       .filter((x) => x.c);
-    const legend = counts.map((x) => `<span class="rk type-${x.t}"><b>${INSIGHT[x.t].glyph}</b>${x.c}</span>`).join("");
+    const legend = counts.map((x) => `<button type="button" class="rk type-${x.t}" data-action="focus-reasoning" data-type="${x.t}" aria-label="${INSIGHT[x.t].label}: ${x.c}"><b aria-hidden="true">${INSIGHT[x.t].glyph}</b>${x.c}</button>`).join("");
     const failed = insights.filter((i) => { const v = vstatus(i); return v && v.key !== "passed"; }).length;
-    const alert = failed ? `<span class="rk rk-alert" data-tooltip-focus title="${failed} check${failed === 1 ? "" : "s"} not passed"><b>✕</b>${failed}</span>` : "";
+    const alert = failed ? `<button type="button" class="rk rk-alert" data-action="focus-reasoning" data-type="not-passed" aria-label="Checks not passed: ${failed}"><b aria-hidden="true">✕</b>${failed}</button>` : "";
     return `<div class="reasoning-summary"><span class="eyebrow">Reasoning</span><div class="reasoning-key">${legend}${alert}</div></div>`;
   }
   function nodeReasoning(stage, node) {
@@ -2002,6 +2002,7 @@
         <div class="node-head">
           <h3>${esc(node.title)}</h3>
           <p>${esc(node.description)}</p>
+          ${reasoningSummary(stage, node)}
         </div>
         <span class="node-caret">${caret()}</span>
       </summary>
@@ -2054,7 +2055,6 @@
       </div>
       ${threadInline(stage.id, "stage")}
       <div class="stage-body">
-        ${reasoningSummary(stage)}
         <div class="nodes">${stage.nodes.map((n, ni) => stageNode(stage, n, ni, i)).join("")}</div>
       </div>
     </section>`;
@@ -2497,7 +2497,16 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "toggle-reviews") {
+    if (a === "focus-reasoning") {
+      e.preventDefault();
+      const node = btn.closest("details[data-node]");
+      node.open = true;
+      const selector = btn.dataset.type === "not-passed"
+        ? '.node-reasoning .tag-face[data-vstat="failed"], .node-reasoning .tag-face[data-vstat="notrun"]'
+        : `.node-reasoning .tag-face[data-type="${cssEsc(btn.dataset.type)}"]`;
+      const target = node.querySelector(selector);
+      if (target) { target.focus(); target.scrollIntoView({ block: "nearest" }); }
+    } else if (a === "toggle-reviews") {
       setReviewsOpen(!reviewsOpen);
       if (reviewsOpen) void refreshReviews();
     } else if (a === "manage-review-data") {
