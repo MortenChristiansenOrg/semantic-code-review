@@ -130,6 +130,27 @@ for (const skillVersion of ['0.2.0', undefined]) {
   });
 }
 
+test('long acceptance identifiers stay separate from descriptions at supported widths', async ({ page }) => {
+  const data = fixture();
+  data.requirements = [{ id: 'story', title: 'Requirements', summary: 'Summary', acceptance: [
+    { id: 'deployment-errors', text: 'Deployment errors are reported clearly.' },
+    { id: 'disable-warmup', text: 'Warmup can be disabled.' },
+    { id: 'a'.repeat(100), text: 'A long unbroken identifier remains readable.' },
+  ] }];
+  await mount(page, data);
+  await page.locator('.specification summary').click();
+  for (const width of [1440, 1024, 720, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const row of await page.locator('.ac-item').all()) {
+      const id = await row.locator('.ac-id').boundingBox();
+      const text = await row.locator('.ac-text').boundingBox();
+      expect(id.x + id.width <= text.x || id.y + id.height <= text.y).toBe(true);
+      expect(await row.locator('.ac-id').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect(await row.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+  }
+});
+
 test('fresh stages collapse; saved choices restore only for their implementation', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
@@ -1102,4 +1123,31 @@ test('omitted lines between replacements are counted once across both sides', as
   await mount(page, data);
   await openFile(page);
   await expect(page.locator('.cinema-diff .d-gap')).toHaveText('⋯ 3 unchanged lines omitted ⋯');
+});
+
+
+test('node counts include only linked reasoning and open matching entries', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights = [
+    { id: 'shared', collection: 'insights', type: 'decision', title: 'Shared decision', nodeRefs: ['first-one', 'first-two'] },
+    { id: 'risk', collection: 'insights', type: 'risk', title: 'Only second risk', nodeRefs: ['first-two'] },
+    { id: 'failed', collection: 'validation', type: 'validation', title: 'Failed check', meta: 'failed', nodeRefs: ['first-one'] },
+    { id: 'passed', collection: 'validation', type: 'validation', title: 'Passed check', meta: 'passed', nodeRefs: ['first-one'] },
+  ];
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  const two = page.locator('details[data-node="first-two"]');
+  await expect(page.locator('.stage-body > .reasoning-summary')).toHaveCount(0);
+  await expect(one.locator('summary .rk')).toHaveCount(3);
+  await expect(two.locator('summary .rk')).toHaveCount(2);
+  await expect(page.locator('details[data-node="second-one"] .rk')).toHaveCount(0);
+  await expect(one.getByRole('button', { name: 'Check: 2', exact: true })).toBeVisible();
+  await one.getByRole('button', { name: 'Decision: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-type="decision"]')).toBeFocused();
+  await one.getByRole('button', { name: 'Checks not passed: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-vstat="failed"]')).toBeFocused();
+  await two.getByRole('button', { name: 'Risk: 1', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(two.locator('.tag-face[data-type="risk"]')).toBeFocused();
 });
