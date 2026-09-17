@@ -385,11 +385,15 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .node.is-approved .node-ix { }
 
 /* ---- reasoning tags (signature) --------------------------------------- */
-.reasoning-summary { display: flex; align-items: center; gap: 14px; margin: 0 0 20px; }
+.reasoning-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 10px 0 0; }
 .node-reasoning { margin: 0 0 14px; }
 .node-reasoning .eyebrow { display: block; margin-bottom: 9px; }
-.reasoning-key { display: flex; gap: 10px; }
+.reasoning-key { display: flex; flex-wrap: wrap; gap: 10px; }
 .reasoning-key .rk {
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--faint);

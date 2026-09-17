@@ -1096,3 +1096,30 @@ test('omitted lines between replacements are counted once across both sides', as
   await openFile(page);
   await expect(page.locator('.cinema-diff .d-gap')).toHaveText('⋯ 3 unchanged lines omitted ⋯');
 });
+
+
+test('node counts include only linked reasoning and open matching entries', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights = [
+    { id: 'shared', collection: 'insights', type: 'decision', title: 'Shared decision', nodeRefs: ['first-one', 'first-two'] },
+    { id: 'risk', collection: 'insights', type: 'risk', title: 'Only second risk', nodeRefs: ['first-two'] },
+    { id: 'failed', collection: 'validation', type: 'validation', title: 'Failed check', meta: 'failed', nodeRefs: ['first-one'] },
+    { id: 'passed', collection: 'validation', type: 'validation', title: 'Passed check', meta: 'passed', nodeRefs: ['first-one'] },
+  ];
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  const two = page.locator('details[data-node="first-two"]');
+  await expect(page.locator('.stage-body > .reasoning-summary')).toHaveCount(0);
+  await expect(one.locator('summary .rk')).toHaveCount(3);
+  await expect(two.locator('summary .rk')).toHaveCount(2);
+  await expect(page.locator('details[data-node="second-one"] .rk')).toHaveCount(0);
+  await expect(one.getByRole('button', { name: 'Check: 2', exact: true })).toBeVisible();
+  await one.getByRole('button', { name: 'Decision: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-type="decision"]')).toBeFocused();
+  await one.getByRole('button', { name: 'Checks not passed: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-vstat="failed"]')).toBeFocused();
+  await two.getByRole('button', { name: 'Risk: 1', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(two.locator('.tag-face[data-type="risk"]')).toBeFocused();
+});
