@@ -547,13 +547,23 @@
             ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
           } : {}) };
           delete state.approvalComparisons[id];
-          if (entry && activeFileNodeId(entry.id) === entry.nodeId) {
-            delete state.activeFiles[entry.id];
-          }
         }
         approvalErrors.delete(id);
         if (previousId) approvalErrors.delete(previousId);
         persist();
+        if (entry && !remove) {
+          // An older save may already be in flight. Wait until this approval
+          // is stored before collapsing its diff; a failed save leaves it open.
+          do {
+            clearTimeout(saveTimer);
+            await saveState();
+            if (saveError) throw new Error(saveError);
+          } while (JSON.stringify(persistedState.approvals?.[id]) !== JSON.stringify(state.approvals[id]));
+          if (activeFileNodeId(entry.id) === entry.nodeId) {
+            delete state.activeFiles[entry.id];
+            persist();
+          }
+        }
       } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
       finally { approvalOps.delete(id); render(); }
     });

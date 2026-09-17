@@ -582,10 +582,35 @@ test('approving a file closes only that file and persists the collapse', async (
     await openFile(page);
     await saveAction(page, () => node.locator('.mini-approve').click(), state => !state.approvals?.[approvalKey('first', 'first-one')]);
     await expect(node.locator('.cinema-diff')).toBeVisible();
-    await saveAction(page, () => node.locator('.mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]);
+    await saveAction(page, () => node.locator('.mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')] && !state.activeFiles?.[fileId]);
     await page.reload();
     await node.locator('summary').click();
     await expect(node.locator('.cinema-diff')).toHaveCount(0);
+});
+
+test('approval waits for durable state and keeps the diff open when saving fails', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/review-state*', async route => {
+    if (route.request().method() === 'POST' && route.request().postDataJSON().changes.some(change => change.path[0] === 'approvals')) {
+      await pending;
+      return route.fulfill({ status: 500, json: { ok: false, error: 'Storage unavailable' } });
+    }
+    return route.fallback();
+  });
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('.mini-approve').click();
+  await expect(page.locator('#save-status')).toContainText('Saving review');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  release();
+  await expect(page.locator('#save-status')).toContainText('Storage unavailable');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  await page.reload();
+  await openFile(page);
+  await expect(node.locator('.mini-approve')).toHaveAttribute('aria-pressed', 'false');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
 });
 
 test('failed snapshot capture does not approve a file', async ({ page }) => {
