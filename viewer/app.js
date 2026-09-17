@@ -547,6 +547,9 @@
             ...approvalEndpoint(entry), snapshotId: retained.snapshotId,
           } : {}) };
           delete state.approvalComparisons[id];
+          if (entry && activeFileNodeId(entry.id) === entry.nodeId) {
+            delete state.activeFiles[entry.id];
+          }
         }
         approvalErrors.delete(id);
         if (previousId) approvalErrors.delete(previousId);
