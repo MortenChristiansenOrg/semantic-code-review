@@ -833,3 +833,18 @@ test("snapshot reads reject an implementation switch instead of changing feedbac
   });
   assert.throws(() => viewerSnapshot(repository.root), /active implementation changed/);
 });
+
+
+test("viewer skill version comes from artifact metadata and can be unavailable", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const manifest = repository.readJson(".semantic-review/manifest.json");
+  const source = createViewerDataSource(repository.root);
+  const data = () => JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  manifest.skillVersion = "0.2.0";
+  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  assert.equal(data().skillVersion, "0.2.0");
+  delete manifest.skillVersion;
+  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  assert.equal(data().skillVersion, null);
+});

@@ -1002,8 +1002,11 @@ function initialize(paths, options) {
   git(["check-ref-format", "--branch", `${branchPrefix}/01-probe`], {
     cwd: paths.root,
   });
+  const versionFile = path.join(skillDirectory, "VERSION");
+  const skillVersion = fs.existsSync(versionFile) ? fs.readFileSync(versionFile, "utf8").trim() : "";
   const manifest = {
     $schema: MANIFEST_SCHEMA,
+    ...(skillVersion ? { skillVersion } : {}),
     formatVersion: "0.1",
     implementationId,
     title: option(options, "title", { required: true }),
