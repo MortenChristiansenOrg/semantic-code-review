@@ -123,6 +123,27 @@ async function saveAction(page, action, matches) {
 }
 async function showNotes(page) { await page.locator('.tb-btn[data-action="toggle-notes"]').click(); }
 
+test('long acceptance identifiers stay separate from descriptions at supported widths', async ({ page }) => {
+  const data = fixture();
+  data.requirements = [{ id: 'story', title: 'Requirements', summary: 'Summary', acceptance: [
+    { id: 'deployment-errors', text: 'Deployment errors are reported clearly.' },
+    { id: 'disable-warmup', text: 'Warmup can be disabled.' },
+    { id: 'a'.repeat(100), text: 'A long unbroken identifier remains readable.' },
+  ] }];
+  await mount(page, data);
+  await page.locator('.specification summary').click();
+  for (const width of [1440, 1024, 720, 390, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const row of await page.locator('.ac-item').all()) {
+      const id = await row.locator('.ac-id').boundingBox();
+      const text = await row.locator('.ac-text').boundingBox();
+      expect(id.x + id.width <= text.x || id.y + id.height <= text.y).toBe(true);
+      expect(await row.locator('.ac-id').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect(await row.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+  }
+});
+
 test('fresh stages collapse; saved choices restore only for their implementation', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
