@@ -591,6 +591,49 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
 });
 
+test('approving a file closes only that file and persists the collapse', async ({ page }) => {
+    await mount(page, fixture(), { openStages: { first: true, second: true }, activeFiles: { 'f:second:shared.js': 'second-one' } });
+    await openFile(page);
+    await page.locator('details[data-node="second-one"] summary').click();
+    const node = page.locator('details[data-node="first-one"]');
+    await saveAction(page, () => node.locator('.mini-approve').click(), state =>
+      !!state.approvals?.[approvalKey('first', 'first-one')] && !state.activeFiles?.[fileId]);
+    await expect(node.locator('.cinema-diff')).toHaveCount(0);
+    await expect(page.locator('details[data-node="second-one"] .cinema-diff')).toBeVisible();
+    await openFile(page);
+    await saveAction(page, () => node.locator('.mini-approve').click(), state => !state.approvals?.[approvalKey('first', 'first-one')]);
+    await expect(node.locator('.cinema-diff')).toBeVisible();
+    await saveAction(page, () => node.locator('.mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')] && !state.activeFiles?.[fileId]);
+    await page.reload();
+    await node.locator('summary').click();
+    await expect(node.locator('.cinema-diff')).toHaveCount(0);
+});
+
+test('approval waits for durable state and keeps the diff open when saving fails', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  await page.route('**/api/review-state*', async route => {
+    if (route.request().method() === 'POST' && route.request().postDataJSON().changes.some(change => change.path[0] === 'approvals')) {
+      await pending;
+      return route.fulfill({ status: 500, json: { ok: false, error: 'Storage unavailable' } });
+    }
+    return route.fallback();
+  });
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('.mini-approve').click();
+  await expect(page.locator('#save-status')).toContainText('Saving review');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  release();
+  await expect(page.locator('#save-status')).toContainText('Storage unavailable');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  await page.reload();
+  await openFile(page);
+  await expect(node.locator('.mini-approve')).toHaveAttribute('aria-pressed', 'false');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+});
+
 test('failed snapshot capture does not approve a file', async ({ page }) => {
   await mount(page); await openFile(page);
   await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'The file changed. Refresh before approving.' } }));
@@ -919,7 +962,7 @@ test('duplicate label tooltips are omitted and other-node hunk links use concise
   await expect(page.locator('details[data-node="first-two"] .cinema-diff')).toBeVisible();
 });
 
-test('approvals and attachment edits preserve open diffs, editor focus, selection and previews', async ({ page }) => {
+test('unrelated approvals and attachment edits preserve open diffs, editor focus, selection and previews', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const errors = await mount(page, fixture(), { openStages: { first: true, second: true }, activeFiles: { [fileId]: 'first-one', 'f:second:shared.js': 'second-one' } });
   await openFile(page);
@@ -941,16 +984,17 @@ test('approvals and attachment edits preserve open diffs, editor focus, selectio
     expect(await page.evaluate(() => window.retainedDiffs.every(el => el.isConnected) && window.retainedEditor === document.querySelector('.note-compose textarea'))).toBe(true);
     expect(await page.evaluate(() => window.detachedDiffs)).toEqual([]);
   };
-  const approval = page.locator('details[data-node="first-one"] .mini-approve');
+  await page.locator('details[data-node="first-two"] summary').click();
+  const approval = page.locator('details[data-node="first-two"] .mini-approve');
   await page.route('**/api/approval-snapshots*', route => route.fulfill({ status: 409, json: { ok: false, error: 'Capture failed' } }));
   await approval.click();
   await expect(page.locator('[role="alert"]')).toContainText('Capture failed');
   await expectRetained();
   await page.unroute('**/api/approval-snapshots*');
-  await saveAction(page, () => approval.click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await saveAction(page, () => approval.click(), state => !!state.approvals?.[approvalKey('first', 'first-two')]);
   await expectRetained();
   await expect(page.locator('.cinema-diff')).toHaveCount(2);
-  await saveAction(page, () => approval.click(), state => !state.approvals?.[approvalKey('first', 'first-one')]);
+  await saveAction(page, () => approval.click(), state => !state.approvals?.[approvalKey('first', 'first-two')]);
   await expectRetained();
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png });
