@@ -14,7 +14,7 @@ import { reviewEnvironment } from "./review-context.js";
 
 function git(root: string, args: string[]) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", ...args], {
-    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0" }, encoding: "utf8", windowsHide: true,
+    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, encoding: "utf8", windowsHide: true,
     maxBuffer: 64 * 1024 * 1024, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd();
 }

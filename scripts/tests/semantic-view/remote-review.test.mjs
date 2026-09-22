@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import http from 'node:http';
+import { promisify } from 'node:util';
 import { createRepository, feedbackCli, flowCli, initializeImplementation } from '../helpers/repository.mjs';
 import { startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
@@ -158,4 +160,27 @@ test('first-parent merge stages show their changes and unchanged approvals retai
   assert.equal(after.stages.length, 4); assert.equal(after.stages.at(-1).title, 'Merge side');
   assert.deepEqual(after.stages.at(-1).files.map(f => f.path), ['side.txt']);
   assert.equal(after.stages[0].files.find(f => f.path === 'code.txt').revision, before.stages[0].files[0].revision);
+});
+
+
+test('remote authentication failures do not invoke interactive askpass helpers', async (t) => {
+  const source = createRepository(t, 'remote-auth-');
+  const server = http.createServer((_request, response) => {
+    response.writeHead(401, { 'www-authenticate': 'Basic realm="test"' }); response.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  source.git('remote', 'add', 'origin', `http://127.0.0.1:${server.address().port}/private.git`);
+  const marker = source.path('askpass-ran');
+  source.write('askpass.cjs', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'called'); process.stdout.write('fixture-user\\n');`);
+  source.write('empty-git-config', '');
+  const askpass = source.path(process.platform === 'win32' ? 'askpass.cmd' : 'askpass');
+  fs.writeFileSync(askpass, process.platform === 'win32'
+    ? `@echo off\r\n"${process.execPath}" "${source.path('askpass.cjs')}"\r\n`
+    : `#!/bin/sh\nexec "${process.execPath}" "${source.path('askpass.cjs')}"\n`, { mode: 0o755 });
+  await assert.rejects(promisify(execFile)(process.execPath, [flowCli, 'review', '--branch', 'feature'], {
+    cwd: source.root, timeout: 15_000,
+    env: { ...process.env, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, GIT_CONFIG_GLOBAL: source.path('empty-git-config'), GIT_CONFIG_NOSYSTEM: '1', SEMANTIC_VIEW_NO_OPEN: '1' },
+  }), error => { assert.match(error.stderr, /Authentication failed|could not read Username/); return true; });
+  assert.equal(fs.existsSync(marker), false, 'Remote Git operations must not launch inherited password prompts');
 });
