@@ -22,8 +22,9 @@ export function reviewId(root: string, implementationId: string) {
   const canonicalRoot = fs.realpathSync(root);
   // Managed remote clones are children of their owning review, whose identity
   // is stable across refreshes and independent of the cloned artifact's ID.
-  const owner = path.basename(path.dirname(canonicalRoot));
-  if (path.basename(canonicalRoot) === "checkout" && isReviewId(owner) && fs.existsSync(reviewDirectory(owner))) {
+  const managedRoot = process.platform === "win32" ? fs.realpathSync.native(root) : canonicalRoot;
+  const owner = path.basename(path.dirname(managedRoot));
+  if (path.basename(managedRoot) === "checkout" && isReviewId(owner) && fs.existsSync(reviewDirectory(owner))) {
     // Git and Windows processes may report the same checkout using either 8.3
     // aliases or full paths. Native realpath expands aliases; comparison must
     // also respect Windows' case-insensitive paths.
@@ -31,9 +32,9 @@ export function reviewId(root: string, implementationId: string) {
       const resolved = fs.realpathSync.native(value);
       return process.platform === "win32" ? resolved.toLowerCase() : resolved;
     };
-    if (canonical(path.dirname(canonicalRoot)) === canonical(reviewDirectory(owner))) {
+    if (canonical(path.dirname(managedRoot)) === canonical(reviewDirectory(owner))) {
       const record = readReview(owner);
-      if (record.remote && canonical(record.repositoryRoot) === canonical(canonicalRoot) && record.implementationId === implementationId) return owner;
+      if (record.remote && canonical(record.repositoryRoot) === canonical(managedRoot) && record.implementationId === implementationId) return owner;
     }
   }
   const slug = (value: string, limit: number, fallback: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()

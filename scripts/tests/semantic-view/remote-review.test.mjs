@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
 import { createRepository, feedbackCli, flowCli, initializeImplementation } from '../helpers/repository.mjs';
@@ -199,4 +199,15 @@ test('remote clones support nested paths under the private review directory', (t
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'refreshed content\n');
   const storage = inspectReviewStorage(review.id, review.generation);
   assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).cleanupPending, false);
+});
+
+
+test('Windows short aliases for the review directory retain remote identity', { skip: process.platform !== 'win32' }, (t) => {
+  const { source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const shortPath = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${review.repositoryRoot}") do @echo %~sI`], { encoding: 'utf8' }).trim();
+  assert.ok(shortPath, 'Windows must return a checkout path');
+  if (shortPath === review.repositoryRoot) { t.skip('This volume does not create 8.3 aliases'); return; }
+  assert.equal(reviewId(shortPath, review.implementationId), review.id);
+  const result = spawnSync(process.execPath, [feedbackCli, 'init'], { cwd: shortPath, encoding: 'utf8' });
+  assert.notEqual(result.status, 0); assert.match(result.stderr, /personal notes only/);
 });
