@@ -102,7 +102,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
         let blockingPid: number;
         try {
           const entries = fs.readdirSync(lock);
-          if (!entries.length) fs.rmdirSync(lock); // A reaper died after removing its owner marker.
+          if (!entries.length) { fs.rmdirSync(lock); continue; } // A reaper died after removing its owner marker.
           else if (entries.length === 1 && /^owner-[a-f0-9-]{36}\.json$/.test(entries[0])) {
             const marker = path.join(lock, entries[0]);
             const { pid } = JSON.parse(fs.readFileSync(marker, "utf8"));
@@ -111,9 +111,11 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
               try { process.kill(pid, 0); }
               catch (error) {
                 if (error.code === "ESRCH") {
+                  blockingPid = undefined;
                   // A unique marker prevents a delayed reaper from removing a
                   // replacement owner. rmdir can only remove an empty directory.
                   fs.unlinkSync(marker); fs.rmdirSync(lock);
+                  continue;
                 }
               }
             }

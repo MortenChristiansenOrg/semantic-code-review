@@ -240,3 +240,21 @@ test('lock acquisition retries when a competing owner retires before the content
   assert.equal(readReview(review.id).state.draft, 'Retained after contention');
   assert.deepEqual(fs.readdirSync(path.join(root, 'user-data', 'locks')), []);
 });
+
+
+test('a dead owner reaped at the deadline does not block acquiring the freed lock', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  const lock = path.join(root, 'user-data', 'locks', review.id + '.lock'), deadPid = 123456789;
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner-00000000-0000-4000-8000-000000000000.json'), JSON.stringify({ pid: deadPid }));
+  const kill = process.kill;
+  t.mock.method(process, 'kill', (pid, signal) => {
+    if (pid === deadPid) throw Object.assign(new Error('No such process'), { code: 'ESRCH' });
+    return kill(pid, signal);
+  });
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now += 10001);
+  patchReviewState(review.id, review.generation, [change(['draft'], 'Saved after reaping')]);
+  assert.equal(readReview(review.id).state.draft, 'Saved after reaping');
+  assert.equal(fs.existsSync(lock), false);
+});
