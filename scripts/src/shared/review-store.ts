@@ -20,6 +20,23 @@ export function reviewDirectory(id: string) {
 }
 export function reviewId(root: string, implementationId: string) {
   const canonicalRoot = fs.realpathSync(root);
+  // Managed remote clones are children of their owning review, whose identity
+  // is stable across refreshes and independent of the cloned artifact's ID.
+  const managedRoot = process.platform === "win32" ? fs.realpathSync.native(root) : canonicalRoot;
+  const owner = path.basename(path.dirname(managedRoot));
+  if (path.basename(managedRoot) === "checkout" && isReviewId(owner) && fs.existsSync(reviewDirectory(owner))) {
+    // Git and Windows processes may report the same checkout using either 8.3
+    // aliases or full paths. Native realpath expands aliases; comparison must
+    // also respect Windows' case-insensitive paths.
+    const canonical = (value: string) => {
+      const resolved = fs.realpathSync.native(value);
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    if (canonical(path.dirname(managedRoot)) === canonical(reviewDirectory(owner))) {
+      const record = readReview(owner);
+      if (record.remote && canonical(record.repositoryRoot) === canonical(managedRoot) && record.implementationId === implementationId) return owner;
+    }
+  }
   const slug = (value: string, limit: number, fallback: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, limit).replace(/-+$/g, "") || fallback;
   const hash = createHash("sha256").update(JSON.stringify([canonicalRoot, implementationId])).digest("hex");
@@ -114,6 +131,7 @@ export type ReviewRecord = {
   id: string; generation: string; repositoryRoot: string; implementationId: string;
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
   state: Record<string, any>;
+  remote?: { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
   viewer?: { port: number; processId: number; viewerVersion: string; skillDirectory: string };
 };
 export function reviewDeletionPath(id: string, generation: string) {
@@ -121,7 +139,7 @@ export function reviewDeletionPath(id: string, generation: string) {
   if (typeof generation !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(generation)) throw new Error("Invalid review generation.");
   return path.join(reviewHome(), "deletions", `${id}.${generation}.json`);
 }
-function hasPendingDeletion(id: string) {
+export function hasPendingDeletion(id: string) {
   const directory = path.join(reviewHome(), "deletions");
   return fs.existsSync(directory) && fs.readdirSync(directory).some((file) => file.startsWith(id + ".") && file.endsWith(".json"));
 }
@@ -189,6 +207,10 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (!isDeepStrictEqual(current, change.before)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
       if (change.after.present) Object.defineProperty(target, key, { value: change.after.value, enumerable: true, configurable: true, writable: true });
       else delete target[key];
+    }
+    if (record.remote && ((record.state.comments || []).some((note) => note.mode === "feedback") ||
+      record.state.replyDrafts?.length || record.state.editor?.compose?.mode === "feedback" || record.state.editor?.replyTo)) {
+      throw new Error("Remote reviews support personal notes only.");
     }
     for (const attachmentId of attachmentIds(record.state)) {
       if (!previousAttachments.has(attachmentId) && !fs.existsSync(path.join(reviewDirectory(id), "attachments", attachmentId, "metadata.json"))) throw new Error("Attachment content was removed. Upload the file again before saving.");

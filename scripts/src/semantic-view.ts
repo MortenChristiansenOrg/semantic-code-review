@@ -41,6 +41,9 @@ import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTE
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
+export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
+import { refreshRemoteReview } from "./shared/remote-review.js";
+
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -426,8 +429,53 @@ function parseDiffPatch(raw, selectorRaw, stats) {
   };
 }
 
+/** Files follow their last occurrence in the ordered review, independently of
+ * intervening stages. */
+function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".semantic-review", "manifest.json"))) {
+  const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
+  return manifest.stages.map((id) => {
+    const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
+    const files = stage.change.files.map((file) => {
+      const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
+      const { previousPath: ignored, ...current } = file;
+      const oldPath = last ? last.path : file.previousPath;
+      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item) => item && item !== file.path))];
+      return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
+        previousPaths, baseRevision: last ? last.headRevision : stage.change.baseRevision,
+        ...(last ? { previousStageId: last.stageId } : {}) };
+    });
+    for (const file of stage.change.files) if (file.previousPath) previous.delete(file.previousPath);
+    for (const file of files) {
+      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path, previousPaths: file.previousPaths });
+    }
+    return { ...stage, change: { ...stage.change, files } };
+  });
+}
+function fileDiffGroups(stage) {
+  const groups = new Map<string, any[]>();
+  for (const file of stage.change.files) {
+    const base = file.baseRevision || stage.change.baseRevision;
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push(file);
+  }
+  return [...groups].map(([baseRevision, files]) => ({ ...stage, change: { ...stage.change, baseRevision, files } }));
+}
+function stageFileStats(repoRoot, stage, captureGit) {
+  const stats = new Map();
+  for (const group of fileDiffGroups(stage)) {
+    const grouped = buildStageStats(repoRoot, group, captureGit);
+    for (const file of group.change.files) if (grouped.has(file.path)) stats.set(file.path, grouped.get(file.path));
+  }
+  return stats;
+}
+function stageFileDiffs(repoRoot, stage, stats, captureGit) {
+  const diffs = new Map();
+  for (const group of fileDiffGroups(stage)) for (const [file, diff] of buildStageDiffs(repoRoot, group, stats, captureGit)) diffs.set(file, diff);
+  return diffs;
+}
+
 function stageDiffKey(stage) {
-  return `${stage.id}\0${stage.change.baseRevision}\0${stage.change.headRevision}`;
+  return JSON.stringify([stage.id, stage.change.baseRevision, stage.change.headRevision, stage.change.files.map((file) => [file.path, file.previousPath, file.baseRevision])]);
 }
 
 function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
@@ -457,6 +505,7 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
         : previousPath;
     if (!filePath) continue;
     blobs.set(filePath, {
+      kind: status.startsWith("R") ? "renamed" : status === "A" ? "added" : status === "D" ? "deleted" : "modified",
       oldBlob: metadata[2] || "",
       newBlob: metadata[3] || "",
     });
@@ -521,7 +570,7 @@ function indexPatchSections(raw, expectedPaths) {
     const filePath = patchSectionPath(section);
     if (filePath && expected.has(filePath) && !indexed.has(filePath)) {
       indexed.set(filePath, section);
-    } else {
+    } else if (!filePath) {
       unresolved.push(section);
     }
   }
@@ -547,8 +596,9 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
   const full = captureGit(repoRoot, args(3));
   const selector = captureGit(repoRoot, args(0));
   const expectedPaths = stage.change.files.map((file) => file.path);
-  const fullByPath = indexPatchSections(full, expectedPaths);
-  const selectorByPath = indexPatchSections(selector, expectedPaths);
+  const changedPaths = expectedPaths.filter((filePath) => stats.has(filePath));
+  const fullByPath = indexPatchSections(full, changedPaths);
+  const selectorByPath = indexPatchSections(selector, changedPaths);
   return new Map(
     expectedPaths.map((filePath) => [
       filePath,
@@ -727,7 +777,7 @@ function buildInsights(stage) {
 
 function fileRevision(stage, file, stats) {
   return createHash("sha256")
-    .update(stats?.oldBlob || stage.change.baseRevision)
+    .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
     .update("\0")
     .update(stats?.newBlob || stage.change.headRevision)
     .update("\0")
@@ -745,12 +795,10 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
-  const stages = manifest.stages.map((stageId) => {
-    const s = readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
+  const stages = readViewerStages(repoRoot, manifest).map((s) => {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const stats = statsForStage(s);
-    const kindByPath = new Map(s.change.files.map((f) => [f.path, f.kind]));
     const previousPathByPath = new Map(
       s.change.files
         .filter((f) => f.previousPath)
@@ -787,7 +835,10 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
       const fileStats = stats.get(p);
       return {
         path: p,
-        kind: kindByPath.get(p) || "modified",
+        kind: fileStats?.kind || "modified",
+        baseRevision: file.baseRevision,
+        previousPaths: file.previousPaths,
+        ...(file.previousStageId ? { previousStageId: file.previousStageId } : {}),
         ...(previousPathByPath.has(p)
           ? { previousPath: previousPathByPath.get(p) }
           : {}),
@@ -831,6 +882,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
   return {
     implementationId: manifest.implementationId,
     reviewId: reviewId(repoRoot, manifest.implementationId),
+    remote: (() => { try { return readReview(reviewId(repoRoot, manifest.implementationId)).remote || null; } catch { return null; } })(),
     title: manifest.title,
     skillVersion: manifest.skillVersion ?? null,
     summary: manifest.summary,
@@ -859,7 +911,7 @@ export function createViewerDataSource(
     let record = stageCache.get(key);
     if (!record) {
       record = {
-        stats: buildStageStats(repoRoot, stage, captureGit),
+        stats: stageFileStats(repoRoot, stage, captureGit),
         diffs: null,
         stage,
         pages: new Map(),
@@ -884,7 +936,7 @@ export function createViewerDataSource(
     if (!manifest.stages.includes(stageId)) {
       throw new Error(`unknown stage "${stageId}"`);
     }
-    return readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
+    return readViewerStages(repoRoot, manifest).find((stage) => stage.id === stageId);
   };
 
   return {
@@ -906,14 +958,14 @@ export function createViewerDataSource(
     async fileDiff(stageId, filePath, baseRevision, headRevision, mode = "changes", offset = 0, targetSide = null, targetLine = null) {
       if (!["changes", "full"].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
       if (targetSide && (!["old", "new"].includes(targetSide) || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
-      let record = stageCache.get(
-        `${stageId}\0${baseRevision}\0${headRevision}`,
-      );
+      let record = [...stageCache.values()].reverse().find((record) => record.stage.id === stageId &&
+        record.stage.change.headRevision === headRevision && record.stage.change.files.some((file) => file.path === filePath && file.baseRevision === baseRevision));
       let stage = record?.stage;
       if (!stage) {
         stage = readStage(stageId);
+        if (!stage.change.files.some((file) => file.path === filePath)) throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
         if (
-          stage.change.baseRevision !== baseRevision ||
+          stage.change.files.find((file) => file.path === filePath)?.baseRevision !== baseRevision ||
           stage.change.headRevision !== headRevision
         ) {
           throw new Error(`stage "${stageId}" changed; reload the viewer`);
@@ -927,7 +979,7 @@ export function createViewerDataSource(
       const small = stage.change.files.length <= 40 && [...record.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
       if (small && mode === "changes" && offset === 0 && !targetSide) {
         try {
-          if (!record.diffs) record.diffs = buildStageDiffs(repoRoot, stage, record.stats, captureGit);
+          if (!record.diffs) record.diffs = stageFileDiffs(repoRoot, stage, record.stats, captureGit);
           const diff = record.diffs.get(filePath);
           if (diff) return { ...diff, truncated: false, nextOffset: diff.truncated ? diff.lines.length : null, mode };
         } catch { /* An unusually wide patch uses the bounded streaming path. */ }
@@ -935,7 +987,7 @@ export function createViewerDataSource(
       record.pages ??= new Map();
       const key = JSON.stringify([filePath, mode, offset, targetSide, targetLine]);
       if (!record.pages.has(key)) {
-        record.pages.set(key, pagedFileDiff(repoRoot, stage, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
+        record.pages.set(key, pagedFileDiff(repoRoot, { ...stage, change: { ...stage.change, baseRevision: file.baseRevision } }, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
           .catch((error) => { record.pages.delete(key); throw error; }));
         // Bound retained pages; in-flight consumers retain their own Promise.
         while (record.pages.size > 32) record.pages.delete(record.pages.keys().next().value);
@@ -1142,6 +1194,7 @@ export function buildFeedbackTargetData(repoRoot) {
 }
 
 function runFeedbackCli(feedbackCli, context: ReviewContext, args, input?: string) {
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   return runReviewCommand(context, process.execPath, [feedbackCli, ...args], { input });
 }
 
@@ -1205,6 +1258,7 @@ export function planFeedbackThreads(notes, implementation) {
 
 export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }, notes) {
   context = feedbackContext(repoRoot, context, true);
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1251,6 +1305,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
 
 export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }, drafts) {
   context = feedbackContext(repoRoot, context);
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1517,17 +1572,17 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
   const file = stage?.files.find((file) => file.path === input.path);
   const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
-  if (stage.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
-  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath,
-    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+  if (file.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
+    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
 export function registeredReviews() {
   return [...listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
-    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt } = record;
-    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, available: !unavailableReason, unavailableReason };
+    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
+    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
   }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
@@ -1607,6 +1662,18 @@ function serveViewer({
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+    }
+
+    if (review.remote && pathname.startsWith("/api/feedback/")) {
+      sendJson(response, 403, { ok: false, error: "Remote reviews support personal notes only." }); return;
+    }
+    if (pathname === "/api/remote/refresh" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Refreshing requires a same-origin request.");
+        await dataSource.call("refreshRemote", [implementationId]);
+        sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
     }
 
     if (pathname === "/api/attachments" && request.method === "POST") {
@@ -1949,7 +2016,8 @@ if (!isMainThread && workerData?.repoRoot) {
       else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-        if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
+        if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
+        else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
         else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
         else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);

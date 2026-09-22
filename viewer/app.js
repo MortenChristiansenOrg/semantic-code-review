@@ -54,6 +54,7 @@
 
   let polling = false;
   let refreshNotice = "";
+  let refreshingRemote = false;
   const draftSnapshots = new WeakMap();
 
   async function pollViewerRevision() {
@@ -90,6 +91,19 @@
     } finally { polling = false; }
   }
 
+  async function refreshRemote() {
+    refreshingRemote = true; refreshNotice = ""; render();
+    try {
+      await flushReviewState();
+      const response = await fetch("/api/remote/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not refresh the remote branch.");
+      await pollViewerRevision();
+      refreshNotice = "Remote branch refreshed";
+    } catch (error) { refreshNotice = `Refresh failed: ${error.message}`; }
+    finally { refreshingRemote = false; render(); }
+  }
+
   function noteStage(note) {
     if (!note) return null;
     if (note.kind === "stage") return stageById.get(note.id);
@@ -117,7 +131,7 @@
       stage.files.forEach((file) => {
         const id = fileKey(stage.id, file.path);
         const previous = previousFiles.get(id);
-        if (previous && previous.stage.baseRevision === stage.baseRevision && previous.stage.headRevision === stage.headRevision && previous.file.revision === file.revision && previous.file.kind === file.kind && Array.isArray(previous.file.lines)) {
+        if (previous && fileBaseRevision(previous) === (file.baseRevision || stage.baseRevision) && previous.stage.headRevision === stage.headRevision && previous.file.revision === file.revision && previous.file.kind === file.kind && Array.isArray(previous.file.lines)) {
           for (const key of ["lines", "_diffMode", "nextOffset", "_pageOffset"]) file[key] = previous.file[key];
         }
         const entry = { id, stage, file };
@@ -189,6 +203,7 @@
     flatFiles.push({ id: fileKey(stage.id, file.path), stage, file });
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
+  const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
   const diffRequests = new Map();
   async function ensureFileDiff(entry, offset = 0, force = false, target = null) {
     if (!entry) return;
@@ -203,7 +218,7 @@
     const query = new URLSearchParams({
       stage: entry.stage.id,
       path: entry.file.path,
-      base: entry.stage.baseRevision,
+      base: fileBaseRevision(entry),
       head: entry.stage.headRevision,
       mode, offset: String(offset),
     });
@@ -519,11 +534,11 @@
     const entry = approvalEntry(id);
     if (!entry?.file.revision) return null;
     const m = entry.membership;
-    return JSON.stringify([entry.file.revision, entry.stage.baseRevision, m.classification, m.hunks || null, m.lineRanges || null]);
+    return JSON.stringify([entry.file.revision, fileBaseRevision(entry), m.classification, m.hunks || null, m.lineRanges || null]);
   }
   function approvalEndpoint(entry) {
     return { stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
-      baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
+      baseRevision: fileBaseRevision(entry), headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
   }
   function changeApproval(id, kind) {
     if (approvalOps.has(id)) return;
@@ -590,6 +605,24 @@
     return entry?.file.kind === "renamed" && entry.file.previousPath
       ? fileApprovalKey(entry.stage.id, entry.nodeId, entry.file.previousPath) : null;
   }
+  // Commit IDs change after an amend/rebase. The newest occurrence can still use
+  // the reviewer's last full-file sign-off, while historical approvals stay put.
+  function remotePreviousApprovalId(id) {
+    const entry = approvalEntry(id);
+    if (!data.remote || !entry?.stage.id.startsWith("commit-") || entry.nodeId !== "changes") return null;
+    const index = flatFiles.findIndex((item) => item.id === entry.id);
+    if (flatFiles.slice(index + 1).some((item) => item.file.path === entry.file.path || item.file.previousPath === entry.file.path)) return null;
+    const paths = [entry.file.path, entry.file.previousPath, ...(entry.file.previousPaths || [])].filter(Boolean);
+    return Object.keys(state.approvals).filter((key) => {
+      if (key === id || !key.startsWith("m:")) return false;
+      try {
+        const [stageId, nodeId, filePath] = JSON.parse(key.slice(2));
+        const saved = approvalRecord(key);
+        return stageId.startsWith("commit-") && nodeId === "changes" && paths.includes(filePath) &&
+          saved?.snapshotId && saved.stageId === stageId && saved.nodeId === nodeId && saved.path === filePath;
+      } catch { return false; }
+    }).sort((a, b) => state.approvals[b].at - state.approvals[a].at)[0] || null;
+  }
   function approvalRecord(id) {
     const rec = state.approvals[id];
     if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
@@ -605,7 +638,7 @@
     // An approval inherited from before a rename can never still match the file
     // as it stands now, so surface it as stale to prompt a fresh look.
     const prevId = previousApprovalId(id);
-    if (prevId && approvalRecord(prevId)) return "stale";
+    if (prevId && approvalRecord(prevId) || remotePreviousApprovalId(id)) return "stale";
     return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
@@ -845,7 +878,7 @@
     });
     return n;
   }
-  const pct = () => Math.round((approvedCount() / reviewable()) * 100);
+  const pct = () => reviewable() ? Math.round((approvedCount() / reviewable()) * 100) : 0;
 
   function splitPath(path) {
     const i = path.lastIndexOf("/");
@@ -1301,11 +1334,11 @@
     if (form && files.length) { event.preventDefault(); uploadFiles(files, editorAttachments(form)); }
   });
   function renderComposer(ctx) {
-    const mode = ctx.mode === "feedback" ? "feedback" : "personal";
+    const mode = !data.remote && ctx.mode === "feedback" ? "feedback" : "personal";
     return `<form class="note-compose mode-${mode}" data-note-form>
       <div class="nc-mode" role="radiogroup" aria-label="Note type">
         <label class="nc-opt"><input type="radio" name="nc-mode" value="personal" ${mode !== "feedback" ? "checked" : ""}><span><b>Personal</b><small>Just for you.</small></span></label>
-        <label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>
+        ${data.remote ? "" : `<label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>`}
       </div>
       <textarea name="nc-body" rows="3" placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>${attachmentEditor(ctx.attachments ||= [])}
       <div class="nc-actions">
@@ -1681,10 +1714,10 @@
     </header>`;
   }
   function retainedApproval(id) {
-    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
+    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "") || approvalRecord(remotePreviousApprovalId(id) || "");
   }
   function comparisonKey(id, entry) {
-    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
   }
   async function loadApprovalComparison(id, entry, offset = 0) {
     const approval = retainedApproval(id);
@@ -1758,9 +1791,10 @@
       <header class="topbar">
         <div class="lockup">
           <span class="vindex">◆</span>
-          <div><strong>Implementation</strong><span>${esc(data.implementationId)}</span></div>
+          <div><strong>${data.remote ? "Remote review" : "Implementation"}</strong><span>${esc(data.remote?.branch || data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
+          ${data.remote ? `<button class="tb-btn" data-action="refresh-remote" type="button" ${refreshingRemote ? "disabled" : ""}>${refreshingRemote ? "Refreshing…" : "Refresh branch"}</button>` : ""}
           <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
           <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${activeNoteCount()}</b></button>
@@ -1840,8 +1874,8 @@
       ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
       ${!reviewList.length && !reviewListBusy ? '<p>No saved reviews.</p>' : ""}
       ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${isCurrentReview(review) ? 'aria-current="true"' : ""}>
-        <div><strong>${esc(review.title)}</strong> <span>${review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}${isCurrentReview(review) ? " · Current" : ""}</span>
-        <p>${esc(review.implementationId)}</p><p class="review-location">${esc(review.repositoryRoot)}</p>
+        <div><strong>${esc(review.title)}</strong> <span>${review.remote ? "Remote · " : ""}${review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}${isCurrentReview(review) ? " · Current" : ""}</span>
+        <p>${esc(review.remote ? `${review.remote.remoteName}/${review.remote.branch}` : review.implementationId)}</p><p class="review-location">${esc(review.remote?.sourceRoot || review.repositoryRoot)}</p>
         <p>Last edited <time datetime="${esc(review.updatedAt)}">${esc(new Date(review.updatedAt).toLocaleString())}</time></p>
         ${!review.available ? `<p class="review-unavailable">Unavailable: ${esc(review.unavailableReason)}</p>` : ""}</div>
         <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || isCurrentReview(review) ? "disabled" : ""}>Open review</button>
@@ -2191,7 +2225,7 @@
     const pending = pendingFeedbackCount();
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
-    const foot = `<div class="notes-foot">
+    const foot = data.remote ? `<div class="notes-foot"><p>Personal notes stay on this computer.</p></div>` : `<div class="notes-foot">
         <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
           ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
         </button>
@@ -2200,7 +2234,7 @@
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
-      <div class="side-head"><div><span class="eyebrow">Your review notes</span><h2>Notes &amp; feedback</h2></div><button data-action="toggle-notes" aria-label="Close" type="button">×</button></div>
+      <div class="side-head"><div><span class="eyebrow">Your review notes</span><h2>${data.remote ? "Personal notes" : "Notes &amp; feedback"}</h2></div><button data-action="toggle-notes" aria-label="Close" type="button">×</button></div>
       <div class="notes-list">${body}</div>
       ${foot}
     </aside>`;
@@ -2512,6 +2546,9 @@
       if (reviewsOpen) void refreshReviews();
     } else if (a === "manage-review-data") {
       void manageReviewData(btn.dataset.reviewId);
+
+    } else if (a === "refresh-remote") {
+      if (!refreshingRemote) void refreshRemote();
     } else if (a === "refresh-reviews") {
       if (!reviewListBusy) void refreshReviews();
     } else if (a === "open-review" || a === "complete-review") {
@@ -3069,7 +3106,7 @@
     compose = {
       ...target,
       editIndex: null,
-      mode: state.lastNoteMode === "feedback" ? "feedback" : "personal",
+      mode: !data.remote && state.lastNoteMode === "feedback" ? "feedback" : "personal",
       body: "",
       dirty: false,
     };

@@ -32,6 +32,7 @@ import {
   stopViewerAndWait,
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
+import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews } from "./shared/review-store.js";
 import { withCheckedFeedback } from "./review-feedback.js";
 import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
@@ -499,6 +500,13 @@ function isViewerLaunchMessage(value: unknown): value is ViewerLaunchMessage {
 }
 
 async function review(options: Options): Promise<void> {
+  const branch = option(options, "branch");
+  if (branch) {
+    if (option(options, "implementation-id")) fail("--branch cannot be combined with --implementation-id.");
+    const remote = startRemoteReview(repositoryRoot(path.resolve(option(options, "project") || ".")), branch);
+    await launchViewer(remote.repositoryRoot);
+    return;
+  }
   const candidate = resolveSingle(options, "review");
   await launchViewer(candidate.worktree);
 }

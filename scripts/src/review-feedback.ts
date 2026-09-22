@@ -1071,6 +1071,7 @@ try {
   if (process.env.SEMANTIC_FLOW_REVIEW_ID) {
     if (paths.reviewId !== process.env.SEMANTIC_FLOW_REVIEW_ID || readReview(paths.reviewId).generation !== process.env.SEMANTIC_FLOW_REVIEW_GENERATION) fail("The initiating review session changed. Reopen the viewer.");
   }
+  if (fs.existsSync(path.join(reviewDirectory(paths.reviewId), "review.json")) && readReview(paths.reviewId).remote) fail("Remote reviews support personal notes only.");
   if (command === "init" && !process.env.SEMANTIC_FLOW_REVIEW_ID) {
     const { manifest } = semanticArtifact(paths);
     registerReview(paths.root, manifest.implementationId, manifest.title);
