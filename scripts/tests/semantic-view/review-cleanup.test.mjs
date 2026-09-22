@@ -158,3 +158,115 @@ test('retirement retries an unknown startup identity and still rejects replaced 
   assert.equal(unknown(), true); // Never accept a replacement as the unknown baseline.
   mock.mock.restore();
 });
+
+
+test('a locked child reports its path and preserves a durable retry after partial removal', (t) => {
+  const { review, other } = setup(t), unused = oldAttachment(review, 'blocked');
+  const original = preview(review), remove = fs.rmSync;
+  let blocked;
+  const mock = t.mock.method(fs, 'rmSync', (file, options) => {
+    if (String(file).includes(path.join('data', 'trash'))) {
+      // Simulate a recursive removal that succeeded on one file first.
+      remove(path.join(file, 'review.json'), { force: true });
+      blocked = path.join(file, unused.path);
+      throw Object.assign(new Error('Sharing violation'), { code: 'EBUSY', path: blocked });
+    }
+    return remove(file, options);
+  });
+  const result = deleteReviewData(review.id, review.generation, original.fingerprint);
+  assert.equal(result.cleanupPending, true);
+  assert.ok(result.error.includes(JSON.stringify(blocked)));
+  assert.match(result.error, /EBUSY/);
+  assert.match(result.error, /Retry file removal/);
+  assert.match(result.error, /Do not delete review files manually/);
+  assert.equal(preview(review).error, result.error);
+  assert.equal(readReview(other.id).generation, other.generation);
+  assert.throws(() => patchReviewState(review.id, review.generation, [change('late', true)]), /deleted/);
+  mock.mock.restore();
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
+});
+
+test('a failed retirement leaves files intact and an unreadable pending tree still allows retry', (t) => {
+  const { review } = setup(t), original = preview(review), live = reviewDirectory(review.id);
+  const bytes = fs.readFileSync(path.join(live, 'review.json'));
+  const rename = fs.renameSync;
+  const locked = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from) === live) throw Object.assign(new Error('File is open'), { code: 'EBUSY', path: live });
+    return rename(from, to);
+  });
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, true);
+  assert.deepEqual(fs.readFileSync(path.join(live, 'review.json')), bytes);
+  const stat = fs.lstatSync;
+  const unreadable = t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (String(file) === live) throw Object.assign(new Error('Access denied'), { code: 'EACCES', path: live });
+    return stat(file, ...args);
+  });
+  const pending = preview(review);
+  assert.equal(pending.deletionPending, true);
+  assert.match(pending.error, /Retry file removal/);
+  assert.ok(pending.categories.every(item => item.detail.includes('inspection unavailable')));
+  unreadable.mock.restore(); locked.mock.restore();
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
+});
+
+test('unused cleanup reports the retired file and leaves saved state unchanged until retry', (t) => {
+  const { review } = setup(t), unused = oldAttachment(review, 'unused');
+  patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);
+  const saved = readReview(review.id).state, original = preview(review), remove = fs.rmSync;
+  let blocked;
+  const mock = t.mock.method(fs, 'rmSync', (file, options) => {
+    if (String(file).includes(path.sep + '.cleanup' + path.sep)) {
+      blocked = path.join(file, 'content.bin');
+      throw Object.assign(new Error('File is open'), { code: 'EPERM', path: blocked });
+    }
+    return remove(file, options);
+  });
+  const result = cleanUnusedReviewFiles(review.id, review.generation, original.fingerprint);
+  assert.equal(result.failures.length, 1);
+  assert.ok(result.failures[0].includes(JSON.stringify(blocked)));
+  assert.match(result.failures[0], /Clean unused files again/);
+  assert.deepEqual(readReview(review.id).state, saved);
+  assert.throws(() => resolveAttachment(review.id, unused.id));
+  mock.mock.restore();
+  assert.ok(cleanUnusedReviewFiles(review.id, review.generation, preview(review).fingerprint).reclaimedBytes > 0);
+  assert.deepEqual(readReview(review.id).state, saved);
+});
+
+
+test('review lock contention identifies the lock location and recorded owner PID', (t) => {
+  const { review } = setup(t);
+  const lock = path.join(process.env.SEMANTIC_FLOW_HOME, 'locks', review.id + '.lock');
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner-00000000-0000-0000-0000-000000000001.json'), JSON.stringify({ pid: process.pid }));
+  let now = Date.now();
+  const clock = t.mock.method(Date, 'now', () => now += 10001);
+  assert.throws(() => preview(review), error => {
+    assert.ok(error.message.includes(JSON.stringify(lock)));
+    assert.ok(error.message.includes(`PID ${process.pid}`));
+    assert.match(error.message, /then retry/);
+    assert.match(error.message, /Do not delete lock or review files manually/);
+    return true;
+  });
+  clock.mock.restore();
+  fs.rmSync(lock, { recursive: true });
+  assert.equal(preview(review).deletionPending, false);
+});
+
+
+test('a file locked during preflight reports recovery without retiring the review', (t) => {
+  const { review } = setup(t), original = preview(review), read = fs.readFileSync;
+  const file = path.join(reviewDirectory(review.id), 'review.json');
+  const mock = t.mock.method(fs, 'readFileSync', (target, ...args) => {
+    if (String(target) === file) throw Object.assign(new Error('Locked during preflight'), { code: 'EACCES', path: file });
+    return read(target, ...args);
+  });
+  assert.throws(() => deleteReviewData(review.id, review.generation, original.fingerprint), error => {
+    assert.ok(error.message.includes(JSON.stringify(file)));
+    assert.match(error.message, /Refresh details, then retry deletion/);
+    return true;
+  });
+  mock.mock.restore();
+  assert.equal(readReview(review.id).generation, review.generation);
+  assert.equal(preview(review).deletionPending, false);
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
+});

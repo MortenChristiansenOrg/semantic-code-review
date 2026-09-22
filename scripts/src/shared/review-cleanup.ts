@@ -1,6 +1,7 @@
 /** Review-owned storage inspection and retirement. Repository paths are display data only. */
 import fs from "node:fs";
 import path from "node:path";
+import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicJson, attachmentIds, isReviewId, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
 
@@ -12,14 +13,14 @@ function trashDirectory(id: string, generation: string) {
   reviewDeletionPath(id, generation); return path.join(reviewHome(), "trash", `${id}.${generation}`);
 }
 /** Never follow directory links when calculating sizes or deletion candidates. */
-function inventory(directory: string): Entry[] {
+function inventory(directory: string, hashContents = true): Entry[] {
   if (!fs.existsSync(directory)) return [];
   if (fs.lstatSync(directory).isSymbolicLink()) throw new Error("Review storage must not be a symbolic link.");
   const entries: Entry[] = [];
   function visit(relative: string) {
     const file = path.join(directory, relative), stat = fs.lstatSync(file), isDirectory = stat.isDirectory();
     entries.push({ name: relative.replaceAll(path.sep, "/"), size: isDirectory ? 0 : stat.size, modified: stat.mtimeMs, directory: isDirectory, link: stat.isSymbolicLink(),
-      ...(!stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: digest(fs.readFileSync(file)) } : {}) });
+      ...(hashContents && !stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: digest(fs.readFileSync(file)) } : {}) });
     if (isDirectory) for (const name of fs.readdirSync(file).sort()) visit(path.join(relative, name));
   }
   for (const name of fs.readdirSync(directory).sort()) visit(name);
@@ -45,7 +46,17 @@ function inspect(id: string, generation: string) {
   const ticket = rawTicket(id, generation);
   if (ticket) {
     const trash = trashDirectory(id, generation), location = fs.existsSync(trash) ? trash : reviewDirectory(id);
-    const entries = inventory(location), ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
+    // Pending deletion needs no content hashes. Even unreadable files must not
+    // prevent the user from retrying removal through the viewer.
+    let entries: Entry[];
+    try { entries = inventory(location, false); }
+    catch (error) {
+      return { ...ticket.preview, storageDirectory: location, deletionPending: true,
+        error: ticket.error || cleanupFailure(error, location, "Use Retry file removal after releasing it."),
+        categories: ticket.preview.categories.map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" })),
+        drafts: 0, unresolved: 0, unused: [], unusedBytes: 0 };
+    }
+    const ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
     const categories = ticket.preview.categories.map((category) => {
       const prefix = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/", "Remote checkout": "checkout/" }[category.label];
       const matches = (entry: Entry) => category.label === "Review state" ? entry.name === "review.json"
@@ -99,12 +110,19 @@ function inspect(id: string, generation: string) {
   return { review: identity, storageDirectory: directory, bytes, categories, drafts, unresolved, referenceError,
     fingerprint: digest(JSON.stringify([review, entries])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0), deletionPending: false };
 }
+function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T): T {
+  try { return withReviewLock(id, operation); }
+  catch (error) {
+    if (!["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(error.code)) throw error;
+    throw new Error(cleanupFailure(error, reviewDirectory(id), retry));
+  }
+}
 export function inspectReviewStorage(id: string, generation: string) {
-  return withReviewLock(id, () => inspect(id, generation));
+  return withCleanupDiagnostics(id, "Use Refresh details, then retry cleanup.", () => inspect(id, generation));
 }
 /** The durable ticket invalidates all old writers before file removal starts. */
 export function deleteReviewData(id: string, generation: string, fingerprint: string) {
-  return withReviewLock(id, () => {
+  return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     const file = reviewDeletionPath(id, generation), live = reviewDirectory(id), trash = trashDirectory(id, generation);
     let ticket = rawTicket(id, generation);
     if (!ticket) {
@@ -114,38 +132,43 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
       ticket = { review: preview.review, preview, requestedAt: new Date().toISOString() };
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); atomicJson(file, ticket);
     }
+    let failedPath = live;
     try {
       if (fs.existsSync(live)) {
         const record = JSON.parse(fs.readFileSync(path.join(live, "review.json"), "utf8"));
         if (record.generation !== generation) throw new Error("A newer review session exists; it will not be removed.");
         fs.mkdirSync(path.dirname(trash), { recursive: true, mode: 0o700 }); fs.renameSync(live, trash);
       }
+      failedPath = trash;
       fs.rmSync(trash, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      failedPath = file;
       fs.rmSync(file, { force: true });
       return { deleted: true, cleanupPending: false };
     } catch (error) {
-      ticket.error = `Review is deleted, but file cleanup needs a retry: ${error.message}`;
+      ticket.error = `Review deletion is pending; the old session cannot write. ${cleanupFailure(error, failedPath, "In Reviews, choose Retry deletion…, then Retry file removal.")}`;
       try { atomicJson(file, ticket); } catch { /* Preserve the existing durable ticket. */ }
       return { deleted: true, cleanupPending: true, error: ticket.error };
     }
   });
 }
 export function cleanUnusedReviewFiles(id: string, generation: string, fingerprint: string) {
-  return withReviewLock(id, () => {
+  return withCleanupDiagnostics(id, "Use Refresh details, then retry Clean unused files.", () => {
     const preview = inspect(id, generation);
     if (preview.deletionPending || preview.referenceError) throw new Error(preview.referenceError || "Finish deleting this review first.");
     if (typeof fingerprint !== "string" || fingerprint !== preview.fingerprint) throw new Error("Review data changed since the preview. Refresh the details before cleanup.");
     const failures: string[] = []; let reclaimedBytes = 0;
     for (const item of preview.unused) {
+      let retired = path.join(reviewDirectory(id), item.path);
+      let failedPath = retired;
       try {
-        let retired = path.join(reviewDirectory(id), item.path);
         if (!item.path.startsWith(".cleanup/")) {
           const directory = path.join(reviewDirectory(id), ".cleanup"); fs.mkdirSync(directory, { recursive: true });
           retired = path.join(directory, randomUUID()); fs.renameSync(path.join(reviewDirectory(id), item.path), retired);
         }
+        failedPath = retired;
         fs.rmSync(retired, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); reclaimedBytes += item.bytes;
       }
-      catch (error) { failures.push(`${item.path}: ${error.message}`); }
+      catch (error) { failures.push(cleanupFailure(error, failedPath, "Your saved review is unchanged. Choose Clean unused files again to retry.")); }
     }
     return { reclaimedBytes, failures };
   });

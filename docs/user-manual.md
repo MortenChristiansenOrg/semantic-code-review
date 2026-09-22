@@ -568,7 +568,23 @@ changes the data after the preview, refresh the details before confirming.
 
 Deletion invalidates the old session before removing files. Stale tabs and CLI
 requests cannot recreate it. If a file is locked or removal is interrupted,
-**Retry deletion…** remains in Saved reviews. You can still open other reviews
+**Retry deletion…** remains in Saved reviews. The error identifies the failing
+file or folder and filesystem error code. When available, a bounded lookup also
+lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
+Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,
+or miss a directory-only lock; an unidentified process is not evidence of no lock.
+No processes are terminated automatically.
+
+Close the application or terminal using the reported location, or release the
+lock and check access permissions. Choose **Retry deletion… → Retry file removal**
+afterward. Pending deletion remains retryable even when storage inspection cannot
+read the remaining files; displayed sizes may be the last known preview. The old
+session stays disabled while retired files are removed, so partial disk removal
+cannot become an active, inconsistent review. For **Clean unused files**, saved
+messages and referenced files stay intact; use the same button again to remove
+remaining retired files. Neither operation requires manual file deletion.
+
+You can still open other reviews
 after deleting the current one, including after a page reload. A tab whose data
 was deleted elsewhere keeps unsent text visible for copying. Running review
 explicitly again in the original worktree starts a fresh session once pending
