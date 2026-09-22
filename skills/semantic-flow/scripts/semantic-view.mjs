@@ -53,7 +53,7 @@ public static class ReviewFileUsers {
   }
 }
 '@
-$paths = @([Console]::In.ReadToEnd() | ConvertFrom-Json)
+[string[]]$paths = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
 $users = @([ReviewFileUsers]::Users([string[]]$paths))
 while ($users.Count -gt 0 -and $paths.Count -gt 1) {
   $middle = [int][Math]::Floor($paths.Count / 2)
