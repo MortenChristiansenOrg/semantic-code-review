@@ -47,9 +47,9 @@ function inspect(id: string, generation: string) {
     const trash = trashDirectory(id, generation), location = fs.existsSync(trash) ? trash : reviewDirectory(id);
     const entries = inventory(location), ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
     const categories = ticket.preview.categories.map((category) => {
-      const prefix = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/" }[category.label];
+      const prefix = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/", "Remote checkout": "checkout/" }[category.label];
       const matches = (entry: Entry) => category.label === "Review state" ? entry.name === "review.json"
-        : prefix ? entry.name.startsWith(prefix) : entry.name !== "review.json" && !/^(feedback|attachments|snapshots)\//.test(entry.name);
+        : prefix ? entry.name.startsWith(prefix) : entry.name !== "review.json" && !/^(feedback|attachments|snapshots|checkout)\//.test(entry.name);
       return { label: category.label, detail: "Pending removal", bytes: entries.filter(matches).reduce((sum, entry) => sum + entry.size, 0) };
     });
     categories.push({ label: "Deletion record", detail: "Removed when cleanup finishes", bytes: ticketBytes });
@@ -90,6 +90,7 @@ function inspect(id: string, generation: string) {
     { label: "Review state", bytes: entries.filter((item) => item.name === "review.json").reduce((sum, item) => sum + item.size, 0), detail: `${drafts} unsent draft${drafts === 1 ? "" : "s"} · ${notes.filter((note) => note.mode !== "feedback").length} personal notes · ${Object.keys(state.approvals || {}).length} approvals` },
     { label: "Submitted feedback", prefix: "feedback/", detail: `${feedbackThreads} threads · ${unresolved} unresolved` },
     { label: "Attachments", prefix: "attachments/", detail: `${entries.filter((item) => /^attachments\/[a-f0-9]{64}\/content\.bin$/.test(item.name)).length} files` },
+    ...(review.remote ? [{ label: "Remote checkout", prefix: "checkout/", detail: `${review.remote.branch} · Includes Git objects and checked-out code` }] : []),
     { label: "Approved snapshots", prefix: "snapshots/", detail: `${entries.filter((item) => /^snapshots\/[a-f0-9]{32}\.json$/.test(item.name)).length} snapshots` },
   ].map((category) => ({ label: category.label, detail: category.detail, bytes: category.bytes ?? entries.filter((item) => item.name.startsWith(category.prefix)).reduce((sum, item) => sum + item.size, 0) }));
   const bytes = entries.reduce((sum, item) => sum + item.size, 0), knownBytes = categories.reduce((sum, item) => sum + item.bytes, 0);

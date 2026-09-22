@@ -70,6 +70,10 @@ is built to make an AI-generated change fast to understand:
   it satisfies and the checks that were run to validate it.
 - **Feedback threads.** Start a conversation on a stage, a piece of reasoning, or
   a specific line, and get an answer or a targeted revision back.
+- **Remote branch reviews.** Run `/semantic-flow review --branch <branch-name>`
+  to review someone else's work with private notes, even without Semantic Flow
+  artifacts. Remote reviews have isolated local checkouts, commit groupings,
+  a refresh button, and comparisons against previously approved content.
 - **Explicit approvals.** Approve the whole change, a single stage, or an
   individual file, and see when a previously approved file changes again.
 
@@ -83,7 +87,7 @@ story using semantic flow") or with explicit commands:
 | `implement` | Start a new piece of work and build it out in reviewable stages. |
 | `continue` | Resume an implementation that was interrupted. |
 | `sync` | Fetch the target branch's upstream and restack the implementation onto its latest changes. |
-| `review` or `rv` | Launch the local review viewer for the current work. |
+| `review` or `rv` | Launch the review viewer for current work, or use `--branch <branch-name>` for a remote review. |
 | `feedback` or `fb` | Have the agent address the feedback you submitted in the viewer. |
 | `reconcile` or `rc` | Have the agent distribute current manual edits into their responsible stages. |
 | `simulate` or `sim` | Reconstruct a completed external change as a reviewable semantic stage stack. |

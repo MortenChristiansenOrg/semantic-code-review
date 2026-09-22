@@ -41,6 +41,9 @@ import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTE
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
+export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
+import { refreshRemoteReview } from "./shared/remote-review.js";
+
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -831,6 +834,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
   return {
     implementationId: manifest.implementationId,
     reviewId: reviewId(repoRoot, manifest.implementationId),
+    remote: (() => { try { return readReview(reviewId(repoRoot, manifest.implementationId)).remote || null; } catch { return null; } })(),
     title: manifest.title,
     skillVersion: manifest.skillVersion ?? null,
     summary: manifest.summary,
@@ -1142,6 +1146,7 @@ export function buildFeedbackTargetData(repoRoot) {
 }
 
 function runFeedbackCli(feedbackCli, context: ReviewContext, args, input?: string) {
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   return runReviewCommand(context, process.execPath, [feedbackCli, ...args], { input });
 }
 
@@ -1205,6 +1210,7 @@ export function planFeedbackThreads(notes, implementation) {
 
 export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }, notes) {
   context = feedbackContext(repoRoot, context, true);
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1251,6 +1257,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
 
 export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }, drafts) {
   context = feedbackContext(repoRoot, context);
+  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
@@ -1526,8 +1533,8 @@ export function registeredReviews() {
   return [...listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
-    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt } = record;
-    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, available: !unavailableReason, unavailableReason };
+    const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
+    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
   }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
@@ -1607,6 +1614,18 @@ function serveViewer({
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+    }
+
+    if (review.remote && pathname.startsWith("/api/feedback/")) {
+      sendJson(response, 403, { ok: false, error: "Remote reviews support personal notes only." }); return;
+    }
+    if (pathname === "/api/remote/refresh" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Refreshing requires a same-origin request.");
+        await dataSource.call("refreshRemote", [implementationId]);
+        sendJson(response, 200, { ok: true });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
     }
 
     if (pathname === "/api/attachments" && request.method === "POST") {
@@ -1949,7 +1968,8 @@ if (!isMainThread && workerData?.repoRoot) {
       else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-        if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
+        if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
+        else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
         else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
         else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);

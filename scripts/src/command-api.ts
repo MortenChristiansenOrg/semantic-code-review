@@ -279,7 +279,7 @@ export const semanticFlowApi: CliSignature = {
     },
     {
       command: "review",
-      options: projectSelectionOptions,
+      options: [...projectSelectionOptions, option("branch", "<branch-name>")],
     },
     {
       command: "feedback",

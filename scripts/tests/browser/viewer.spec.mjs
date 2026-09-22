@@ -28,7 +28,7 @@ function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first',
 }
 async function mount(page, data = fixture(), saved = {}, other = []) {
   const allData = [data, ...other];
-  const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
+  const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
   const attachments = new Map();
@@ -1194,4 +1194,40 @@ test('node counts include only linked reasoning and open matching entries', asyn
   await two.getByRole('button', { name: 'Risk: 1', exact: true }).focus();
   await page.keyboard.press('Enter');
   await expect(two.locator('.tag-face[data-type="risk"]')).toBeFocused();
+});
+
+
+test('remote reviews offer only personal notes and refresh approved files in place', async ({ page }) => {
+  const data = { ...fixture(), remote: { branch: 'feature', targetBranch: 'main' } };
+  await mount(page, data);
+  await expect(page.locator('.lockup')).toContainText('Remote review');
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await expect(page.locator('[data-review="browser-review"]')).toContainText('Remote');
+  await page.keyboard.press('Escape');
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toHaveCount(0);
+  await page.locator('textarea[name="nc-body"]').fill('My personal note');
+  await saveAction(page, () => page.getByRole('button', { name: 'Add note', exact: true }).click(), state => state.comments?.[0]?.mode === 'personal');
+  await showNotes(page);
+  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveCount(0);
+  await page.locator('.side.notes').getByRole('button', { name: 'Close', exact: true }).click();
+  await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+  const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), exists: true };
+  await page.route('**/api/approval-comparison*', route => route.fulfill({ json: { ok: true, approved: endpoint, current: endpoint, lines: [{ t: 'del', o: 1, s: 'approved content' }, { t: 'add', n: 1, s: 'remote update' }], nextOffset: null } }));
+  await page.route('**/api/remote/refresh*', route => {
+    expect(route.request().headers()['content-type']).toBe('application/json');
+    data.stages[0].files[0].revision = 'remote-updated'; data.viewerRevision = 'refreshed';
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.getByRole('button', { name: 'Refresh branch', exact: true }).click();
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.is-approved-comparison')).toContainText('remote update');
+  await expect(page.locator('.file-notes')).toContainText('My personal note');
+  await page.route('**/api/remote/refresh*', route => route.fulfill({ status: 409, json: { ok: false, error: 'Remote unavailable' } }));
+  await page.getByRole('button', { name: 'Refresh branch', exact: true }).click();
+  await expect(page.locator('.review-update')).toContainText('Refresh failed: Remote unavailable');
+  await expect(page.getByRole('button', { name: 'Refresh branch', exact: true })).toBeEnabled();
 });

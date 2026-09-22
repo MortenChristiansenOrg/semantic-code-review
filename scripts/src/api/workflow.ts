@@ -65,13 +65,22 @@ export declare function semanticFlowStatus(
   options?: SemanticFlowStatusOptions,
 ): void;
 
+export interface ReviewSemanticFlowOptions {
+  /** Repository used to discover the branch's remote. */
+  project?: string;
+  /** Selects a local implementation; mutually exclusive with branch. */
+  "implementation-id"?: string;
+  /** Reviews a remote branch in private local storage, with personal notes only. Accepts remote/branch. */
+  branch?: string;
+}
+
 /**
- * Resolves one active artifact and launches its local review viewer.
+ * Resolves one active artifact or remote branch and launches its local review viewer.
  * @cli semantic-flow.mjs
  * @command review
  */
 export declare function reviewSemanticFlow(
-  options?: SelectSemanticFlowImplementationOptions,
+  options?: ReviewSemanticFlowOptions,
 ): void;
 
 export interface SemanticFlowFeedbackOptions {
