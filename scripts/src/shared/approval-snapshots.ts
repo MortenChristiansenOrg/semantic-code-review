@@ -7,7 +7,7 @@ import { assertReviewContext, runReviewCommand, type ReviewContext } from "./rev
 import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
 
 export type FileEndpoint = {
-  stageId: string; nodeId: string; path: string; previousPath?: string;
+  stageId: string; nodeId: string; path: string; previousPath?: string; previousPaths?: string[];
   baseRevision: string; headRevision: string; fileRevision: string; ownership: any;
 };
 type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string | null };
@@ -62,7 +62,7 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     const originalKey = `m:${JSON.stringify([snapshot.endpoint.stageId, snapshot.endpoint.nodeId, snapshot.endpoint.path])}`;
     const remotePrevious = review.remote && /^commit-[a-f0-9]{40,64}$/.test(current.stageId) && /^commit-[a-f0-9]{40,64}$/.test(snapshot.endpoint.stageId) &&
       current.nodeId === "changes" && snapshot.endpoint.nodeId === "changes" &&
-      [current.path, current.previousPath].includes(snapshot.endpoint.path) && approvals[originalKey]?.snapshotId === snapshotId;
+      [current.path, current.previousPath, ...(current.previousPaths || [])].includes(snapshot.endpoint.path) && approvals[originalKey]?.snapshotId === snapshotId;
     if (!remotePrevious && (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path)))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
     if (snapshot.id !== snapshotId || (before.sha256 === null ? !before.unsupported || before.bytes !== "" : digest(Buffer.from(before.bytes, "base64")) !== before.sha256)) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");

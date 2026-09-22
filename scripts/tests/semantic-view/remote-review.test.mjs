@@ -104,8 +104,8 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
   assert.equal(data.stages[0].insights[0].title, 'Preserved reasoning'); assert.ok(data.requirements.length);
 });
 
-test('review --branch launches a remote viewer and enforces HTTP read-only mode', async (t) => {
-  const { source } = setup(t);
+test('review --branch enforces read-only mode and authoritative approval lineage over HTTP', async (t) => {
+  const { source, author } = setup(t);
   const result = spawnSync(process.execPath, [flowCli, 'review', '--branch', 'feature', '--project', source.root], {
     cwd: source.root, encoding: 'utf8', env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: '1' }, timeout: 30_000,
   });
@@ -124,10 +124,34 @@ test('review --branch launches a remote viewer and enforces HTTP read-only mode'
   const query = `?review=${identity.reviewId}&generation=${identity.generation}`;
   const feedback = await fetch(url + 'api/feedback/export' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" }, body: '{}' });
   assert.equal(feedback.status, 403);
+  const post = (route, body) => fetch(url + route + query, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const initial = endpoint((await (await fetch(url + 'api/implementation' + query)).json()).implementation);
+  const saved = await (await post('api/approval-snapshots', initial)).json();
+  assert.equal(saved.ok, true);
+  patchReviewState(identity.reviewId, identity.generation, [change(['approvals', `m:${JSON.stringify([initial.stageId, initial.nodeId, initial.path])}`], { ...initial, ...saved, at: 1, rev: 'initial' })]);
+  author.git('switch', 'feature');
+  author.git('mv', 'code.txt', 'middle.txt'); author.git('commit', '-m', 'First rename');
+  author.git('mv', 'middle.txt', 'final.txt'); author.git('commit', '-m', 'Second rename');
+  author.write('final.txt', 'updated\n'); author.write('unrelated.txt', 'different file\n');
+  author.git('add', 'final.txt', 'unrelated.txt'); author.git('commit', '-m', 'Update files'); author.git('switch', 'main');
   const refreshed = await fetch(url + 'api/remote/refresh' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" } });
   assert.equal(refreshed.status, 200, await refreshed.text());
   const list = await (await fetch(url + 'api/reviews' + query)).json();
   assert.ok(list.reviews.find((r) => r.id === identity.reviewId).remote);
+  const current = (await (await fetch(url + 'api/implementation' + query)).json()).implementation.stages.at(-1);
+  const compare = (filePath) => {
+    const file = current.files.find(file => file.path === filePath);
+    return post('api/approval-comparison', { stageId: current.id, nodeId: 'changes', path: file.path,
+      baseRevision: file.baseRevision, headRevision: current.headRevision, fileRevision: file.revision, ownership: file.memberships[0],
+      snapshotId: saved.snapshotId, previousPaths: ['code.txt'] });
+  };
+  const comparison = await compare('final.txt');
+  assert.equal(comparison.status, 200);
+  assert.deepEqual((await comparison.json()).lines.filter(line => line.t !== 'ctx').map(line => line.s), ['original', 'updated']);
+  const forged = await compare('unrelated.txt');
+  assert.equal(forged.status, 409, 'Client-provided rename paths must not authorize a different file');
+  assert.match((await forged.json()).error, /another file review/);
+
 });
 
 
@@ -233,4 +257,25 @@ test('remote commit diffs show only incremental edits without a cumulative stage
   assert.equal(file.previousStageId, `commit-${head}`);
   const diff = await dataSource.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision);
   assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['original', 'updated']);
+});
+
+test('remote approval comparisons follow a complete rename chain across commits and reloads', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const context = captureReviewContext(review.id), initial = endpoint(dataFor(review));
+  const saved = captureApprovalSnapshot(context, initial);
+  patchReviewState(review.id, review.generation, [change(['approvals', `m:${JSON.stringify([initial.stageId, initial.nodeId, initial.path])}`], { ...initial, ...saved, at: 1, rev: 'initial' })]);
+  author.git('switch', 'feature');
+  author.git('mv', 'code.txt', 'middle.txt'); author.git('commit', '-m', 'First rename');
+  author.git('mv', 'middle.txt', 'final.txt'); author.git('commit', '-m', 'Second rename');
+  author.commitFile('final.txt', 'updated\n', 'Edit after rename'); author.git('switch', 'main');
+  refreshRemoteReview(review.id, review.generation);
+  const data = dataFor(review), stage = data.stages.at(-1), file = stage.files[0];
+  assert.deepEqual(file.previousPaths, ['middle.txt', 'code.txt']);
+  assert.equal(file.previousPath, undefined);
+  const current = { stageId: stage.id, nodeId: 'changes', path: file.path, previousPaths: file.previousPaths,
+    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
+  assert.deepEqual(compareApprovalSnapshot(context, saved.snapshotId, current).lines.filter(line => line.t !== 'ctx').map(line => line.s), ['original', 'updated']);
+  assert.deepEqual(dataFor(review).stages.at(-1).files[0].previousPaths, file.previousPaths);
+  assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, { ...current, previousPaths: [], path: 'unrelated.txt' }), /another file review/);
+  assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, { ...current, nodeId: 'another-node' }), /another file review/);
 });

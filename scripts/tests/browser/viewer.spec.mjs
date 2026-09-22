@@ -1248,7 +1248,7 @@ test('remote stages have no cumulative view and use file-specific diff and appro
   expect((await approval).postDataJSON().baseRevision).toBe('c'.repeat(40));
 });
 
-test('the newest remote commit retains an earlier approval after rewritten history and renames', async ({ page }) => {
+test('the newest remote commit retains an earlier approval after rewritten history and chained renames', async ({ page }) => {
   const data = { ...fixture(), remote: { branch: 'feature' } };
   data.stages.forEach((stage, index) => {
     stage.id = `commit-${String(index + 1).repeat(40)}`;
@@ -1256,7 +1256,8 @@ test('the newest remote commit retains an earlier approval after rewritten histo
     stage.files[0].memberships = [{ nodeId: 'changes', classification: 'behavior' }];
   });
   const latest = data.stages[1];
-  latest.files[0].kind = 'renamed'; latest.files[0].previousPath = 'old.js';
+  latest.files[0].kind = 'renamed'; latest.files[0].previousPath = 'middle.js';
+  latest.files[0].previousPaths = ['middle.js', 'old.js'];
   const oldStage = `commit-${'9'.repeat(40)}`, oldKey = approvalKey(oldStage, 'changes', 'old.js');
   const oldApproval = { stageId: oldStage, nodeId: 'changes', path: 'old.js', rev: 'older', at: 1, snapshotId: 'a'.repeat(32) };
   await mount(page, data, { approvals: { [oldKey]: oldApproval } });

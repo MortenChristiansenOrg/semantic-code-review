@@ -612,7 +612,7 @@
     if (!data.remote || !entry?.stage.id.startsWith("commit-") || entry.nodeId !== "changes") return null;
     const index = flatFiles.findIndex((item) => item.id === entry.id);
     if (flatFiles.slice(index + 1).some((item) => item.file.path === entry.file.path || item.file.previousPath === entry.file.path)) return null;
-    const paths = [entry.file.path, entry.file.previousPath].filter(Boolean);
+    const paths = [entry.file.path, entry.file.previousPath, ...(entry.file.previousPaths || [])].filter(Boolean);
     return Object.keys(state.approvals).filter((key) => {
       if (key === id || !key.startsWith("m:")) return false;
       try {

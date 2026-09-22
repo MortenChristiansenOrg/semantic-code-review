@@ -432,20 +432,21 @@ function parseDiffPatch(raw, selectorRaw, stats) {
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
 function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".semantic-review", "manifest.json"))) {
-  const previous = new Map<string, { stageId: string; headRevision: string; path: string }>();
+  const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
   return manifest.stages.map((id) => {
     const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
     const files = stage.change.files.map((file) => {
       const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
       const { previousPath: ignored, ...current } = file;
       const oldPath = last ? last.path : file.previousPath;
+      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item) => item && item !== file.path))];
       return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
-        baseRevision: last ? last.headRevision : stage.change.baseRevision,
+        previousPaths, baseRevision: last ? last.headRevision : stage.change.baseRevision,
         ...(last ? { previousStageId: last.stageId } : {}) };
     });
-    for (const file of stage.change.files) {
-      if (file.previousPath) previous.delete(file.previousPath);
-      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path });
+    for (const file of stage.change.files) if (file.previousPath) previous.delete(file.previousPath);
+    for (const file of files) {
+      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path, previousPaths: file.previousPaths });
     }
     return { ...stage, change: { ...stage.change, files } };
   });
@@ -836,6 +837,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
         path: p,
         kind: fileStats?.kind || "modified",
         baseRevision: file.baseRevision,
+        previousPaths: file.previousPaths,
         ...(file.previousStageId ? { previousStageId: file.previousStageId } : {}),
         ...(previousPathByPath.has(p)
           ? { previousPath: previousPathByPath.get(p) }
@@ -1571,7 +1573,7 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
   const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
   if (file.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
-  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath,
+  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
     baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
