@@ -55,10 +55,15 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     if (!fs.existsSync(file)) throw new Error("Approved content is unavailable. Re-approve the current file to capture a new snapshot.");
     const snapshot: Snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
     // A persisted reference carries identity through rename edges observed in earlier revisions.
-    const approvals = readReview(context.reviewId).state.approvals || {};
+    const review = readReview(context.reviewId);
+    const approvals = review.state.approvals || {};
     const retained = [current.path, current.previousPath].filter(Boolean).some((filePath) =>
       approvals[`m:${JSON.stringify([current.stageId, current.nodeId, filePath])}`]?.snapshotId === snapshotId);
-    if (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path))) throw new Error("The approved snapshot belongs to another file review.");
+    const originalKey = `m:${JSON.stringify([snapshot.endpoint.stageId, snapshot.endpoint.nodeId, snapshot.endpoint.path])}`;
+    const remotePrevious = review.remote && /^commit-[a-f0-9]{40,64}$/.test(current.stageId) && /^commit-[a-f0-9]{40,64}$/.test(snapshot.endpoint.stageId) &&
+      current.nodeId === "changes" && snapshot.endpoint.nodeId === "changes" &&
+      [current.path, current.previousPath].includes(snapshot.endpoint.path) && approvals[originalKey]?.snapshotId === snapshotId;
+    if (!remotePrevious && (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path)))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
     if (snapshot.id !== snapshotId || (before.sha256 === null ? !before.unsupported || before.bytes !== "" : digest(Buffer.from(before.bytes, "base64")) !== before.sha256)) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
     const info = {

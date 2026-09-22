@@ -1885,6 +1885,3 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border: 1px dashed var(--signal); outline: 2px solid var(--signal-soft); outline-offset: 2px;
   background: #33251f; box-shadow: inset 0 0 0 1px var(--signal-soft);
 }
-
-.review-views { display: flex; gap: 8px; margin: 24px 0; }
-.review-views [aria-pressed="true"] { border-color: var(--signal); background: var(--signal-soft); color: var(--text); }

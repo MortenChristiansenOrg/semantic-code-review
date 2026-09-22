@@ -430,27 +430,24 @@ function parseDiffPatch(raw, selectorRaw, stats) {
 }
 
 /** Files follow their last occurrence in the ordered review, independently of
- * intervening stages. The cumulative remote overview is a separate view. */
+ * intervening stages. */
 function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".semantic-review", "manifest.json"))) {
-  let remote = false;
-  try { remote = Boolean(readReview(reviewId(repoRoot, manifest.implementationId)).remote); } catch { /* Unregistered local artifact. */ }
   const previous = new Map<string, { stageId: string; headRevision: string; path: string }>();
   return manifest.stages.map((id) => {
     const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
-    const overview = remote && id === "branch";
     const files = stage.change.files.map((file) => {
-      const last = !overview && (previous.get(file.path) || previous.get(file.previousPath));
+      const last = previous.get(file.path) || previous.get(file.previousPath);
       const { previousPath: ignored, ...current } = file;
       const oldPath = last ? last.path : file.previousPath;
       return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
         baseRevision: last ? last.headRevision : stage.change.baseRevision,
         ...(last ? { previousStageId: last.stageId } : {}) };
     });
-    if (!overview) for (const file of stage.change.files) {
+    for (const file of stage.change.files) {
       if (file.previousPath) previous.delete(file.previousPath);
       previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path });
     }
-    return { ...stage, overview, change: { ...stage.change, files } };
+    return { ...stage, change: { ...stage.change, files } };
   });
 }
 function fileDiffGroups(stage) {
@@ -854,7 +851,6 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
 
     return {
       id: s.id,
-      overview: s.overview,
       title: s.title,
       summary: s.summary,
       rationale: s.rationale,

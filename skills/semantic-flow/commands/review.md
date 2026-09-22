@@ -50,9 +50,9 @@ run the feedback, sync, reconcile or implementation workflows for these reviews.
 
 Matching published Semantic Flow metadata supplies the original stages, nodes,
 requirements and insights. Without usable metadata, the viewer reconstructs
-stages from first-parent commits, including merge commits. Both presentations
-include **All branch changes**, a cumulative diff with stable file approval
-identities; use it to track approvals across remote updates or rewritten history.
+stages from first-parent commits, including merge commits. Each later occurrence
+of a file compares against the previous stage that changed it, skipping any
+intervening stages. There is no duplicate cumulative stage.
 The fallback compares against the merge base with the remote's default branch
 (`main` or `master` if the remote does not advertise one). Git-derived groupings
 provide commit messages and authors, but cannot recover undocumented intent.
@@ -60,7 +60,9 @@ provide commit messages and authors, but cannot recover undocumented intent.
 Reopening a saved review retains the last reviewed snapshot. Choose **Refresh
 branch** in the viewer to fetch updates. Changed file approvals become stale and
 **Since approval** compares current content with the saved approved content,
-including after force-pushes. Unchanged file content retains its approval when
+including after force-pushes. In commit-based reviews, the newest occurrence of
+a file can compare against its latest saved approval from an earlier commit.
+Unchanged file content retains its approval when
 the base and ownership are unchanged. Refresh failures keep the previous
 snapshot available. Notes and approvals on removed commit stages remain saved
 but those stages no longer appear in the current branch's history.

@@ -21,8 +21,8 @@ function setup(t) {
 const dataFor = (record) => JSON.parse(createImplementationDataScript(record.repositoryRoot).replace(/^window.SEMANTIC_IMPLEMENTATION = /, '').replace(/;\s*$/, ''));
 const change = (path, value) => ({ path, before: { present: false }, after: { present: true, value } });
 function endpoint(data) {
-  const s = data.stages[0], file = s.files.find((f) => f.path === 'code.txt');
-  return { stageId: s.id, nodeId: file.memberships[0].nodeId, path: file.path, baseRevision: s.baseRevision, headRevision: s.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
+  const s = data.stages.findLast((stage) => stage.files.some((file) => file.path === 'code.txt')), file = s.files.find((f) => f.path === 'code.txt');
+  return { stageId: s.id, nodeId: file.memberships[0].nodeId, path: file.path, baseRevision: file.baseRevision, headRevision: s.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
 }
 
 test('remote review owns its checkout, groups commits, reopens, and deletes all owned data', (t) => {
@@ -34,8 +34,8 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(captureReviewContext(review.id).repositoryRoot, review.repositoryRoot);
   assert.equal(reviewId(fs.realpathSync.native(review.repositoryRoot), review.implementationId), review.id);
   const data = dataFor(review);
-  assert.equal(data.remote.branch, 'feature'); assert.equal(data.stages.length, 2);
-  assert.equal(data.stages[0].id, 'branch'); assert.equal(data.stages[1].id, `commit-${head}`);
+  assert.equal(data.remote.branch, 'feature'); assert.equal(data.stages.length, 1);
+  assert.equal(data.stages[0].id, `commit-${head}`);
   assert.deepEqual(data.stages[0].files.map((f) => f.path), ['code.txt']);
   assert.equal(startRemoteReview(source.root, 'feature').id, review.id);
   assert.ok(registeredReviews().find((r) => r.id === review.id).remote);
@@ -52,19 +52,23 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
 test('refresh preserves notes and approved snapshots through appends, force-pushes, and failures', (t) => {
   const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
   const context = captureReviewContext(review.id), initial = dataFor(review), saved = captureApprovalSnapshot(context, endpoint(initial));
-  patchReviewState(review.id, review.generation, [change(['comments'], [{ mode: 'personal', body: 'Private note' }]), change(['approvals', 'file'], saved)]);
+  patchReviewState(review.id, review.generation, [change(['comments'], [{ mode: 'personal', body: 'Private note' }]), change(['approvals', `m:${JSON.stringify([endpoint(initial).stageId, 'changes', 'code.txt'])}`], { ...saved, ...endpoint(initial), at: 1, rev: 'initial' })]);
   author.git('switch', 'feature'); author.commitFile('code.txt', 'updated\n', 'Update code'); author.git('switch', 'main');
   assert.equal(startRemoteReview(source.root, 'feature').remote.headRevision, review.remote.headRevision);
   refreshRemoteReview(review.id, review.generation);
   const next = dataFor(review);
-  assert.notEqual(next.stages[0].files[0].revision, initial.stages[0].files[0].revision);
-  assert.equal(next.stages.length, 3);
+  assert.equal(next.stages[0].files[0].revision, initial.stages[0].files[0].revision);
+  assert.notEqual(next.stages[1].files[0].revision, initial.stages[0].files[0].revision);
+  assert.equal(next.stages.length, 2);
   assert.equal(readReview(review.id).state.comments[0].body, 'Private note');
+  const unreferenced = captureApprovalSnapshot(context, endpoint(initial));
+  assert.throws(() => compareApprovalSnapshot(context, unreferenced.snapshotId, endpoint(next)), /another file review/);
   const diff = compareApprovalSnapshot(context, saved.snapshotId, endpoint(next));
   assert.deepEqual(diff.lines.filter((l) => l.t !== 'ctx').map((l) => l.s), ['original', 'updated']);
   author.git('switch', 'feature'); author.git('reset', '--hard', 'main'); author.commitFile('code.txt', 'rewritten\n', 'Rewritten history'); author.git('switch', 'main');
   refreshRemoteReview(review.id, review.generation);
-  assert.equal(dataFor(review).stages[0].id, 'branch');
+  assert.equal(dataFor(review).stages.length, 1);
+  assert.notEqual(dataFor(review).stages[0].id, initial.stages[0].id);
   assert.deepEqual(compareApprovalSnapshot(context, saved.snapshotId, endpoint(dataFor(review))).lines.filter((l) => l.t !== 'ctx').map((l) => l.s), ['original', 'rewritten']);
   author.git('branch', '-D', 'feature');
   assert.throws(() => refreshRemoteReview(review.id, review.generation));
@@ -96,8 +100,8 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
   author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
   author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
-  assert.equal(data.stages[0].id, 'branch'); assert.equal(data.stages[1].title, 'Semantic title'); assert.equal(data.stages[1].nodes[0].id, 'semantic-node');
-  assert.equal(data.stages[1].insights[0].title, 'Preserved reasoning'); assert.ok(data.requirements.length);
+  assert.equal(data.stages.length, 1); assert.equal(data.stages[0].title, 'Semantic title'); assert.equal(data.stages[0].nodes[0].id, 'semantic-node');
+  assert.equal(data.stages[0].insights[0].title, 'Preserved reasoning'); assert.ok(data.requirements.length);
 });
 
 test('review --branch launches a remote viewer and enforces HTTP read-only mode', async (t) => {
@@ -146,7 +150,7 @@ test('malformed and stale metadata fall back to complete Git history', (t) => {
   author.write('.semantic-review/manifest.json', JSON.stringify({ stages: ['../escape'], requirements: [] }));
   author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Unusable metadata'); author.git('switch', 'main');
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
-  assert.equal(data.stages[0].id, 'branch'); assert.equal(data.stages.length, 3);
+  assert.ok(data.stages.every(stage => stage.id.startsWith('commit-'))); assert.equal(data.stages.length, 2);
   assert.deepEqual(data.stages[0].files.map(f => f.path), ['code.txt']);
   assert.equal(fs.existsSync(path.join(reviewDirectory(review.id), 'escape.json')), false);
 });
@@ -158,7 +162,7 @@ test('first-parent merge stages show their changes and unchanged approvals retai
   author.git('merge', '--no-ff', 'side', '-m', 'Merge side'); author.git('switch', 'main');
   refreshRemoteReview(review.id, review.generation);
   const after = dataFor(review);
-  assert.equal(after.stages.length, 4); assert.equal(after.stages.at(-1).title, 'Merge side');
+  assert.equal(after.stages.length, 3); assert.equal(after.stages.at(-1).title, 'Merge side');
   assert.deepEqual(after.stages.at(-1).files.map(f => f.path), ['side.txt']);
   assert.equal(after.stages[0].files.find(f => f.path === 'code.txt').revision, before.stages[0].files[0].revision);
 });
@@ -193,7 +197,7 @@ test('remote clones support nested paths under the private review directory', (t
   author.git('switch', 'feature'); author.commitFile(file, 'nested content\n', 'Nested file'); author.git('switch', 'main');
   const review = startRemoteReview(source.root, 'feature');
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'nested content\n');
-  assert.ok(dataFor(review).stages[0].files.some(f => f.path === file));
+  assert.ok(dataFor(review).stages.some(stage => stage.files.some(f => f.path === file)));
   author.git('switch', 'feature'); author.commitFile(file, 'refreshed content\n', 'Nested update'); author.git('switch', 'main');
   refreshRemoteReview(review.id, review.generation);
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'refreshed content\n');
@@ -212,7 +216,7 @@ test('Windows short aliases for the review directory retain remote identity', { 
   assert.notEqual(result.status, 0); assert.match(result.stderr, /personal notes only/);
 });
 
-test('remote commit diffs exclude the overview and earlier edits to the same file', async (t) => {
+test('remote commit diffs show only incremental edits without a cumulative stage', async (t) => {
   const { author, source, head } = setup(t);
   author.git('switch', 'feature');
   author.commitFile('unrelated.txt', 'gap\n', 'Intervening commit');
@@ -222,8 +226,8 @@ test('remote commit diffs exclude the overview and earlier edits to the same fil
   const { createViewerDataSource } = await import('../../../skills/semantic-flow/scripts/semantic-view.mjs');
   const dataSource = createViewerDataSource(review.repositoryRoot);
   const data = JSON.parse(dataSource.implementationDataScript().replace(/^window.SEMANTIC_IMPLEMENTATION = /, '').replace(/;\s*$/, ''));
-  assert.equal(data.stages[0].overview, true);
-  assert.ok(data.stages.slice(1).every((stage) => !stage.overview));
+  assert.equal(data.stages.length, 3);
+  assert.ok(data.stages.every((stage) => stage.id.startsWith('commit-')));
   const stage = data.stages.find((stage) => stage.id === `commit-${updated}`), file = stage.files[0];
   assert.equal(file.baseRevision, head);
   assert.equal(file.previousStageId, `commit-${head}`);

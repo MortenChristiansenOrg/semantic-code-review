@@ -1232,15 +1232,12 @@ test('remote reviews offer only personal notes and refresh approved files in pla
   await expect(page.getByRole('button', { name: 'Refresh branch', exact: true })).toBeEnabled();
 });
 
-test('remote overview is separate and file-specific bases drive diffs and approvals', async ({ page }) => {
+test('remote stages have no cumulative view and use file-specific diff and approval bases', async ({ page }) => {
   const data = { ...fixture(), remote: { branch: 'feature' } };
-  const overview = structuredClone(data.stages[0]);
-  overview.id = 'branch'; overview.title = 'All branch changes'; overview.overview = true;
-  data.stages.unshift(overview);
-  data.stages[1].files[0].baseRevision = 'c'.repeat(40);
-  delete data.stages[1].files[0].lines;
-  await mount(page, data, { comments: [{ kind: 'file', id: 'f:branch:shared.js', nodeId: 'first-one', mode: 'personal', body: 'Overview note' }] });
-  await expect(page.getByRole('heading', { name: 'All branch changes', exact: true })).toHaveCount(0);
+  data.stages[0].files[0].baseRevision = 'c'.repeat(40);
+  delete data.stages[0].files[0].lines;
+  await mount(page, data);
+  await expect(page.getByRole('button', { name: 'All changes', exact: true })).toHaveCount(0);
   await expect(page.locator('.hero-line')).toContainText('2 stages');
   await expect(page.locator('.tb-actions')).toContainText('0/10');
   const diffRequest = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/diff');
@@ -1249,14 +1246,32 @@ test('remote overview is separate and file-specific bases drive diffs and approv
   const approval = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/approval-snapshots');
   await page.locator('details[data-node="first-one"] .mini-approve').click();
   expect((await approval).postDataJSON().baseRevision).toBe('c'.repeat(40));
-  await page.getByRole('button', { name: 'All changes', exact: true }).click();
-  await expect(page.locator('.stage')).toHaveCount(1);
-  await expect(page.getByRole('heading', { name: 'All branch changes', exact: true })).toBeVisible();
-  await expect(page.locator('.tb-actions')).toContainText('0/5');
-  await page.getByRole('button', { name: 'By stage', exact: true }).click();
-  await expect(page.locator('.stage')).toHaveCount(2);
-  await showNotes(page);
-  await page.getByRole('button', { name: 'Show note target', exact: true }).click();
-  await expect(page.locator('.stage')).toHaveCount(1);
-  await expect(page.locator('.stage[data-stage="branch"] .file-notes')).toContainText('Overview note');
+});
+
+test('the newest remote commit retains an earlier approval after rewritten history and renames', async ({ page }) => {
+  const data = { ...fixture(), remote: { branch: 'feature' } };
+  data.stages.forEach((stage, index) => {
+    stage.id = `commit-${String(index + 1).repeat(40)}`;
+    stage.nodes = [{ id: 'changes', title: 'Commit changes' }];
+    stage.files[0].memberships = [{ nodeId: 'changes', classification: 'behavior' }];
+  });
+  const latest = data.stages[1];
+  latest.files[0].kind = 'renamed'; latest.files[0].previousPath = 'old.js';
+  const oldStage = `commit-${'9'.repeat(40)}`, oldKey = approvalKey(oldStage, 'changes', 'old.js');
+  const oldApproval = { stageId: oldStage, nodeId: 'changes', path: 'old.js', rev: 'older', at: 1, snapshotId: 'a'.repeat(32) };
+  await mount(page, data, { approvals: { [oldKey]: oldApproval } });
+  await expect(page.locator(`.stage[data-stage="${data.stages[0].id}"] .frow`)).not.toHaveClass(/is-stale/);
+  const latestStage = page.locator(`.stage[data-stage="${latest.id}"]`);
+  await expect(latestStage.locator('.frow')).toHaveClass(/is-stale/);
+  await page.route('**/api/approval-comparison*', route => {
+    expect(route.request().postDataJSON().snapshotId).toBe(oldApproval.snapshotId);
+    return route.fulfill({ json: { ok: true, approved: oldApproval, current: { path: 'shared.js' }, lines: [{ t: 'del', o: 1, s: 'previously approved' }, { t: 'add', n: 1, s: 'updated file' }], nextOffset: null } });
+  });
+  await latestStage.locator('.stage-title').click();
+  await latestStage.locator('details.node summary').click();
+  await latestStage.locator('.frow-open').click();
+  await expect(latestStage.locator('.is-approved-comparison')).toContainText('previously approved');
+  await saveAction(page, () => latestStage.locator('.mini-approve').click(), state => {
+    return !!state.approvals?.[approvalKey(latest.id, 'changes')]?.snapshotId && !!state.approvals?.[oldKey];
+  });
 });

@@ -82,16 +82,14 @@ function projection(record: ReviewRecord, head: string) {
     for (const ref of refs) { semantic = artifact(root, ref, head); if (semantic) break; }
   }
   if (semantic) {
-    const overview = stage(root, "branch", "All branch changes", "Approve files here to track later updates, including updates without published metadata.", semantic.stages[0].change.baseRevision, head, remote.branch);
-    // Namespace imported IDs so an authored stage named "branch" cannot replace
-    // the stable cumulative stage used for approvals across presentation changes.
+    // Keep authored and reconstructed stage identities separate across refreshes.
     const stages = semantic.stages.map((s) => ({ ...s, id: `semantic-${s.id}`, dependsOn: s.dependsOn.map((id) => `semantic-${id}`) }));
-    return { ...semantic, stages: [overview, ...stages], manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: ["branch", ...stages.map((s) => s.id)] } };
+    return { ...semantic, stages, manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: stages.map((s) => s.id) } };
   }
   const target = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.targetBranch}^{commit}`]);
   const base = git(root, ["merge-base", head, target]);
   const commits = git(root, ["rev-list", "--reverse", "--first-parent", `${base}..${head}`]).split("\n").filter(Boolean);
-  const stages = [stage(root, "branch", "All branch changes", `Changes in ${remote.branch} relative to ${remote.targetBranch}. Approve files here to track later updates.`, base, head, remote.branch)];
+  const stages = [];
   for (const commit of commits) {
     const parent = git(root, ["rev-parse", `${commit}^1`]);
     const message = git(root, ["show", "-s", "--format=%s%n%b", commit]);

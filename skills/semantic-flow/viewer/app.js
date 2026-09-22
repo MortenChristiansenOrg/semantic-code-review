@@ -125,10 +125,8 @@
     Object.assign(data, next);
     nodeTitleById.clear(); stageById.clear(); stageNumberById.clear();
     fileById.clear(); fileByPreviousId.clear(); flatFiles.length = 0;
-    let stageNumber = 0;
-    data.stages.forEach((stage) => {
-      stageById.set(stage.id, stage);
-      if (!stage.overview) stageNumberById.set(stage.id, ++stageNumber);
+    data.stages.forEach((stage, index) => {
+      stageById.set(stage.id, stage); stageNumberById.set(stage.id, index + 1);
       stage.nodes.forEach((node) => nodeTitleById.set(`${stage.id}:${node.id}`, node.title));
       stage.files.forEach((file) => {
         const id = fileKey(stage.id, file.path);
@@ -192,7 +190,7 @@
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(`${s.id}:${n.id}`, n.title)));
   const stageById = new Map(data.stages.map((stage) => [stage.id, stage]));
-  const stageNumberById = new Map(data.stages.filter((stage) => !stage.overview).map((stage, i) => [stage.id, i + 1]));
+  const stageNumberById = new Map(data.stages.map((stage, i) => [stage.id, i + 1]));
 
   const requirements = Array.isArray(data.requirements) ? data.requirements : [];
   // Criterion ids are only unique within a specification, so every acceptance
@@ -607,6 +605,24 @@
     return entry?.file.kind === "renamed" && entry.file.previousPath
       ? fileApprovalKey(entry.stage.id, entry.nodeId, entry.file.previousPath) : null;
   }
+  // Commit IDs change after an amend/rebase. The newest occurrence can still use
+  // the reviewer's last full-file sign-off, while historical approvals stay put.
+  function remotePreviousApprovalId(id) {
+    const entry = approvalEntry(id);
+    if (!data.remote || !entry?.stage.id.startsWith("commit-") || entry.nodeId !== "changes") return null;
+    const index = flatFiles.findIndex((item) => item.id === entry.id);
+    if (flatFiles.slice(index + 1).some((item) => item.file.path === entry.file.path || item.file.previousPath === entry.file.path)) return null;
+    const paths = [entry.file.path, entry.file.previousPath].filter(Boolean);
+    return Object.keys(state.approvals).filter((key) => {
+      if (key === id || !key.startsWith("m:")) return false;
+      try {
+        const [stageId, nodeId, filePath] = JSON.parse(key.slice(2));
+        const saved = approvalRecord(key);
+        return stageId.startsWith("commit-") && nodeId === "changes" && paths.includes(filePath) &&
+          saved?.snapshotId && saved.stageId === stageId && saved.nodeId === nodeId && saved.path === filePath;
+      } catch { return false; }
+    }).sort((a, b) => state.approvals[b].at - state.approvals[a].at)[0] || null;
+  }
   function approvalRecord(id) {
     const rec = state.approvals[id];
     if (!rec || typeof rec !== "object" || !Number.isFinite(rec.at)) return null;
@@ -622,7 +638,7 @@
     // An approval inherited from before a rename can never still match the file
     // as it stands now, so surface it as stale to prompt a fresh look.
     const prevId = previousApprovalId(id);
-    if (prevId && approvalRecord(prevId)) return "stale";
+    if (prevId && approvalRecord(prevId) || remotePreviousApprovalId(id)) return "stale";
     return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
@@ -778,7 +794,7 @@
     });
   }
   function acceptanceStatus(ref) {
-    const stages = data.stages.filter((stage) => !stage.overview)
+    const stages = data.stages
       .map((s, i) => ({ s, i }))
       .filter((x) => (x.s.specificationRefs || []).includes(ref));
     if (!stages.length) return { key: "uncovered", stages: [] };
@@ -848,17 +864,14 @@
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg>`;
   }
 
-  function visibleStages() {
-    return data.stages.filter((stage) => Boolean(stage.overview) === Boolean(state.showOverview));
-  }
   function reviewable() {
     let n = 0;
-    visibleStages().forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
+    data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
     return n;
   }
   function approvedCount() {
     let n = 0;
-    visibleStages().forEach((s) => {
+    data.stages.forEach((s) => {
       if (stageApproved(s)) n += 1;
       s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
       stageFileApprovals(s).forEach((key) => { if (approved(key)) n += 1; });
@@ -1701,7 +1714,7 @@
     </header>`;
   }
   function retainedApproval(id) {
-    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
+    return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "") || approvalRecord(remotePreviousApprovalId(id) || "");
   }
   function comparisonKey(id, entry) {
     return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
@@ -1951,13 +1964,13 @@
   }
 
   function hero() {
-    const totalFiles = visibleStages().reduce((a, s) => a + s.files.length, 0);
-    const totalNodes = visibleStages().reduce((a, s) => a + s.nodes.length, 0);
+    const totalFiles = data.stages.reduce((a, s) => a + s.files.length, 0);
+    const totalNodes = data.stages.reduce((a, s) => a + s.nodes.length, 0);
     return `<section class="hero">
       <h1>${esc(data.title)}</h1>
       <p class="hero-sum">${esc(data.summary)}</p>
       <div class="hero-line">
-        <span><b>${visibleStages().length}</b> ${state.showOverview ? "overview" : "stages"}</span>
+        <span><b>${data.stages.length}</b> stages</span>
         <span><b>${totalNodes}</b> steps</span>
         <span><b>${totalFiles}</b> files</span>
         <span class="hero-skill-version">Skill version: ${esc(data.skillVersion || "Unknown")}</span>
@@ -2086,12 +2099,8 @@
     return `<div class="story">
       ${hero()}
       ${specificationPanel()}
-      ${data.stages.some((stage) => stage.overview) ? `<nav class="review-views" aria-label="Review view">
-        <button class="tb-btn" type="button" data-action="review-view" data-view="stages" aria-pressed="${!state.showOverview}">By stage</button>
-        <button class="tb-btn" type="button" data-action="review-view" data-view="overview" aria-pressed="${Boolean(state.showOverview)}">All changes</button>
-      </nav>` : ""}
       <div class="spine">
-        ${visibleStages().map((s, i) => stageSection(s, i)).join("")}
+        ${data.stages.map((s, i) => stageSection(s, i)).join("")}
       </div>
       <footer class="story-end">
         <span class="eyebrow">End of review</span>
@@ -2102,7 +2111,7 @@
 
   /* ---- side panels ------------------------------------------------------ */
   function coveragePanel() {
-    const rows = visibleStages().map((s, i) => {
+    const rows = data.stages.map((s, i) => {
       const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
       const fileApprovals = stageFileApprovals(s);
       const fd = fileApprovals.filter(approved).length;
@@ -2537,9 +2546,7 @@
       if (reviewsOpen) void refreshReviews();
     } else if (a === "manage-review-data") {
       void manageReviewData(btn.dataset.reviewId);
-    } else if (a === "review-view") {
-      state.showOverview = btn.dataset.view === "overview";
-      persist(); render();
+
     } else if (a === "refresh-remote") {
       if (!refreshingRemote) void refreshRemote();
     } else if (a === "refresh-reviews") {
@@ -2673,8 +2680,6 @@
   // panel, and scroll its conversation into view (targeting the comments so a
   // tall file body cannot push them off-screen).
   function jumpToElement(kind, id, stageId, nodeId) {
-    const targetStageId = kind === "stage" ? id : stageId || noteFileEntry(kind, id)?.stage.id;
-    if (targetStageId) state.showOverview = Boolean(stageById.get(targetStageId)?.overview);
     pendingLazyJump = null;
     state.notesOpen = false;
     state.coverageOpen = false;
