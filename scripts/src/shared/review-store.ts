@@ -23,9 +23,18 @@ export function reviewId(root: string, implementationId: string) {
   // Managed remote clones are children of their owning review, whose identity
   // is stable across refreshes and independent of the cloned artifact's ID.
   const owner = path.basename(path.dirname(canonicalRoot));
-  if (path.basename(canonicalRoot) === "checkout" && isReviewId(owner) && fs.existsSync(reviewDirectory(owner)) && path.dirname(canonicalRoot) === fs.realpathSync(reviewDirectory(owner))) {
-    const record = readReview(owner);
-    if (record.remote && record.repositoryRoot === canonicalRoot && record.implementationId === implementationId) return owner;
+  if (path.basename(canonicalRoot) === "checkout" && isReviewId(owner) && fs.existsSync(reviewDirectory(owner))) {
+    // Git and Windows processes may report the same checkout using either 8.3
+    // aliases or full paths. Native realpath expands aliases; comparison must
+    // also respect Windows' case-insensitive paths.
+    const canonical = (value: string) => {
+      const resolved = fs.realpathSync.native(value);
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    if (canonical(path.dirname(canonicalRoot)) === canonical(reviewDirectory(owner))) {
+      const record = readReview(owner);
+      if (record.remote && canonical(record.repositoryRoot) === canonical(canonicalRoot) && record.implementationId === implementationId) return owner;
+    }
   }
   const slug = (value: string, limit: number, fallback: string) => value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, limit).replace(/-+$/g, "") || fallback;

@@ -7,7 +7,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { createRepository, feedbackCli, flowCli, initializeImplementation } from '../helpers/repository.mjs';
 import { startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
-  patchReviewState, readReview, reviewDirectory, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+  patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 
 function setup(t) {
   const author = createRepository(t, 'remote-author-'), source = createRepository(t, 'remote-reviewer-');
@@ -32,6 +32,7 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(review.repositoryRoot, fs.realpathSync(path.join(reviewDirectory(review.id), 'checkout')));
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, 'code.txt'), 'utf8'), 'original\n');
   assert.equal(captureReviewContext(review.id).repositoryRoot, review.repositoryRoot);
+  assert.equal(reviewId(fs.realpathSync.native(review.repositoryRoot), review.implementationId), review.id);
   const data = dataFor(review);
   assert.equal(data.remote.branch, 'feature'); assert.equal(data.stages.length, 2);
   assert.equal(data.stages[0].id, 'branch'); assert.equal(data.stages[1].id, `commit-${head}`);
