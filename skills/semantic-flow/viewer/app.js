@@ -1849,6 +1849,7 @@
       const response = await fetch("/api/reviews/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) });
       const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not inspect review storage.");
       storage = result.storage;
+      if (storage.error) error = storage.error;
     }
     dialog.addEventListener("close", () => dialog.remove());
     dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });

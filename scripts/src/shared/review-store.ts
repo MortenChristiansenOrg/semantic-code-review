@@ -99,6 +99,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
         // The owner can retire the destination after a contended rename. Its
         // absence here is a reason to retry, not evidence of a fatal error.
         if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
+        let blockingPid: number;
         try {
           const entries = fs.readdirSync(lock);
           if (!entries.length) fs.rmdirSync(lock); // A reaper died after removing its owner marker.
@@ -106,6 +107,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
             const marker = path.join(lock, entries[0]);
             const { pid } = JSON.parse(fs.readFileSync(marker, "utf8"));
             if (Number.isInteger(pid) && pid > 0) {
+              blockingPid = pid;
               try { process.kill(pid, 0); }
               catch (error) {
                 if (error.code === "ESRCH") {
@@ -117,7 +119,7 @@ export function withReviewLock<T>(id: string, operation: () => T): T {
             }
           }
         } catch { /* Another owner/reaper progressed, or a temporary read failed. */ }
-        if (Date.now() >= deadline) throw new Error("Review data is busy. Retry the operation.");
+        if (Date.now() >= deadline) throw new Error(`Review data is busy at ${JSON.stringify(lock)}${blockingPid ? `; held by process PID ${blockingPid}` : "; holding process could not be identified"}. Wait for that operation to finish, or close the application using this review, then retry. Do not delete lock or review files manually.`);
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
       }
     }

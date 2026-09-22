@@ -907,18 +907,23 @@ test('a review deleted in another tab preserves unsent text for copying and reje
 
 test('a pending deletion stays visible and can retry file removal', async ({ page }) => {
   await mount(page); let pending = false, gone = false;
+  const failure = 'Could not clean /user-data/trash/review/locked.bin (EBUSY). Editor (PID 123) is using the file. Close it, then choose Retry file removal. Do not delete review files manually.';
   const record = { id: 'browser-review', generation: 'test', title: 'Review fixes', repositoryRoot: '/repos/review', implementationId: 'browser-review', updatedAt: '2026-09-11T10:00:00Z', completedAt: null };
   await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: gone ? [] : [{ ...record, available: !pending, deletionPending: pending }] } }));
-  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { review: record, storageDirectory: '/user-data/trash/review', bytes: 1024, categories: [], drafts: 0, unresolved: 0, fingerprint: 'preview', unused: [], unusedBytes: 0, deletionPending: pending } } }));
+  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { review: record, storageDirectory: '/user-data/trash/review', bytes: 1024, categories: [], drafts: 0, unresolved: 0, fingerprint: 'preview', unused: [], unusedBytes: 0, deletionPending: pending, error: pending ? failure : undefined } } }));
   await page.route('**/api/reviews/delete?*', (route) => {
-    if (!pending) { pending = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: true, error: 'File is open. Retry removal.' } }); }
+    if (!pending) { pending = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: true, error: failure } }); }
     gone = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: false } });
   });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Review data', exact: true }); await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('File is open');
+  await expect(dialog.getByRole('alert')).toContainText('/user-data/trash/review/locked.bin');
+  await expect(dialog.getByRole('alert')).toContainText('Editor (PID 123)');
   await expect(page.locator('[data-review="browser-review"]')).toContainText('Deletion pending');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('button', { name: 'Retry deletion…', exact: true }).click();
+  await expect(dialog.getByRole('alert')).toContainText(failure);
   await dialog.getByRole('button', { name: 'Retry file removal', exact: true }).click();
   await expect(dialog).toHaveCount(0); await expect(page.locator('[data-review="browser-review"]')).toHaveCount(0);
 });
