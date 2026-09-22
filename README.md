@@ -115,7 +115,9 @@ No separate skill is needed. Existing standalone report and repair installations
 can be removed after installing a main-skill release containing `report`.
 Diagnosis needs no active implementation, source checkout, working CLI, or Node.js.
 It supports available GitHub tools and a copyable draft for manual submission.
-Reporting never requires an update or silently replaces the affected installation.
+Once reporting guidance is available, diagnosis does not require updating or
+replacing the affected installation. Older main-skill installations need a release
+containing `report` to expose the command.
 For blocking defects, optional source-fix guidance keeps the project, installation,
 and maintained checkout distinct and replaces only complete built installations
 within the user's authorized scope.
