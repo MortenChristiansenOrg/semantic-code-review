@@ -6,8 +6,8 @@ Read this file when a command file requires it.
 
 The installed skill root is the directory containing the active
 `semantic-flow/SKILL.md`. Do not edit the installed skill during ordinary
-workflow commands. `update` is the only command that replaces it. Use the
-`semantic-flow-repair` skill for defects in maintained sources.
+workflow commands. `update` is the only command that replaces it. Use `/semantic-flow report` for defects in the skill, CLI, or viewer.
+Its optional source-fix guidance is loaded only within an authorized repair scope.
 
 Before invoking a bundled executable:
 

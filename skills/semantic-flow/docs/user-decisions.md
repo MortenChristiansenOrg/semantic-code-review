@@ -9,6 +9,9 @@ A clear request carries permission for the prescribed reversible steps needed
 to complete it. Run the documented procedure without a separate approval for
 restacking, stage-ref updates, temporary recovery branches, compare-and-swap,
 artifact repair, or CLI syntax. Use only supported procedures and their guards.
+For reporting, routine mechanics are read-only diagnosis and drafting. Reporting
+alone does not authorize recovery mutations, updates, source fixes, or submission;
+follow the report command's scope and exact-content/account confirmation.
 An exception explicitly prescribed by a recovery guide is already authorized
 within that procedure; it is not a new permission request.
 

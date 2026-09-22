@@ -100,6 +100,24 @@ test('actual archive installs complete CLI without a source checkout and reports
   assert.equal(JSON.parse(result.stdout).sourceCommit, 'a'.repeat(40));
   assert.equal(JSON.parse(result.stdout).skillVersion, '0.2.0');
   assert.ok(fs.existsSync(path.join(destination, 'viewer/app.js')));
+  const pending = ['commands/report.md'];
+  const visited = new Set();
+  while (pending.length) {
+    const relative = pending.pop();
+    if (visited.has(relative)) continue;
+    visited.add(relative);
+    const file = path.resolve(destination, relative);
+    assert.ok(file.startsWith(`${destination}${path.sep}`), `Report reference escapes installation: ${relative}`);
+    const content = fs.readFileSync(file, 'utf8');
+    for (const match of content.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+      const link = match[1].split('#')[0];
+      if (!link || /^[a-z]+:/i.test(link)) continue;
+      pending.push(path.relative(destination, path.resolve(path.dirname(file), link)));
+    }
+  }
+  assert.ok(visited.has(path.join('assets', 'bug-report.md')));
+  assert.ok(visited.has(path.join('references', 'report', 'source-repair.md')));
+
 });
 
 test('archive validation rejects wrong versions, missing files, changed contents, incompatible runtime, traversal, duplicates, and symlinks', async (t) => {

@@ -432,8 +432,8 @@ current:
 
 ## Recovery
 
-For a suspected defect in the skill, CLI, or viewer, use the separate
-`/semantic-flow-report <problem>` skill to diagnose it and prepare an upstream bug
+For a suspected defect in the skill, CLI, or viewer, use
+`/semantic-flow report <problem>` to diagnose it and prepare an upstream bug
 report. It supports external users and manual submission without a source checkout.
 See [installation and usage](../README.md#report-a-semantic-flow-problem). Ordinary
 comments about the implementation being reviewed still use Semantic Flow feedback.

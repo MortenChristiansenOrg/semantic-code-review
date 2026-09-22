@@ -5,6 +5,9 @@ or mentions semantic flow in a natural-language request.
 
 ## Route by intent
 
+- A request to diagnose or report a defect in the Semantic Flow skill, CLI, or
+  viewer routes to `report.md`, even without an active implementation. Comments
+  about the implementation being reviewed still route to `feedback.md`.
 - An implementation request such as "implement the current user story using
   semantic flow" routes to `implement.md`.
 - A request to resume interrupted implementation routes to `continue.md`.

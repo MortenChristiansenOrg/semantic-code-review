@@ -21,9 +21,8 @@ For authorized repair:
    an existing checkout, or treat the installed generated bundles as maintained
    source. Maintainers may use an existing source checkout only when it is the
    intended location and unrelated work is preserved.
-3. If `semantic-flow-repair` is available and applicable, reuse its source repair
-   and validation guidance. It is optional: without it, use this source map and
-   the checkout's `AGENTS.md` and build instructions:
+3. Read [Maintained source repair](source-repair.md) and the checkout's
+   `AGENTS.md` and build instructions. Use this source map:
 
    | Defect | Maintained source |
    | --- | --- |

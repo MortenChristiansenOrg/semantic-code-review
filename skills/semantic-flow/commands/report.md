@@ -1,31 +1,27 @@
----
-name: semantic-flow-report
-description: Diagnose a problem with the Semantic Flow skill, CLI, or viewer and prepare or submit a reproducible bug report to its upstream repository. Use for Semantic Flow bug-reporting requests, including unclear failures; ordinary implementation review feedback belongs to semantic-flow feedback.
----
-
-# Semantic Flow Report
+# Report command
 
 Help the user reach a useful resolution: corrected usage, a known workaround or
 fix, an update, an actionable report, or an optional local workaround for a
-blocker. Invoke as `/semantic-flow-report <problem>` or `$semantic-flow-report
-<problem>`, or through a natural-language reporting request. This is a separate
-skill, not a `semantic-flow` subcommand.
+blocker. Invoke as `/semantic-flow report <problem>` or `$semantic-flow report
+<problem>`, or through a natural-language reporting request.
 
 The issue destination is
 [MortenChristiansenOrg/semantic-code-review](https://github.com/MortenChristiansenOrg/semantic-code-review),
 including when invoked inside a user's project, a fork, or the maintainer's
-checkout. Reporting requires neither that checkout nor `semantic-flow-repair`.
+checkout. Reporting requires no source checkout, active implementation, working bundled
+CLI, or Node.js. Read available instructions and metadata; preserve a copyable
+draft when runtime, filesystem, or GitHub access is unavailable.
 
 ## Establish the situation
 
 Identify the affected **Semantic Flow installation**, the **user's project and
-artifact worktree**, and this **reporting skill** separately. Use supplied paths,
+artifact worktree**, and the **guidance used for reporting** separately. Use supplied paths,
 active skill metadata, and known workspace context; ask when multiple installs
 could explain the failure. Do not search arbitrary drives. In the maintainer's
 checkout, do not assume the source skill is the installation that failed.
 
 Check GitHub access early using one available method; read the corresponding
-section of [GitHub access and submission](references/github.md). Establish the
+section of [GitHub access and submission](../references/report/github.md). Establish the
 effective account for that method and issue-access capabilities. Missing access
 should prompt connection/authentication guidance while diagnosis and drafting
 continue. Never request pasted credentials. Read access is sufficient for
@@ -66,7 +62,7 @@ review artifacts or clear browser storage during diagnosis.
 
 ## Find the best resolution
 
-Check provenance using [Versions and updates](references/provenance.md); a version
+Check provenance using [Versions and updates](../references/report/provenance.md); a version
 label alone does not establish which implementation is installed. Preserve the
 original evidence and report uncertainty if an update comparison is unavailable.
 Suggest relevant updates, but do not require an update to accept a report or
@@ -79,14 +75,14 @@ new evidence when useful. A shared symptom alone does not prove duplication.
 If search is incomplete or unavailable, say so; avoid claiming no duplicates.
 
 Offer the next useful action. For a blocker without a suitable update or
-workaround, consult [Temporary local fixes](references/local-fix.md) only if that
+workaround, consult [Temporary local fixes](../references/report/local-fix.md) only if that
 option is relevant. Reporting does not authorize forking, implementation work,
 or installation changes. The user can choose reporting without repair.
 
 ## Prepare, confirm, and submit
 
 Use the repository's applicable issue template when available, otherwise adapt
-the [report template](assets/bug-report.md). Keep a concise, sanitized title and
+the [report template](../assets/bug-report.md). Keep a concise, sanitized title and
 body, with unknowns explicit and related reports linked. For a duplicate comment,
 include only useful additional evidence and the intended issue URL.
 
@@ -112,7 +108,7 @@ explicit approval for that same payload/account; recheck identity immediately
 before posting and reconfirm if the account, destination, or payload changes.
 
 Submit the approved payload once using the chosen method and the retry procedure
-in [GitHub access and submission](references/github.md). No test issues, automatic
+in [GitHub access and submission](../references/report/github.md). No test issues, automatic
 cross-posting, or unapproved comments. Return the verified issue/comment URL and
 next steps, or the preserved draft and the precise obstacle. When corrected usage
 or an existing resolution suffices, explain the outcome without creating an issue.
