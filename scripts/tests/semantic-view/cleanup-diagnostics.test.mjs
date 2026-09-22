@@ -8,7 +8,7 @@ import test from 'node:test';
 import { cleanupFailure, fileUsers } from '../../src/shared/cleanup-diagnostics.ts';
 
 function setup(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-diagnostics-'));
+  const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'cleanup-diagnostics-'));
   const file = path.join(root, "locked æ ' $ file.txt"); fs.writeFileSync(file, 'keep');
   t.after(() => { t.mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); });
   return { root, file };
