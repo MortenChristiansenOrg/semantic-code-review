@@ -13,7 +13,7 @@ import specificationSchema from "../../../standard/v0.1/schema/specification.sch
 import { reviewEnvironment } from "./review-context.js";
 
 function git(root: string, args: string[]) {
-  return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", ...args], {
+  return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
     cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, encoding: "utf8", windowsHide: true,
     maxBuffer: 64 * 1024 * 1024, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd();
@@ -161,7 +161,7 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     try {
       const root = path.join(directory, "checkout");
-      git(sourceRoot, ["clone", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
+      git(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
       const targetRef = optional(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
       const targetBranch = targetRef?.replace(/^refs\/remotes\/origin\//, "") || ["main", "master"].find((name) => optional(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`]));
       if (!targetBranch) throw new Error("The remote has no default branch. Set its default branch before starting a review.");

@@ -184,3 +184,18 @@ test('remote authentication failures do not invoke interactive askpass helpers',
   }), error => { assert.match(error.stderr, /Authentication failed|could not read Username/); return true; });
   assert.equal(fs.existsSync(marker), false, 'Remote Git operations must not launch inherited password prompts');
 });
+
+
+test('remote clones support nested paths under the private review directory', (t) => {
+  const { source, author } = setup(t);
+  const file = `nested-${'a'.repeat(45)}/nested-${'b'.repeat(45)}/file.txt`;
+  author.git('switch', 'feature'); author.commitFile(file, 'nested content\n', 'Nested file'); author.git('switch', 'main');
+  const review = startRemoteReview(source.root, 'feature');
+  assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'nested content\n');
+  assert.ok(dataFor(review).stages[0].files.some(f => f.path === file));
+  author.git('switch', 'feature'); author.commitFile(file, 'refreshed content\n', 'Nested update'); author.git('switch', 'main');
+  refreshRemoteReview(review.id, review.generation);
+  assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'refreshed content\n');
+  const storage = inspectReviewStorage(review.id, review.generation);
+  assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).cleanupPending, false);
+});
