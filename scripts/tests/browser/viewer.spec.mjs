@@ -616,6 +616,71 @@ test('approving a file closes only that file and persists the collapse', async (
     await expect(node.locator('.cinema-diff')).toHaveCount(0);
 });
 
+for (const mode of ['personal', 'feedback', 'edit', 'reply']) {
+  test(`${mode} comment autosave waits for 300 ms of idle typing without a save notice`, async ({ page }) => {
+    const data = fixture();
+    if (mode === 'personal') data.remote = { branch: 'feature', targetBranch: 'main' };
+    if (mode === 'reply') data.feedback = [thread('autosave')];
+    const saved = mode === 'edit' ? { comments: [{ kind: 'file', id: fileId, nodeId: 'first-one', body: 'Original', mode: 'personal', createdAt: 1 }] } : {};
+    await mount(page, data, saved);
+    if (mode === 'reply' || mode === 'edit') {
+      await saveAction(page, () => showNotes(page), state => state.notesOpen);
+      if (mode === 'reply') await page.locator('.side.notes [data-action="thread-reply"]').click();
+      else await saveAction(page, () => page.locator('.side.notes [data-action="edit-note"]').click(), state => !!state.editor?.compose);
+    } else {
+      await openFile(page);
+      await saveAction(page, () => page.locator('.file-notes .thread-add').click(), state => !!state.editor?.compose);
+      if (mode === 'feedback') await saveAction(page, () => page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click(), state => state.editor?.compose?.mode === 'feedback');
+    }
+    await page.clock.install();
+    await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+    const requests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') requests.push(request.postDataJSON());
+    });
+    const input = page.locator(mode === 'reply' ? 'textarea[name="reply-body"]' : 'textarea[name="nc-body"]');
+    await input.fill('First');
+    await page.clock.runFor(200);
+    expect(requests).toHaveLength(0);
+    await input.fill('Latest');
+    await page.clock.runFor(299);
+    expect(requests).toHaveLength(0);
+    await expect(page.locator('#save-status')).toBeHidden();
+    await saveAction(page, () => page.clock.runFor(1), state => (mode === 'reply' ? state.editor?.replyDraft : state.editor?.compose?.body) === 'Latest');
+    expect(requests).toHaveLength(1);
+    await page.clock.runFor(500);
+    expect(requests).toHaveLength(1);
+  });
+}
+
+test('an in-flight autosave respects the debounce for newer comment text', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  await saveAction(page, () => page.locator('.file-notes .thread-add').click(), state => !!state.editor?.compose);
+  await page.clock.install();
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  let writes = 0;
+  await page.route('**/api/review-state*', async route => {
+    if (route.request().method() === 'POST' && ++writes === 1) await pending;
+    return route.fallback();
+  });
+  const input = page.locator('textarea[name="nc-body"]');
+  await input.fill('First save');
+  const firstRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await page.clock.runFor(300);
+  await firstRequest;
+  await expect(page.locator('#save-status')).toBeHidden();
+  await input.fill('Newer text');
+  await page.clock.runFor(100);
+  await saveAction(page, () => release(), state => state.editor?.compose?.body === 'First save');
+  await page.clock.runFor(199);
+  expect(writes).toBe(1);
+  await saveAction(page, () => page.clock.runFor(1), state => state.editor?.compose?.body === 'Newer text');
+  expect(writes).toBe(2);
+});
+
 test('approval waits for durable state and keeps the diff open when saving fails', async ({ page }) => {
   await mount(page);
   await openFile(page);
@@ -630,7 +695,7 @@ test('approval waits for durable state and keeps the diff open when saving fails
   });
   const node = page.locator('details[data-node="first-one"]');
   await node.locator('.mini-approve').click();
-  await expect(page.locator('#save-status')).toContainText('Saving review');
+  await expect(page.locator('#save-status')).toBeHidden();
   await expect(node.locator('.cinema-diff')).toBeVisible();
   release();
   await expect(page.locator('#save-status')).toContainText('Storage unavailable');

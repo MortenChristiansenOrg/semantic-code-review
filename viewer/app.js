@@ -34,6 +34,7 @@
   let savingState = false;
   let saveError = "";
   let saveTimer;
+  let commentSaveNotBefore = 0;
   let saveOperation = null;
   let reviewsOpen = reviewDeleted;
   let reviewList = [];
@@ -456,18 +457,27 @@
       if (snapshot) note.snapshot = snapshot;
     }
   }
-  function persist() {
+  // A completed in-flight write must also respect the latest typing deadline.
+  // Explicit flushes still call saveState directly before navigation or actions.
+  function scheduleSave(delay = 0) {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      void saveState();
+    }, Math.max(delay, commentSaveNotBefore - Date.now()));
+  }
+  function persist(commentInput = false) {
     if (reviewDeleted) return;
     captureEditor();
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(saveState, 50);
+    if (commentInput) commentSaveNotBefore = Date.now() + 300;
+    scheduleSave(50);
   }
   function showSaveStatus() {
     let notice = document.querySelector("#save-status");
     if (!notice) { notice = document.createElement("div"); notice.id = "save-status"; notice.setAttribute("role", "status"); document.body.append(notice); }
     notice.className = "save-status";
-    notice.hidden = !saveError && !savingState;
-    notice.textContent = saveError ? `Review changes are not saved: ${saveError}` : "Saving review…";
+    notice.hidden = !saveError;
+    notice.textContent = saveError ? `Review changes are not saved: ${saveError}` : "";
   }
   function saveState() {
     if (saveOperation) return saveOperation;
@@ -495,7 +505,7 @@
       saveError = "";
     } catch (error) { saveError = error.message; }
     finally { savingState = false; showSaveStatus(); }
-    if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) saveTimer = setTimeout(saveState, 0);
+    if (!saveError && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) scheduleSave();
   }
   async function flushReviewState() {
     if (reviewDeleted) return;
@@ -3167,11 +3177,11 @@
     if (compose && t.matches('.note-compose textarea[name="nc-body"]')) {
       compose.body = t.value;
       compose.dirty = true;
-      persist();
+      persist(true);
     } else if (t.matches('.tthread-reply textarea[name="reply-body"]')) {
       replyDraft = t.value;
       replyDirty = true;
-      persist();
+      persist(true);
     }
   });
   document.addEventListener("change", (e) => {
