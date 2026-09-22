@@ -37,15 +37,17 @@ public static class ReviewFileUsers {
   [DllImport("rstrtmgr.dll")] static extern int RmEndSession(uint session);
   public static ProcessInfo[] Users(string[] files) {
     uint session;
-    if (RmStartSession(out session, 0, new StringBuilder(33)) != 0) return new ProcessInfo[0];
+    int code = RmStartSession(out session, 0, new StringBuilder(33));
+    if (code != 0) throw new InvalidOperationException("RmStartSession: " + code);
     try {
-      if (RmRegisterResources(session, (uint)files.Length, files, 0, IntPtr.Zero, 0, IntPtr.Zero) != 0) return new ProcessInfo[0];
+      code = RmRegisterResources(session, (uint)files.Length, files, 0, IntPtr.Zero, 0, IntPtr.Zero);
+      if (code != 0) throw new InvalidOperationException("RmRegisterResources: " + code);
       uint needed, count = 0, reasons = 0;
       ProcessInfo[] apps = null;
       for (int attempt = 0; attempt < 3; attempt++) {
-        int code = RmGetList(session, out needed, ref count, apps, ref reasons);
+        code = RmGetList(session, out needed, ref count, apps, ref reasons);
         if (code == 0) { if (apps == null) return new ProcessInfo[0]; Array.Resize(ref apps, (int)count); return apps; }
-        if (code != 234 || needed > 1024) return new ProcessInfo[0];
+        if (code != 234 || needed > 1024) throw new InvalidOperationException("RmGetList: " + code);
         count = needed; apps = new ProcessInfo[count];
       }
       return new ProcessInfo[0];

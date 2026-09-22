@@ -74,9 +74,18 @@ test('native lookup identifies a process holding a real file', async (t) => {
   try {
     const ready = await Promise.race([once(child.stdout, 'data'), exited.then(() => { throw new Error('File holder exited before ready'); })]);
     assert.match(String(ready[0]), /ready/);
+    const execute = childProcess.execFileSync, diagnostics = [];
+    t.mock.method(childProcess, 'execFileSync', (...args) => {
+      try {
+        const output = execute(...args); diagnostics.push({ output }); return output;
+      } catch (error) {
+        diagnostics.push({ status: error.status, signal: error.signal, stderr: String(error.stderr || ''), stdout: String(error.stdout || '') });
+        throw error;
+      }
+    });
     for (const target of [file, root]) {
       const users = fileUsers(target);
-      assert.ok(users.some(user => user.pid === child.pid && user.path === file), JSON.stringify(users));
+      assert.ok(users.some(user => user.pid === child.pid && user.path === file), JSON.stringify({ target, users, diagnostics }));
     }
   } finally {
     if (child.exitCode === null) child.kill();
