@@ -9,7 +9,9 @@ specific platforms, harnesses, etc.
 
 ## Workflow
 
-Do not use the semantic-flow skill on this repo, it is a skill that other projects will install and use.
+Do not use Semantic Flow to implement work in this repository; it is a workflow
+that other projects install and use. `/semantic-flow report` may be used here to
+diagnose and report defects in the skill, CLI, or viewer.
 
 ### Releases
 

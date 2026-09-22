@@ -1,6 +1,6 @@
 ---
 name: semantic-flow
-description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, reconstruct an existing implementation, or review, revise, sync, validate, prepare, archive, inspect, or update a semantic-flow implementation. Supports explicit commands and natural-language requests.
+description: Use when explicitly requested to implement a substantial feature or user story with semantic flow, reconstruct an existing implementation, or review, revise, sync, validate, prepare, archive, inspect, or update a semantic-flow implementation. Also diagnose and report defects in the Semantic Flow skill, CLI, or viewer. Supports explicit commands and natural-language requests; implementation review comments use feedback.
 ---
 
 # Semantic Flow
@@ -14,7 +14,11 @@ internal implementation details. A request authorizes the routine reversible
 mechanics needed to complete it. Handle those mechanics autonomously, including
 prescribed conflict recovery; do not ask users to approve CLI invocations,
 restacking, temporary branches, guarded stage-ref updates, or artifact repair.
-This applies to every command below, including continuation and error paths.
+This applies to implementation workflows, including continuation and error paths.
+For `report`, diagnosis starts read-only: reporting does not authorize restacking,
+artifact repair, rerunning mutating failures, installation updates, or source fixes
+to gather evidence. Read `commands/report.md` only for reporting or help about reporting;
+ordinary implementation commands do not load its reporting resources.
 
 Before any user-facing question or blocker report, apply
 [the communication rules](docs/user-decisions.md). Ask about desired behavior,
@@ -39,6 +43,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | `/semantic-flow validate` | | `commands/validate.md` |
 | `/semantic-flow prepare` | | `commands/prepare.md` |
 | `/semantic-flow archive` | | `commands/archive.md` |
+| `/semantic-flow report` | | `commands/report.md` |
 | `/semantic-flow version` | | `commands/version.md` |
 | `/semantic-flow update` | `up` | `commands/update.md` |
 | `/semantic-flow help` or `/semantic-flow help <command>` | | `commands/help.md` |

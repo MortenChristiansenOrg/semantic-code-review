@@ -208,6 +208,7 @@ test("skill indexes command-specific workflows", () => {
 
   const commands = [
     "implicit",
+    "report",
     "implement",
     "review",
     "feedback",
@@ -393,8 +394,8 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     path.join(repositoryRoot, "scripts", "README.md"),
     "utf8",
   );
-  const repairSkill = fs.readFileSync(
-    path.join(repositoryRoot, "skills", "semantic-flow-repair", "SKILL.md"),
+  const sourceRepair = fs.readFileSync(
+    path.join(repositoryRoot, "skills", "semantic-flow", "references", "report", "source-repair.md"),
     "utf8",
   );
   const userManual = fs.readFileSync(
@@ -464,7 +465,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);
-  assert.doesNotMatch(repairSkill, /\.\\scripts|<source-repository>\\skills/);
+  assert.doesNotMatch(sourceRepair, /\.\\scripts|<source-repository>\\skills/);
   assert.match(userManual, /<semantic-implementation> <command>/);
   assert.match(userManual, /docs\/os\/linux\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);

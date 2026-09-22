@@ -41,7 +41,10 @@ version exists, so a late maintenance release cannot move users backward.
 
 Install Node.js 20 or newer and Git. No source checkout, npm dependencies, or
 build toolchain is needed to use the packaged skill. Windows, macOS, and Linux
-use the same archive. The separate reporting skill is not bundled.
+use the same archive. Reporting instructions, references, and the report template
+are bundled in the main skill and updated with it. Reporting itself needs neither
+Node.js nor Git; offline or broken-runtime diagnosis can preserve a draft. Older
+standalone report/repair installations are no longer distributed or required.
 
 Download `semantic-flow-X.Y.Z.zip` and `semantic-flow-X.Y.Z.zip.sha256` from the
 same release. Use the uploaded asset, rather than GitHub's source-code archive.

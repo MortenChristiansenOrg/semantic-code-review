@@ -1,6 +1,6 @@
 # Versions and updates
 
-Identify the affected installation before comparing versions. The reporting skill
+Identify the affected installation before comparing versions. The guidance used for reporting
 and a nearby source checkout are not evidence of what the user actually ran.
 Use installation metadata, an update receipt, a known source revision/channel,
 and the affected installed files. Preserve evidence of customization and the
@@ -16,7 +16,7 @@ Use its absolute path. If it cannot run, read `VERSION` and relevant installed
 instructions instead; a missing/older version command is not a reporting blocker.
 Do not run implementation discovery or validation just to obtain a version.
 
-The current experimental format uses `0.1.0` for different source commits. The
+A version label can be shared by different source builds. The
 version helper reports `sourceCommit` only when its directory is in a Git
 checkout; a repository-level copied installation may therefore report the user's
 project commit, not an upstream skill revision. Verify the repository and the
@@ -49,7 +49,9 @@ update/reinstall route, including its source and destination checks. Preserve lo
 customizations and relevant review state before replacement; explain any unresolved
 compatibility risk. For copied installs without a source checkout, use the same
 trusted distribution/installer instead of assuming a sibling developer checkout.
-Never bypass an updater rejection with a force option just to finish a report.
+Reporting guidance shares the main skill's update lifecycle; do not require an
+update or replace the affected installation to obtain newer diagnostics. Record
+unavailable diagnostics honestly. Never bypass an updater rejection with a force option just to finish a report.
 Reproduce safely afterward when possible and record both original and updated
 provenance and outcomes. A fix that is verified after update may resolve the
 request without a new issue; an untested upgrade does not establish resolution.
