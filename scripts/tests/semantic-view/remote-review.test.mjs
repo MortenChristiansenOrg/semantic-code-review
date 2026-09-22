@@ -211,3 +211,22 @@ test('Windows short aliases for the review directory retain remote identity', { 
   const result = spawnSync(process.execPath, [feedbackCli, 'init'], { cwd: shortPath, encoding: 'utf8' });
   assert.notEqual(result.status, 0); assert.match(result.stderr, /personal notes only/);
 });
+
+test('remote commit diffs exclude the overview and earlier edits to the same file', async (t) => {
+  const { author, source, head } = setup(t);
+  author.git('switch', 'feature');
+  author.commitFile('unrelated.txt', 'gap\n', 'Intervening commit');
+  const updated = author.commitFile('code.txt', 'updated\n', 'Update code');
+  author.git('switch', 'main');
+  const review = startRemoteReview(source.root, 'feature');
+  const { createViewerDataSource } = await import('../../../skills/semantic-flow/scripts/semantic-view.mjs');
+  const dataSource = createViewerDataSource(review.repositoryRoot);
+  const data = JSON.parse(dataSource.implementationDataScript().replace(/^window.SEMANTIC_IMPLEMENTATION = /, '').replace(/;\s*$/, ''));
+  assert.equal(data.stages[0].overview, true);
+  assert.ok(data.stages.slice(1).every((stage) => !stage.overview));
+  const stage = data.stages.find((stage) => stage.id === `commit-${updated}`), file = stage.files[0];
+  assert.equal(file.baseRevision, head);
+  assert.equal(file.previousStageId, `commit-${head}`);
+  const diff = await dataSource.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision);
+  assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['original', 'updated']);
+});

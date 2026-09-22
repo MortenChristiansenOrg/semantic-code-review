@@ -429,8 +429,55 @@ function parseDiffPatch(raw, selectorRaw, stats) {
   };
 }
 
+/** Files follow their last occurrence in the ordered review, independently of
+ * intervening stages. The cumulative remote overview is a separate view. */
+function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".semantic-review", "manifest.json"))) {
+  let remote = false;
+  try { remote = Boolean(readReview(reviewId(repoRoot, manifest.implementationId)).remote); } catch { /* Unregistered local artifact. */ }
+  const previous = new Map<string, { stageId: string; headRevision: string; path: string }>();
+  return manifest.stages.map((id) => {
+    const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
+    const overview = remote && id === "branch";
+    const files = stage.change.files.map((file) => {
+      const last = !overview && (previous.get(file.path) || previous.get(file.previousPath));
+      const { previousPath: ignored, ...current } = file;
+      const oldPath = last ? last.path : file.previousPath;
+      return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
+        baseRevision: last ? last.headRevision : stage.change.baseRevision,
+        ...(last ? { previousStageId: last.stageId } : {}) };
+    });
+    if (!overview) for (const file of stage.change.files) {
+      if (file.previousPath) previous.delete(file.previousPath);
+      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path });
+    }
+    return { ...stage, overview, change: { ...stage.change, files } };
+  });
+}
+function fileDiffGroups(stage) {
+  const groups = new Map<string, any[]>();
+  for (const file of stage.change.files) {
+    const base = file.baseRevision || stage.change.baseRevision;
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push(file);
+  }
+  return [...groups].map(([baseRevision, files]) => ({ ...stage, change: { ...stage.change, baseRevision, files } }));
+}
+function stageFileStats(repoRoot, stage, captureGit) {
+  const stats = new Map();
+  for (const group of fileDiffGroups(stage)) {
+    const grouped = buildStageStats(repoRoot, group, captureGit);
+    for (const file of group.change.files) if (grouped.has(file.path)) stats.set(file.path, grouped.get(file.path));
+  }
+  return stats;
+}
+function stageFileDiffs(repoRoot, stage, stats, captureGit) {
+  const diffs = new Map();
+  for (const group of fileDiffGroups(stage)) for (const [file, diff] of buildStageDiffs(repoRoot, group, stats, captureGit)) diffs.set(file, diff);
+  return diffs;
+}
+
 function stageDiffKey(stage) {
-  return `${stage.id}\0${stage.change.baseRevision}\0${stage.change.headRevision}`;
+  return JSON.stringify([stage.id, stage.change.baseRevision, stage.change.headRevision, stage.change.files.map((file) => [file.path, file.previousPath, file.baseRevision])]);
 }
 
 function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
@@ -460,6 +507,7 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
         : previousPath;
     if (!filePath) continue;
     blobs.set(filePath, {
+      kind: status.startsWith("R") ? "renamed" : status === "A" ? "added" : status === "D" ? "deleted" : "modified",
       oldBlob: metadata[2] || "",
       newBlob: metadata[3] || "",
     });
@@ -524,7 +572,7 @@ function indexPatchSections(raw, expectedPaths) {
     const filePath = patchSectionPath(section);
     if (filePath && expected.has(filePath) && !indexed.has(filePath)) {
       indexed.set(filePath, section);
-    } else {
+    } else if (!filePath) {
       unresolved.push(section);
     }
   }
@@ -550,8 +598,9 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
   const full = captureGit(repoRoot, args(3));
   const selector = captureGit(repoRoot, args(0));
   const expectedPaths = stage.change.files.map((file) => file.path);
-  const fullByPath = indexPatchSections(full, expectedPaths);
-  const selectorByPath = indexPatchSections(selector, expectedPaths);
+  const changedPaths = expectedPaths.filter((filePath) => stats.has(filePath));
+  const fullByPath = indexPatchSections(full, changedPaths);
+  const selectorByPath = indexPatchSections(selector, changedPaths);
   return new Map(
     expectedPaths.map((filePath) => [
       filePath,
@@ -730,7 +779,7 @@ function buildInsights(stage) {
 
 function fileRevision(stage, file, stats) {
   return createHash("sha256")
-    .update(stats?.oldBlob || stage.change.baseRevision)
+    .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
     .update("\0")
     .update(stats?.newBlob || stage.change.headRevision)
     .update("\0")
@@ -748,12 +797,10 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
-  const stages = manifest.stages.map((stageId) => {
-    const s = readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
+  const stages = readViewerStages(repoRoot, manifest).map((s) => {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const stats = statsForStage(s);
-    const kindByPath = new Map(s.change.files.map((f) => [f.path, f.kind]));
     const previousPathByPath = new Map(
       s.change.files
         .filter((f) => f.previousPath)
@@ -790,7 +837,9 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
       const fileStats = stats.get(p);
       return {
         path: p,
-        kind: kindByPath.get(p) || "modified",
+        kind: fileStats?.kind || "modified",
+        baseRevision: file.baseRevision,
+        ...(file.previousStageId ? { previousStageId: file.previousStageId } : {}),
         ...(previousPathByPath.has(p)
           ? { previousPath: previousPathByPath.get(p) }
           : {}),
@@ -805,6 +854,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
 
     return {
       id: s.id,
+      overview: s.overview,
       title: s.title,
       summary: s.summary,
       rationale: s.rationale,
@@ -863,7 +913,7 @@ export function createViewerDataSource(
     let record = stageCache.get(key);
     if (!record) {
       record = {
-        stats: buildStageStats(repoRoot, stage, captureGit),
+        stats: stageFileStats(repoRoot, stage, captureGit),
         diffs: null,
         stage,
         pages: new Map(),
@@ -888,7 +938,7 @@ export function createViewerDataSource(
     if (!manifest.stages.includes(stageId)) {
       throw new Error(`unknown stage "${stageId}"`);
     }
-    return readJson(path.join(implementationRoot, "stages", `${stageId}.json`));
+    return readViewerStages(repoRoot, manifest).find((stage) => stage.id === stageId);
   };
 
   return {
@@ -910,14 +960,14 @@ export function createViewerDataSource(
     async fileDiff(stageId, filePath, baseRevision, headRevision, mode = "changes", offset = 0, targetSide = null, targetLine = null) {
       if (!["changes", "full"].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
       if (targetSide && (!["old", "new"].includes(targetSide) || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
-      let record = stageCache.get(
-        `${stageId}\0${baseRevision}\0${headRevision}`,
-      );
+      let record = [...stageCache.values()].reverse().find((record) => record.stage.id === stageId &&
+        record.stage.change.headRevision === headRevision && record.stage.change.files.some((file) => file.path === filePath && file.baseRevision === baseRevision));
       let stage = record?.stage;
       if (!stage) {
         stage = readStage(stageId);
+        if (!stage.change.files.some((file) => file.path === filePath)) throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
         if (
-          stage.change.baseRevision !== baseRevision ||
+          stage.change.files.find((file) => file.path === filePath)?.baseRevision !== baseRevision ||
           stage.change.headRevision !== headRevision
         ) {
           throw new Error(`stage "${stageId}" changed; reload the viewer`);
@@ -931,7 +981,7 @@ export function createViewerDataSource(
       const small = stage.change.files.length <= 40 && [...record.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
       if (small && mode === "changes" && offset === 0 && !targetSide) {
         try {
-          if (!record.diffs) record.diffs = buildStageDiffs(repoRoot, stage, record.stats, captureGit);
+          if (!record.diffs) record.diffs = stageFileDiffs(repoRoot, stage, record.stats, captureGit);
           const diff = record.diffs.get(filePath);
           if (diff) return { ...diff, truncated: false, nextOffset: diff.truncated ? diff.lines.length : null, mode };
         } catch { /* An unusually wide patch uses the bounded streaming path. */ }
@@ -939,7 +989,7 @@ export function createViewerDataSource(
       record.pages ??= new Map();
       const key = JSON.stringify([filePath, mode, offset, targetSide, targetLine]);
       if (!record.pages.has(key)) {
-        record.pages.set(key, pagedFileDiff(repoRoot, stage, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
+        record.pages.set(key, pagedFileDiff(repoRoot, { ...stage, change: { ...stage.change, baseRevision: file.baseRevision } }, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
           .catch((error) => { record.pages.delete(key); throw error; }));
         // Bound retained pages; in-flight consumers retain their own Promise.
         while (record.pages.size > 32) record.pages.delete(record.pages.keys().next().value);
@@ -1524,9 +1574,9 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
   const file = stage?.files.find((file) => file.path === input.path);
   const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
-  if (stage.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  if (file.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
   return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath,
-    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
 export function registeredReviews() {

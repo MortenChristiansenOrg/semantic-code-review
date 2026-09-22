@@ -660,7 +660,7 @@ test("viewer client refreshes data without reloading the page", () => {
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
   assert.match(app, /Notes <b>\$\{activeNoteCount\(\)\}<\/b>/);
-  assert.match(app, /base: entry\.stage\.baseRevision/);
+  assert.match(app, /base: fileBaseRevision\(entry\)/);
   assert.match(app, /head: entry\.stage\.headRevision/);
   assert.match(app, /pendingLazyJump = null;\s+state\.notesOpen = false/);
   assert.match(app, /function resumePendingLazyJump\(\)/);
@@ -847,4 +847,55 @@ test("viewer skill version comes from artifact metadata and can be unavailable",
   delete manifest.skillVersion;
   repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
   assert.equal(data().skillVersion, null);
+});
+
+test("repeated files compare with their last stage across gaps, renames, and cumulative bases", async (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const base = repository.git('rev-parse', 'HEAD');
+  beginStage(repository);
+  const first = repository.commitFile('repeat.txt', 'first\nstable\n', 'First occurrence');
+  organizeStage(repository);
+  repository.semantic('stage', 'finish');
+  const template = repository.readJson('.semantic-review/stages/implementation.json');
+  const gap = repository.commitFile('other.txt', 'other\n', 'Intervening file');
+  const second = repository.commitFile('repeat.txt', 'second\nstable\n', 'Second occurrence');
+  repository.git('mv', 'repeat.txt', 'renamed.txt');
+  repository.git('commit', '-m', 'Rename file');
+  const renamed = repository.git('rev-parse', 'HEAD');
+  const last = repository.commitFile('renamed.txt', 'third\nstable\n', 'Update renamed file');
+  const stages = [
+    ['first', first, [{ path: 'repeat.txt', kind: 'added' }]],
+    ['gap', gap, [{ path: 'other.txt', kind: 'added' }]],
+    ['second', second, [{ path: 'repeat.txt', kind: 'added' }, { path: 'other.txt', kind: 'added' }]],
+    ['rename', renamed, [{ path: 'renamed.txt', previousPath: 'repeat.txt', kind: 'renamed' }]],
+    ['last', last, [{ path: 'renamed.txt', previousPath: 'repeat.txt', kind: 'renamed' }]],
+  ];
+  for (const [id, headRevision, files] of stages) repository.write(`.semantic-review/stages/${id}.json`, JSON.stringify({
+    ...template, id, change: { ...template.change, baseRevision: base, headRevision, files },
+    nodes: [{ id: 'change', description: 'Change', changes: files.map(({ path }) => ({ path, classification: 'behavior' })) }],
+  }));
+  const manifest = repository.readJson('.semantic-review/manifest.json');
+  repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
+  const source = createViewerDataSource(repository.root);
+  const data = JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const stage = data.stages[2], file = stage.files[0];
+  assert.equal(file.baseRevision, first);
+  assert.equal(file.previousStageId, 'first');
+  assert.equal(file.kind, 'modified');
+  assert.equal(file.additions, 1); assert.equal(file.deletions, 1);
+  for (const mode of ['changes', 'full']) {
+    const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
+    assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['first', 'second']);
+  }
+  // An unchanged repeated file must not receive another file's patch.
+  const unchanged = stage.files[1];
+  const empty = await source.fileDiff(stage.id, unchanged.path, unchanged.baseRevision, stage.headRevision);
+  assert.deepEqual(empty.lines, []);
+  const renameFile = data.stages[3].files[0], lastFile = data.stages[4].files[0];
+  assert.equal(renameFile.baseRevision, second); assert.equal(renameFile.previousPath, 'repeat.txt');
+  assert.equal(lastFile.baseRevision, renamed); assert.equal(lastFile.previousPath, undefined);
+  assert.equal(lastFile.kind, 'modified');
+  const diff = await source.fileDiff('last', lastFile.path, lastFile.baseRevision, last);
+  assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['second', 'third']);
 });

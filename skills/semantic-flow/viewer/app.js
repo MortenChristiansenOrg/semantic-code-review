@@ -125,13 +125,15 @@
     Object.assign(data, next);
     nodeTitleById.clear(); stageById.clear(); stageNumberById.clear();
     fileById.clear(); fileByPreviousId.clear(); flatFiles.length = 0;
-    data.stages.forEach((stage, index) => {
-      stageById.set(stage.id, stage); stageNumberById.set(stage.id, index + 1);
+    let stageNumber = 0;
+    data.stages.forEach((stage) => {
+      stageById.set(stage.id, stage);
+      if (!stage.overview) stageNumberById.set(stage.id, ++stageNumber);
       stage.nodes.forEach((node) => nodeTitleById.set(`${stage.id}:${node.id}`, node.title));
       stage.files.forEach((file) => {
         const id = fileKey(stage.id, file.path);
         const previous = previousFiles.get(id);
-        if (previous && previous.stage.baseRevision === stage.baseRevision && previous.stage.headRevision === stage.headRevision && previous.file.revision === file.revision && previous.file.kind === file.kind && Array.isArray(previous.file.lines)) {
+        if (previous && fileBaseRevision(previous) === (file.baseRevision || stage.baseRevision) && previous.stage.headRevision === stage.headRevision && previous.file.revision === file.revision && previous.file.kind === file.kind && Array.isArray(previous.file.lines)) {
           for (const key of ["lines", "_diffMode", "nextOffset", "_pageOffset"]) file[key] = previous.file[key];
         }
         const entry = { id, stage, file };
@@ -190,7 +192,7 @@
   const nodeTitleById = new Map();
   data.stages.forEach((s) => s.nodes.forEach((n) => nodeTitleById.set(`${s.id}:${n.id}`, n.title)));
   const stageById = new Map(data.stages.map((stage) => [stage.id, stage]));
-  const stageNumberById = new Map(data.stages.map((stage, i) => [stage.id, i + 1]));
+  const stageNumberById = new Map(data.stages.filter((stage) => !stage.overview).map((stage, i) => [stage.id, i + 1]));
 
   const requirements = Array.isArray(data.requirements) ? data.requirements : [];
   // Criterion ids are only unique within a specification, so every acceptance
@@ -203,6 +205,7 @@
     flatFiles.push({ id: fileKey(stage.id, file.path), stage, file });
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
+  const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
   const diffRequests = new Map();
   async function ensureFileDiff(entry, offset = 0, force = false, target = null) {
     if (!entry) return;
@@ -217,7 +220,7 @@
     const query = new URLSearchParams({
       stage: entry.stage.id,
       path: entry.file.path,
-      base: entry.stage.baseRevision,
+      base: fileBaseRevision(entry),
       head: entry.stage.headRevision,
       mode, offset: String(offset),
     });
@@ -533,11 +536,11 @@
     const entry = approvalEntry(id);
     if (!entry?.file.revision) return null;
     const m = entry.membership;
-    return JSON.stringify([entry.file.revision, entry.stage.baseRevision, m.classification, m.hunks || null, m.lineRanges || null]);
+    return JSON.stringify([entry.file.revision, fileBaseRevision(entry), m.classification, m.hunks || null, m.lineRanges || null]);
   }
   function approvalEndpoint(entry) {
     return { stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
-      baseRevision: entry.stage.baseRevision, headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
+      baseRevision: fileBaseRevision(entry), headRevision: entry.stage.headRevision, fileRevision: entry.file.revision, ownership: structuredClone(entry.membership) };
   }
   function changeApproval(id, kind) {
     if (approvalOps.has(id)) return;
@@ -775,7 +778,7 @@
     });
   }
   function acceptanceStatus(ref) {
-    const stages = data.stages
+    const stages = data.stages.filter((stage) => !stage.overview)
       .map((s, i) => ({ s, i }))
       .filter((x) => (x.s.specificationRefs || []).includes(ref));
     if (!stages.length) return { key: "uncovered", stages: [] };
@@ -845,21 +848,24 @@
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg>`;
   }
 
+  function visibleStages() {
+    return data.stages.filter((stage) => Boolean(stage.overview) === Boolean(state.showOverview));
+  }
   function reviewable() {
     let n = 0;
-    data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
+    visibleStages().forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
     return n;
   }
   function approvedCount() {
     let n = 0;
-    data.stages.forEach((s) => {
+    visibleStages().forEach((s) => {
       if (stageApproved(s)) n += 1;
       s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
       stageFileApprovals(s).forEach((key) => { if (approved(key)) n += 1; });
     });
     return n;
   }
-  const pct = () => Math.round((approvedCount() / reviewable()) * 100);
+  const pct = () => reviewable() ? Math.round((approvedCount() / reviewable()) * 100) : 0;
 
   function splitPath(path) {
     const i = path.lastIndexOf("/");
@@ -1698,7 +1704,7 @@
     return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "");
   }
   function comparisonKey(id, entry) {
-    return JSON.stringify([id, retainedApproval(id)?.snapshotId, entry.stage.baseRevision, entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
   }
   async function loadApprovalComparison(id, entry, offset = 0) {
     const approval = retainedApproval(id);
@@ -1945,13 +1951,13 @@
   }
 
   function hero() {
-    const totalFiles = data.stages.reduce((a, s) => a + s.files.length, 0);
-    const totalNodes = data.stages.reduce((a, s) => a + s.nodes.length, 0);
+    const totalFiles = visibleStages().reduce((a, s) => a + s.files.length, 0);
+    const totalNodes = visibleStages().reduce((a, s) => a + s.nodes.length, 0);
     return `<section class="hero">
       <h1>${esc(data.title)}</h1>
       <p class="hero-sum">${esc(data.summary)}</p>
       <div class="hero-line">
-        <span><b>${data.stages.length}</b> stages</span>
+        <span><b>${visibleStages().length}</b> ${state.showOverview ? "overview" : "stages"}</span>
         <span><b>${totalNodes}</b> steps</span>
         <span><b>${totalFiles}</b> files</span>
         <span class="hero-skill-version">Skill version: ${esc(data.skillVersion || "Unknown")}</span>
@@ -2080,8 +2086,12 @@
     return `<div class="story">
       ${hero()}
       ${specificationPanel()}
+      ${data.stages.some((stage) => stage.overview) ? `<nav class="review-views" aria-label="Review view">
+        <button class="tb-btn" type="button" data-action="review-view" data-view="stages" aria-pressed="${!state.showOverview}">By stage</button>
+        <button class="tb-btn" type="button" data-action="review-view" data-view="overview" aria-pressed="${Boolean(state.showOverview)}">All changes</button>
+      </nav>` : ""}
       <div class="spine">
-        ${data.stages.map((s, i) => stageSection(s, i)).join("")}
+        ${visibleStages().map((s, i) => stageSection(s, i)).join("")}
       </div>
       <footer class="story-end">
         <span class="eyebrow">End of review</span>
@@ -2092,7 +2102,7 @@
 
   /* ---- side panels ------------------------------------------------------ */
   function coveragePanel() {
-    const rows = data.stages.map((s, i) => {
+    const rows = visibleStages().map((s, i) => {
       const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
       const fileApprovals = stageFileApprovals(s);
       const fd = fileApprovals.filter(approved).length;
@@ -2527,6 +2537,9 @@
       if (reviewsOpen) void refreshReviews();
     } else if (a === "manage-review-data") {
       void manageReviewData(btn.dataset.reviewId);
+    } else if (a === "review-view") {
+      state.showOverview = btn.dataset.view === "overview";
+      persist(); render();
     } else if (a === "refresh-remote") {
       if (!refreshingRemote) void refreshRemote();
     } else if (a === "refresh-reviews") {
@@ -2660,6 +2673,8 @@
   // panel, and scroll its conversation into view (targeting the comments so a
   // tall file body cannot push them off-screen).
   function jumpToElement(kind, id, stageId, nodeId) {
+    const targetStageId = kind === "stage" ? id : stageId || noteFileEntry(kind, id)?.stage.id;
+    if (targetStageId) state.showOverview = Boolean(stageById.get(targetStageId)?.overview);
     pendingLazyJump = null;
     state.notesOpen = false;
     state.coverageOpen = false;

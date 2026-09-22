@@ -73,7 +73,10 @@ is built to make an AI-generated change fast to understand:
 - **Remote branch reviews.** Run `/semantic-flow review --branch <branch-name>`
   to review someone else's work with private notes, even without Semantic Flow
   artifacts. Remote reviews have isolated local checkouts, commit groupings,
-  a refresh button, and comparisons against previously approved content.
+  a refresh button, and comparisons against previously approved content. Stages
+  show each file relative to its previous occurrence; the cumulative diff is
+  available separately under **All changes**. Regular reviews use the same
+  incremental file comparisons.
 - **Explicit approvals.** Approve the whole change, a single stage, or an
   individual file, and see when a previously approved file changes again.
 
