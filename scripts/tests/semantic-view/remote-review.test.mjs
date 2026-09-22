@@ -204,7 +204,7 @@ test('remote clones support nested paths under the private review directory', (t
 
 test('Windows short aliases for the review directory retain remote identity', { skip: process.platform !== 'win32' }, (t) => {
   const { source } = setup(t), review = startRemoteReview(source.root, 'feature');
-  const shortPath = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${review.repositoryRoot}") do @echo %~sI`], { encoding: 'utf8' }).trim();
+  const shortPath = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${review.repositoryRoot}") do @echo %~sI`], { encoding: 'utf8', windowsVerbatimArguments: true }).trim();
   assert.ok(shortPath, 'Windows must return a checkout path');
   if (shortPath === review.repositoryRoot) { t.skip('This volume does not create 8.3 aliases'); return; }
   assert.equal(reviewId(shortPath, review.implementationId), review.id);
