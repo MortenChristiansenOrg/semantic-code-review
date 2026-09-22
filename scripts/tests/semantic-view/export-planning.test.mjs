@@ -899,3 +899,40 @@ test("repeated files compare with their last stage across gaps, renames, and cum
   const diff = await source.fileDiff('last', lastFile.path, lastFile.baseRevision, last);
   assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['second', 'third']);
 });
+
+test("a rename follows its source history when the destination was previously deleted", async (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  const first = repository.commitFile('source.txt', 'original\nstable one\nstable two\nstable three\n', 'Add source');
+  organizeStage(repository);
+  repository.semantic('stage', 'finish');
+  const template = repository.readJson('.semantic-review/stages/implementation.json');
+  const destination = repository.commitFile('destination.txt', 'unrelated\n', 'Old destination');
+  repository.git('rm', 'destination.txt'); repository.git('commit', '-m', 'Delete destination');
+  const deleted = repository.git('rev-parse', 'HEAD');
+  const updated = repository.commitFile('source.txt', 'updated\nstable one\nstable two\nstable three\n', 'Update source');
+  repository.git('mv', 'source.txt', 'destination.txt'); repository.git('commit', '-m', 'Rename source');
+  const renamed = repository.git('rev-parse', 'HEAD');
+  const stages = [
+    ['source', template.change.baseRevision, first, { path: 'source.txt', kind: 'added' }],
+    ['delete', destination, deleted, { path: 'destination.txt', kind: 'deleted' }],
+    ['update', deleted, updated, { path: 'source.txt', kind: 'modified' }],
+    ['rename', updated, renamed, { path: 'destination.txt', previousPath: 'source.txt', kind: 'renamed' }],
+  ];
+  for (const [id, baseRevision, headRevision, file] of stages) repository.write(`.semantic-review/stages/${id}.json`, JSON.stringify({
+    ...template, id, change: { ...template.change, baseRevision, headRevision, files: [file] },
+    nodes: [{ id: 'change', description: 'Change', changes: [{ path: file.path, classification: 'behavior' }] }],
+  }));
+  const manifest = repository.readJson('.semantic-review/manifest.json');
+  repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
+  const source = createViewerDataSource(repository.root);
+  const data = JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const file = data.stages.at(-1).files[0];
+  assert.equal(file.baseRevision, updated);
+  assert.equal(file.previousStageId, 'update');
+  assert.equal(file.previousPath, 'source.txt');
+  assert.equal(file.additions, 0); assert.equal(file.deletions, 0);
+  const diff = await source.fileDiff('rename', file.path, file.baseRevision, renamed);
+  assert.deepEqual(diff.lines, []);
+});

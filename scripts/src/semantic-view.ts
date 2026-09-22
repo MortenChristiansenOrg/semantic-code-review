@@ -436,7 +436,7 @@ function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".se
   return manifest.stages.map((id) => {
     const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
     const files = stage.change.files.map((file) => {
-      const last = previous.get(file.path) || previous.get(file.previousPath);
+      const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
       const { previousPath: ignored, ...current } = file;
       const oldPath = last ? last.path : file.previousPath;
       return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
