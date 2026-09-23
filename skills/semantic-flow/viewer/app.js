@@ -428,6 +428,7 @@
       hideApproved: false,
       fileView: {},
       hideDeleted: {},
+      wrapLines: false,
       threadCollapsed: {},
       openLineThreads: {},
       activeFiles: {},
@@ -1699,7 +1700,8 @@
     const k = entry.file.kind, id = fileApprovalKey(entry.stage.id, activeFileNodeId(entry.id), entry.file.path);
     const stale = approvalState(id) === "stale", since = sinceApprovalEnabled(id);
     const comparison = stale ? `<div class="view-toggle"><button class="vt ${since ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(id)}" aria-pressed="${since}">Since approval</button></div>` : "";
-    return `${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
+    const wrap = `<div class="view-toggle"><button class="vt ${state.wrapLines ? "is-on" : ""}" type="button" data-action="toggle-wrap" aria-pressed="${Boolean(state.wrapLines)}">Wrap lines</button></div>`;
+    return `${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
@@ -1781,7 +1783,7 @@
     const approvalId = fileApprovalKey(entry.stage.id, opts.focusNodeId || activeFileNodeId(entry.id), entry.file.path);
     const sinceApproval = sinceApprovalEnabled(approvalId);
     const comparisonEntry = approvalEntry(approvalId);
-    return `<section class="diff-panel ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
+    return `<section class="diff-panel ${state.wrapLines ? "wrap-lines" : ""} ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
       ${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
     </section>`;
@@ -2613,6 +2615,9 @@
       else { collapseThenRender((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
       openNoteEdit(Number(btn.dataset.index));
+    } else if (a === "toggle-wrap") {
+      state.wrapLines = !state.wrapLines;
+      persist(); render();
     } else if (a === "set-view") {
       state.fileView[btn.dataset.id] = btn.dataset.mode;
       const entry = fileById.get(btn.dataset.id);

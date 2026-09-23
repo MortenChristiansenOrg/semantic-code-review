@@ -1885,3 +1885,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border: 1px dashed var(--signal); outline: 2px solid var(--signal-soft); outline-offset: 2px;
   background: #33251f; box-shadow: inset 0 0 0 1px var(--signal-soft);
 }
+
+/* Wrap visual rows while keeping each source line and its gutter intact. */
+.wrap-lines .diff-grid { width: 100%; min-width: 0; }
+.wrap-lines .drow { grid-template-columns: 3.4em 3.4em 1.3em minmax(0, 1fr); align-items: start; }
+.wrap-lines .drow > code { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.wrap-lines .drow .lact { align-self: start; }

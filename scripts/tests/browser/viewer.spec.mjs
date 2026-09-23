@@ -1346,3 +1346,51 @@ test('the newest remote commit retains an earlier approval after rewritten histo
     return !!state.approvals?.[approvalKey(latest.id, 'changes')]?.snapshotId && !!state.approvals?.[oldKey];
   });
 });
+
+for (const kind of ['modified', 'added', 'deleted']) {
+  test(`line wrapping preserves source rows and anchors for ${kind} files`, async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 });
+    const data = fixture();
+    const file = data.stages[0].files[0];
+    file.kind = kind;
+    const text = `    const long = "${'abcdef'.repeat(100)}";`;
+    file.lines = [{ t: kind === 'deleted' ? 'del' : 'add', o: kind === 'deleted' ? 7 : undefined, n: kind === 'deleted' ? undefined : 7, s: text, h: 1 }];
+    await mount(page, data);
+    await openFile(page);
+    const panel = page.locator('.cinema-diff');
+    const toggle = panel.getByRole('button', { name: 'Wrap lines', exact: true });
+    const row = panel.locator('[data-line-id]');
+    const anchor = `l:first:${kind === 'deleted' ? 'old' : 'new'}:7:shared.js`;
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(await panel.locator('.diff-scroll').evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+    await toggle.focus();
+    await toggle.press('Space');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(await panel.locator('.diff-scroll').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    expect(await row.evaluate(el => el.offsetHeight > 40)).toBe(true);
+    await expect(row).toHaveAttribute('data-line-id', anchor);
+    await expect(row.locator('code')).toHaveText(text);
+    await expect(row.locator('.tok-key').first()).toHaveText('const');
+    await expect(row.locator('.ln').last()).toHaveText('7');
+    await row.locator('.lact').click();
+    await expect(panel.locator('.line-thread')).toHaveAttribute('data-thread', anchor);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(await panel.locator('.diff-scroll').evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true);
+  });
+}
+
+test('wrapping persists across file navigation and full file mode', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  await saveAction(page, () => page.getByRole('button', { name: 'Wrap lines', exact: true }).click(), state => state.wrapLines === true);
+  await page.getByRole('button', { name: 'Full file', exact: true }).click();
+  await expect(page.locator('.cinema-diff .diff-panel')).toHaveClass(/wrap-lines/);
+  await openFile(page, 'first-two');
+  for (const button of await page.getByRole('button', { name: 'Wrap lines', exact: true }).all()) {
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+  }
+  await page.reload();
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
+});
