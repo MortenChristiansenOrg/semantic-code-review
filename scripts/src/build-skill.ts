@@ -63,9 +63,16 @@ const compilation = await build({
   logLevel: "info",
 });
 
+const markdownCompilation = await build({
+  entryPoints: [path.join(viewerSource, "markdown.js")],
+  nodePaths: [path.join(scriptsRoot, "node_modules")],
+  bundle: true, platform: "browser", format: "iife", target: "es2022",
+  minify: true, legalComments: "eof", metafile: true, write: false,
+});
+
 // Include the complete license texts of dependencies actually bundled at runtime.
 const dependencies = new Map<string, string>();
-for (const input of Object.keys(compilation.metafile.inputs)) {
+for (const input of Object.keys({ ...compilation.metafile.inputs, ...markdownCompilation.metafile.inputs })) {
   if (!input.includes("node_modules/")) continue;
   let directory = path.dirname(path.resolve(input));
   while (!fs.existsSync(path.join(directory, "package.json"))) {
@@ -132,5 +139,7 @@ for (const file of ["index.html", "app.js", "styles.css", "favicon.svg"]) {
     path.join(viewerDestination, file),
   );
 }
+
+fs.writeFileSync(path.join(viewerDestination, "markdown.js"), markdownCompilation.outputFiles[0].contents);
 
 console.log(`Compiled semantic-flow skill at ${skillRoot}.`);

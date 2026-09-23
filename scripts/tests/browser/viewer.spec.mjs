@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('app.js', viewer), 'utf8');
+const markdownSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/markdown.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';
 const approvalKey = (stage, node, file = 'shared.js') => `m:${JSON.stringify([stage, node, file])}`;
@@ -94,10 +95,11 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
       target.status = url.pathname.endsWith('resolve') ? 'resolved' : 'open';
       return json({ ok: true, status: target.status });
     }
+    if (url.pathname === '/markdown.js') return route.fulfill({ contentType: 'text/javascript', body: markdownSource });
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/app.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
   });
   await page.goto('http://localhost/');
   await expect(page.locator('.stage')).toHaveCount(2);
@@ -1393,4 +1395,77 @@ test('wrapping persists across file navigation and full file mode', async ({ pag
   await page.reload();
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
+});
+
+for (const kind of ['modified', 'added', 'deleted', 'renamed']) {
+  test(`Markdown preview renders the complete ${kind} file safely and restores source`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    file.path = 'docs/Guide.MD'; file.kind = kind;
+    if (kind === 'renamed') file.previousPath = 'old/Guide.MD';
+    const errors = await mount(page, data);
+    const content = '# Heading\n\nUnchanged paragraph with **bold** and *emphasis*.\n\n[Relative](../README.md) [Web](https://example.com) [Unsafe](javascript:alert(1))\n\n![Image](./image.png)\n\n- first\n- second\n\n1. ordered\n\n> quotation\n\n```js\nconst example = 1;\n```\n\n| Key | Value |\n| --- | --- |\n| A | B |\n\n- [x] done\n- [ ] pending\n\n<script>window.markdownAttack = true</script><img src="x" onerror="window.markdownAttack=true"><button data-action="toggle-notes">Injected</button><a href="javascript:alert(1)">bad link</a><p data-action="toggle-wrap" class="diff-panel" id="app">text</p>';
+    const requests = [];
+    await page.route('**/api/file-content*', route => {
+      requests.push(new URL(route.request().url()));
+      return route.fulfill({ json: { ok: true, content, revision: (kind === 'deleted' ? 'a' : 'b').repeat(40), side: kind === 'deleted' ? 'base' : 'head' } });
+    });
+    await openFile(page);
+    const source = page.locator('.cinema-diff .source-view');
+    const before = await source.locator('[data-line-id]').evaluateAll(rows => rows.map(row => row.dataset.lineId));
+    await page.getByRole('button', { name: 'Preview', exact: true }).focus();
+    await page.getByRole('button', { name: 'Preview', exact: true }).press('Enter');
+    const preview = page.locator('.markdown-preview');
+    await expect(preview.getByRole('heading', { name: 'Heading' })).toBeVisible();
+    await expect(page.locator('.markdown-revision')).toContainText(kind === 'deleted' ? 'Base revision (deleted file) aaaaaaaaaaaa' : 'Head revision bbbbbbbbbbbb');
+    for (const selector of ['strong', 'em', 'ul', 'ol', 'blockquote', 'pre code', 'table']) await expect(preview.locator(selector).first()).toBeVisible();
+    await expect(preview.locator('input[type=checkbox]')).toHaveCount(2);
+    await expect(preview.locator('input').first()).toBeChecked();
+    await expect(preview.locator('input').first()).toBeDisabled();
+    await expect(preview.locator('script, button, [data-action], [onerror], [id], [class]')).toHaveCount(0);
+    await expect(preview.getByText('bad link', { exact: true })).not.toHaveAttribute('href');
+    expect(await page.evaluate(() => window.markdownAttack)).toBeUndefined();
+    const relative = new URL(await preview.getByRole('link', { name: 'Relative', exact: true }).getAttribute('href'));
+    expect(relative.searchParams.get('target')).toBe('README.md');
+    expect(relative.searchParams.get('head')).toBe('b'.repeat(40));
+    const image = new URL(await preview.getByRole('img', { name: 'Image', exact: true }).getAttribute('src'));
+    expect(image.searchParams.get('target')).toBe('docs/image.png');
+    expect(requests[0].searchParams.get('path')).toBe('docs/Guide.MD');
+    await expect(source).toBeHidden();
+    await page.getByRole('button', { name: 'Source', exact: true }).click();
+    await expect(source).toBeVisible();
+    expect(await source.locator('[data-line-id]').evaluateAll(rows => rows.map(row => row.dataset.lineId))).toEqual(before);
+    await source.locator('.lact').first().click();
+    await expect(source.locator('.line-thread')).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+}
+
+test('Markdown preview failures retain source controls and non-Markdown files have no toggle', async ({ page }) => {
+  await mount(page);
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Preview', exact: true })).toHaveCount(0);
+  const data = fixture(); data.stages[0].files[0].path = 'README.markdown';
+  await mount(page, data);
+  await page.route('**/api/file-content*', route => route.fulfill({ status: 422, json: { ok: false, error: 'Target unavailable at this revision.' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.cinema-diff')).toContainText('Preview unavailable: Target unavailable');
+  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  await expect(page.locator('.cinema-diff .source-view')).toBeVisible();
+});
+
+test('switching Markdown preview preserves a line draft and its source anchor', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'README.md';
+  await mount(page, data);
+  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: '# Document', revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  const source = page.locator('.cinema-diff .source-view');
+  await source.locator('.lact').first().click();
+  const editor = source.locator('textarea');
+  await editor.fill('Keep this review draft');
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.markdown-preview h1')).toHaveText('Document');
+  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  await expect(editor).toHaveValue('Keep this review draft');
+  await expect(source.locator('.line-thread')).toHaveAttribute('data-thread', 'l:first:new:1:README.md');
 });

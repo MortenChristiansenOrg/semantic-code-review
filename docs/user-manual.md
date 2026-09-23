@@ -510,6 +510,23 @@ diff open. The combined file-comment and personal-note counts toggle the notes
 without closing the diff. The **Add note** footer stays visible when existing
 comments are collapsed.
 
+**Wrap lines** enables soft wrapping in file and diff views, including long
+unbroken strings. It starts off and is remembered across files in the review.
+Wrapped rows keep their source line numbers and feedback anchors.
+
+Markdown files (`.md` and `.markdown`, case insensitive) offer **Source / Preview**.
+Preview shows the complete file at the labeled head revision, or the base revision
+for a deleted file. Return to Source to inspect diffs or leave line feedback;
+existing drafts, notes, and source-view settings are retained. Preview supports
+headings, lists, links, tables, task lists, and fenced code. Embedded scripts,
+unsafe links, and interactive HTML are removed.
+
+Relative links open repository files as plain text at the displayed revision;
+PNG, JPEG, GIF, and WebP images render from that same revision. Missing targets,
+unsupported images, binary files, and files above the 4 MiB preview limit remain
+unavailable without affecting the source view. Rendered diffs and feedback on
+rendered elements are not supported.
+
 Approval snapshots retain file content up to 20 MiB per endpoint. Larger files
 retain their actual size and Git object identity, with an explicit unavailable
 comparison and no claimed SHA-256 content hash. This limit does not prevent

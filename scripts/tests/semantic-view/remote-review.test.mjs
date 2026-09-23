@@ -106,6 +106,9 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
 
 test('review --branch enforces read-only mode and authoritative approval lineage over HTTP', async (t) => {
   const { source, author } = setup(t);
+  author.git('switch', 'feature');
+  author.commitFile('docs/README.md', '# Preview\n\nComplete document.\n', 'Add documentation');
+  author.git('switch', 'main');
   const result = spawnSync(process.execPath, [flowCli, 'review', '--branch', 'feature', '--project', source.root], {
     cwd: source.root, encoding: 'utf8', env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: '1' }, timeout: 30_000,
   });
@@ -125,7 +128,24 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   const feedback = await fetch(url + 'api/feedback/export' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" }, body: '{}' });
   assert.equal(feedback.status, 403);
   const post = (route, body) => fetch(url + route + query, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const initial = endpoint((await (await fetch(url + 'api/implementation' + query)).json()).implementation);
+  const implementation = (await (await fetch(url + 'api/implementation' + query)).json()).implementation;
+  const docStage = implementation.stages.find(stage => stage.files.some(file => file.path === 'docs/README.md'));
+  const docFile = docStage.files.find(file => file.path === 'docs/README.md');
+  const contentUrl = new URL(url + 'api/file-content' + query);
+  for (const [key, value] of Object.entries({ stage: docStage.id, path: docFile.path, base: docFile.baseRevision, head: docStage.headRevision })) contentUrl.searchParams.set(key, value);
+  const document = await (await fetch(contentUrl)).json();
+  assert.equal(document.content, '# Preview\n\nComplete document.\n');
+  assert.equal(document.revision, docStage.headRevision);
+  contentUrl.searchParams.set('raw', '1');
+  const raw = await fetch(contentUrl);
+  assert.equal(raw.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.equal(raw.headers.get('x-content-type-options'), 'nosniff');
+  assert.match(raw.headers.get('content-security-policy'), /sandbox/);
+  contentUrl.searchParams.set('target', '../outside');
+  assert.equal((await fetch(contentUrl)).status, 422);
+  contentUrl.searchParams.set('review', 'wrong-review');
+  assert.equal((await fetch(contentUrl)).status, 409);
+  const initial = endpoint(implementation);
   const saved = await (await post('api/approval-snapshots', initial)).json();
   assert.equal(saved.ok, true);
   patchReviewState(identity.reviewId, identity.generation, [change(['approvals', `m:${JSON.stringify([initial.stageId, initial.nodeId, initial.path])}`], { ...initial, ...saved, at: 1, rev: 'initial' })]);
