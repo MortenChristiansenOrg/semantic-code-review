@@ -955,6 +955,27 @@ export function createViewerDataSource(
       return cachedScript;
     },
     snapshot: snapshotReader,
+    fileContent(stageId, filePath, baseRevision, headRevision, targetPath = null) {
+      const stage = readStage(stageId);
+      const file = stage.change.files.find((item) => item.path === filePath);
+      if (!file || file.baseRevision !== baseRevision || stage.change.headRevision !== headRevision) throw new Error("File revision changed; reload the viewer.");
+      if (!/\.(md|markdown)$/i.test(filePath)) throw new Error("Preview requires a Markdown file.");
+      const deleted = stageRecord(stage).stats.get(filePath)?.kind === "deleted";
+      const revision = deleted ? baseRevision : headRevision;
+      const displayedPath = deleted ? file.previousPath || filePath : filePath;
+      const resourcePath = targetPath ?? displayedPath;
+      if (typeof resourcePath !== "string" || !resourcePath || resourcePath.includes("\\") || resourcePath.includes("\0") || resourcePath.startsWith("/") || resourcePath.split("/").some((part) => part === ".." || part === "." || !part)) throw new Error("Invalid repository path.");
+      const tree = captureGit(repoRoot, ["--literal-pathspecs", "ls-tree", "-z", revision, "--", resourcePath]);
+      const match = /^(100644|100755) blob ([a-f0-9]+)\t([^\0]+)\0$/.exec(tree);
+      if (!match || match[3] !== resourcePath) throw new Error("Target unavailable at this revision.");
+      const limit = 4 * 1024 * 1024;
+      const size = Number(captureGit(repoRoot, ["cat-file", "-s", match[2]]));
+      if (!Number.isSafeInteger(size) || size > limit) throw new Error("Preview unavailable: file exceeds 4 MiB.");
+      const bytes = execFileSync("git", ["cat-file", "blob", match[2]], { cwd: repoRoot, env: reviewEnvironment(), windowsHide: true, maxBuffer: limit });
+      const mediaType = imageMediaType(bytes);
+      if (!mediaType && bytes.includes(0)) throw new Error("Preview unavailable for binary files.");
+      return { revision, path: resourcePath, side: deleted ? "base" : "head", content: bytes.toString("base64"), mediaType: mediaType || "text/plain; charset=utf-8" };
+    },
     async fileDiff(stageId, filePath, baseRevision, headRevision, mode = "changes", offset = 0, targetSide = null, targetLine = null) {
       if (!["changes", "full"].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
       if (targetSide && (!["old", "new"].includes(targetSide) || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
@@ -1796,6 +1817,19 @@ function serveViewer({
       return;
     }
 
+    if (request.method === "GET" && pathname === "/api/file-content") {
+      try {
+        const result = await dataSource.call("fileContent", [url.searchParams.get("stage"), url.searchParams.get("path"), url.searchParams.get("base"), url.searchParams.get("head"), url.searchParams.get("target")]);
+        if (url.searchParams.get("raw") === "1") {
+          if (url.searchParams.get("image") === "1" && !result.mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
+          const bytes = Buffer.from(result.content, "base64");
+          response.writeHead(200, { "content-type": result.mediaType, "content-length": bytes.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
+          response.end(bytes);
+        } else sendJson(response, 200, { ok: true, ...result, content: Buffer.from(result.content, "base64").toString("utf8") });
+      } catch (error) { sendJson(response, 422, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/api/diff") {
       const stageId = url.searchParams.get("stage");
       const filePath = url.searchParams.get("path");
@@ -1969,7 +2003,7 @@ function createViewerWorker(repoRoot, context: ReviewContext, management = false
     get healthy() { return !stopped; },
     call(method, args) {
       if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
-      const key = ["snapshot", "fileDiff", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
+      const key = ["snapshot", "fileDiff", "fileContent", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
       if (key && reads.has(key)) return reads.get(key);
       if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
       const id = ++sequence;
@@ -2013,7 +2047,7 @@ if (!isMainThread && workerData?.repoRoot) {
       let result;
       if (method === "readReview") result = readReview(context.reviewId);
       else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
-      else if (["snapshot", "fileDiff", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      else if (["snapshot", "fileDiff", "fileContent", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
@@ -2089,7 +2123,7 @@ async function main() {
   startupWorker = dataSource;
   const feedbackCli = locateFeedbackCli();
   const fingerprint = createHash("sha256");
-  for (const file of [fileURLToPath(import.meta.url), feedbackCli, ...["app.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))].filter(Boolean)) {
+  for (const file of [fileURLToPath(import.meta.url), feedbackCli, ...["app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))].filter(Boolean)) {
     fingerprint.update(fs.readFileSync(file));
   }
   const viewerVersion = fingerprint.digest("hex");

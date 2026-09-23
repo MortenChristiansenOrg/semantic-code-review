@@ -220,3 +220,31 @@ test('streamed rename pages do not include a newly recreated old path', async (t
   assert.ok(result.lines.some((row) => row.s === 'renamed change'));
   assert.equal(result.lines.some((row) => row.s === 'unrelated replacement'), false);
 });
+
+test('Markdown content uses complete immutable head/base blobs and confines relative assets', (t) => {
+  const repo = createRepository(t);
+  repo.commitFile('docs/readme.md', '# Base\n\n' + 'unchanged\n'.repeat(1200), 'Base document');
+  repo.commitFile('docs/deleted.md', '# Deleted base\n', 'Deleted document');
+  repo.commitFile('docs/asset.txt', 'base asset', 'Base asset');
+  initializeImplementation(repo); beginStage(repo);
+  repo.write('docs/readme.md', repo.read('docs/readme.md') + '\n# Tail\n');
+  repo.write('docs/asset.txt', 'head asset');
+  repo.git('rm', 'docs/deleted.md'); repo.git('add', '.'); repo.git('commit', '-m', 'Review'); organizeStage(repo); repo.semantic('stage', 'finish');
+  const stage = repo.readJson('.semantic-review/stages/implementation.json');
+  const source = createViewerDataSource(repo.root);
+  const args = ['implementation', 'docs/readme.md', stage.change.baseRevision, stage.change.headRevision];
+  const read = (...input) => { const result = source.fileContent(...input); return { ...result, content: Buffer.from(result.content, 'base64').toString('utf8') }; };
+  const result = read(...args);
+  assert.equal(result.side, 'head'); assert.equal(result.revision, stage.change.headRevision);
+  assert.equal(result.content, repo.read('docs/readme.md'));
+  repo.write('docs/readme.md', 'dirty worktree');
+  assert.equal(read(...args).content, result.content);
+  assert.equal(read(...args, 'docs/asset.txt').content, 'head asset');
+  const deleted = ['implementation', 'docs/deleted.md', stage.change.baseRevision, stage.change.headRevision];
+  assert.equal(read(...deleted).content, '# Deleted base\n');
+  assert.equal(read(...deleted).side, 'base');
+  assert.equal(read(...deleted, 'docs/asset.txt').content, 'base asset');
+  for (const target of ['../outside', '/etc/passwd', 'docs/../../outside', 'docs/./asset.txt', 'docs/missing', 'docs', 'docs\\asset.txt']) assert.throws(() => read(...args, target), /Invalid repository path|unavailable/);
+  assert.throws(() => read('implementation', 'docs/readme.md', 'bad', stage.change.headRevision), /revision changed/);
+  assert.throws(() => read('implementation', 'missing.md', stage.change.baseRevision, stage.change.headRevision), /revision changed/);
+});

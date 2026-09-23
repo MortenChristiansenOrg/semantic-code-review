@@ -45,6 +45,7 @@
   const approvalOps = new Map();
   const approvalComparisons = new Map();
   const approvalErrors = new Map();
+  const markdownPreviews = new Map();
 
   let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
 
@@ -429,6 +430,7 @@
       fileView: {},
       hideDeleted: {},
       wrapLines: false,
+      markdownPreview: {},
       threadCollapsed: {},
       openLineThreads: {},
       activeFiles: {},
@@ -1696,12 +1698,58 @@
   // Diff view controls: mode toggle + hide-removed. Added/deleted files render
   // their full contents once, so neither control applies to them.
   function sinceApprovalEnabled(id) { return approvalState(id) === "stale" && state.approvalComparisons[id] !== false; }
+  function isMarkdown(entry) { return /\.(md|markdown)$/i.test(entry.file.path); }
+  function markdownMode(entry) { return isMarkdown(entry) && Boolean(state.markdownPreview[entry.id]); }
+  function markdownUrl(entry, target, image = false) {
+    const url = new URL("/api/file-content", window.location.href);
+    const params = { stage: entry.stage.id, path: entry.file.path, base: fileBaseRevision(entry), head: entry.stage.headRevision, review: requestReviewId, generation: requestGeneration || "" };
+    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+    if (target != null) {
+      const filePath = entry.file.kind === "deleted" ? entry.file.previousPath || entry.file.path : entry.file.path;
+      try {
+        const root = new URL("https://repository.invalid/");
+        const resolved = new URL(target, new URL(filePath.split("/").map(encodeURIComponent).join("/"), root));
+        if (resolved.origin !== root.origin) return null;
+        url.searchParams.set("target", decodeURIComponent(resolved.pathname.slice(1)));
+        url.searchParams.set("raw", "1");
+        if (image) url.searchParams.set("image", "1");
+        url.hash = resolved.hash;
+      } catch { return null; }
+    }
+    return url.href;
+  }
+  function markdownBody(entry) {
+    const key = markdownUrl(entry);
+    let preview = markdownPreviews.get(key);
+    if (!preview) {
+      preview = { loading: true, entryId: entry.id };
+      markdownPreviews.set(key, preview);
+      // Open previews must survive cache pressure, including collapsed nodes.
+      for (const [cachedKey, cached] of markdownPreviews) {
+        if (markdownPreviews.size <= 12) break;
+        if (cachedKey !== key && !(cached.entryId in state.activeFiles && state.markdownPreview[cached.entryId])) markdownPreviews.delete(cachedKey);
+      }
+      fetch(key).then(async (response) => {
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || "Could not load Markdown.");
+        if (!window.renderMarkdownPreview) throw new Error("Markdown renderer unavailable; reload the viewer.");
+        preview.html = window.renderMarkdownPreview(result.content, (target, image) => markdownUrl(entry, target, image));
+        preview.label = `Complete file · ${result.side === "base" ? "Base revision (deleted file)" : "Head revision"} ${result.revision.slice(0, 12)}`;
+      }).catch((error) => { preview.error = error.message; }).finally(() => { preview.loading = false; render(); });
+    }
+    if (preview.loading) return `<div class="diff-empty" role="status">Loading Markdown preview…</div>`;
+    if (preview.error) return `<div class="diff-empty" role="status">Preview unavailable: ${esc(preview.error)}</div>`;
+    return `<div class="markdown-revision">${esc(preview.label)} · Switch to Source to review lines.</div><article class="markdown-preview">${preview.html}</article>`;
+  }
   function diffControls(entry) {
     const k = entry.file.kind, id = fileApprovalKey(entry.stage.id, activeFileNodeId(entry.id), entry.file.path);
     const stale = approvalState(id) === "stale", since = sinceApprovalEnabled(id);
     const comparison = stale ? `<div class="view-toggle"><button class="vt ${since ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(id)}" aria-pressed="${since}">Since approval</button></div>` : "";
     const wrap = `<div class="view-toggle"><button class="vt ${state.wrapLines ? "is-on" : ""}" type="button" data-action="toggle-wrap" aria-pressed="${Boolean(state.wrapLines)}">Wrap lines</button></div>`;
-    return `${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
+    const preview = markdownMode(entry);
+    const markdown = isMarkdown(entry) ? `<div class="view-toggle" role="group" aria-label="Markdown view"><button class="vt ${preview ? "" : "is-on"}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="source" aria-pressed="${!preview}">Source</button><button class="vt ${preview ? "is-on" : ""}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="preview" aria-pressed="${preview}">Preview</button></div>` : "";
+    if (preview) return markdown;
+    return `${markdown}${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
@@ -1785,7 +1833,8 @@
     const comparisonEntry = approvalEntry(approvalId);
     return `<section class="diff-panel ${state.wrapLines ? "wrap-lines" : ""} ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
       ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      ${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}
+      <div class="source-view" ${markdownMode(entry) ? "hidden" : ""}>${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}</div>
+      ${markdownMode(entry) ? markdownBody(entry) : ""}
     </section>`;
   }
   function diffToolbar(entry) {
@@ -2615,6 +2664,14 @@
       else { collapseThenRender((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
       openNoteEdit(Number(btn.dataset.index));
+    } else if (a === "markdown-mode") {
+      const entry = fileById.get(btn.dataset.id);
+      if (entry && btn.dataset.mode === "preview") {
+        const key = markdownUrl(entry);
+        if (markdownPreviews.get(key)?.error) markdownPreviews.delete(key);
+      }
+      state.markdownPreview[btn.dataset.id] = btn.dataset.mode === "preview";
+      persist(); render();
     } else if (a === "toggle-wrap") {
       state.wrapLines = !state.wrapLines;
       persist(); render();
@@ -2716,6 +2773,7 @@
       const entry = p && fileById.get(fileKey(p.stageId, p.path));
       if (entry) {
         if (p.side === "old") state.hideDeleted[entry.id] = false;
+        state.markdownPreview[entry.id] = false;
         lineEntry = entry;
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
