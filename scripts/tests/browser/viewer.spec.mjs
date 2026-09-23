@@ -1469,3 +1469,26 @@ test('switching Markdown preview preserves a line draft and its source anchor', 
   await expect(editor).toHaveValue('Keep this review draft');
   await expect(source.locator('.line-thread')).toHaveAttribute('data-thread', 'l:first:new:1:README.md');
 });
+
+test('more than twelve open Markdown previews do not evict each other', async ({ page }) => {
+  const data = fixture(), template = data.stages[0].files[0];
+  data.stages[0].files = Array.from({ length: 13 }, (_, i) => ({ ...structuredClone(template), path: `doc${i}.md` }));
+  await mount(page, data);
+  let requests = 0;
+  await page.route('**/api/file-content*', route => {
+    requests++;
+    return route.fulfill({ json: { ok: true, content: '# Document', revision: 'b'.repeat(40), side: 'head' } });
+  });
+  await page.locator('.stage-title[data-id="first"]').click();
+  const details = page.locator('details[data-node="first-one"]');
+  await details.locator('summary').click();
+  for (let i = 0; i < 13; i++) {
+    const row = details.locator('.frow-wrap').nth(i);
+    await row.locator('.frow-open').click();
+    await row.getByRole('button', { name: 'Preview', exact: true }).click();
+    await expect(row.locator('.markdown-preview h1')).toHaveText('Document');
+  }
+  await page.getByRole('button', { name: /^Notes/ }).click();
+  await expect(details.locator('.markdown-preview h1')).toHaveCount(13);
+  expect(requests).toBe(13);
+});

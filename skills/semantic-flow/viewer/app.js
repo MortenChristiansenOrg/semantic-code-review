@@ -1722,9 +1722,13 @@
     const key = markdownUrl(entry);
     let preview = markdownPreviews.get(key);
     if (!preview) {
-      preview = { loading: true };
+      preview = { loading: true, entryId: entry.id };
       markdownPreviews.set(key, preview);
-      while (markdownPreviews.size > 12) markdownPreviews.delete(markdownPreviews.keys().next().value);
+      // Open previews must survive cache pressure, including collapsed nodes.
+      for (const [cachedKey, cached] of markdownPreviews) {
+        if (markdownPreviews.size <= 12) break;
+        if (cachedKey !== key && !(cached.entryId in state.activeFiles && state.markdownPreview[cached.entryId])) markdownPreviews.delete(cachedKey);
+      }
       fetch(key).then(async (response) => {
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || "Could not load Markdown.");
