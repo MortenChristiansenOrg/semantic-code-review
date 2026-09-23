@@ -2665,6 +2665,11 @@
     } else if (a === "edit-note") {
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "markdown-mode") {
+      const entry = fileById.get(btn.dataset.id);
+      if (entry && btn.dataset.mode === "preview") {
+        const key = markdownUrl(entry);
+        if (markdownPreviews.get(key)?.error) markdownPreviews.delete(key);
+      }
       state.markdownPreview[btn.dataset.id] = btn.dataset.mode === "preview";
       persist(); render();
     } else if (a === "toggle-wrap") {
@@ -2768,6 +2773,7 @@
       const entry = p && fileById.get(fileKey(p.stageId, p.path));
       if (entry) {
         if (p.side === "old") state.hideDeleted[entry.id] = false;
+        state.markdownPreview[entry.id] = false;
         lineEntry = entry;
         lineFileId = entry.id;
         lineMembership = (entry.file.memberships || []).find((m) => m.nodeId === nodeId) || (entry.file.memberships || [])[0];
@@ -2796,7 +2802,6 @@
       kind === "line" && lineEntry && !fileHasLine(lineEntry.file, parseLineId(id).side, parseLineId(id).line);
     if (waitForLazyLine) {
       pendingLazyJump = { id, fileId: lineEntry.id, membership: lineMembership };
-      state.markdownPreview[lineEntry.id] = false;
       state.fileView[lineEntry.id] = "full";
       delete lineEntry.file.lines;
       ensureFileDiff(lineEntry, 0, true, parseLineId(id));

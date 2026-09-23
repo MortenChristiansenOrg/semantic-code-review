@@ -1492,3 +1492,39 @@ test('more than twelve open Markdown previews do not evict each other', async ({
   await expect(details.locator('.markdown-preview h1')).toHaveCount(13);
   expect(requests).toBe(13);
 });
+
+test('Markdown preview retries a transient failure only after explicit selection', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'README.md';
+  await mount(page, data);
+  let requests = 0;
+  await page.route('**/api/file-content*', route => {
+    requests++;
+    return requests === 1
+      ? route.fulfill({ status: 503, json: { ok: false, error: 'Viewer is busy; retry after the current requests finish.' } })
+      : route.fulfill({ json: { ok: true, content: '# Recovered', revision: 'b'.repeat(40), side: 'head' } });
+  });
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.cinema-diff')).toContainText('Preview unavailable: Viewer is busy');
+  await page.getByRole('button', { name: /^Notes/ }).click();
+  expect(requests).toBe(1);
+  await page.locator('.side.notes [data-action="toggle-notes"]').click();
+  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.markdown-preview h1')).toHaveText('Recovered');
+  expect(requests).toBe(2);
+});
+
+test('jumping to an already-loaded Markdown line exits Preview', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'README.md';
+  data.feedback = [thread('markdown-line', 'open', { kind: 'line', stageId: 'first', path: 'README.md', side: 'new', line: 1, label: 'README.md:1' })];
+  await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:1:README.md', nodeId: 'first-one', exported: true, threadId: 'markdown-line', body: 'Feedback markdown-line' }] });
+  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: '# Document', revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.markdown-preview h1')).toBeVisible();
+  await showNotes(page);
+  await page.locator('.side.notes [data-action="jump-to"][data-kind="line"]').click();
+  await expect(page.getByRole('button', { name: 'Source', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.cinema-diff [data-line-id="l:first:new:1:README.md"]')).toBeVisible();
+});
