@@ -88,13 +88,21 @@ approved `--use-current-source` override. It is never an automatic fallback.
 
 ## Maintainer workflow: “bump the version”
 
-Work in a branch and follow the normal PR workflow. A request for a release
-authorizes its preparation; carry out publication when the maintainer's request
-includes it. A request for a PR ends at the reviewed PR unless publication was
-also requested. Do not use the Semantic Flow skill on this repository.
+Prepare releases directly on the repository's default branch (`master` currently;
+use `main` if that becomes the default). No release PR is required. A request to
+bump the version or prepare a release authorizes preparation; an explicit request
+to publish also authorizes pushing the release commit and its matching tag.
+Use a release PR when the maintainer requests one, and stop at that PR unless
+merging or publication was also requested. Do not use the Semantic Flow skill on
+this repository.
 
-1. Fetch tags and inspect published releases. Identify the last published version
-   and the intended release commit. Read the diff, tests, and relevant PRs/issues
+The Release workflow is triggered by pushing a `v*` tag, independently of PRs.
+Pushing a commit to the default branch runs Checks but does not publish a release.
+
+1. Fetch the remote default branch and tags, and start from its latest commit in
+   a clean checkout. If the current checkout contains other work, use a separate
+   worktree. Inspect published releases and identify the last published version
+   and the intended release contents. Read the diff, tests, and relevant PRs/issues
    since that release; commit prefixes alone cannot classify compatibility.
    For the first packaged release, the source baseline is
    `08aade5457db696039ddd435406cf0c98b2aa31f` (the last `0.1.0` source snapshot).
@@ -114,20 +122,28 @@ also requested. Do not use the Semantic Flow skill on this repository.
    Make specific breaking changes and upgrade actions prominent; include the
    experimental note during `0.x`. Generated GitHub notes are research input,
    not the finished changelog. The publisher removes only the leading version/date
-   heading (and following blank space) from the reviewed file because GitHub
+   heading (and following blank space) from the committed file because GitHub
    already displays the version as the release title. All note sections remain
    intact, and publication verifies this exact rendered body.
 4. Run `npm ci --prefix scripts`, `npm test --prefix scripts`, install Chromium
    with `npm exec --prefix scripts -- playwright install chromium`, and run
    `npm run test:browser --prefix scripts`. Commit the version, notes, and built
-   skill with the implementation. Do not include unrelated uncommitted work.
+   skill as the release preparation commit. If those files are already committed
+   and correct for the intended release, reuse that commit. Do not include
+   unrelated uncommitted work.
 5. From that clean commit, run `npm run release --prefix scripts -- package`.
    This writes `dist/semantic-flow-X.Y.Z.zip` and its checksum, checks metadata,
    extracts the actual archive, and runs the bundled commands without a source
    checkout. Repeating it on the same commit produces the same bytes. CI runs
    this rehearsal on all three supported operating systems.
-6. After the PR lands and publication is authorized, check out the intended
-   release commit and create/push its matching annotated tag, for example
+6. When publication is authorized, push the tested release commit to the remote
+   default branch with a normal fast-forward push (for example,
+   `git push origin HEAD:master`). Never force-push. If the remote has advanced,
+   incorporate those commits, reassess the release contents and notes, and repeat
+   validation and packaging before retrying. For an explicitly requested release
+   PR, merge it first and validate/package the resulting release commit.
+   Confirm the intended release commit is on the remote default branch, check it
+   out with a clean working tree, and create/push its matching annotated tag, for example
    `git tag -a v0.2.0 -m "Release 0.2.0"` and `git push origin v0.2.0`.
    The Release workflow runs the full validation matrix, rebuilds from the exact
    tag, and publishes through `npm run release --prefix scripts -- publish`.
@@ -137,7 +153,7 @@ also requested. Do not use the Semantic Flow skill on this repository.
    and latest-release selection. Report the version choice and validation outcome.
 
 Publication creates a draft, uploads the archive/checksum, downloads and compares
-them with the tested files, verifies the reviewed notes, then publishes. Retry a
+them with the tested files, verifies the committed notes, then publishes. Retry a
 failed workflow on the same tag: draft assets can be replaced, while published
 releases are refused. If a published release needs a fix, make a new version.
 If publication succeeded but a final check failed, inspect the existing release

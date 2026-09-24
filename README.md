@@ -163,5 +163,7 @@ implementation.
 > changes in place. It does not provide backward-compatibility guarantees yet.
 
 See [release policy and maintainer workflow](docs/releases.md) for versioning,
-release notes, and the “bump the version” procedure. Product releases use `0.x`;
+release notes, and the “bump the version” procedure. Releases can be prepared and
+published directly from the default branch (`master` currently), without a PR;
+pushing the version tag triggers validation and publication. Product releases use `0.x`;
 any release may contain breaking changes until the explicit 1.0 transition.

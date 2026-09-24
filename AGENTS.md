@@ -17,7 +17,10 @@ diagnose and report defects in the skill, CLI, or viewer.
 
 When asked to bump the version or create a release, follow [docs/releases.md](docs/releases.md).
 Classify actual changes, use the release helper, write notes from the template,
-and validate the built archive. Follow the requested PR/publication scope.
+and validate the built archive. Prepare releases directly on the default branch
+(`master` currently); a release PR is optional and only needed when requested.
+An explicit request to publish authorizes pushing the release commit and tag.
+Follow the requested PR/publication scope.
 
 ### Updating an installed skill from this repository
 
