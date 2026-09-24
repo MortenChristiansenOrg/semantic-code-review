@@ -1412,10 +1412,15 @@ for (const kind of ['modified', 'added', 'deleted', 'renamed']) {
     await openFile(page);
     const source = page.locator('.cinema-diff .source-view');
     const before = await source.locator('[data-line-id]').evaluateAll(rows => rows.map(row => row.dataset.lineId));
+    const markdownToggle = page.getByRole('group', { name: 'Markdown view', exact: true });
+    const sourcePosition = await markdownToggle.boundingBox();
+    const wrapPosition = await page.getByRole('button', { name: 'Wrap lines', exact: true }).boundingBox();
+    expect(sourcePosition.x).toBeGreaterThan(wrapPosition.x + wrapPosition.width);
     await page.getByRole('button', { name: 'Preview', exact: true }).focus();
     await page.getByRole('button', { name: 'Preview', exact: true }).press('Enter');
     const preview = page.locator('.markdown-preview');
     await expect(preview.getByRole('heading', { name: 'Heading' })).toBeVisible();
+    expect(await markdownToggle.boundingBox()).toEqual(sourcePosition);
     await expect(page.locator('.markdown-revision')).toContainText(kind === 'deleted' ? 'Base revision (deleted file) aaaaaaaaaaaa' : 'Head revision bbbbbbbbbbbb');
     for (const selector of ['strong', 'em', 'ul', 'ol', 'blockquote', 'pre code', 'table']) await expect(preview.locator(selector).first()).toBeVisible();
     await expect(preview.locator('input[type=checkbox]')).toHaveCount(2);
@@ -1433,6 +1438,7 @@ for (const kind of ['modified', 'added', 'deleted', 'renamed']) {
     await expect(source).toBeHidden();
     await page.getByRole('button', { name: 'Source', exact: true }).click();
     await expect(source).toBeVisible();
+    expect(await markdownToggle.boundingBox()).toEqual(sourcePosition);
     expect(await source.locator('[data-line-id]').evaluateAll(rows => rows.map(row => row.dataset.lineId))).toEqual(before);
     await source.locator('.lact').first().click();
     await expect(source.locator('.line-thread')).toBeVisible();
