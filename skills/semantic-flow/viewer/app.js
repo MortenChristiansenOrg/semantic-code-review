@@ -1749,7 +1749,7 @@
     const preview = markdownMode(entry);
     const markdown = isMarkdown(entry) ? `<div class="view-toggle" role="group" aria-label="Markdown view"><button class="vt ${preview ? "" : "is-on"}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="source" aria-pressed="${!preview}">Source</button><button class="vt ${preview ? "is-on" : ""}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="preview" aria-pressed="${preview}">Preview</button></div>` : "";
     if (preview) return markdown;
-    return `${markdown}${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}`;
+    return `${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}${markdown}`;
   }
   function diffHeader(entry, opts = {}) {
     const { file, stage } = entry;
