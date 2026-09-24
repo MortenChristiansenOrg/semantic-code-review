@@ -1905,6 +1905,14 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .markdown-preview blockquote { border-left: 3px solid var(--line); padding-left: 16px; color: var(--muted); }
 .markdown-preview pre { padding: 14px; background: var(--panel); overflow: auto; }
 .markdown-preview code { font-family: var(--mono); font-size: .9em; white-space: pre-wrap; }
+.markdown-preview :not(pre) > code {
+  padding: .1em .35em;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--raise);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 .markdown-preview table { border-collapse: collapse; display: block; overflow: auto; }
 .markdown-preview :is(td,th) { border: 1px solid var(--line); padding: 6px 12px; }
 .markdown-preview img { max-width: 100%; height: auto; }
