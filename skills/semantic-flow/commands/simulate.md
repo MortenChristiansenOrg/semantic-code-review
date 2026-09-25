@@ -47,7 +47,8 @@ not collide with existing local refs or artifacts.
 
 Construct the expected integrated result before creating semantic stages:
 
-1. Create a clean isolated worktree at the recorded target head.
+1. Create a clean isolated worktree at the recorded target head, selecting and
+   reporting its path under [the shared worktree location rules](../docs/runtime.md#choose-an-isolated-worktree-location).
 2. In that worktree, create a uniquely named temporary recovery branch outside
    the planned semantic branch prefix.
 3. Squash-merge the recorded source commit into the recorded target head and

@@ -96,7 +96,20 @@ safe skill updates on Linux and Windows.
 
 ## 2. Initialize at trunk
 
-Start with a clean worktree at the local target branch head:
+Implementation and simulation use isolated worktrees. An explicit destination
+takes precedence over an established repository location and naming convention.
+When neither applies, the default is `<main-project-path>.worktrees/<feature-slug>`:
+for a project at `/code/my-todo`, work on “my feature” goes in
+`/code/my-todo.worktrees/my-feature`, even if the session starts in another linked
+worktree. The skill reports the selected absolute path before creation. Occupied
+automatic destinations receive `-2`, `-3`, etc.; an occupied explicit destination
+requires another path unless the command permits reuse. Implementation may reuse
+the intended clean worktree in this repository at the required revision;
+simulation creates a new worktree. Existing contents are never overwritten. See the
+[shared location rules](../skills/semantic-flow/docs/runtime.md#choose-an-isolated-worktree-location)
+for selection and safe reuse.
+
+Initialize from the clean isolated worktree at the local target branch head:
 
 ```json
 {

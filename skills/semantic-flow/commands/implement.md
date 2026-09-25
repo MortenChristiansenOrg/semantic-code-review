@@ -27,7 +27,8 @@ instead of initializing another implementation.
 For new work:
 
 1. Require a clean source worktree at the intended target branch head.
-2. Create or use a clean isolated implementation worktree.
+2. Create or use a clean isolated implementation worktree, selecting and
+   reporting its path under [the shared worktree location rules](../docs/runtime.md#choose-an-isolated-worktree-location).
 3. Gather the source work items and apply the specification boundaries in
    `../docs/artifact-quality.md`. Default each requested user story or source
    work item to one specification with all of its acceptance criteria. Create
