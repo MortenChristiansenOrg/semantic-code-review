@@ -44,6 +44,40 @@ Use the Git repository containing the user's current working directory unless
 the user supplied another project path. Keep this repository distinct from the
 installed skill and its maintained source checkout.
 
+## Choose an isolated worktree location
+
+Apply this rule whenever creating an implementation or simulation worktree:
+
+1. Honor an explicit user-provided destination.
+2. Otherwise, inspect applicable repository instructions (including `AGENTS.md`),
+   documented tooling, and existing worktrees for an established location and
+   naming convention. Follow that convention when one exists; do not infer one
+   from a single ad hoc checkout.
+3. If no convention exists, use `<main-project-path>.worktrees/<feature-slug>`.
+   Resolve the main checkout from `git worktree list --porcelain`, even when the
+   session started in a linked worktree. The parent directory is a sibling of
+   that main checkout, not of the current linked worktree. Derive a short,
+   lowercase, hyphen-separated slug from the requested work or implementation
+   ID; use only ASCII letters, digits, and hyphens, starting with a letter or
+   digit. For example, `/code/my-todo` uses
+   `/code/my-todo.worktrees/my-feature`. Use native path separators on Windows.
+   If there is no main checkout (a bare repository), resolve the project path
+   with the user before applying this fallback.
+
+Before creation, check both filesystem entries and registered Git worktrees.
+Never overwrite, delete, or force-reuse a colliding destination, including an
+empty directory or dangling symlink. For an automatically chosen path, append
+`-2`, `-3`, and so on to the directory name until it is unused, keeping the
+selected parent directory. For an explicit destination, report the collision
+and ask for another path instead of silently changing it. An existing worktree
+may be reused only when the command permits reuse and it is verified to be the
+intended clean worktree in this repository at the required revision.
+
+Report the selected absolute path and whether it follows the user override,
+repository convention, or fallback before creating or reusing the worktree.
+Create it without force; if creation races with another process, reassess the
+collision under the same rules.
+
 ## Resolve an active artifact worktree
 
 Commands that need an existing artifact must not assume it lives in the current
