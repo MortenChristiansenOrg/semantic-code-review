@@ -102,7 +102,7 @@ export function resolveCodeTarget(root: string, target: CodeTarget, head: string
       const oldStart = Number(match[1]), oldCount = Number(match[2] ?? 1), newCount = Number(match[4] ?? 1);
       // Changed immediate boundaries can indicate a block moved out of its scope.
       const overlaps = oldCount === 0
-        ? oldStart >= target.startLine && oldStart < target.endLine
+        ? oldStart >= target.startLine - 1 && oldStart <= target.endLine
         : oldStart <= target.endLine + 1 && oldStart + oldCount >= target.startLine;
       if (overlaps) return stale("Targeted code was edited, moved, or deleted; review the insight before retargeting.", currentPath);
       if (oldCount === 0 ? oldStart < target.startLine : oldStart + oldCount <= target.startLine) shift += newCount - oldCount;

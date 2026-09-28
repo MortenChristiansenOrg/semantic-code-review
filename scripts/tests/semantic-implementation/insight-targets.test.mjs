@@ -47,6 +47,21 @@ test("changed, inserted, deleted and moved target lines require review", async t
   });
 });
 
+test("insertions at span boundaries require review while distant insertions remain mappable", async t => {
+  for (const [label, text, expected] of [
+    ["immediately before", content.replace("  if (!value)", "  if (enabled) {\n  if (!value)"), "needs-review"],
+    ["immediately after", content.replace("  return value;\n", "  return value;\n  }\n"), "needs-review"],
+    ["before surrounding context", "// another header\n" + content, "mapped"],
+    ["after surrounding context", content + "// another footer\n", "mapped"],
+  ]) await t.test(label, t => {
+    const { repo, target } = fixture(t);
+    const head = repo.commitFile("src/check.js", text, label);
+    const result = resolveCodeTarget(repo.root, target, head);
+    assert.equal(result.status, expected);
+    assert.deepEqual(result.original, target);
+  });
+});
+
 test("deleted files, ambiguous repeated code and unavailable originals retain inspectable context", async t => {
   await t.test("deleted file", t => {
     const { repo, target } = fixture(t);
