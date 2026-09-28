@@ -95,6 +95,32 @@ insights, validation evidence, and `change`.
 
 `dependsOn` contains only direct semantic prerequisites. Manifest order is both a topological order and the linear branch order.
 
+### Optional insight code targets
+
+Every insight kind, and validation evidence, may include `codeTarget`. It supplements
+`nodeRefs`; untargeted items remain valid. The target stores `path`, immutable
+commit `revision`, `blobId`, inclusive one-based `startLine` / `endLine`, and
+`contextStartLine` / `context` (an array of original lines including up to three
+surrounding lines on each side). The context must contain the entire span and,
+when the original commit is available, must match that snapshot. Only regular
+text files are supported. The target may refer to an unchanged file in the stage
+head as well as a changed file.
+
+The original anchor is immutable until explicitly retargeted or removed. Viewer
+resolution compares it with the stage's recorded head, not the working tree.
+Line shifts away from the span and Git-detected file renames map automatically.
+Moved blocks map only when the diff preserves the span and its immediate boundaries.
+Edits touching the span or its immediate boundaries, deleted blocks, ambiguous repeated code, and
+unavailable original revisions are marked **Needs review**. Automatic mapping
+indicates unchanged target text, not a fresh review of the reasoning or its
+surrounding behavior. Saved original context remains readable after publication,
+archiving, or pruning old commits. Mapping does not mutate the artifact.
+
+After reviewing changed code and updating the insight if necessary, use
+`stage target` to capture a new anchor or `--remove` to drop only the link. A
+normal insight replacement preserves an existing anchor unless a new target
+is supplied. Format `0.1` remains unchanged.
+
 ### Change
 
 | Field | Meaning |

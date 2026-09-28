@@ -93,6 +93,9 @@ export const semanticImplementationApi: CliSignature = {
         option("item-id", "<id>", { required: true }),
         option("replace"),
         option("finalized"),
+        option("code-path", "<repository-path>"),
+        option("code-start", "<line>"),
+        option("code-end", "<line>"),
         option("category", "<specification|engineering>"),
         option("summary", "<text>"),
         option("rationale", "<text>"),
@@ -106,6 +109,12 @@ export const semanticImplementationApi: CliSignature = {
         option("question", "<text>"),
         option("node-ref", "<node-id>", { repeatable: true }),
       ],
+    },
+    {
+      command: "stage target",
+      options: [option("stage", "<stage-id|current>"), option("finalized"),
+        option("collection", "<collection>", { required: true }), option("item-id", "<id>", { required: true }),
+        option("remove"), option("code-path", "<repository-path>"), option("code-start", "<line>"), option("code-end", "<line>")],
     },
     {
       command: "stage organize",
@@ -127,6 +136,9 @@ export const semanticImplementationApi: CliSignature = {
         option("node-ref", "<node-id>", { repeatable: true }),
         option("replace"),
         option("finalized"),
+        option("code-path", "<repository-path>"),
+        option("code-start", "<line>"),
+        option("code-end", "<line>"),
       ],
     },
     {

@@ -102,6 +102,14 @@ individual command options; validation items add `kind: "validation"`. Keep the
 stage and finalized flag outside the items array. Do not delay important
 observations or create filler to make a batch.
 
+When an insight explains particular code, optionally attach a committed line or
+span with `codePath`, `codeStart`, and optional `codeEnd` on `stage record` or
+`stage validation` (including batch items). All insight kinds support this.
+Coordinates are one-based and inclusive at the stage's committed head; do not
+capture against uncommitted edits. To attach later, use `stage target` with
+`collection`, `itemId`, and the same code coordinates. Read the `stages` API module
+for its exact contract. Links supplement the required node references.
+
 Run focused checks while implementing. Do not record routine execution of
 existing test suites. Preserve only review-relevant validation, such as
 temporary tests or probes that are later removed, manual checks, and noteworthy

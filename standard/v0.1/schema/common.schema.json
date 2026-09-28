@@ -232,6 +232,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       }
     },
@@ -255,6 +258,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       }
     },
@@ -278,6 +284,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       }
     },
@@ -305,6 +314,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       }
     },
@@ -327,6 +339,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       }
     },
@@ -365,6 +380,9 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
         }
       },
       "allOf": [
@@ -403,6 +421,52 @@
         },
         "nodeRefs": {
           "$ref": "#/$defs/nodeRefs"
+        },
+        "codeTarget": {
+          "$ref": "#/$defs/codeTarget"
+        }
+      }
+    },
+    "codeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "revision",
+        "blobId",
+        "startLine",
+        "endLine",
+        "contextStartLine",
+        "context"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repositoryPath"
+        },
+        "revision": {
+          "$ref": "#/$defs/sha1"
+        },
+        "blobId": {
+          "$ref": "#/$defs/sha1"
+        },
+        "startLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "endLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contextStartLine": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

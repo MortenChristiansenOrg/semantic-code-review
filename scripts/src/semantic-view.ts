@@ -1,3 +1,5 @@
+import { resolveCodeTarget } from "./shared/insight-targets.js";
+export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
  * Semantic Flow review viewer launcher.
  *
@@ -697,7 +699,7 @@ async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetS
     truncated: false, nextOffset: more ? offset + lines.length : null, offset, mode };
 }
 
-function buildInsights(stage) {
+function buildInsights(stage, repoRoot) {
   const insights = [];
   (stage.decisions || []).forEach((d) =>
     insights.push({
@@ -772,7 +774,10 @@ function buildInsights(stage) {
       nodeRefs: q.nodeRefs || [],
     }),
   );
-  return insights;
+  return insights.map(insight => {
+    const target = stage[insight.collection]?.find(item => item.id === insight.id)?.codeTarget;
+    return target ? { ...insight, codeTarget: resolveCodeTarget(repoRoot, target, stage.change.headRevision) } : insight;
+  });
 }
 
 function fileRevision(stage, file, stats) {
@@ -863,7 +868,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
       headRevision: head,
       nodes,
       files,
-      insights: buildInsights(s),
+      insights: buildInsights(s, repoRoot),
     };
   });
 
@@ -943,12 +948,12 @@ export function createViewerDataSource(
     implementationDataScript() {
       const snapshot = snapshotReader();
       if (snapshot.revision !== cachedRevision) {
-        const data = buildImplementationData(
+        const data = withValidationContext(() => buildImplementationData(
           repoRoot,
           (stage) => stageRecord(stage).stats,
           snapshot,
           captureGit,
-        );
+        ));
         cachedScript = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(data)};\n`;
         cachedRevision = snapshot.revision;
       }

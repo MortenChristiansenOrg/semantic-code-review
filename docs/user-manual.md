@@ -208,6 +208,32 @@ Record insights when they become relevant:
 <semantic-implementation> stage record --input <decision.json>
 ```
 
+All insight kinds can optionally link to a line or a span of committed code.
+Pass `--code-path <path> --code-start <line> [--code-end <line>]` to `stage record`
+or `stage validation` (also supported in batch items). Omit the end for a single
+line. Capture after committing; these coordinates refer to the stage head, not
+uncommitted working files. For a finalized stage, synchronize its recorded head
+before retargeting.
+
+Attach or retarget an existing insight without replacing its text:
+
+```text
+<semantic-implementation> stage target --collection decisions --item-id keep-policy-in-aggregate --code-path src/Orders/Order.cs --code-start 24 --code-end 31
+```
+
+Use `--stage <id> --finalized` for a finalized stage. Use `--remove` instead of
+code coordinates to remove only the link. Collections are `decisions`,
+`assumptions`, `alternatives`, `failedAttempts`, `risks`, `openQuestions`, and
+`validation`.
+
+In the viewer, choose **View code** beside an insight, **Insights** on a file,
+or an insight beside its linked line. The dialog shows the full insight alongside
+highlighted code with surrounding context; both panes scroll independently.
+**Needs review** links show the saved original code and why mapping failed.
+Review the revised code and reasoning before retargeting. Unchanged spans can
+follow line shifts and file renames automatically; that does not confirm that
+the insight's reasoning still holds after surrounding behavior changes.
+
 Commit the implementation, then describe its causal change nodes in an
 organization document:
 
