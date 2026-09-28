@@ -42,14 +42,18 @@ file becomes unapproved while remaining marked as previously approved.
 
 Press **T** or use **Find file** in the viewer toolbar to find a changed file
 across the whole review. The shortcut is inactive while typing in a text field
-or while another dialog is open. Type a filename, part of a path, or an abbreviation; renamed files also
-match their previous path. Results include every occurrence, grouped by stage
-and change node, with the change mode and stage-level added/removed line counts
-(or a binary indicator). Use **↑/↓** to select, **Tab** to complete the selected
-filename, **Enter** to open its diff, and **Esc** to close the dialog. Clicking a
-result also opens it. Files appearing in multiple nodes or stages have a
-**Find occurrences** button beside their row; it opens the same dialog with that
-exact path selected so you can jump between its changes.
+or while another dialog is open. Search matches a contiguous substring of the
+current filename, ignoring case; directories and previous names do not affect
+matches. Results include every occurrence, grouped by stage and change node.
+Each shows the filename above its directory, the same change glyph used in file
+headers, and stage-level added/removed line counts (or a binary indicator).
+The suggested filename remainder appears as muted text after what you type.
+Press **Enter** to open the first result directly, **↑/↓** to select another
+result, or **Esc** to close the dialog. Clicking a result also opens it. Files
+appearing in multiple nodes or stages have a **Find occurrences** button beside
+their row; it opens the same dialog scoped to that exact file, with its filename
+selected so you can jump between its changes. Editing the query searches all
+filenames again.
 
 ## 1. Build the bundled CLI
 

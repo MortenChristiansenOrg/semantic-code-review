@@ -1935,12 +1935,21 @@ html:has(.file-search[open]) { overflow: hidden; }
 .file-search::backdrop { background: rgba(0, 0, 0, .65); }
 .file-search header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .file-search h2 { font-size: 18px; }
+.file-search-field { position: relative; flex-shrink: 0; }
 .file-search input {
   width: 100%; flex-shrink: 0; padding: 12px;
   color: var(--text); background: var(--ink); border: 1px solid var(--line);
-  border-radius: var(--radius-sm); font: 14px var(--mono);
+  border-radius: var(--radius-sm); font: 14px/1.5 var(--mono);
 }
 .file-search input:focus { outline: 2px solid var(--signal); outline-offset: 2px; }
+.file-search-completion {
+  position: absolute; inset: 1px; padding: 12px;
+  pointer-events: none; overflow: hidden; white-space: pre;
+  color: var(--muted); font: 14px/1.5 var(--mono);
+}
+.file-search-completion-text { display: block; width: max-content; }
+.file-search-typed { visibility: hidden; }
+
 .file-search [role="status"], .file-search footer { margin: 0; color: var(--muted); font-size: 12px; }
 .file-search [role="listbox"] { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .file-search h3 { font-size: 13px; padding: 12px 8px 4px; color: var(--signal-2); }
@@ -1952,8 +1961,8 @@ html:has(.file-search[open]) { overflow: hidden; }
 .file-search [role="option"]:hover { background: var(--raise); }
 .file-search [role="option"][aria-selected="true"] { background: var(--signal-soft); border-color: var(--signal); }
 .file-search-path { min-width: 0; flex: 1; overflow-wrap: anywhere; font: 12px var(--mono); }
-.file-search-path small { display: block; margin-top: 4px; color: var(--muted); }
-.file-search-kind { color: var(--muted); font-size: 11px; }
+.file-search-path strong { display: block; font-weight: 500; }
+.file-search-path small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
 .file-search .metrics { white-space: nowrap; }
 .file-occurrences { white-space: nowrap; }
 @media (max-width: 600px) {

@@ -1545,10 +1545,13 @@ test('file search groups every occurrence and opens the chosen stage and node', 
   await expect(dialog.getByRole('heading', { name: '01 · Stage first' })).toBeVisible();
   await expect(dialog.getByRole('heading', { name: '02 · Stage second' })).toBeVisible();
   await expect(dialog.getByRole('option').first()).toContainText('+2');
-  await input.fill('SHDJS');
+  await input.fill('SHAR');
   await expect(dialog.getByRole('option')).toHaveCount(4);
+  await expect(dialog.locator('.file-search-suffix')).toHaveText('ed.js');
   await input.press('Tab');
-  await expect(input).toHaveValue('shared.js');
+  await expect(input).toHaveValue('SHAR');
+  await expect(input).not.toBeFocused();
+  await input.focus();
   await input.press('End');
   await expect(dialog.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
   await input.press('Enter');
@@ -1560,23 +1563,26 @@ test('file search groups every occurrence and opens the chosen stage and node', 
   expect(errors).toEqual([]);
 });
 
-test('file occurrences preselect an exact path; search supports renames and empty results', async ({ page }) => {
+test('file occurrences stay scoped to their path; search uses current filenames', async ({ page }) => {
   const data = fixture();
+  for (const stage of data.stages) stage.files[0].path = 'lib/shared.js';
+  data.stages[0].files.push({ path: 'other/shared.js', kind: 'modified', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
   data.stages[0].files.push({ path: 'src/renamed.js', previousPath: 'old/name.js', kind: 'renamed', additions: 5, deletions: 3, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
   data.stages[0].files.push({ path: 'shared.json', kind: 'added', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
   await mount(page, data);
   await page.locator('.stage-title[data-id="first"]').click();
   await page.locator('details[data-node="first-one"] > summary').click();
-  const occurrences = page.getByRole('button', { name: 'Find occurrences of shared.js', exact: true }).first();
+  const occurrences = page.getByRole('button', { name: 'Find occurrences of lib/shared.js', exact: true }).first();
   await occurrences.click();
   const dialog = page.getByRole('dialog', { name: 'Find a file' });
   const input = dialog.getByRole('combobox');
   await expect(input).toHaveValue('shared.js');
   await expect(dialog.getByRole('option')).toHaveCount(4);
-  await input.fill('old/name');
+  await input.fill('renamed');
   await expect(dialog.getByRole('option')).toHaveCount(1);
-  await expect(dialog.getByRole('option')).toContainText('src/renamed.js');
-  await expect(dialog.getByRole('option')).toContainText('Renamed');
+  await expect(dialog.getByRole('option').locator('strong')).toHaveText('renamed.js');
+  await expect(dialog.getByRole('option').locator('small')).toHaveText('src/');
+  await expect(dialog.getByRole('option').getByRole('img', { name: 'Renamed' })).toHaveText('R');
   await expect(dialog.getByRole('option')).toContainText('−3');
   await input.fill('missing-file');
   await expect(dialog.getByRole('status')).toHaveText('No matching files');
@@ -1586,7 +1592,7 @@ test('file occurrences preselect an exact path; search supports renames and empt
   await input.press('Escape');
   await expect(occurrences).toBeFocused();
   await page.getByRole('button', { name: 'Find file', exact: true }).click();
-  await input.fill('old/name');
+  await input.fill('renamed');
   await dialog.getByRole('option').click();
   await expect(page.locator('.frow[data-file="f:first:src/renamed.js"] + .cinema-diff')).toBeVisible();
 });
@@ -1666,4 +1672,81 @@ test('T opens file search without stealing typing, modified keys, or another dia
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(draft).toHaveValue('t');
+});
+
+test('file search requires a contiguous current filename substring and completes inline', async ({ page }) => {
+  const data = fixture();
+  const file = (path, kind = 'added', previousPath) => ({ path, kind, previousPath, additions: 3, deletions: 1, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
+  data.stages[0].files.push(file('src/catalog.ts'), file('lib/catalog.test.ts'), file('catalog/other.ts'), file('src/fresh.ts', 'renamed', 'old/catalog.ts'));
+  await mount(page, data);
+  await page.keyboard.press('t');
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox', { name: 'Filename' });
+  const suffix = dialog.locator('.file-search-suffix');
+  await expect(suffix).toHaveText('');
+  for (const query of ['src', 'lib', 'ctlg', 'src/catalog.ts', 'old/catalog', ' catalog']) {
+    await input.fill(query);
+    await expect(dialog.getByRole('option')).toHaveCount(0);
+    await expect(suffix).toHaveText('');
+  }
+  await input.fill('CAT');
+  await expect(dialog.getByRole('option')).toHaveCount(2);
+  await expect(suffix).toHaveText('alog.ts');
+  await expect(input).toHaveValue('CAT');
+  await expect(dialog.getByRole('option').first()).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('option').first().locator('strong')).toHaveText('catalog.ts');
+  await expect(dialog.getByRole('option').first().locator('small')).toHaveText('src/');
+  await expect(dialog.getByRole('option').first().getByRole('img', { name: 'Added' })).toHaveText('A');
+  await expect(dialog.locator('footer')).not.toContainText('Tab');
+  await input.press('ArrowDown');
+  await expect(suffix).toHaveText('alog.test.ts');
+  await input.press('ArrowUp');
+  await expect(suffix).toHaveText('alog.ts');
+  await input.press('ArrowLeft');
+  await expect(suffix).toHaveText('');
+  await input.press('ArrowRight');
+  await expect(suffix).toHaveText('alog.ts');
+  await input.dispatchEvent('compositionstart');
+  await expect(suffix).toHaveText('');
+  await input.dispatchEvent('compositionend');
+  await expect(suffix).toHaveText('alog.ts');
+  await input.fill('alog');
+  await expect(dialog.getByRole('option')).toHaveCount(2);
+  await expect(suffix).toHaveText('.ts');
+  const typedBounds = await dialog.locator('.file-search-typed').boundingBox();
+  const suffixBounds = await suffix.boundingBox();
+  expect(suffixBounds.x).toBeCloseTo(typedBounds.x + typedBounds.width, 0);
+  expect(suffixBounds.y).toBeCloseTo(typedBounds.y, 0);
+  await input.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  const row = page.locator('.frow[data-file="f:first:src/catalog.ts"]');
+  await expect(row.locator('.frow-open')).toBeFocused();
+  await expect(page.locator('.frow[data-file="f:first:src/catalog.ts"] + .cinema-diff')).toBeVisible();
+  await expect(row.getByRole('img', { name: 'Added' })).toHaveText('A');
+});
+
+test('inline filename completion stays clipped and aligned when the query scrolls', async ({ page }) => {
+  const data = fixture();
+  const query = 'long-filename-'.repeat(8);
+  data.stages[0].files[0].path = `src/${query}suffix.ts`;
+  await page.setViewportSize({ width: 390, height: 700 });
+  await mount(page, data);
+  await page.keyboard.press('t');
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox');
+  await input.fill(query);
+  await expect(dialog.locator('.file-search-suffix')).toHaveText('suffix.ts');
+  await expect.poll(() => input.evaluate(el => el.scrollLeft)).toBeGreaterThan(0);
+  await expect.poll(() => dialog.evaluate(el => {
+    const input = el.querySelector('input');
+    const transform = getComputedStyle(el.querySelector('.file-search-completion-text')).transform;
+    return new DOMMatrixReadOnly(transform).m41 + input.scrollLeft;
+  })).toBe(0);
+  expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const result = dialog.getByRole('option').first();
+  const nameBounds = await result.locator('strong').boundingBox();
+  const pathBounds = await result.locator('small').boundingBox();
+  expect(pathBounds.y).toBeGreaterThanOrEqual(nameBounds.y + nameBounds.height);
+  const sizes = await result.evaluate(el => [el.querySelector('strong'), el.querySelector('small')].map(node => parseFloat(getComputedStyle(node).fontSize)));
+  expect(sizes[1]).toBeLessThan(sizes[0]);
 });
