@@ -227,15 +227,7 @@
   rebuildFileSearchIndex();
 
   function matchesFileSearch(path, query) {
-    const candidate = path.toLowerCase();
-    // Subsequence completion supports both filename fragments and abbreviated paths.
-    let offset = 0;
-    for (const letter of query) {
-      const index = candidate.indexOf(letter, offset);
-      if (index < 0) return false;
-      offset = index + 1;
-    }
-    return true;
+    return splitPath(path).name.toLowerCase().includes(query);
   }
 
   function openFileSearch(path = "") {
@@ -245,18 +237,35 @@
     dialog.className = "file-search";
     dialog.setAttribute("aria-labelledby", "file-search-title");
     dialog.innerHTML = `<header><h2 id="file-search-title">Find a file</h2><button type="button" class="tb-btn" aria-label="Close file search">Esc</button></header>
-      <input id="file-search-input" type="text" role="combobox" aria-label="File name or path" aria-autocomplete="list" aria-expanded="true" aria-controls="file-search-results" aria-describedby="file-search-help" placeholder="File name or path…" autocomplete="off" spellcheck="false">
+      <div class="file-search-field">
+        <input id="file-search-input" type="text" role="combobox" aria-label="Filename" aria-autocomplete="both" aria-expanded="true" aria-controls="file-search-results" aria-describedby="file-search-help" placeholder="Filename…" autocomplete="off" spellcheck="false">
+        <div class="file-search-completion" aria-hidden="true"><span class="file-search-completion-text"><span class="file-search-typed"></span><span class="file-search-suffix"></span></span></div>
+      </div>
       <p id="file-search-status" role="status"></p>
       <div id="file-search-results" role="listbox" aria-label="File changes"></div>
-      <footer id="file-search-help">↑ ↓ select · Enter open · Tab complete filename · Esc close</footer>`;
+      <footer id="file-search-help">↑ ↓ select · Enter open · Esc close</footer>`;
     const input = dialog.querySelector("input");
     const results = dialog.querySelector('[role="listbox"]');
     const status = dialog.querySelector('[role="status"]');
-    let matches = [], selected = 0, navigating = false;
-    // An occurrence button starts with exact path matching, avoiding similarly
-    // named files; editing the query returns to fuzzy search.
+    const completion = dialog.querySelector(".file-search-completion-text");
+    const typed = dialog.querySelector(".file-search-typed");
+    const suffix = dialog.querySelector(".file-search-suffix");
+    let matches = [], selected = 0, navigating = false, composing = false;
+    // Keep occurrence navigation scoped to the exact file until the user edits
+    // its filename. Directory text never participates in the search query.
     let exactPath = path || null;
-    input.value = path;
+    input.value = splitPath(path).name;
+    function updateCompletion() {
+      const name = matches[selected] ? splitPath(matches[selected].file.path).name : "";
+      const query = input.value.toLowerCase();
+      const index = name.toLowerCase().indexOf(query);
+      const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+      typed.textContent = input.value;
+      // For an interior substring, suggest only the remainder after that match.
+      suffix.textContent = query && index >= 0 && atEnd && !composing && document.activeElement === input
+        ? name.slice(index + input.value.length) : "";
+      completion.style.transform = `translateX(${-input.scrollLeft}px)`;
+    }
     function select(index, scroll = true) {
       selected = index;
       for (const option of results.querySelectorAll('[role="option"]')) {
@@ -267,13 +276,14 @@
         input.setAttribute("aria-activedescendant", active.id);
         if (scroll) active.scrollIntoView({ block: "nearest" });
       } else input.removeAttribute("aria-activedescendant");
+      updateCompletion();
     }
     function paint() {
       const previous = matches[selected];
-      const query = input.value.trim().toLowerCase();
+      const query = input.value.toLowerCase();
       matches = fileSearchEntries.filter(({ file }) => exactPath
         ? file.path === exactPath
-        : matchesFileSearch(file.path, query) || (file.previousPath && matchesFileSearch(file.previousPath, query)));
+        : matchesFileSearch(file.path, query));
       let stageId, nodeId, html = "";
       matches.forEach(({ stage, node, file }, index) => {
         if (stageId !== stage.id) {
@@ -286,9 +296,10 @@
           nodeId = node.id;
           html += `<div role="group" aria-labelledby="file-search-node-${index}"><h4 id="file-search-node-${index}">${esc(node.title)}</h4>`;
         }
+        const { name, dir } = splitPath(file.path);
         html += `<div role="option" id="file-search-option-${index}" data-index="${index}" aria-selected="false">
-          <span class="file-search-path">${esc(file.path)}${file.previousPath ? `<small>from ${esc(file.previousPath)}</small>` : ""}</span>
-          <span class="file-search-kind">${esc(kindLabel(file.kind))}</span>
+          ${fileKind(file.kind)}
+          <span class="file-search-path"><strong>${esc(name)}</strong>${dir ? `<small>${esc(dir)}</small>` : ""}</span>
           <span title="Total line changes for this file in this stage">${file.binary ? "Binary" : fileMetrics(file)}</span></div>`;
       });
       if (matches.length) html += "</div></div>";
@@ -309,6 +320,9 @@
       requestAnimationFrame(() => fileRowElement(id, entry.node.id)?.querySelector(".frow-open")?.focus({ preventScroll: true }));
     }
     input.addEventListener("input", () => { exactPath = null; matches = []; paint(); });
+    for (const event of ["focus", "blur", "select", "keyup", "click", "scroll"]) input.addEventListener(event, updateCompletion);
+    input.addEventListener("compositionstart", () => { composing = true; updateCompletion(); });
+    input.addEventListener("compositionend", () => { composing = false; updateCompletion(); });
     input.addEventListener("keydown", (event) => {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && matches.length) {
@@ -317,8 +331,6 @@
         select(index);
       } else if (event.key === "Enter") {
         event.preventDefault(); choose(selected);
-      } else if (event.key === "Tab" && !event.shiftKey && matches[selected] && input.value !== matches[selected].file.path) {
-        event.preventDefault(); input.value = matches[selected].file.path; exactPath = input.value; paint();
       }
     });
     results.addEventListener("click", (event) => {
@@ -1044,6 +1056,9 @@
   function kindLabel(kind) {
     return kind === "added" ? "Added" : kind === "deleted" ? "Deleted" : kind === "renamed" ? "Renamed" : "Modified";
   }
+  function fileKind(kind) {
+    return `<span class="kind k-${esc(kind)}" role="img" aria-label="${kindLabel(kind)}" title="${kindLabel(kind)}">${kindGlyph(kind)}</span>`;
+  }
   // A renamed/moved file shows where it came from so reviewers can place it; the
   // full pre-rename path stays in the tooltip when the shown one is shortened.
   function renameFrom(file) {
@@ -1546,7 +1561,7 @@
     return `<div data-render-key="${esc(id)}" class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
       <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
         <div class="frow-open" data-action="open-file" data-id="${id}" data-node-id="${node.id}" role="button" tabindex="0" title="${esc(file.path)}">
-          <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
+          ${fileKind(file.kind)}
           <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}${sharedChip}
           ${fileMetrics(file)}
@@ -1888,7 +1903,7 @@
     const id = entry.id;
     return `<header class="diff-head">
       <div class="diff-id">
-        <span class="kind k-${file.kind}" title="${kindLabel(file.kind)}">${kindGlyph(file.kind)}</span>
+        ${fileKind(file.kind)}
         <span class="diff-path"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
       </div>
       <div class="diff-facts">
