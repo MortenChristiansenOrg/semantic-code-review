@@ -1631,6 +1631,62 @@ test('file search keeps all matches scrollable and fits narrow screens', async (
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(700);
 });
 
+test('file search dismisses on the backdrop but keeps interior clicks and result navigation working', async ({ page }) => {
+  const errors = await mount(page);
+  const trigger = page.getByRole('button', { name: 'Find file', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await trigger.click();
+  const bounds = await dialog.boundingBox();
+  // Empty dialog padding targets the dialog itself, just like the backdrop.
+  await page.mouse.click(bounds.x + 5, bounds.y + 5);
+  await dialog.getByRole('heading', { name: 'Find a file' }).click();
+  await dialog.getByRole('combobox').click();
+  await expect(dialog).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  await trigger.press('t');
+  await dialog.getByRole('option').last().click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('details[data-node="second-two"] .frow-open')).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('file search reopens an empty query at the top after scrolling and every dismissal method', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const data = fixture();
+  data.stages[0].files.push(...Array.from({ length: 120 }, (_, i) => ({ path: `src/file-${i}.js`, kind: 'added', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] })));
+  const errors = await mount(page, data);
+  const trigger = page.getByRole('button', { name: 'Find file', exact: true });
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox');
+  const results = dialog.getByRole('listbox');
+  await trigger.click();
+  for (const dismiss of ['Escape', 'button', 'backdrop']) {
+    await expect(input).toHaveValue('');
+    if (dismiss === 'Escape') {
+      await input.press('End');
+      await expect(dialog.getByRole('option').last()).toBeInViewport();
+    } else {
+      await results.hover();
+      await page.mouse.wheel(0, 10000);
+    }
+    await expect.poll(() => results.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    if (dismiss === 'Escape') await input.press('Escape');
+    else if (dismiss === 'button') await dialog.getByRole('button', { name: 'Close file search' }).click();
+    else await page.mouse.click(5, 5);
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await trigger.press('t');
+    await expect(input).toHaveValue('');
+    await expect(input).toBeFocused();
+    await expect.poll(() => results.evaluate(el => el.scrollTop)).toBe(0);
+    await expect(dialog.getByRole('option').first()).toHaveAttribute('aria-selected', 'true');
+    await expect(dialog.getByRole('option').first()).toBeInViewport();
+  }
+  expect(errors).toEqual([]);
+});
+
 test('T opens file search without stealing typing, modified keys, or another dialog', async ({ page }) => {
   await mount(page);
   const dialog = page.getByRole('dialog', { name: 'Find a file' });

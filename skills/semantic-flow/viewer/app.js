@@ -338,6 +338,11 @@
       if (option) choose(Number(option.dataset.index));
     });
     dialog.querySelector("button").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", (event) => {
+      if (event.target !== dialog) return;
+      const box = dialog.getBoundingClientRect();
+      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+    });
     dialog.addEventListener("close", () => {
       refreshFileSearch = null;
       dialog.remove();
@@ -345,6 +350,8 @@
     });
     refreshFileSearch = paint;
     document.body.append(dialog); paint(); dialog.showModal(); input.focus(); input.select();
+    // Set the initial viewport after opening and focusing, when layout exists.
+    results.scrollTo({ top: 0, behavior: "instant" });
   }
 
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
