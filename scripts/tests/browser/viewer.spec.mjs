@@ -1625,3 +1625,45 @@ test('file search keeps all matches scrollable and fits narrow screens', async (
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(700);
   await page.screenshot({ path: '/tmp/issue-3-file-search-mobile.png' });
 });
+
+test('T opens file search without stealing typing, modified keys, or another dialog', async ({ page }) => {
+  await mount(page);
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const trigger = page.getByRole('button', { name: 'Find file', exact: true });
+  await expect(trigger).toHaveAttribute('aria-keyshortcuts', 't');
+  await trigger.focus();
+  await page.keyboard.press('t');
+  await expect(dialog.getByRole('combobox')).toBeFocused();
+  await page.keyboard.press('t');
+  await expect(dialog.getByRole('combobox')).toHaveValue('t');
+  await page.keyboard.press('Escape');
+  await expect(trigger).toBeFocused();
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  const draft = page.locator('textarea[name="nc-body"]');
+  await draft.press('t');
+  await expect(draft).toHaveValue('t');
+  await expect(dialog).toHaveCount(0);
+  const ignored = await page.evaluate(() => {
+    const dispatch = (target, options = {}) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 't', bubbles: true, cancelable: true, ...options }));
+    const results = ['ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'isComposing', 'repeat'].map(key => dispatch(document.body, { [key]: true }));
+    for (const html of ['<input>', '<select><option>test</option></select>', '<div contenteditable="true"><span>Text</span></div>', '<div role="textbox"><span>Text</span></div>']) {
+      const holder = document.createElement('div');
+      holder.innerHTML = html; document.body.append(holder);
+      results.push(dispatch(holder.querySelector('span') || holder.firstElementChild));
+      holder.remove();
+    }
+    return results;
+  });
+  expect(ignored.every(Boolean)).toBe(true);
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.keyboard.press('t');
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await trigger.focus();
+  await page.keyboard.press('t');
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(draft).toHaveValue('t');
+});

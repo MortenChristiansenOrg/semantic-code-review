@@ -1986,7 +1986,7 @@
           <div><strong>${data.remote ? "Remote review" : "Implementation"}</strong><span>${esc(data.remote?.branch || data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
-          <button class="tb-btn" data-action="file-search" type="button">Find file</button>
+          <button class="tb-btn" data-action="file-search" type="button" aria-keyshortcuts="t" title="Find file (T)">Find file <kbd aria-hidden="true">T</kbd></button>
           ${data.remote ? `<button class="tb-btn" data-action="refresh-remote" type="button" ${refreshingRemote ? "disabled" : ""}>${refreshingRemote ? "Refreshing…" : "Refresh branch"}</button>` : ""}
           <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
@@ -3425,6 +3425,14 @@
   });
 
   document.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
+        !e.defaultPrevented && !e.isComposing && !e.repeat && !reviewDeleted &&
+        !document.querySelector("dialog[open]") && e.target instanceof Element &&
+        !e.target.isContentEditable && !e.target.closest('input, textarea, select, [role="textbox"], [role="combobox"]')) {
+      e.preventDefault();
+      openFileSearch();
+      return;
+    }
     if (e.key === "Enter" && e.ctrlKey && !e.isComposing && !e.repeat && e.target instanceof Element && e.target.matches('textarea[name="nc-body"], textarea[name="reply-body"]')) {
       e.preventDefault();
       e.target.form?.requestSubmit();

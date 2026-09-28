@@ -40,8 +40,9 @@ read-only; removing that parent approval restores each descendant's explicit
 status. File approvals are fingerprinted from the stage patch, so a changed
 file becomes unapproved while remaining marked as previously approved.
 
-Use **Find file** in the viewer toolbar to find a changed file across the whole
-review. Type a filename, part of a path, or an abbreviation; renamed files also
+Press **T** or use **Find file** in the viewer toolbar to find a changed file
+across the whole review. The shortcut is inactive while typing in a text field
+or while another dialog is open. Type a filename, part of a path, or an abbreviation; renamed files also
 match their previous path. Results include every occurrence, grouped by stage
 and change node, with the change mode and stage-level added/removed line counts
 (or a binary indicator). Use **↑/↓** to select, **Tab** to complete the selected
