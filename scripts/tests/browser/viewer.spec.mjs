@@ -1623,7 +1623,6 @@ test('file search keeps all matches scrollable and fits narrow screens', async (
   expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   const bounds = await dialog.boundingBox();
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(700);
-  await page.screenshot({ path: '/tmp/issue-3-file-search-mobile.png' });
 });
 
 test('T opens file search without stealing typing, modified keys, or another dialog', async ({ page }) => {
