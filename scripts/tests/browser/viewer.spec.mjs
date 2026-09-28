@@ -1534,3 +1534,94 @@ test('jumping to an already-loaded Markdown line exits Preview', async ({ page }
   await expect(page.getByRole('button', { name: 'Source', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.cinema-diff [data-line-id="l:first:new:1:README.md"]')).toBeVisible();
 });
+
+test('file search groups every occurrence and opens the chosen stage and node', async ({ page }) => {
+  const errors = await mount(page);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox');
+  await expect(input).toBeFocused();
+  await expect(dialog.getByRole('option')).toHaveCount(4);
+  await expect(dialog.getByRole('heading', { name: '01 · Stage first' })).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: '02 · Stage second' })).toBeVisible();
+  await expect(dialog.getByRole('option').first()).toContainText('+2');
+  await input.fill('SHDJS');
+  await expect(dialog.getByRole('option')).toHaveCount(4);
+  await input.press('Tab');
+  await expect(input).toHaveValue('shared.js');
+  await input.press('End');
+  await expect(dialog.getByRole('option').last()).toHaveAttribute('aria-selected', 'true');
+  await input.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  const node = page.locator('.stage[data-stage="second"] details[data-node="second-two"]');
+  await expect(node).toHaveAttribute('open', '');
+  await expect(node.locator('.cinema-diff')).toBeVisible();
+  await expect(node.locator('.frow-open')).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('file occurrences preselect an exact path; search supports renames and empty results', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files.push({ path: 'src/renamed.js', previousPath: 'old/name.js', kind: 'renamed', additions: 5, deletions: 3, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
+  data.stages[0].files.push({ path: 'shared.json', kind: 'added', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  await page.locator('details[data-node="first-one"] > summary').click();
+  const occurrences = page.getByRole('button', { name: 'Find occurrences of shared.js', exact: true }).first();
+  await occurrences.click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox');
+  await expect(input).toHaveValue('shared.js');
+  await expect(dialog.getByRole('option')).toHaveCount(4);
+  await input.fill('old/name');
+  await expect(dialog.getByRole('option')).toHaveCount(1);
+  await expect(dialog.getByRole('option')).toContainText('src/renamed.js');
+  await expect(dialog.getByRole('option')).toContainText('Renamed');
+  await expect(dialog.getByRole('option')).toContainText('−3');
+  await input.fill('missing-file');
+  await expect(dialog.getByRole('status')).toHaveText('No matching files');
+  await expect(input).not.toHaveAttribute('aria-activedescendant');
+  await input.press('Enter');
+  await expect(dialog).toBeVisible();
+  await input.press('Escape');
+  await expect(occurrences).toBeFocused();
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  await input.fill('old/name');
+  await dialog.getByRole('option').click();
+  await expect(page.locator('.frow[data-file="f:first:src/renamed.js"] + .cinema-diff')).toBeVisible();
+});
+
+test('file search updates from live snapshots without losing query or background drafts', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await page.locator('textarea[name="nc-body"]').fill('Keep my draft');
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const input = dialog.getByRole('combobox');
+  await input.fill('shared');
+  data.stages[1].files = [];
+  data.viewerRevision = 'updated-files';
+  await expect(dialog.getByRole('option')).toHaveCount(2, { timeout: 15000 });
+  await expect(input).toHaveValue('shared');
+  await expect(input).toBeFocused();
+  await input.press('Escape');
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Keep my draft');
+});
+
+test('file search keeps all matches scrollable and fits narrow screens', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files.push(...Array.from({ length: 120 }, (_, i) => ({ path: `src/${'long-directory/'.repeat(5)}file-${i}.js`, kind: 'added', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] })));
+  await page.setViewportSize({ width: 390, height: 700 });
+  await mount(page, data);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await expect(dialog.getByRole('option')).toHaveCount(124);
+  await dialog.getByRole('combobox').press('End');
+  await expect(dialog.getByRole('option').last()).toBeInViewport();
+  expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const bounds = await dialog.boundingBox();
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(700);
+  await page.screenshot({ path: '/tmp/issue-3-file-search-mobile.png' });
+});

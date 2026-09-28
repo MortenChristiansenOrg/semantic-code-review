@@ -141,6 +141,8 @@
         if (file.previousPath) fileByPreviousId.set(fileKey(stage.id, file.previousPath), entry);
       });
     });
+    rebuildFileSearchIndex();
+    refreshFileSearch?.();
     requirements.splice(0, requirements.length, ...(data.requirements || []));
     allAcceptance.splice(0, allAcceptance.length, ...requirements.flatMap((r) => (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` }))));
     artifactThreads.splice(0, artifactThreads.length, ...(data.feedback || []));
@@ -205,6 +207,134 @@
     flatFiles.push({ id: fileKey(stage.id, file.path), stage, file });
   }));
   const fileById = new Map(flatFiles.map((f) => [f.id, f]));
+  // Index memberships, not just paths: a shared file has a distinct destination
+  // in each node. Rebuild only when the implementation snapshot changes.
+  let fileSearchEntries = [];
+  let fileOccurrenceCounts = new Map();
+  let refreshFileSearch = null;
+  function rebuildFileSearchIndex() {
+    fileSearchEntries = [];
+    fileOccurrenceCounts = new Map();
+    for (const stage of data.stages) {
+      for (const node of stage.nodes) {
+        for (const file of nodeFileList(stage, node)) {
+          fileSearchEntries.push({ stage, node, file });
+          fileOccurrenceCounts.set(file.path, (fileOccurrenceCounts.get(file.path) || 0) + 1);
+        }
+      }
+    }
+  }
+  rebuildFileSearchIndex();
+
+  function matchesFileSearch(path, query) {
+    const candidate = path.toLowerCase();
+    // Subsequence completion supports both filename fragments and abbreviated paths.
+    let offset = 0;
+    for (const letter of query) {
+      const index = candidate.indexOf(letter, offset);
+      if (index < 0) return false;
+      offset = index + 1;
+    }
+    return true;
+  }
+
+  function openFileSearch(path = "") {
+    if (reviewDeleted || document.querySelector("dialog[open]")) return;
+    const opener = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "file-search";
+    dialog.setAttribute("aria-labelledby", "file-search-title");
+    dialog.innerHTML = `<header><h2 id="file-search-title">Find a file</h2><button type="button" class="tb-btn" aria-label="Close file search">Esc</button></header>
+      <input id="file-search-input" type="text" role="combobox" aria-label="File name or path" aria-autocomplete="list" aria-expanded="true" aria-controls="file-search-results" aria-describedby="file-search-help" placeholder="File name or path…" autocomplete="off" spellcheck="false">
+      <p id="file-search-status" role="status"></p>
+      <div id="file-search-results" role="listbox" aria-label="File changes"></div>
+      <footer id="file-search-help">↑ ↓ select · Enter open · Tab complete filename · Esc close</footer>`;
+    const input = dialog.querySelector("input");
+    const results = dialog.querySelector('[role="listbox"]');
+    const status = dialog.querySelector('[role="status"]');
+    let matches = [], selected = 0, navigating = false;
+    // An occurrence button starts with exact path matching, avoiding similarly
+    // named files; editing the query returns to fuzzy search.
+    let exactPath = path || null;
+    input.value = path;
+    function select(index, scroll = true) {
+      selected = index;
+      for (const option of results.querySelectorAll('[role="option"]')) {
+        option.setAttribute("aria-selected", String(Number(option.dataset.index) === selected));
+      }
+      const active = results.querySelector(`[data-index="${selected}"]`);
+      if (active) {
+        input.setAttribute("aria-activedescendant", active.id);
+        if (scroll) active.scrollIntoView({ block: "nearest" });
+      } else input.removeAttribute("aria-activedescendant");
+    }
+    function paint() {
+      const previous = matches[selected];
+      const query = input.value.trim().toLowerCase();
+      matches = fileSearchEntries.filter(({ file }) => exactPath
+        ? file.path === exactPath
+        : matchesFileSearch(file.path, query) || (file.previousPath && matchesFileSearch(file.previousPath, query)));
+      let stageId, nodeId, html = "";
+      matches.forEach(({ stage, node, file }, index) => {
+        if (stageId !== stage.id) {
+          if (stageId !== undefined) html += "</div></div>";
+          stageId = stage.id; nodeId = undefined;
+          html += `<div role="group" aria-labelledby="file-search-stage-${index}"><h3 id="file-search-stage-${index}">${String(stageNumberById.get(stage.id)).padStart(2, "0")} · ${esc(stage.title)}</h3>`;
+        }
+        if (nodeId !== node.id) {
+          if (nodeId !== undefined) html += "</div>";
+          nodeId = node.id;
+          html += `<div role="group" aria-labelledby="file-search-node-${index}"><h4 id="file-search-node-${index}">${esc(node.title)}</h4>`;
+        }
+        html += `<div role="option" id="file-search-option-${index}" data-index="${index}" aria-selected="false">
+          <span class="file-search-path">${esc(file.path)}${file.previousPath ? `<small>from ${esc(file.previousPath)}</small>` : ""}</span>
+          <span class="file-search-kind">${esc(kindLabel(file.kind))}</span>
+          <span title="Total line changes for this file in this stage">${file.binary ? "Binary" : fileMetrics(file)}</span></div>`;
+      });
+      if (matches.length) html += "</div></div>";
+      results.innerHTML = html;
+      status.textContent = matches.length ? `${matches.length} file occurrence${matches.length === 1 ? "" : "s"} · line counts are per stage` : "No matching files";
+      const previousIndex = previous ? matches.findIndex((entry) => entry.stage.id === previous.stage.id && entry.node.id === previous.node.id && entry.file.path === previous.file.path) : -1;
+      select(previousIndex >= 0 ? previousIndex : 0, false);
+    }
+    function choose(index) {
+      const entry = matches[index];
+      if (!entry) return;
+      navigating = true;
+      dialog.close();
+      const id = fileKey(entry.stage.id, entry.file.path);
+      state.markdownPreview[id] = false;
+      state.approvalComparisons[fileApprovalKey(entry.stage.id, entry.node.id, entry.file.path)] = false;
+      jumpToElement("file", id, entry.stage.id, entry.node.id);
+      requestAnimationFrame(() => fileRowElement(id, entry.node.id)?.querySelector(".frow-open")?.focus({ preventScroll: true }));
+    }
+    input.addEventListener("input", () => { exactPath = null; matches = []; paint(); });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && matches.length) {
+        event.preventDefault();
+        const index = event.key === "Home" ? 0 : event.key === "End" ? matches.length - 1 : (selected + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length;
+        select(index);
+      } else if (event.key === "Enter") {
+        event.preventDefault(); choose(selected);
+      } else if (event.key === "Tab" && !event.shiftKey && matches[selected] && input.value !== matches[selected].file.path) {
+        event.preventDefault(); input.value = matches[selected].file.path; exactPath = input.value; paint();
+      }
+    });
+    results.addEventListener("click", (event) => {
+      const option = event.target.closest('[role="option"]');
+      if (option) choose(Number(option.dataset.index));
+    });
+    dialog.querySelector("button").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => {
+      refreshFileSearch = null;
+      dialog.remove();
+      if (!navigating) (opener?.isConnected ? opener : app.querySelector('[data-action="file-search"]'))?.focus({ preventScroll: true });
+    });
+    refreshFileSearch = paint;
+    document.body.append(dialog); paint(); dialog.showModal(); input.focus(); input.select();
+  }
+
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
   const diffRequests = new Map();
   async function ensureFileDiff(entry, offset = 0, force = false, target = null) {
@@ -1422,6 +1552,7 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
+          ${(fileOccurrenceCounts.get(file.path) || 0) > 1 ? `<button class="file-occurrences" data-action="file-search" data-path="${esc(file.path)}" type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${esc(file.path)}">↗ ${fileOccurrenceCounts.get(file.path)}</button>` : ""}
           ${threadBadge}${lineBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
@@ -1855,6 +1986,7 @@
           <div><strong>${data.remote ? "Remote review" : "Implementation"}</strong><span>${esc(data.remote?.branch || data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
+          <button class="tb-btn" data-action="file-search" type="button">Find file</button>
           ${data.remote ? `<button class="tb-btn" data-action="refresh-remote" type="button" ${refreshingRemote ? "disabled" : ""}>${refreshingRemote ? "Refreshing…" : "Refresh branch"}</button>` : ""}
           <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
           <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
@@ -1866,6 +1998,7 @@
   }
 
   function markReviewDeleted(external = false) {
+    document.querySelector(".file-search[open]")?.close();
     reviewDeleted = true; deletedElsewhere = external; reviewsOpen = true;
     clearTimeout(saveTimer); saveError = ""; showSaveStatus(); render(); void refreshReviews();
   }
@@ -2594,7 +2727,9 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "focus-reasoning") {
+    if (a === "file-search") {
+      openFileSearch(btn.dataset.path || "");
+    } else if (a === "focus-reasoning") {
       e.preventDefault();
       const node = btn.closest("details[data-node]");
       node.open = true;
