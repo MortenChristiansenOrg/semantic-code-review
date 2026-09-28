@@ -79,7 +79,10 @@ together:
 3. Apply all requested code corrections for the
    stage as one coherent edit, then run relevant tests and commit.
 4. Update finalized insights only when the recorded reasoning changed. Do not
-   record normal test runs as validation evidence.
+   record normal test runs as validation evidence. After stage snapshots are
+   synchronized, review affected code-linked insights and use `stage target` to
+   retarget or remove links that need review, following the “Code-linked insights”
+   guidance in `reconcile.md`.
 5. Reorganize only when the corrected diff changes files, node ownership, hunks,
    line ranges, or links. Read `../docs/finalized-stage-organization.md` and
    follow it completely, including the explicit stage ID and organization JSON.

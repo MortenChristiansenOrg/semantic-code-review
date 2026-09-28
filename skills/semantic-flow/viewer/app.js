@@ -1094,6 +1094,48 @@
       : type === "analysis" ? "Analysis"
       : "";
   }
+  function codeInsightButton(stage, ins, label = "View code") {
+    const target = ins.codeTarget;
+    if (!target) return "";
+    return `<button type="button" class="code-insight-link ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}">${esc(label)}${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
+  }
+  function codeContextHtml(target) {
+    return `<div class="insight-code-block" tabindex="0" aria-label="Code context">${target.context.map((line, index) => {
+      const number = target.contextStartLine + index;
+      return `<div class="insight-code-line ${number >= target.startLine && number <= target.endLine ? "is-target" : ""}"><span>${number}</span><code>${esc(line) || " "}</code></div>`;
+    }).join("")}</div>`;
+  }
+  function openCodeInsight(stage, ins, choices = [ins]) {
+    if (!stage || !ins?.codeTarget) return;
+    forceHidePop();
+    const opener = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = "code-insight-dialog";
+    dialog.setAttribute("aria-labelledby", "code-insight-title");
+    const paint = () => {
+      const target = ins.codeTarget, stale = target.status === "needs-review";
+      const shown = stale ? target.original : target;
+      dialog.innerHTML = `<header><h2 id="code-insight-title">Insight and code</h2><button type="button" data-close aria-label="Close insight">Close</button></header>
+        ${choices.length > 1 ? `<label class="insight-picker">Insight <select>${choices.map((item, i) => `<option value="${i}" ${item === ins ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select></label>` : ""}
+        <p class="insight-target-status ${stale ? "needs-review" : ""}">${stale ? `Needs review: ${esc(target.reason)}` : target.status === "mapped" ? "Linked code is unchanged; mapped to this stage revision. The insight has not been re-reviewed." : "Linked to this stage revision."}</p>
+        <div class="code-insight-columns"><article tabindex="0" aria-label="Insight text"><p class="eyebrow">${esc((INSIGHT[ins.type] || INSIGHT.decision).label)}</p><h3>${esc(ins.title)}</h3><div class="insight-full-body">${esc(ins.body || "")}</div>
+          ${stale ? '<p>Review the insight against the revised code, then use <code>stage target</code> to retarget it or remove its code link. Its original context is preserved here.</p>' : ""}</article>
+          <section aria-label="Linked code"><h3>${stale ? "Original code" : "Linked code"}</h3><p class="insight-code-location">${esc(shown.path)}:${shown.startLine}–${shown.endLine} · ${esc(shown.revision.slice(0, 12))}</p>${codeContextHtml(shown)}
+            ${!stale && target.status === "mapped" ? `<details class="insight-original"><summary>Original context · ${esc(target.original.revision.slice(0, 12))}</summary><p>${esc(target.original.path)}:${target.original.startLine}–${target.original.endLine}</p>${codeContextHtml(target.original)}</details>` : ""}</section></div>`;
+      dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+      dialog.querySelector("select")?.addEventListener("change", event => { ins = choices[Number(event.target.value)]; paint(); dialog.querySelector("select").focus(); });
+    };
+    dialog.addEventListener("close", () => { dialog.remove(); if (opener?.isConnected) opener.focus({ preventScroll: true }); });
+    dialog.addEventListener("click", event => {
+      if (event.target !== dialog) return;
+      const box = dialog.getBoundingClientRect();
+      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+    });
+    document.body.append(dialog); paint(); dialog.showModal();
+  }
+  function fileCodeInsights(stage, filePath) {
+    return stage.insights.filter(ins => ins.codeTarget && (ins.codeTarget.path === filePath || ins.codeTarget.original.path === filePath));
+  }
   function reasoningChip(stage, ins) {
     const info = INSIGHT[ins.type] || INSIGHT.decision;
     const vs = vstatus(ins);
@@ -1112,7 +1154,7 @@
         data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
         aria-haspopup="true">
         <b>${glyph}</b><span class="tag-kind">${esc(kindText)}</span><span class="tag-gist">${esc(ins.title)}</span>
-      </button>
+      </button>${codeInsightButton(stage, ins)}
     </span>`;
   }
   function reasoningSummary(stage, node) {
@@ -1575,6 +1617,7 @@
         </div>
         <div class="frow-act">
           ${(fileOccurrenceCounts.get(file.path) || 0) > 1 ? `<button class="file-occurrences" data-action="file-search" data-path="${esc(file.path)}" type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${esc(file.path)}">↗ ${fileOccurrenceCounts.get(file.path)}</button>` : ""}
+          ${fileCodeInsights(stage, file.path).length ? `<button class="code-insight-link" type="button" data-action="file-insights" data-stage="${esc(stage.id)}" data-path="${esc(file.path)}">Insights · ${fileCodeInsights(stage, file.path).length}</button>` : ""}
           ${threadBadge}${lineBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
         </div>
@@ -1761,7 +1804,10 @@
       } else ctx.previousOwner = null;
     }
     const row = `<div data-line-id="${esc(lineId)}" class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
-    return ownershipNotice + row + lineThreadRow(lineId);
+    const stage = stageById.get(ctx.stageId);
+    const linked = side === "new" && stage ? stage.insights.filter(ins => ins.codeTarget?.status !== "needs-review" && ins.codeTarget?.path === ctx.path && ins.codeTarget.startLine === lineNo) : [];
+    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => codeInsightButton(stage, ins, ins.title)).join("")}</div>` : "";
+    return ownershipNotice + insights + row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
     if (ctx && ctx.previousHunk !== r.h) { ctx.previousOwner = null; ctx.previousHunk = r.h; }
@@ -2749,7 +2795,13 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "file-search") {
+    if (a === "code-insight") {
+      const stage = stageById.get(btn.dataset.stage);
+      openCodeInsight(stage, stage?.insights.find(ins => ins.collection === btn.dataset.collection && ins.id === btn.dataset.item));
+    } else if (a === "file-insights") {
+      const stage = stageById.get(btn.dataset.stage), choices = stage ? fileCodeInsights(stage, btn.dataset.path) : [];
+      openCodeInsight(stage, choices[0], choices);
+    } else if (a === "file-search") {
       openFileSearch(btn.dataset.path || "");
     } else if (a === "focus-reasoning") {
       e.preventDefault();

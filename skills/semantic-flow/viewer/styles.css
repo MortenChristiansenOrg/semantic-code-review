@@ -1971,3 +1971,30 @@ html:has(.file-search[open]) { overflow: hidden; }
   .file-search { padding: 12px; }
   .file-search [role="option"] { gap: 8px; }
 }
+
+/* Read long insights alongside their immutable code context. */
+.code-insight-link { border: 1px solid var(--line); border-radius: 5px; background: transparent; color: inherit; padding: 4px 8px; font: inherit; font-size: 12px; cursor: pointer; }
+.code-insight-link:hover { background: #ffffff12; }
+.code-insight-link.needs-review, .insight-target-status.needs-review { color: var(--warn); }
+.line-code-insights { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; border-left: 3px solid var(--signal); }
+.code-insight-dialog { width: min(1200px, 94vw); max-width: 94vw; max-height: 90vh; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); }
+.code-insight-dialog::backdrop { background: #0009; }
+.code-insight-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.code-insight-dialog h2 { margin: 0; font-size: 20px; }
+.code-insight-dialog h3 { margin-top: 0; overflow-wrap: anywhere; }
+.code-insight-dialog button, .insight-picker select { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; }
+.insight-picker { display: block; margin-top: 16px; }
+.insight-picker select { max-width: 90%; }
+.insight-target-status { font-size: 13px; }
+.code-insight-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 24px; }
+.code-insight-columns > article, .code-insight-columns > section { min-width: 0; max-height: 62vh; overflow: auto; }
+.insight-full-body { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.insight-code-location { overflow-wrap: anywhere; font-size: 12px; }
+.insight-code-block { overflow: auto; font: 12px/1.7 monospace; border: 1px solid var(--line); border-radius: 5px; }
+.insight-code-line { display: flex; min-width: max-content; }
+.insight-code-line > span { flex: 0 0 5ch; text-align: right; padding: 0 1ch; opacity: .6; user-select: none; }
+.insight-code-line > code { white-space: pre; padding-right: 12px; }
+.insight-code-line.is-target { background: var(--signal-soft); }
+.insight-original { margin-top: 16px; }
+.insight-original summary { cursor: pointer; }
+@media (max-width: 720px) { .code-insight-columns { grid-template-columns: minmax(0, 1fr); } .code-insight-columns > article, .code-insight-columns > section { max-height: 35vh; } }

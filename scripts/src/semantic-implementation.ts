@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -893,6 +894,11 @@ function validateArtifact(
     validateDocument(ajv, stage, path.join(paths.workStages, `${id}.json`));
   }
 
+  for (const stage of [...artifact.stages.values(), ...artifact.workStages.values()]) {
+    for (const collection of STAGE_ITEM_COLLECTIONS) for (const item of stage[collection]) {
+      if (item.codeTarget) validateCodeTarget(paths.root, item.codeTarget, !schemaOnly && validateGit);
+    }
+  }
   if (!schemaOnly) {
     validateSemantic(paths, artifact, { validateGit, allowLandedTarget, allowTargetDrift });
   }
@@ -1345,6 +1351,39 @@ function validateRecordedNodeRefs(stage, item) {
   }
 }
 
+function setRecordedCodeTarget(paths, stage, options, value, previous = undefined) {
+  const file = option(options, "code-path");
+  const start = option(options, "code-start");
+  const end = option(options, "code-end");
+  if (file === undefined && start === undefined && end === undefined) {
+    if (previous?.codeTarget) value.codeTarget = previous.codeTarget;
+    return;
+  }
+  if (file === undefined || start === undefined) fail("Code targets require --code-path and --code-start.");
+  const revision = stage.change?.headRevision ?? branchCommit(paths.root, stage.branch);
+  value.codeTarget = captureCodeTarget(paths.root, revision, file, Number(start), Number(end ?? start));
+}
+
+function targetInsight(paths, options) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage target"));
+  const finalized = flag(options, "finalized"), requested = option(options, "stage");
+  if (finalized && (!requested || requested === "current")) fail("--finalized requires an explicit --stage <stage-id>.");
+  const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
+  const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "stage");
+  const collection = option(options, "collection", { required: true }), itemId = option(options, "item-id", { required: true });
+  if (!STAGE_ITEM_COLLECTIONS.includes(collection)) fail("Unknown insight collection.");
+  const remove = flag(options, "remove");
+  const hasCode = ["code-path", "code-start", "code-end"].some(key => options.has(key));
+  if (remove ? hasCode : !hasCode) fail("Use --remove or --code-path with --code-start to set a target.");
+  updateStageInsight(paths, id, finalized, stage => {
+    const item = stage[collection].find(value => value.id === itemId);
+    if (!item) fail(`Stage ${id} has no ${collection} item ${itemId}.`);
+    if (remove) delete item.codeTarget;
+    else setRecordedCodeTarget(paths, stage, options, item);
+  });
+  console.log(`${remove ? "Removed" : "Set"} code target for ${collection}/${itemId}.`);
+}
+
 function recordStageItem(paths, options, batch = undefined) {
   assertKnownOptions(
     options,
@@ -1367,7 +1406,7 @@ function recordStageItem(paths, options, batch = undefined) {
   if (nodeRefs.length > 0) {
     item.value.nodeRefs = nodeRefs;
   }
-  item.allowed.push("node-ref");
+  item.allowed.push("node-ref", "code-path", "code-start", "code-end");
   const replace = flag(options, "replace");
   assertKnownOptions(
     options,
@@ -1398,6 +1437,7 @@ function recordStageItem(paths, options, batch = undefined) {
     if (index >= 0 && !item.value.nodeRefs && stage[item.collection][index].nodeRefs) {
       item.value.nodeRefs = stage[item.collection][index].nodeRefs;
     }
+    setRecordedCodeTarget(paths, stage, options, item.value, stage[item.collection][index]);
     validateRecordedNodeRefs(stage, item.value);
     if (index >= 0) {
       stage[item.collection][index] = item.value;
@@ -1459,6 +1499,7 @@ function recordValidation(paths, options, batch = undefined) {
     if (index >= 0 && !value.nodeRefs && stage.validation[index].nodeRefs) {
       value.nodeRefs = stage.validation[index].nodeRefs;
     }
+    setRecordedCodeTarget(paths, stage, options, value, stage.validation[index]);
     validateRecordedNodeRefs(stage, value);
     if (index >= 0) {
       stage.validation[index] = value;
@@ -2755,6 +2796,7 @@ function dispatch(paths, positionals, options) {
     setStage(paths, options);
     return;
   }
+  if (command === "stage" && subcommand === "target") return targetInsight(paths, options);
   if (command === "stage" && subcommand === "record-batch") return recordStageBatch(paths, options);
   if (command === "stage" && subcommand === "plan") return organizationPlan(paths, options);
   if (command === "stage" && subcommand === "record") {

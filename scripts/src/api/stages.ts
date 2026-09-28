@@ -48,6 +48,13 @@ export interface SetStageOptions {
 export declare function setStage(options: SetStageOptions): void;
 
 export interface RecordStageInsightOptions {
+  /** Optional code link, captured from the committed stage head; requires code-start. */
+  "code-path"?: string;
+  /** First line of the code target (one-based). */
+  "code-start"?: string;
+  /** Last line, inclusive; defaults to code-start. */
+  "code-end"?: string;
+
   /** Stage receiving the insight; omitted or `current` selects the only active stage. */
   stage?: string;
   /** Insight shape, which determines the required conditional fields. */
@@ -113,6 +120,13 @@ export interface OrganizeStageOptions {
 export declare function organizeStage(options: OrganizeStageOptions): void;
 
 export interface RecordValidationOptions {
+  /** Optional code link, captured from the committed stage head; requires code-start. */
+  "code-path"?: string;
+  /** First line of the code target (one-based). */
+  "code-start"?: string;
+  /** Last line, inclusive; defaults to code-start. */
+  "code-end"?: string;
+
   /** Stage receiving the validation evidence; omitted or `current` selects the only active stage. */
   stage?: string;
   /** Stable identifier for this validation evidence. */
@@ -196,3 +210,27 @@ export interface OrganizationPlanOptions {
  * @command stage plan
  */
 export declare function organizationPlan(options?: OrganizationPlanOptions): void;
+
+export interface TargetInsightOptions {
+  /** Omitted or current selects the active working stage. */
+  stage?: string;
+  /** Target a finalized stage by explicit ID. */
+  finalized?: true;
+  /** Insight collection, or validation. */
+  collection: "decisions" | "assumptions" | "alternatives" | "failedAttempts" | "risks" | "openQuestions" | "validation";
+  /** Existing insight identifier. */
+  "item-id": string;
+  /** Remove the optional link while preserving the insight. */
+  remove?: true;
+  /** Optional code link, captured from the committed stage head; requires code-start. */
+  "code-path"?: string;
+  /** First line of the code target (one-based). */
+  "code-start"?: string;
+  /** Last line, inclusive; defaults to code-start. */
+  "code-end"?: string;
+}
+/** Attach or retarget after reviewing an insight against committed code, or remove its link.
+ * @cli semantic-implementation.mjs
+ * @command stage target
+ */
+export declare function targetInsight(options: TargetInsightOptions): void;

@@ -1806,3 +1806,62 @@ test('inline filename completion stays clipped and aligned when the query scroll
   const sizes = await result.evaluate(el => [el.querySelector('strong'), el.querySelector('small')].map(node => parseFloat(getComputedStyle(node).fontSize)));
   expect(sizes[1]).toBeLessThan(sizes[0]);
 });
+
+function codeInsight(status = 'current') {
+  const original = { path: 'shared.js', revision: 'b'.repeat(40), blobId: 'c'.repeat(40), startLine: 1, endLine: 1, contextStartLine: 1, context: ['const first = 1;', '// context', 'const second = 2;'] };
+  return { type: 'risk', collection: 'risks', id: 'linked', title: 'Check the boundary', body: 'A long explanation.\n'.repeat(120) + 'Final paragraph <img src=x onerror=unsafe()>', nodeRefs: ['first-one'],
+    codeTarget: { ...original, original, status, ...(status === 'needs-review' ? { reason: 'Targeted code was edited.' } : {}) } };
+}
+
+test('code insights open from reasoning, file and line with full text and keyboard dismissal', async ({ page }) => {
+  const data = fixture(); data.stages[0].insights.push(codeInsight());
+  const errors = await mount(page, data); await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  const button = node.locator('.node-reasoning .code-insight-link');
+  await button.click();
+  const dialog = page.getByRole('dialog', { name: 'Insight and code' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('.insight-full-body')).toContainText('Final paragraph <img src=x onerror=unsafe()>');
+  await expect(dialog.locator('img')).toHaveCount(0);
+  await expect(dialog.locator('.insight-code-line.is-target')).toHaveText('1const first = 1;');
+  await expect(dialog.locator('.insight-code-block')).toContainText('// context');
+  expect(await dialog.locator('article').evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(button).toBeFocused();
+  await node.getByRole('button', { name: 'Insights · 1' }).click(); await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close insight' }).click();
+  await node.locator('.line-code-insights button').click(); await expect(dialog).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('stale code insights show original context and repair guidance without attaching to current lines', async ({ page }) => {
+  const data = fixture(); data.stages[0].insights.push(codeInsight('needs-review'));
+  const errors = await mount(page, data); await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await expect(node.locator('.line-code-insights')).toHaveCount(0);
+  await node.locator('.node-reasoning .code-insight-link').click();
+  const dialog = page.getByRole('dialog', { name: 'Insight and code' });
+  await expect(dialog).toContainText('Needs review: Targeted code was edited.');
+  await expect(dialog.getByRole('heading', { name: 'Original code', exact: true })).toBeVisible();
+  await expect(dialog).toContainText('stage target');
+  await expect(dialog.locator('.insight-code-block')).toContainText('const first = 1;');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('mapped insights show both contexts and files let reviewers choose between insights', async ({ page }) => {
+  const data = fixture(), first = codeInsight('mapped'), second = codeInsight();
+  first.codeTarget.startLine = 2; first.codeTarget.endLine = 2;
+  first.codeTarget.context = ['// moved', 'const first = 1;', '// context'];
+  first.codeTarget.revision = 'd'.repeat(40);
+  second.id = 'second-link'; second.title = 'Another insight';
+  data.stages[0].insights.push(first, second);
+  await mount(page, data); await openFile(page);
+  await page.locator('details[data-node="first-one"]').getByRole('button', { name: 'Insights · 2' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Insight and code' });
+  await expect(dialog).toContainText('has not been re-reviewed');
+  await dialog.locator('.insight-original summary').click();
+  await expect(dialog.locator('.insight-original .insight-code-block')).toContainText('const first = 1;');
+  await dialog.getByRole('combobox').selectOption('1');
+  await expect(dialog.getByRole('heading', { name: 'Another insight', exact: true })).toBeVisible();
+});

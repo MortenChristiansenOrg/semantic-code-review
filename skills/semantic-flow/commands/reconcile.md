@@ -139,3 +139,16 @@ If any step fails, retain the recovery branch and report its name and snapshot
 commit so the desired tree remains recoverable. Stop with the reconciled stack
 ready for human review. Do not reply to or resolve feedback threads, approve
 the stack, publish metadata, push branches, or merge.
+
+### Code-linked insights
+
+Code targets preserve their original revision and code context. The viewer maps
+unchanged spans across line shifts and file renames, and marks edited, missing,
+or ambiguous targets as **Needs review**. After synchronizing stage snapshots,
+review affected insights against the revised code. Update reasoning when needed,
+then use `stage target --stage <id> --finalized --collection <collection>
+--item-id <id> --code-path <path> --code-start <line> [--code-end <line>]` to
+confirm a new target, or `--remove` to remove just the link. Insight replacement
+without new code coordinates preserves the original anchor. Do not retarget
+merely to dismiss the warning; automatic mapping also does not establish that
+the reasoning still holds after surrounding behavior changes.
