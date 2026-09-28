@@ -1661,6 +1661,7 @@ test('T opens file search without stealing typing, modified keys, or another dia
   await page.keyboard.press('t');
   await expect(dialog).toHaveCount(0);
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Saved reviews' })).toHaveCount(0);
   await trigger.focus();
   await page.keyboard.press('t');
   await expect(dialog).toBeVisible();
