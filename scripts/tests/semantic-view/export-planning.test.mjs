@@ -936,3 +936,29 @@ test("a rename follows its source history when the destination was previously de
   const diff = await source.fileDiff('rename', file.path, file.baseRevision, renamed);
   assert.deepEqual(diff.lines, []);
 });
+
+
+test("file revisions detect base and head mode changes without blob changes", (t) => {
+  const repository = createRepository(t);
+  repository.git('config', 'core.filemode', 'false');
+  repository.commitFile('code.txt', 'base\n', 'Base content');
+  initializeImplementation(repository); beginStage(repository);
+  repository.commitFile('code.txt', 'head\n', 'Head content');
+  organizeStage(repository); repository.semantic('stage', 'finish');
+  const stagePath = '.semantic-review/stages/implementation.json', stage = repository.readJson(stagePath);
+  const source = createViewerDataSource(repository.root);
+  const revision = () => JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]).stages[0].files[0].revision;
+  const original = revision(), branch = repository.git('branch', '--show-current');
+  const baseBlob = repository.git('rev-parse', `${stage.change.baseRevision}:code.txt`);
+  repository.git('switch', 'main'); repository.git('update-index', '--chmod=+x', 'code.txt');
+  repository.git('commit', '-m', 'Executable base');
+  stage.change.baseRevision = repository.git('rev-parse', 'HEAD');
+  assert.equal(repository.git('rev-parse', 'HEAD:code.txt'), baseBlob);
+  repository.git('switch', branch); repository.write(stagePath, JSON.stringify(stage));
+  const baseChanged = revision(); assert.notEqual(baseChanged, original);
+  const headBlob = repository.git('rev-parse', 'HEAD:code.txt');
+  repository.git('update-index', '--chmod=+x', 'code.txt'); repository.git('commit', '-m', 'Executable head');
+  stage.change.headRevision = repository.git('rev-parse', 'HEAD'); repository.write(stagePath, JSON.stringify(stage));
+  assert.equal(repository.git('rev-parse', 'HEAD:code.txt'), headBlob);
+  assert.notEqual(revision(), baseChanged);
+});

@@ -508,6 +508,8 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
     if (!filePath) continue;
     blobs.set(filePath, {
       kind: status.startsWith("R") ? "renamed" : status === "A" ? "added" : status === "D" ? "deleted" : "modified",
+      oldMode: metadata[0] || "",
+      newMode: metadata[1] || "",
       oldBlob: metadata[2] || "",
       newBlob: metadata[3] || "",
     });
@@ -781,15 +783,21 @@ function buildInsights(stage, repoRoot) {
 }
 
 function fileRevision(stage, file, stats) {
-  return createHash("sha256")
+  const hash = createHash("sha256")
     .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
     .update("\0")
     .update(stats?.newBlob || stage.change.headRevision)
     .update("\0")
     .update(file.path)
     .update("\0")
-    .update(file.previousPath || "")
-    .digest("hex");
+    .update(file.previousPath || "");
+  // Preserve existing fingerprints for ordinary files. Missing sides are already
+  // represented by zero blob IDs; non-default modes need additional identity.
+  for (const side of ["oldMode", "newMode"]) {
+    const mode = stats?.[side];
+    if (mode && mode !== "100644" && mode !== "000000") hash.update(`\0${side}=${mode}`);
+  }
+  return hash.digest("hex");
 }
 
 function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) {
