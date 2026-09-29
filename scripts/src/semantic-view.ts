@@ -510,6 +510,7 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
       kind: status.startsWith("R") ? "renamed" : status === "A" ? "added" : status === "D" ? "deleted" : "modified",
       oldMode: metadata[0] || "",
       newMode: metadata[1] || "",
+      previousPath: status.startsWith("R") || status.startsWith("C") ? previousPath : undefined,
       oldBlob: metadata[2] || "",
       newBlob: metadata[3] || "",
     });
@@ -1213,11 +1214,13 @@ export function buildFeedbackTargetData(repoRoot) {
       const stage = readJson(
         path.join(implementationRoot, "stages", `${stageId}.json`),
       );
+      const stats = stageFileStats(repoRoot, stage, gitCapture);
       return {
         id: stage.id,
         title: stage.title,
         baseRevision: stage.change.baseRevision,
         headRevision: stage.change.headRevision,
+        files: stage.change.files.map(file => ({ path: file.path, revision: fileRevision(stage, file, stats.get(file.path)) })),
         nodes: (stage.nodes || []).map((node) => ({
           id: node.id,
           title: humanizeId(node.id),
@@ -1250,6 +1253,26 @@ function cliErrorMessage(error) {
   return (line || "feedback command failed").replace(/^Error:\s*/, "");
 }
 
+// Upgrade commit-only line snapshots without moving their original anchors.
+// Unavailable history stays unresolved and is conservatively rejected on export.
+export function resolveLineDraftSnapshots(repoRoot, notes) {
+  if (!Array.isArray(notes)) return notes;
+  return notes.map(note => {
+    if (note?.kind !== "line" || !note.snapshot || note.snapshot.fileRevision) return note;
+    const { base, head } = note.snapshot;
+    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(note.id);
+    if (!match || ![base, head].every(rev => typeof rev === "string" && /^[a-f0-9]{40,64}$/.test(rev))) return note;
+    try {
+      const stage = { change: { baseRevision: base, headRevision: head } };
+      const stats = immutableFact(JSON.stringify(["draft-stats", repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
+      const fileStats = stats.get(match[4]);
+      if (!fileStats) return note;
+      const revision = fileRevision(stage, { path: match[4], previousPath: fileStats.previousPath }, fileStats);
+      return { ...note, snapshot: { ...note.snapshot, fileRevision: revision } };
+    } catch { return note; }
+  });
+}
+
 // Validate every note and resolve its target into review-feedback options.
 // Pure over (notes, implementation): produces the ordered list of threads to create
 // and the reasons any note was skipped, without mutating any state. Kept
@@ -1277,8 +1300,12 @@ export function planFeedbackThreads(notes, implementation) {
       target = mapNoteTarget(note, implementation);
       if (note.kind === "line" && note.snapshot) {
         const stage = implementation.stages.find((stage) => stage.id === target.stage);
-        if (!stage || stage.baseRevision !== note.snapshot.base || stage.headRevision !== note.snapshot.head) {
-          throw new Error("The stage changed since this line draft was written. Copy its text into a new note on the current diff before sending.");
+        const file = stage?.files?.find(file => file.path === target.path);
+        const unchanged = note.snapshot.fileRevision
+          ? file?.revision === note.snapshot.fileRevision
+          : stage && stage.baseRevision === note.snapshot.base && stage.headRevision === note.snapshot.head;
+        if (!unchanged) {
+          throw new Error("The file changed since this line draft was written. Copy its text into a new note on the current diff before sending.");
         }
       }
     } catch (error) {
@@ -1299,7 +1326,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
   if (!Array.isArray(notes) || notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
-  const { planned, skipped } = planFeedbackThreads(notes, implementation);
+  const { planned, skipped } = planFeedbackThreads(resolveLineDraftSnapshots(repoRoot, notes), implementation);
   if (planned.length === 0) {
     return { ok: false, error: "No notes could be exported.", skipped };
   }
@@ -1738,6 +1765,16 @@ function serveViewer({
       return;
     }
 
+    if (request.method === "POST" && pathname === "/api/draft-snapshots") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Draft snapshots require a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        const notes = await dataSource.call("resolveLineDraftSnapshots", [implementationId, payload.notes]);
+        sendJson(response, 200, { ok: true, snapshots: notes.map(note => note?.snapshot || null) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
@@ -2064,6 +2101,7 @@ if (!isMainThread && workerData?.repoRoot) {
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
+        else if (method === "resolveLineDraftSnapshots") result = resolveLineDraftSnapshots(root, args[1]);
         else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
         else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
         else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);

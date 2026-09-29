@@ -117,7 +117,11 @@
 
   function rememberDraftSnapshot(note) {
     const stage = noteStage(note);
-    if (stage && !draftSnapshots.has(note)) draftSnapshots.set(note, { base: stage.baseRevision, head: stage.headRevision });
+    if (stage && !draftSnapshots.has(note)) {
+      const entry = note.kind === "line" ? noteFileEntry(note.kind, note.id) : null;
+      draftSnapshots.set(note, { base: entry ? fileBaseRevision(entry) : stage.baseRevision, head: stage.headRevision,
+        ...(entry?.file.revision ? { fileRevision: entry.file.revision } : {}) });
+    }
   }
 
   function adoptImplementation(next) {
@@ -2411,7 +2415,8 @@
     const nodeId = noteNodeId(c);
     if (!entry || !nodeId) return null;
     const snapshot = draftSnapshots.get(c);
-    const stale = snapshot && (snapshot.base !== entry.stage.baseRevision || snapshot.head !== entry.stage.headRevision);
+    const stale = snapshot && (snapshot.fileRevision ? snapshot.fileRevision !== entry.file.revision
+      : snapshot.base !== fileBaseRevision(entry) || snapshot.head !== entry.stage.headRevision);
     return c.kind === "line" && !stale && !renamedLineNote(c) ? { ...c, nodeId } : { kind: "file", id: entry.id, nodeId };
   }
   function noteGroupKey(c) {
@@ -3235,6 +3240,11 @@
         });
         let out = {};
         try { out = await res.json(); } catch { /* non-JSON error body */ }
+        (out.skipped || []).forEach((s) => {
+          const c = state.comments[s.ref];
+          const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
+          skips.push(`${label} — ${s.reason}`);
+        });
         if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
         adoptViewerSnapshot(out);
         const byRef = new Map(pending.map(({ c, i }) => [i, c]));
@@ -3247,14 +3257,9 @@
           }
         });
         notesSent = (out.exported || []).length;
-        (out.skipped || []).forEach((s) => {
-          const c = state.comments[s.ref];
-          const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
-          skips.push(`${label} — ${s.reason}`);
-        });
       } catch (err) {
         persist();
-        exportState = { phase: "error", message: err.message || "Export failed.", skips: [] };
+        exportState = { phase: "error", message: err.message || "Export failed.", skips };
         render();
         return;
       }
@@ -3693,6 +3698,16 @@
     resumePendingLazyJump();
   };
 
+  const legacyDrafts = [...state.comments, compose].filter(note => note?.kind === "line" && !note.exported && note.snapshot && !note.snapshot.fileRevision);
+  if (legacyDrafts.length && !reviewDeleted) {
+    try {
+      const response = await fetch("/api/draft-snapshots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: legacyDrafts }) });
+      const result = await response.json();
+      if (response.ok && result.ok) legacyDrafts.forEach((note, index) => {
+        if (result.snapshots?.[index]?.fileRevision) note.snapshot = result.snapshots[index];
+      });
+    } catch { /* Unavailable original snapshots remain conservatively stale. */ }
+  }
   for (const note of [...state.comments, compose].filter(Boolean)) {
     if (note.snapshot) draftSnapshots.set(note, note.snapshot);
   }

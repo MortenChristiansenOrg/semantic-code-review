@@ -26,6 +26,7 @@ const {
   exportFeedback,
   exportFeedbackReplies,
   planFeedbackThreads,
+  resolveLineDraftSnapshots,
   mapNoteTarget,
   readFeedbackThread,
   viewerSnapshot,
@@ -180,7 +181,8 @@ test("feedback export target data omits diff reconstruction", (t) => {
     })),
     [{ id: "implementation", nodes: ["implementation-change"] }],
   );
-  assert.equal("files" in targetData.stages[0], false);
+  assert.match(targetData.stages[0].files[0].revision, /^[a-f0-9]{64}$/);
+  assert.equal("lines" in targetData.stages[0].files[0], false);
 });
 
 test("viewer data preserves zero-context hunk ownership", async (t) => {
@@ -961,4 +963,49 @@ test("file revisions detect base and head mode changes without blob changes", (t
   stage.change.headRevision = repository.git('rev-parse', 'HEAD'); repository.write(stagePath, JSON.stringify(stage));
   assert.equal(repository.git('rev-parse', 'HEAD:code.txt'), headBlob);
   assert.notEqual(revision(), baseChanged);
+});
+
+test("line drafts survive unrelated restacks and reject actual file changes", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const stagePath = '.semantic-review/stages/implementation.json';
+  const stage = repository.readJson(stagePath), original = buildFeedbackTargetData(repository.root).stages[0];
+  const snapshot = { base: original.baseRevision, head: original.headRevision };
+  const legacy = { kind: 'line', id: 'l:implementation:new:1:implementation.txt', body: 'Check this line', snapshot };
+  const modern = { ...legacy, snapshot: { ...snapshot, fileRevision: original.files[0].revision } };
+  const branch = repository.git('branch', '--show-current');
+  repository.git('switch', 'main');
+  const base = repository.commitFile('unrelated.txt', 'unrelated\n', 'Unrelated lower change');
+  repository.git('switch', branch); repository.git('rebase', 'main');
+  stage.change.baseRevision = base; stage.change.headRevision = repository.git('rev-parse', 'HEAD');
+  repository.write(stagePath, JSON.stringify(stage));
+  const current = buildFeedbackTargetData(repository.root);
+  const migrated = resolveLineDraftSnapshots(repository.root, [legacy])[0];
+  assert.deepEqual(migrated.snapshot, modern.snapshot, 'migration preserves the original commit anchor');
+  assert.equal(planFeedbackThreads([modern, migrated], current).planned.length, 2);
+  const result = exportFeedback({ repoRoot: repository.root, implementation: current, feedbackCli }, [legacy, modern]);
+  assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.exported.length, 2);
+  const thread = readFeedbackThread(repository.root, result.exported[0].threadId);
+  assert.equal(thread.target.kind, 'line'); assert.equal(thread.target.path, 'implementation.txt');
+  stage.change.headRevision = repository.commitFile('implementation.txt', 'changed\n', 'Change the commented file');
+  repository.write(stagePath, JSON.stringify(stage));
+  const rejected = exportFeedback({ repoRoot: repository.root, implementation: buildFeedbackTargetData(repository.root), feedbackCli }, [legacy, modern]);
+  assert.equal(rejected.ok, false); assert.equal(rejected.skipped.length, 2);
+  assert.match(rejected.skipped[0].reason, /file changed/);
+  const unavailable = { ...legacy, snapshot: { ...snapshot, head: 'f'.repeat(40) } };
+  assert.deepEqual(resolveLineDraftSnapshots(repository.root, [unavailable]), [unavailable]);
+  assert.equal(planFeedbackThreads([unavailable], current).planned.length, 0);
+});
+
+for (const kind of ['modified', 'deleted', 'renamed']) test(`legacy line snapshots retain ${kind} file identities`, (t) => {
+  const repository = createRepository(t);
+  repository.commitFile('old name.txt', 'one\ntwo\nthree\n', 'Original');
+  initializeImplementation(repository); beginStage(repository);
+  if (kind === 'modified') repository.write('old name.txt', 'one\ntwo\nchanged\n');
+  if (kind === 'deleted') repository.git('rm', 'old name.txt');
+  if (kind === 'renamed') repository.git('mv', 'old name.txt', 'new name.txt');
+  repository.git('add', '.'); repository.git('commit', '-m', 'Stage change');
+  organizeStage(repository); repository.semantic('stage', 'finish');
+  const stage = buildFeedbackTargetData(repository.root).stages[0];
+  const note = { kind: 'line', id: `l:implementation:old:1:${stage.files[0].path}`, snapshot: { base: stage.baseRevision, head: stage.headRevision } };
+  assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
 });
