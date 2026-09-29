@@ -146,8 +146,17 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   contentUrl.searchParams.set('review', 'wrong-review');
   assert.equal((await fetch(contentUrl)).status, 409);
   const initial = endpoint(implementation);
-  const saved = await (await post('api/approval-snapshots', initial)).json();
+  // Obsolete commit coordinates are safe when content and ownership still match:
+  // the server must capture its authoritative current endpoint.
+  const moved = { ...initial, baseRevision: '0'.repeat(40), headRevision: '0'.repeat(40) };
+  const saved = await (await post('api/approval-snapshots', moved)).json();
   assert.equal(saved.ok, true);
+  const unchanged = await (await post('api/approval-comparison', { ...moved, snapshotId: saved.snapshotId })).json();
+  assert.equal(unchanged.current.baseRevision, initial.baseRevision);
+  assert.equal(unchanged.current.headRevision, initial.headRevision);
+  assert.deepEqual(unchanged.lines, []);
+  assert.equal((await post('api/approval-snapshots', { ...initial, fileRevision: 'changed' })).status, 409);
+  assert.equal((await post('api/approval-snapshots', { ...initial, ownership: { ...initial.ownership, classification: 'refactor' } })).status, 409);
   patchReviewState(identity.reviewId, identity.generation, [change(['approvals', `m:${JSON.stringify([initial.stageId, initial.nodeId, initial.path])}`], { ...initial, ...saved, at: 1, rev: 'initial' })]);
   author.git('switch', 'feature');
   author.git('mv', 'code.txt', 'middle.txt'); author.git('commit', '-m', 'First rename');

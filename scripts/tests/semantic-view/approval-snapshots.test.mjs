@@ -113,3 +113,28 @@ test('full-file approval comparisons include unchanged context and reject unknow
   assert.equal(full.lines[0].s, 'line 0'); assert.equal(full.lines.at(-1).s, 'line 29');
   assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), 0, 'unknown'), /Invalid comparison view/);
 });
+
+
+test('base comparisons follow file content across restacks, including existing snapshots', (t) => {
+  const { repo, context } = setup(t);
+  const base = repo.commitFile('code.txt', 'base content\n', 'Base');
+  repo.git('switch', '-c', 'stage');
+  const head = repo.commitFile('code.txt', 'approved content\n', 'Stage');
+  const approved = { ...endpoint(repo), baseRevision: base };
+  const saved = captureApprovalSnapshot(context, approved);
+  repo.git('switch', 'main');
+  const nextBase = repo.commitFile('unrelated.txt', 'unrelated\n', 'Lower stage update');
+  repo.git('switch', 'stage'); repo.git('rebase', 'main');
+  assert.notEqual(repo.git('rev-parse', 'HEAD'), head);
+  const current = { ...endpoint(repo), baseRevision: nextBase };
+  let comparison = compareApprovalSnapshot(context, saved.snapshotId, current);
+  assert.equal(comparison.baseChanged, false); assert.deepEqual(comparison.lines, []);
+  const file = path.join(reviewDirectory(context.reviewId), 'snapshots', saved.snapshotId + '.json');
+  const legacy = JSON.parse(fs.readFileSync(file, 'utf8')); delete legacy.baseIdentity;
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.equal(compareApprovalSnapshot(context, saved.snapshotId, current).baseChanged, false);
+  // A changed base must still be reported even when the approved head is unchanged.
+  const changedBase = repo.commitFile('code.txt', 'different base\n', 'Change base content');
+  comparison = compareApprovalSnapshot(context, saved.snapshotId, { ...current, baseRevision: changedBase });
+  assert.equal(comparison.baseChanged, true); assert.deepEqual(comparison.lines, []);
+});

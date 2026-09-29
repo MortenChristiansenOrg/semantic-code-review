@@ -696,7 +696,16 @@
     const entry = approvalEntry(id);
     if (!entry?.file.revision) return null;
     const m = entry.membership;
-    return JSON.stringify([entry.file.revision, fileBaseRevision(entry), m.classification, m.hunks || null, m.lineRanges || null]);
+    return JSON.stringify([entry.file.revision, m.classification, m.hunks || null, m.lineRanges || null]);
+  }
+  function approvalRevision(rec) {
+    // Older approvals included the base commit, although the file revision
+    // already identifies both sides of the diff. Preserve their ownership key.
+    try {
+      const parts = JSON.parse(rec.rev);
+      if (Array.isArray(parts) && parts.length === 5) return JSON.stringify([parts[0], ...parts.slice(2)]);
+    } catch { /* Unknown records remain stale. */ }
+    return rec.rev;
   }
   function approvalEndpoint(entry) {
     return { stageId: entry.stage.id, nodeId: entry.nodeId, path: entry.file.path,
@@ -794,7 +803,7 @@
   function approvalState(id) {
     const rec = approvalRecord(id);
     if (rec) {
-      if (id.startsWith("m:")) return rec.rev === revisionFor(id) && rec.path === approvalEntry(id)?.file.path ? "approved" : "stale";
+      if (id.startsWith("m:")) return approvalRevision(rec) === revisionFor(id) && rec.path === approvalEntry(id)?.file.path ? "approved" : "stale";
       return "approved";
     }
     // An approval inherited from before a rename can never still match the file

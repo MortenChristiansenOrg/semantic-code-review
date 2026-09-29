@@ -548,6 +548,25 @@ test('shared files have independent node approvals, counts, and revocation', asy
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
 });
 
+for (const legacy of [false, true]) test(`file approvals survive unchanged restacks (${legacy ? 'existing' : 'new'} record)`, async ({ page }) => {
+  const data = fixture(), key = approvalKey('first', 'first-one');
+  await mount(page, data, legacy ? { approvals: { [key]: { rev: firstMembershipRevision, at: 1, path: 'shared.js' } } } : {});
+  await openFile(page);
+  const row = page.locator('details[data-node="first-one"] .frow');
+  if (!legacy) await saveAction(page, () => row.locator('.mini-approve').click(), state => !!state.approvals?.[key]);
+  data.stages[0].baseRevision = 'c'.repeat(40);
+  data.stages[0].headRevision = 'd'.repeat(40);
+  data.viewerRevision = 'restacked';
+  await page.reload();
+  await expect(row).toHaveClass(/is-approved/);
+  await expect(row).not.toHaveClass(/is-stale/);
+  await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
+  data.stages[0].files[0].memberships[0].classification = 'refactor';
+  data.viewerRevision = 'classification-changed';
+  await page.reload();
+  await expect(row).toHaveClass(/is-stale/);
+});
+
 test('ownership changes stale only that membership; file content changes stale every approval', async ({ page }) => {
   const data = fixture();
   await mount(page, data);

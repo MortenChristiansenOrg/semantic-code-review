@@ -11,7 +11,7 @@ export type FileEndpoint = {
   baseRevision: string; headRevision: string; fileRevision: string; ownership: any;
 };
 type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string | null };
-type Snapshot = { id: string; endpoint: FileEndpoint; createdAt: string; content: Content };
+type Snapshot = { id: string; endpoint: FileEndpoint; createdAt: string; baseIdentity?: string; content: Content };
 const MAX_APPROVED_BYTES = 20 * 1024 * 1024;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 export function approvalSnapshotPath(reviewId: string, snapshotId: string) {
@@ -38,10 +38,24 @@ function readContent(context: ReviewContext, endpoint: FileEndpoint): Content {
   return { exists: Boolean(record), mode: mode || null, objectId: objectId || null, unsupported,
     binary: bytes.includes(0) || !Buffer.from(text, "utf8").equals(bytes), bytes: bytes.toString("base64"), size: bytes.length, sha256: digest(bytes) };
 }
+function baseIdentity(context: ReviewContext, endpoint: FileEndpoint): string {
+  const filePath = endpoint.previousPath || endpoint.path;
+  const tree = git(context, ["ls-tree", "-z", endpoint.baseRevision, "--", filePath]).toString("utf8");
+  const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === filePath);
+  return record ? record.slice(0, record.indexOf("\t")) : "";
+}
+function baseChanged(context: ReviewContext, snapshot: Snapshot, current: FileEndpoint): boolean {
+  try {
+    return (snapshot.baseIdentity ?? baseIdentity(context, snapshot.endpoint)) !== baseIdentity(context, current);
+  } catch {
+    // Older snapshots may outlive their original Git objects.
+    return snapshot.endpoint.baseRevision !== current.baseRevision;
+  }
+}
 export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint) {
   return withReviewLock(context.reviewId, () => {
     assertReviewContext(context);
-    const snapshot: Snapshot = { id: randomUUID().replaceAll("-", ""), endpoint, createdAt: new Date().toISOString(), content: readContent(context, endpoint) };
+    const snapshot: Snapshot = { id: randomUUID().replaceAll("-", ""), endpoint, createdAt: new Date().toISOString(), baseIdentity: baseIdentity(context, endpoint), content: readContent(context, endpoint) };
     atomicJson(approvalSnapshotPath(context.reviewId, snapshot.id), snapshot);
     return { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
   });
@@ -69,7 +83,7 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     const info = {
       approved: { ...snapshot.endpoint, at: snapshot.createdAt, size: before.size, sha256: before.sha256, exists: before.exists, mode: before.mode, objectId: before.objectId },
       current: { ...current, size: after.size, sha256: after.sha256, exists: after.exists, mode: after.mode, objectId: after.objectId },
-      baseChanged: snapshot.endpoint.baseRevision !== current.baseRevision,
+      baseChanged: baseChanged(context, snapshot, current),
       ownershipChanged: !isDeepStrictEqual(snapshot.endpoint.ownership, current.ownership),
     };
     const unsupported = before.unsupported || after.unsupported || (before.binary || after.binary ? "Binary file comparison: content hashes and sizes are shown; a line diff is unavailable." : "");

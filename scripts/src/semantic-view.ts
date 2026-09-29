@@ -508,6 +508,8 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
     if (!filePath) continue;
     blobs.set(filePath, {
       kind: status.startsWith("R") ? "renamed" : status === "A" ? "added" : status === "D" ? "deleted" : "modified",
+      oldMode: metadata[0] || "",
+      newMode: metadata[1] || "",
       oldBlob: metadata[2] || "",
       newBlob: metadata[3] || "",
     });
@@ -781,15 +783,21 @@ function buildInsights(stage, repoRoot) {
 }
 
 function fileRevision(stage, file, stats) {
-  return createHash("sha256")
+  const hash = createHash("sha256")
     .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
     .update("\0")
     .update(stats?.newBlob || stage.change.headRevision)
     .update("\0")
     .update(file.path)
     .update("\0")
-    .update(file.previousPath || "")
-    .digest("hex");
+    .update(file.previousPath || "");
+  // Preserve existing fingerprints for ordinary files. Missing sides are already
+  // represented by zero blob IDs; non-default modes need additional identity.
+  for (const side of ["oldMode", "newMode"]) {
+    const mode = stats?.[side];
+    if (mode && mode !== "100644" && mode !== "000000") hash.update(`\0${side}=${mode}`);
+  }
+  return hash.digest("hex");
 }
 
 function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) {
@@ -1598,7 +1606,7 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
   const file = stage?.files.find((file) => file.path === input.path);
   const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
-  if (file.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  if (file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
   return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
     baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
