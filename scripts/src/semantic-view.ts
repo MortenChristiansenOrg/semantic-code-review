@@ -1598,7 +1598,7 @@ function approvedFileEndpoint(input, script: string): FileEndpoint {
   const file = stage?.files.find((file) => file.path === input.path);
   const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
-  if (file.baseRevision !== input.baseRevision || stage.headRevision !== input.headRevision || file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  if (file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
   return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
     baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
