@@ -1884,3 +1884,41 @@ test('mapped insights show both contexts and files let reviewers choose between 
   await dialog.getByRole('combobox').selectOption('1');
   await expect(dialog.getByRole('heading', { name: 'Another insight', exact: true })).toBeVisible();
 });
+
+
+test('new line drafts retain their file snapshot across live restacks and reloads', async ({ page }) => {
+  const data = fixture(); await mount(page, data); await openFile(page);
+  await page.locator('.cinema-diff .lact').first().click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  const editor = page.locator('textarea[name="nc-body"]'); await editor.fill('Check this line');
+  await saveAction(page, () => editor.press('Control+Enter'), state => state.comments?.[0]?.snapshot?.fileRevision === 'rev');
+  const refreshed = page.waitForResponse(r => new URL(r.url()).pathname === '/api/implementation');
+  data.stages[0].baseRevision = 'c'.repeat(40); data.stages[0].headRevision = 'd'.repeat(40); data.viewerRevision = 'restacked';
+  await refreshed;
+  await showNotes(page);
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
+  await page.reload(); await showNotes(page);
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
+  await expect(page.locator('.side.notes [data-action="jump-to"][data-kind="line"]')).toHaveCount(1);
+  const request = page.waitForRequest(r => new URL(r.url()).pathname === '/api/feedback/export');
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  expect((await request).postDataJSON().notes[0].snapshot.fileRevision).toBe('rev');
+});
+
+for (const changed of [false, true]) test(`existing line drafts resolve their original file snapshot (${changed ? 'changed' : 'unchanged'})`, async ({ page }) => {
+  const data = fixture();
+  const note = { kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', body: 'Existing draft', mode: 'feedback', createdAt: 1,
+    snapshot: { base: 'c'.repeat(40), head: 'd'.repeat(40) } };
+  await mount(page, data, { comments: [note] });
+  await page.route('**/api/draft-snapshots*', route => route.fulfill({ json: { ok: true, snapshots: [{ ...note.snapshot, fileRevision: changed ? 'old-content' : 'rev' }] } }));
+  await page.reload(); await showNotes(page);
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(changed ? 1 : 0);
+  await expect(page.locator(`.side.notes [data-action="jump-to"][data-kind="${changed ? 'file' : 'line'}"]`)).toHaveCount(1);
+  if (changed) {
+    await page.route('**/api/feedback/export*', route => route.fulfill({ status: 422, json: { ok: false, error: 'No notes could be exported.', skipped: [{ ref: 0, reason: 'The file changed since this line draft was written.' }] } }));
+    await page.getByRole('button', { name: /Prepare feedback/ }).click();
+    await expect(page.locator('.side.notes')).toContainText('No notes could be exported.');
+    await expect(page.locator('.side.notes')).toContainText('The file changed since this line draft was written.');
+    await expect(page.locator('.side.notes .tnote')).toContainText('Existing draft');
+  }
+});

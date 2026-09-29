@@ -146,6 +146,9 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   contentUrl.searchParams.set('review', 'wrong-review');
   assert.equal((await fetch(contentUrl)).status, 409);
   const initial = endpoint(implementation);
+  const draftSnapshot = { base: initial.baseRevision, head: initial.headRevision };
+  const migrated = await (await post('api/draft-snapshots', { notes: [{ kind: 'line', id: `l:${initial.stageId}:new:1:${initial.path}`, snapshot: draftSnapshot }] })).json();
+  assert.deepEqual(migrated.snapshots, [{ ...draftSnapshot, fileRevision: initial.fileRevision }]);
   // Obsolete commit coordinates are safe when content and ownership still match:
   // the server must capture its authoritative current endpoint.
   const moved = { ...initial, baseRevision: '0'.repeat(40), headRevision: '0'.repeat(40) };
