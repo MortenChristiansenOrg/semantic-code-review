@@ -1098,6 +1098,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .diff-close:hover { border-color: var(--signal); color: var(--text); }
 
 .diff-scroll {
+  container-type: inline-size;
+  /* Reserve classic scrollbar space before resolving container query units. */
+  scrollbar-gutter: stable;
   overflow: auto;
   max-height: min(74vh, 720px);
   scrollbar-color: var(--line) transparent;
@@ -1976,7 +1979,38 @@ html:has(.file-search[open]) { overflow: hidden; }
 .code-insight-link { border: 1px solid var(--line); border-radius: 5px; background: transparent; color: inherit; padding: 4px 8px; font: inherit; font-size: 12px; cursor: pointer; }
 .code-insight-link:hover { background: #ffffff12; }
 .code-insight-link.needs-review, .insight-target-status.needs-review { color: var(--warn); }
-.line-code-insights { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px; border-left: 3px solid var(--signal); }
+.line-code-insights {
+  /* Size against the scrollport, not the widest source line. Only the code
+     moves horizontally; insight text always wraps within the visible area. */
+  position: sticky;
+  left: 0;
+  width: 100cqw;
+  max-width: 100%;
+  box-sizing: border-box;
+  display: grid;
+  gap: 6px;
+  padding: 6px 12px;
+  border-left: 3px solid var(--signal);
+  font-family: var(--sans);
+}
+.line-code-insights .code-insight-link {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+  font-size: 13px;
+}
+.inline-insight-icon { flex: 0 0 1em; text-align: center; }
+.inline-insight-text { min-width: 0; }
+.line-code-insights .code-insight-link > * { cursor: inherit; }
+.line-code-insights .code-insight-link:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+.drow.is-code-insight-target { background: var(--signal-soft); }
+.drow.is-code-insight-target > code { opacity: 1; }
 .code-insight-dialog { width: min(1200px, 94vw); max-width: 94vw; max-height: 90vh; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); }
 .code-insight-dialog::backdrop { background: #0009; }
 .code-insight-dialog > header { display: flex; justify-content: space-between; align-items: center; gap: 20px; }

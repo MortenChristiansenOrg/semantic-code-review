@@ -1107,10 +1107,14 @@
       : type === "analysis" ? "Analysis"
       : "";
   }
-  function codeInsightButton(stage, ins, label = "View code") {
+  function codeInsightButton(stage, ins, label = "View code", inline = false) {
     const target = ins.codeTarget;
     if (!target) return "";
-    return `<button type="button" class="code-insight-link ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}">${esc(label)}${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
+    const info = vstatus(ins) || INSIGHT[ins.type] || INSIGHT.decision;
+    const content = inline
+      ? `<b class="inline-insight-icon" role="img" aria-label="${esc(info.label)}">${esc(info.glyph)}</b><span class="inline-insight-text">${esc(label)}</span>`
+      : esc(label);
+    return `<button type="button" class="code-insight-link ${inline ? `type-${esc(ins.type)}` : ""} ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}">${content}${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
   }
   function codeContextHtml(target) {
     return `<div class="insight-code-block" tabindex="0" aria-label="Code context">${target.context.map((line, index) => {
@@ -1819,7 +1823,7 @@
     const row = `<div data-line-id="${esc(lineId)}" class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
     const stage = stageById.get(ctx.stageId);
     const linked = side === "new" && stage ? stage.insights.filter(ins => ins.codeTarget?.status !== "needs-review" && ins.codeTarget?.path === ctx.path && ins.codeTarget.startLine === lineNo) : [];
-    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => codeInsightButton(stage, ins, ins.title)).join("")}</div>` : "";
+    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => codeInsightButton(stage, ins, ins.title, true)).join("")}</div>` : "";
     return ownershipNotice + insights + row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
@@ -2804,6 +2808,44 @@
   window.addEventListener("resize", () => { if (popOwner && popOwner.isConnected) positionPop(popOwner); });
 
   /* ---- events ----------------------------------------------------------- */
+  // Keep the hit area stable: highlighting only changes paint, never layout or
+  // the insight DOM. Moving between its icon, text, and padding is one hover.
+  let hoveredCodeInsight = null, focusedCodeInsight = null;
+  function highlightInlineInsight(button) {
+    app.querySelectorAll(".is-code-insight-target").forEach(row => row.classList.remove("is-code-insight-target"));
+    if (!button?.isConnected) return;
+    const stage = stageById.get(button.dataset.stage);
+    const target = stage?.insights.find(ins => ins.collection === button.dataset.collection && ins.id === button.dataset.item)?.codeTarget;
+    if (!target || target.status === "needs-review") return;
+    button.closest(".diff-grid")?.querySelectorAll("[data-line-id]").forEach(row => {
+      const line = parseLineId(row.dataset.lineId);
+      if (line?.stageId === stage.id && line.side === "new" && line.path === target.path && line.line >= target.startLine && line.line <= target.endLine)
+        row.classList.add("is-code-insight-target");
+    });
+  }
+  document.addEventListener("pointerover", e => {
+    const button = e.target.closest(".line-code-insights .code-insight-link");
+    if (!button || button.contains(e.relatedTarget)) return;
+    hoveredCodeInsight = button;
+    highlightInlineInsight(button);
+  });
+  document.addEventListener("pointerout", e => {
+    const button = e.target.closest(".line-code-insights .code-insight-link");
+    if (!button || button.contains(e.relatedTarget)) return;
+    hoveredCodeInsight = null;
+    highlightInlineInsight(focusedCodeInsight);
+  });
+  document.addEventListener("focusin", e => {
+    const button = e.target.closest(".line-code-insights .code-insight-link");
+    if (!button) return;
+    focusedCodeInsight = button;
+    highlightInlineInsight(button);
+  });
+  document.addEventListener("focusout", e => {
+    if (!e.target.closest(".line-code-insights .code-insight-link")) return;
+    focusedCodeInsight = null;
+    highlightInlineInsight(hoveredCodeInsight);
+  });
   document.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-action]");
     if (!btn) return;

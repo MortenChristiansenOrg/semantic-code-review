@@ -1868,6 +1868,101 @@ test('stale code insights show original context and repair guidance without atta
   expect(errors).toEqual([]);
 });
 
+test('inline insights wrap in a stable sans-serif hit area and stay pinned while code scrolls', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 900 });
+  const data = fixture(), insight = codeInsight();
+  insight.type = 'question'; insight.collection = 'openQuestions';
+  insight.title = 'Should a 429 response honor Retry-After? ' + 'Keep the retry delay within the delivery budget. '.repeat(8);
+  data.stages[0].insights.push(insight);
+  data.stages[0].files[0].lines[0].s += ' // ' + 'long source line '.repeat(60);
+  data.stages[0].files[0].lines.push(...Array.from({ length: 50 }, (_, i) => ({ t: 'add', n: i + 4, s: `const value${i} = ${i};`, h: 1 })));
+  const errors = await mount(page, data); await openFile(page);
+  const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+  const scroller = panel.locator('.diff-scroll');
+  const button = panel.locator('.line-code-insights button');
+  await expect(button.getByRole('img', { name: 'Open question', exact: true })).toHaveText('?');
+  await button.scrollIntoViewIfNeeded();
+  const inspect = () => button.evaluate(el => {
+    const scroll = el.closest('.diff-scroll'), text = el.querySelector('.inline-insight-text');
+    const range = document.createRange(); range.selectNodeContents(text);
+    return {
+      x: el.getBoundingClientRect().x, width: el.getBoundingClientRect().width,
+      scrollLeft: scroll.getBoundingClientRect().left, scrollWidth: scroll.clientWidth,
+      overflow: el.scrollWidth > el.clientWidth, font: getComputedStyle(el).fontFamily,
+      bodyFont: getComputedStyle(document.body).fontFamily,
+      lines: Array.from(range.getClientRects()).map(r => ({ x: r.x, y: r.y })),
+    };
+  });
+  const before = await inspect();
+  expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+  expect(await button.evaluate(el => el.parentElement.getBoundingClientRect().width <= el.closest('.diff-scroll').clientWidth)).toBe(true);
+  expect(before.lines.length).toBeGreaterThan(1);
+  expect(before.overflow).toBe(false);
+  expect(before.font).toBe(before.bodyFont);
+  expect(before.lines.every(r => Math.abs(r.x - before.lines[0].x) < 1)).toBe(true);
+  await scroller.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  expect(await scroller.evaluate(el => el.scrollLeft)).toBeGreaterThan(200);
+  const after = await inspect();
+  expect(Math.abs(after.x - before.x)).toBeLessThan(1);
+  expect(after.x + after.width).toBeLessThanOrEqual(after.scrollLeft + after.scrollWidth);
+  // Sample padding, icon, text, and multiple wrapped rows without hit-area changes.
+  const box = await button.boundingBox();
+  for (const [dx, dy] of [[2, 2], [12, 12], [55, 12], [55, box.height - 8], [box.width - 3, box.height / 2]]) {
+    await page.mouse.move(box.x + dx, box.y + dy);
+    const hit = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return { cursor: getComputedStyle(el).cursor, button: !!el.closest('.line-code-insights button') };
+    }, { x: box.x + dx, y: box.y + dy });
+    expect(hit).toEqual({ cursor: 'pointer', button: true });
+    const bounds = await button.boundingBox();
+    expect(bounds).toEqual(box);
+  }
+  await page.setViewportSize({ width: 760, height: 900 });
+  const resized = await inspect();
+  expect(resized.width).toBeLessThan(before.width);
+  expect(resized.overflow).toBe(false);
+  await panel.getByRole('button', { name: 'Wrap lines', exact: true }).click();
+  const wrapped = await inspect();
+  expect(wrapped.lines.length).toBeGreaterThan(1);
+  expect(wrapped.overflow).toBe(false);
+  expect(await scroller.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('inline insight hover and focus highlight only the linked new lines in that diff', async ({ page }) => {
+  const data = fixture(), insight = codeInsight();
+  insight.codeTarget.endLine = 2;
+  data.stages[0].insights.push(insight);
+  data.stages[0].files[0].lines.unshift({ t: 'del', o: 1, s: 'old code', h: 1 });
+  const errors = await mount(page, data);
+  await openFile(page, 'first-two');
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  const button = node.locator('.line-code-insights button');
+  const highlighted = page.locator('.is-code-insight-target');
+  await button.hover();
+  await expect(highlighted).toHaveCount(2);
+  expect(await highlighted.evaluateAll(rows => rows.map(row => row.dataset.lineId))).toEqual(['l:first:new:1:shared.js', 'l:first:new:2:shared.js']);
+  await expect(node.locator('[data-line-id="l:first:old:1:shared.js"]')).not.toHaveClass(/is-code-insight-target/);
+  await expect(page.locator('details[data-node="first-two"] .is-code-insight-target')).toHaveCount(0);
+  await button.locator('.inline-insight-icon').hover();
+  await expect(highlighted).toHaveCount(2);
+  await button.locator('.inline-insight-text').hover();
+  await expect(highlighted).toHaveCount(2);
+  await page.mouse.move(0, 0);
+  await expect(highlighted).toHaveCount(0);
+  await button.focus();
+  await expect(highlighted).toHaveCount(2);
+  await button.press('Enter');
+  await expect(page.getByRole('dialog', { name: 'Insight and code' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(button).toBeFocused();
+  await expect(highlighted).toHaveCount(2);
+  await page.getByRole('button', { name: 'Find file' }).focus();
+  await expect(highlighted).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('mapped insights show both contexts and files let reviewers choose between insights', async ({ page }) => {
   const data = fixture(), first = codeInsight('mapped'), second = codeInsight();
   first.codeTarget.startLine = 2; first.codeTarget.endLine = 2;
