@@ -1911,7 +1911,7 @@ test('inline insights wrap in a stable sans-serif hit area and stay pinned while
     await page.mouse.move(box.x + dx, box.y + dy);
     const hit = await page.evaluate(({ x, y }) => {
       const el = document.elementFromPoint(x, y);
-      return { cursor: getComputedStyle(el).cursor, button: !!el.closest('.line-code-insights button') };
+      return { cursor: getComputedStyle(el).cursor, button: el.matches('.line-code-insights button') };
     }, { x: box.x + dx, y: box.y + dy });
     expect(hit).toEqual({ cursor: 'pointer', button: true });
     const bounds = await button.boundingBox();
@@ -1945,9 +1945,11 @@ test('inline insight hover and focus highlight only the linked new lines in that
   expect(await highlighted.evaluateAll(rows => rows.map(row => row.dataset.lineId))).toEqual(['l:first:new:1:shared.js', 'l:first:new:2:shared.js']);
   await expect(node.locator('[data-line-id="l:first:old:1:shared.js"]')).not.toHaveClass(/is-code-insight-target/);
   await expect(page.locator('details[data-node="first-two"] .is-code-insight-target')).toHaveCount(0);
-  await button.locator('.inline-insight-icon').hover();
+  const icon = await button.locator('.inline-insight-icon').boundingBox();
+  await page.mouse.move(icon.x + icon.width / 2, icon.y + icon.height / 2);
   await expect(highlighted).toHaveCount(2);
-  await button.locator('.inline-insight-text').hover();
+  const text = await button.locator('.inline-insight-text').boundingBox();
+  await page.mouse.move(text.x + 10, text.y + text.height / 2);
   await expect(highlighted).toHaveCount(2);
   await page.mouse.move(0, 0);
   await expect(highlighted).toHaveCount(0);
@@ -1957,9 +1959,92 @@ test('inline insight hover and focus highlight only the linked new lines in that
   await expect(page.getByRole('dialog', { name: 'Insight and code' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(button).toBeFocused();
-  await expect(highlighted).toHaveCount(2);
-  await page.getByRole('button', { name: 'Find file' }).focus();
   await expect(highlighted).toHaveCount(0);
+  await page.getByRole('button', { name: 'Find file' }).focus();
+  await button.focus();
+  await expect(highlighted).toHaveCount(2);
+  await button.click();
+  await page.getByRole('button', { name: 'Close insight' }).click();
+  await expect(button).toBeFocused();
+  await expect(highlighted).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await button.hover();
+  await expect(highlighted).toHaveCount(2);
+  await page.mouse.move(0, 0);
+  await expect(highlighted).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('linked reasoning is one divided pill with stable hover and multiline tooltips', async ({ page }) => {
+  const data = fixture(), insight = codeInsight();
+  insight.body = 'First paragraph.\n\nSecond paragraph.\nThird line.';
+  data.stages[0].insights.push(insight);
+  const errors = await mount(page, data); await openFile(page);
+  const pill = page.locator('details[data-node="first-one"] .node-reasoning .tag.has-code');
+  const face = pill.locator('.tag-face'), code = pill.locator('.code-insight-link');
+  await face.scrollIntoViewIfNeeded();
+  const left = await face.boundingBox(), right = await code.boundingBox();
+  expect(Math.abs(left.x + left.width - right.x)).toBeLessThan(1);
+  expect(left.y).toBe(right.y);
+  expect(left.height).toBe(right.height);
+  await expect(code).toHaveCSS('border-left-width', '1px');
+  await face.hover();
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toBeVisible();
+  expect(await tooltip.locator('p').textContent()).toBe(insight.body);
+  await expect(tooltip.locator('p')).toHaveCSS('white-space', 'pre-wrap');
+  // Moving through label descendants must not repaint or hide the tooltip.
+  await tooltip.evaluate(el => {
+    window.tooltipMutations = [];
+    window.tooltipObserver = new MutationObserver(records => window.tooltipMutations.push(...records.map(r => r.type)));
+    window.tooltipObserver.observe(el, { childList: true, attributes: true, subtree: true });
+  });
+  for (const dx of [3, 18, 60, left.width - 3]) {
+    await page.mouse.move(left.x + dx, left.y + left.height / 2);
+    await expect(face).toHaveCSS('cursor', 'pointer');
+    expect(await face.boundingBox()).toEqual(left);
+    await expect(tooltip).toBeVisible();
+  }
+  expect(await page.evaluate(() => { window.tooltipObserver.disconnect(); return window.tooltipMutations; })).toEqual([]);
+  await face.click();
+  await page.mouse.move(0, 0);
+  await expect(tooltip).toBeVisible();
+  await code.click();
+  await expect(page.getByRole('dialog', { name: 'Insight and code' })).toBeVisible();
+  await expect(tooltip).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(code).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('code insight dialogs animate entry and every dismissal, including an interrupted entry', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const data = fixture(); data.stages[0].insights.push(codeInsight());
+  const errors = await mount(page, data); await openFile(page);
+  const button = page.locator('details[data-node="first-one"] .line-code-insights button');
+  const dialog = page.getByRole('dialog', { name: 'Insight and code' });
+  for (const action of ['close', 'escape', 'backdrop']) {
+    await button.click();
+    expect(await dialog.evaluate(el => {
+      const entry = el.getAnimations().find(a => a.effect.getTiming().duration === 180 && a.effect.getKeyframes().some(f => f.transform));
+      if (!entry) return false;
+      entry.pause(); entry.currentTime = 70;
+      return true;
+    })).toBe(true);
+    if (action === 'close') await dialog.getByRole('button', { name: 'Close insight' }).click();
+    else if (action === 'escape') await page.keyboard.press('Escape');
+    else await page.mouse.click(1, 1);
+    await expect(dialog).toHaveClass(/is-closing/);
+    expect(await dialog.evaluate(el => el.getAnimations().some(a => a.effect.getTiming().duration === 140))).toBe(true);
+    await expect(dialog).toHaveCount(0);
+    await expect(button).toBeFocused();
+    await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
+  }
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await button.click();
+  expect(await dialog.evaluate(el => el.getAnimations().length)).toBe(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

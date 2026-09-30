@@ -1125,10 +1125,23 @@
   function openCodeInsight(stage, ins, choices = [ins]) {
     if (!stage || !ins?.codeTarget) return;
     forceHidePop();
+    clearInlineInsightHighlight();
     const opener = document.activeElement;
     const dialog = document.createElement("dialog");
     dialog.className = "code-insight-dialog";
     dialog.setAttribute("aria-labelledby", "code-insight-title");
+    let entering = null, closing = false;
+    const dismiss = () => {
+      if (closing) return;
+      closing = true;
+      if (motionReduced()) { dialog.close(); return; }
+      const current = getComputedStyle(dialog);
+      const from = { opacity: current.opacity, transform: current.transform };
+      entering?.cancel();
+      dialog.classList.add("is-closing");
+      const animation = dialog.animate([from, { opacity: 0, transform: "translateY(8px) scale(.985)" }], { duration: 140, easing: "ease-in", fill: "forwards" });
+      afterAnim(animation, 140, () => dialog.close());
+    };
     const paint = () => {
       const target = ins.codeTarget, stale = target.status === "needs-review";
       const shown = stale ? target.original : target;
@@ -1139,16 +1152,28 @@
           ${stale ? '<p>Review the insight against the revised code, then use <code>stage target</code> to retarget it or remove its code link. Its original context is preserved here.</p>' : ""}</article>
           <section aria-label="Linked code"><h3>${stale ? "Original code" : "Linked code"}</h3><p class="insight-code-location">${esc(shown.path)}:${shown.startLine}–${shown.endLine} · ${esc(shown.revision.slice(0, 12))}</p>${codeContextHtml(shown)}
             ${!stale && target.status === "mapped" ? `<details class="insight-original"><summary>Original context · ${esc(target.original.revision.slice(0, 12))}</summary><p>${esc(target.original.path)}:${target.original.startLine}–${target.original.endLine}</p>${codeContextHtml(target.original)}</details>` : ""}</section></div>`;
-      dialog.querySelector("[data-close]").addEventListener("click", () => dialog.close());
+      dialog.querySelector("[data-close]").addEventListener("click", dismiss);
       dialog.querySelector("select")?.addEventListener("change", event => { ins = choices[Number(event.target.value)]; paint(); dialog.querySelector("select").focus(); });
     };
-    dialog.addEventListener("close", () => { dialog.remove(); if (opener?.isConnected) opener.focus({ preventScroll: true }); });
+    dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      // Restore keyboard position without treating restored focus as a new
+      // request to preview the range. A fresh hover/focus can highlight again.
+      clearInlineInsightHighlight();
+      suppressedCodeInsight = opener?.closest(".line-code-insights .code-insight-link") || null;
+    });
     dialog.addEventListener("click", event => {
       if (event.target !== dialog) return;
       const box = dialog.getBoundingClientRect();
-      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+      if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dismiss();
     });
     document.body.append(dialog); paint(); dialog.showModal();
+    if (!motionReduced()) entering = dialog.animate([
+      { opacity: 0, transform: "translateY(10px) scale(.985)" },
+      { opacity: 1, transform: "translateY(0) scale(1)" },
+    ], { duration: 180, easing: "cubic-bezier(.22,.7,.2,1)" });
   }
   function fileCodeInsights(stage, filePath) {
     return stage.insights.filter(ins => ins.codeTarget && (ins.codeTarget.path === filePath || ins.codeTarget.original.path === filePath));
@@ -1164,7 +1189,7 @@
     const vtype = ins.type === "validation" ? validationTypeLabel(ins.validationType) : "";
     const meta = vs ? vtype : (ins.meta || "");
     const kindText = vtype ? `${info.label} · ${vtype}` : info.label;
-    return `<span class="tag type-${ins.type} ${vs ? `vstat-${vs.key}` : ""}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
+    return `<span class="tag ${ins.codeTarget ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       <button class="tag-face" type="button" data-tagpop="1"
         data-type="${ins.type}" data-vstat="${vs ? vs.key : ""}"
         data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}"
@@ -2746,6 +2771,7 @@
   }
   function showPop(btn) {
     clearTimeout(popTimer);
+    if (popOwner === btn && popEl?.classList.contains("is-shown")) return;
     clearPopDescription();
     popOwner = btn;
     const ids = new Set((btn.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
@@ -2781,7 +2807,7 @@
   });
   document.addEventListener("pointerout", (e) => {
     const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
-    if (b && !popSticky) scheduleHide();
+    if (b && !b.contains(e.relatedTarget) && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
     const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
@@ -2810,7 +2836,11 @@
   /* ---- events ----------------------------------------------------------- */
   // Keep the hit area stable: highlighting only changes paint, never layout or
   // the insight DOM. Moving between its icon, text, and padding is one hover.
-  let hoveredCodeInsight = null, focusedCodeInsight = null;
+  let hoveredCodeInsight = null, focusedCodeInsight = null, suppressedCodeInsight = null;
+  function clearInlineInsightHighlight() {
+    hoveredCodeInsight = focusedCodeInsight = null;
+    highlightInlineInsight(null);
+  }
   function highlightInlineInsight(button) {
     app.querySelectorAll(".is-code-insight-target").forEach(row => row.classList.remove("is-code-insight-target"));
     if (!button?.isConnected) return;
@@ -2825,24 +2855,34 @@
   }
   document.addEventListener("pointerover", e => {
     const button = e.target.closest(".line-code-insights .code-insight-link");
-    if (!button || button.contains(e.relatedTarget)) return;
+    if (!button || button === suppressedCodeInsight || button.contains(e.relatedTarget)) return;
     hoveredCodeInsight = button;
     highlightInlineInsight(button);
   });
   document.addEventListener("pointerout", e => {
     const button = e.target.closest(".line-code-insights .code-insight-link");
     if (!button || button.contains(e.relatedTarget)) return;
+    if (button === suppressedCodeInsight) suppressedCodeInsight = null;
     hoveredCodeInsight = null;
     highlightInlineInsight(focusedCodeInsight);
   });
+  document.addEventListener("pointermove", e => {
+    const button = e.target.closest(".line-code-insights .code-insight-link");
+    if (!button || button !== suppressedCodeInsight) return;
+    suppressedCodeInsight = null;
+    hoveredCodeInsight = button;
+    highlightInlineInsight(button);
+  });
   document.addEventListener("focusin", e => {
     const button = e.target.closest(".line-code-insights .code-insight-link");
-    if (!button) return;
+    if (!button || button === suppressedCodeInsight) return;
     focusedCodeInsight = button;
     highlightInlineInsight(button);
   });
   document.addEventListener("focusout", e => {
-    if (!e.target.closest(".line-code-insights .code-insight-link")) return;
+    const button = e.target.closest(".line-code-insights .code-insight-link");
+    if (!button) return;
+    if (button === suppressedCodeInsight) suppressedCodeInsight = null;
     focusedCodeInsight = null;
     highlightInlineInsight(hoveredCodeInsight);
   });
