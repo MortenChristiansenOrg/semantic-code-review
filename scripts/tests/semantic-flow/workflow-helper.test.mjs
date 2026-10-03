@@ -480,9 +480,11 @@ test("update restarts a matching linked-worktree viewer without changing artifac
 });
 
 test("viewer serves its installed release version and replaces an older running release", async (t) => {
-  const fixture = createUpdateFixture(t), port = await reserveViewerPort();
+  const port = await reserveViewerPort();
   let viewerPid;
+  // Register shutdown before the fixture cleanup: Windows locks the live cwd.
   t.after(() => stopViewer(port, viewerPid));
+  const fixture = createUpdateFixture(t);
   fixture.initialize();
   const manifestPath = path.join(fixture.target, ".semantic-review", "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
