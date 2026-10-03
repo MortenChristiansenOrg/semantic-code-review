@@ -1368,6 +1368,98 @@ test('the newest remote commit retains an earlier approval after rewritten histo
   });
 });
 
+for (const mode of ['changes', 'full', 'approval']) {
+  test(`file paging follows navigation direction in ${mode} mode`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    const lines = Array.from({ length: 1900 }, (_, i) => ({ t: 'add', n: i + 1, s: `const row${i + 1} = ${i + 1};`, h: 1 }));
+    file.lines = lines.slice(0, 900); file.nextOffset = 900;
+    const errors = await mount(page, data, { fileView: { [fileId]: mode === 'full' ? 'full' : 'changes' } });
+    const payload = offset => ({ ok: true, lines: lines.slice(offset, offset + 900), offset,
+      nextOffset: offset + 900 < lines.length ? offset + 900 : null, additions: lines.length, deletions: 0 });
+    await page.route('**/api/diff*', route => route.fulfill({ json: payload(Number(new URL(route.request().url()).searchParams.get('offset'))) }));
+    await page.route('**/api/approval-comparison*', route => route.fulfill({ json: payload(route.request().postDataJSON().offset) }));
+    await openFile(page);
+    if (mode === 'approval') {
+      await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+      file.revision = 'changed'; data.viewerRevision = 'changed';
+      await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+      await openFile(page);
+      await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    }
+    const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+    const scroller = panel.locator('.diff-scroll');
+    await expect(panel.locator('.diff-pages span')).toHaveText('Rows 1–900');
+    // Trigger the button without automation scrolling the pager into view first.
+    for (const [button, start, rows, backward] of [
+      ['Next page', 400, 'Rows 901–1800', false],
+      ['Previous page', 150, 'Rows 1–900', true],
+      ['Next page', 0, 'Rows 901–1800', false],
+      ['Next page', 600, 'Rows 1801–1900', false],
+      ['Previous page', 0, 'Rows 901–1800', true],
+    ]) {
+      await scroller.evaluate((el, top) => { el.scrollTop = top; }, start);
+      await panel.getByRole('button', { name: button, exact: true }).evaluate(el => el.click());
+      await expect(panel.locator('.diff-pages span')).toHaveText(rows);
+      await expect.poll(() => scroller.evaluate((el, end) => end
+        ? Math.abs(el.scrollTop - (el.scrollHeight - el.clientHeight)) : el.scrollTop, backward)).toBeLessThanOrEqual(1);
+      if (backward) expect(await scroller.evaluate(el => el.scrollTop)).toBeGreaterThan(1000);
+    }
+    // Ordinary rerenders continue to retain the current page's position.
+    await scroller.evaluate(el => { el.scrollTop = 250; });
+    await panel.getByRole('button', { name: 'Wrap lines', exact: true }).click();
+    await expect.poll(() => scroller.evaluate(el => el.scrollTop)).toBe(250);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const scenario of ['diff', 'queued diff', 'approval']) {
+  test(`pending page scroll stays with its requesting node (${scenario})`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    const lines = Array.from({ length: 1800 }, (_, i) => ({ t: 'add', n: i + 1, s: `const row${i + 1} = ${i + 1};`, h: 1 }));
+    file.lines = lines.slice(0, 900); file.nextOffset = 900;
+    await mount(page, data, { fileView: { [fileId]: 'full' } });
+    const payload = offset => ({ ok: true, lines: lines.slice(offset, offset + 900), offset, nextOffset: offset ? null : 900, additions: 1800 });
+    let releasePage;
+    const pendingPage = new Promise(resolve => { releasePage = resolve; });
+    await page.route('**/api/diff*', async route => {
+      const offset = Number(new URL(route.request().url()).searchParams.get('offset'));
+      if (offset) await pendingPage;
+      await route.fulfill({ json: payload(offset) });
+    });
+    await page.route('**/api/approval-comparison*', async route => {
+      const offset = route.request().postDataJSON().offset;
+      if (offset) await pendingPage;
+      await route.fulfill({ json: payload(offset) });
+    });
+    await openFile(page);
+    if (scenario === 'approval') {
+      await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+      file.revision = 'changed'; data.viewerRevision = 'changed';
+      await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+      await openFile(page);
+    }
+    const first = page.locator('details[data-node="first-one"] .cinema-diff');
+    await expect(first.locator('.diff-pages span')).toHaveText('Rows 1–900');
+    const next = first.getByRole('button', { name: 'Next page', exact: true });
+    const routeName = scenario === 'approval' ? '/api/approval-comparison' : '/api/diff';
+    const request = page.waitForRequest(r => new URL(r.url()).pathname === routeName);
+    await next.evaluate(el => el.click()); await request;
+    if (scenario === 'queued diff') await next.evaluate(el => el.click());
+    await openFile(page, 'first-two');
+    const second = page.locator('details[data-node="first-two"] .cinema-diff');
+    const scroller = second.locator('.diff-scroll');
+    await scroller.evaluate(el => { el.scrollTop = 250; });
+    const responses = [];
+    page.on('response', r => { if (new URL(r.url()).pathname === routeName) responses.push(r); });
+    releasePage();
+    await expect.poll(() => responses.length).toBe(scenario === 'queued diff' ? 2 : 1);
+    if (scenario !== 'approval') await expect(second.locator('.diff-pages span')).toHaveText('Rows 901–1800');
+    // Let all response handlers and their renders complete before checking scroll.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await scroller.evaluate(el => el.scrollTop)).toBe(250);
+  });
+}
+
 for (const kind of ['modified', 'added', 'deleted']) {
   test(`line wrapping preserves source rows and anchors for ${kind} files`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 800 });

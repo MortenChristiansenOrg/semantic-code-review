@@ -360,10 +360,10 @@
 
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
   const diffRequests = new Map();
-  async function ensureFileDiff(entry, offset = 0, force = false, target = null) {
+  async function ensureFileDiff(entry, offset = 0, force = false, target = null, pageScroll = null) {
     if (!entry) return;
     if (diffRequests.has(entry.id)) {
-      if (target || force) entry.file._queuedDiff = { offset, force, target };
+      if (target || force) entry.file._queuedDiff = { offset, force, target, pageScroll };
       return;
     }
     const mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
@@ -378,6 +378,7 @@
       mode, offset: String(offset),
     });
     if (target) { query.set("side", target.side); query.set("line", String(target.line)); }
+    let pageLoaded = false;
     const request = fetch(`/api/diff?${query}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
@@ -397,6 +398,7 @@
         entry.file.binary = Boolean(payload.binary);
         entry.file.truncated = Boolean(payload.truncated);
         delete entry.file._ownership;
+        pageLoaded = true;
       })
       .catch((error) => {
         entry.file._diffError = error.message || "Diff could not be loaded.";
@@ -406,8 +408,9 @@
         diffRequests.delete(entry.id);
         const queued = entry.file._queuedDiff;
         delete entry.file._queuedDiff;
-        if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target);
+        if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target, queued.pageScroll);
         render();
+        if (pageLoaded && pageScroll && !queued) scrollDiffPage(entry.id, pageScroll);
       });
     diffRequests.set(entry.id, request);
   }
@@ -2020,12 +2023,19 @@
   function comparisonKey(id, entry) {
     return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
   }
-  async function loadApprovalComparison(id, entry, offset = 0) {
+  function scrollDiffPage(id, navigation) {
+    // A response may arrive after this shared file was opened in another node.
+    if (activeFileNodeId(id) !== navigation.nodeId) return;
+    const scroller = cinemaHolder(id, navigation.nodeId)?.querySelector(".diff-scroll");
+    if (scroller) scroller.scrollTop = navigation.direction === "backward" ? scroller.scrollHeight : 0;
+  }
+  async function loadApprovalComparison(id, entry, offset = 0, pageScroll = null) {
     const approval = retainedApproval(id);
     if (!approval?.snapshotId) return;
     const key = comparisonKey(id, entry), mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
     if (approvalComparisons.get(key)?.loading) return;
     approvalComparisons.set(key, { loading: true, offset }); render();
+    let pageLoaded = false;
     try {
       await flushReviewState();
       const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
@@ -2033,9 +2043,12 @@
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
       approvalComparisons.set(key, result);
+      pageLoaded = true;
     } catch (error) { approvalComparisons.set(key, { error: error.message, offset }); }
     while (approvalComparisons.size > 32) approvalComparisons.delete(approvalComparisons.keys().next().value);
     render();
+    if (pageLoaded && pageScroll && comparisonKey(id, entry) === key && sinceApprovalEnabled(id))
+      scrollDiffPage(entry.id, pageScroll);
   }
   function approvalComparisonBody(id, entry) {
     const approval = retainedApproval(id);
@@ -2927,7 +2940,11 @@
       persist(); render();
     } else if (a === "approval-page") {
       const entry = approvalEntry(btn.dataset.id);
-      if (entry) void loadApprovalComparison(btn.dataset.id, entry, Number(btn.dataset.offset));
+      const offset = Number(btn.dataset.offset);
+      const previous = entry ? approvalComparisons.get(comparisonKey(btn.dataset.id, entry))?.offset || 0 : 0;
+      if (entry) void loadApprovalComparison(btn.dataset.id, entry, offset, {
+        direction: offset > previous ? "forward" : "backward", nodeId: entry.nodeId,
+      });
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
@@ -2986,7 +3003,10 @@
       if (entry) { delete entry.file.lines; delete entry.file._diffError; }
       persist(); render();
     } else if (a === "diff-page") {
-      ensureFileDiff(fileById.get(btn.dataset.id), Number(btn.dataset.offset), true);
+      const entry = fileById.get(btn.dataset.id), offset = Number(btn.dataset.offset);
+      if (entry) ensureFileDiff(entry, offset, true, null, {
+        direction: offset > (entry.file._pageOffset || 0) ? "forward" : "backward", nodeId: activeFileNodeId(entry.id),
+      });
     } else if (a === "toggle-hide-removed") {
       const id = btn.dataset.id;
       state.hideDeleted[id] = !state.hideDeleted[id];
