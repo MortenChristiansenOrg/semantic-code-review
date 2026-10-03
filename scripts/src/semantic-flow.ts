@@ -1228,10 +1228,14 @@ function replaceInstalledSkill(
   }
 }
 
-async function viewerForUpdate(
-  targetRoot: string,
-): Promise<Array<ViewerIdentity & { repositoryRoot: string }>> {
-  const roots = worktreeRoots(targetRoot);
+async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoot: string }>> {
+  // Installation maintenance does not require a project. Only discover viewers
+  // when the invocation directory provides a repository to match against.
+  const targetRoot = git(["rev-parse", "--show-toplevel"], {
+    cwd: process.cwd(), allowFailure: true,
+  });
+  if (!targetRoot) return [];
+  const roots = worktreeRoots(path.resolve(targetRoot));
   const ports = new Set(listReviews().filter((r) => roots.some((root) => samePath(root, r.repositoryRoot))).map((r) => r.viewer?.port).filter((port): port is number => Boolean(port)));
   const candidates = await Promise.all([probeViewer(), ...Array.from(ports, (port) => probeViewer(port))]);
   const found: Array<ViewerIdentity & { repositoryRoot: string }> = [];
@@ -1285,12 +1289,8 @@ async function updateFromSource(options: Options): Promise<void> {
   const sourceOption = option(options, "source");
   const useCurrentSource = flag(options, "use-current-source");
   const previousVersion = readVersion(skillDirectory);
-  const targetRoot = repositoryRoot(process.cwd());
-  const sourceRoot = repositoryRoot(
-    sourceOption
-      ? path.resolve(sourceOption)
-      : path.join(path.dirname(targetRoot), "semantic-code-review"),
-  );
+  if (!sourceOption) fail("Source updates require an explicit --source.");
+  const sourceRoot = repositoryRoot(path.resolve(sourceOption));
   validateSourceRepository(sourceRoot);
 
   const branch = git(["symbolic-ref", "--short", "HEAD"], {
@@ -1338,7 +1338,7 @@ async function updateFromSource(options: Options): Promise<void> {
   const builtSkill = path.join(sourceRoot, "skills", "semantic-flow");
   const requiredFiles = verifySkill(builtSkill);
 
-  const viewers = await viewerForUpdate(targetRoot);
+  const viewers = await viewerForUpdate();
   await stopViewersForUpdate(viewers);
   let installedVersion: string;
   try {
@@ -1387,13 +1387,12 @@ async function update(options: Options): Promise<void> {
     return;
   }
   console.log(upgradeNotes(releases, previousVersion, targetVersion));
-  const targetRoot = repositoryRoot(process.cwd());
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-release-"));
   try {
     const staged = path.join(temporary, "semantic-flow");
     const metadata = await unpackDistribution(await downloadRelease(release), staged, targetVersion);
     const required = verifySkill(staged);
-    const viewers = await viewerForUpdate(targetRoot);
+    const viewers = await viewerForUpdate();
     await stopViewersForUpdate(viewers);
     try {
       replaceInstalledSkill(staged, skillDirectory, required);
