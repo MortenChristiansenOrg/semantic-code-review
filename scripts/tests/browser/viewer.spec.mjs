@@ -126,9 +126,9 @@ async function saveAction(page, action, matches) {
 async function showNotes(page) { await page.locator('.tb-btn[data-action="toggle-notes"]').click(); }
 
 for (const skillVersion of ['0.2.0', undefined]) {
-  test(`viewer shows artifact skill version ${skillVersion ?? 'as unknown'}`, async ({ page }) => {
-    await mount(page, { ...fixture(), skillVersion });
-    await expect(page.locator('.hero-skill-version')).toHaveText(`Skill version: ${skillVersion ?? 'Unknown'}`);
+  test(`viewer shows running release with artifact skill version ${skillVersion ?? 'absent'}`, async ({ page }) => {
+    await mount(page, { ...fixture(), skillVersion, viewerReleaseVersion: "0.8.1" });
+    await expect(page.locator('.hero-skill-version')).toHaveText("Viewer version: 0.8.1");
   });
 }
 
