@@ -2,7 +2,7 @@
 
 Install the latest published release of Semantic Flow. This command replaces the
 installed skill without changing repository code, implementation artifacts, or
-feedback files.
+feedback files. Updates can run from any directory, including outside Git.
 
 `<semantic-flow>` means `node` followed by the quoted absolute path to
 `<installed-skill-root>/scripts/semantic-flow.mjs`. Run:
@@ -21,10 +21,11 @@ Surface breaking changes and upgrade steps from the notes. All `0.x` releases
 are experimental and may break compatibility. Updating the skill does not
 migrate existing artifacts. A newer local version is not silently downgraded.
 
-The helper identifies a matching viewer for the current repository or a linked
-worktree, requests shutdown, and waits for the process to exit before replacing
+When invoked inside Git, the helper identifies a matching viewer for the current
+repository or a linked worktree, requests shutdown, and waits for the process to exit before replacing
 files. It then restarts the viewer at the same URL without opening another browser tab.
 Browser drafts remain in the browser. Unrelated viewers are left alone.
+Outside Git, viewer discovery and shutdown are skipped.
 Do not stop the launcher shell or improvise process termination. Use the same
 `SEMANTIC_VIEW_PORT` setting as the original launch when a custom port is configured.
 
@@ -52,8 +53,8 @@ Only when the user wants a local source build, run:
 <semantic-flow> update --source /path/to/semantic-code-review
 ```
 
-The helper validates the explicit source, pulls a clean branch with an upstream
-using `--ff-only`, installs missing dependencies, builds, verifies, and replaces
+The invocation directory need not be a Git repository. The helper validates the
+explicit source, pulls a clean branch with an upstream using `--ff-only`, installs missing dependencies, builds, verifies, and replaces
 the skill. It does not run the source test suite. A dirty, detached, or source
 branch without an upstream stops the update. Under `../docs/user-decisions.md`,
 explain that this would install the checkout's current contents (including any

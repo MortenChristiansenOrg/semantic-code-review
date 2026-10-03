@@ -417,11 +417,11 @@ function createUpdateFixture(t) {
   }
   return {
     root, source, target, installedSkill, run, initialize,
-    update: async (env) => {
+    update: async (env, cwd = target) => {
       const child = spawn(process.execPath, [
         copiedCli, "update", "--source", source, "--use-current-source",
       ], {
-        cwd: target, env: { ...process.env, ...env },
+        cwd, env: { ...process.env, ...env },
         stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
       });
       let stdout = "", stderr = "";
@@ -443,6 +443,16 @@ test("update rebuilds and replaces a copied installation", async (t) => {
     "9.9.9\n",
   );
   assert.ok(result.stdout.includes(`${builtSkillVersion} -> 9.9.9`));
+  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
+});
+
+test("explicit source update replaces an installation outside Git", async (t) => {
+  const fixture = createUpdateFixture(t);
+  const port = await reserveViewerPort();
+  const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) }, fixture.root);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "9.9.9\n");
+  assert.match(result.stdout, /Updated semantic-flow/);
   await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
 });
 

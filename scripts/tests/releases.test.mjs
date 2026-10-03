@@ -182,9 +182,9 @@ globalThis.fetch = async (url, options) => {
 ${options.failReplacement ? `const rename = fs.renameSync; fs.renameSync = (from, to) => { if (String(from).includes('.semantic-flow-update-')) throw new Error('Injected replacement failure'); return rename(from, to); };` : ''}
 `);
   const cli = path.join(installed, 'scripts/semantic-flow.mjs');
-  async function run(args = [], env = {}) {
+  async function run(args = [], env = {}, cwd = repository.root) {
     const child = spawn(process.execPath, ['--import', pathToFileURL(preload).href, cli, 'update', ...args], {
-      cwd: repository.root, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+      cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     let stdout = '', stderr = '';
     child.stdout.on('data', (data) => { stdout += data; });
@@ -194,6 +194,15 @@ ${options.failReplacement ? `const rename = fs.renameSync; fs.renameSync = (from
   }
   return { root, repository, installed, cli, run };
 }
+
+test('release update replaces an installation outside Git', async (t) => {
+  const fixture = await updateFixture(t);
+  const result = await fixture.run([], {}, fixture.root);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Updated semantic-flow 0.1.0 -> 0.2.0/);
+  assert.equal(fs.readFileSync(path.join(fixture.installed, 'VERSION'), 'utf8'), '0.2.0\n');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fixture.installed, 'RELEASE.json'), 'utf8')).sourceCommit, 'a'.repeat(40));
+});
 
 test('release update handles skipped versions, official same-version transition, current installs, and explicit recovery', async (t) => {
   const fixture = await updateFixture(t);
