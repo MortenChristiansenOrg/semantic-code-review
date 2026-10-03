@@ -479,6 +479,40 @@ test("update restarts a matching linked-worktree viewer without changing artifac
   assert.ok(result.stdout.includes(`Updated semantic-flow ${builtSkillVersion} -> 9.9.9`));
 });
 
+test("viewer serves its installed release version and replaces an older running release", async (t) => {
+  const fixture = createUpdateFixture(t), port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  fixture.initialize();
+  const manifestPath = path.join(fixture.target, ".semantic-review", "manifest.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  manifest.skillVersion = "0.2.0";
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  const original = fs.readFileSync(manifestPath, "utf8");
+  const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
+  const launch = () => {
+    const result = fixture.run(["review", "--project", fixture.target], env);
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const identity = () => fetch(`http://127.0.0.1:${port}/api/whoami`).then(response => response.json());
+  launch();
+  const before = await identity(); viewerPid = before.processId;
+  assert.equal(before.viewerReleaseVersion, builtSkillVersion);
+  fs.writeFileSync(path.join(fixture.installedSkill, "VERSION"), "9.9.9\n");
+  launch();
+  const after = await identity(); viewerPid = after.processId;
+  assert.equal(after.viewerReleaseVersion, "9.9.9");
+  assert.notEqual(after.processId, before.processId);
+  assert.notEqual(after.viewerVersion, before.viewerVersion);
+  const query = new URLSearchParams({ review: after.reviewId, generation: after.generation });
+  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation?${query}`).then(response => response.json());
+  assert.equal(payload.implementation.viewerReleaseVersion, "9.9.9");
+  assert.equal(payload.implementation.skillVersion, "0.2.0");
+  const script = await fetch(`http://127.0.0.1:${port}/implementation-data.js`).then(response => response.text());
+  assert.match(script, /"viewerReleaseVersion":"9.9.9"/);
+  assert.equal(fs.readFileSync(manifestPath, "utf8"), original);
+});
+
 async function startUpdateViewerFixture(t, fixture, port, overrides = {}) {
   const script = path.join(fixture.root, "viewer-fixture.mjs");
   fs.writeFileSync(script, `

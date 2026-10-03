@@ -49,6 +49,10 @@ import { refreshRemoteReview } from "./shared/remote-review.js";
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const versionFile = path.resolve(scriptDir, "..", "VERSION");
+const viewerReleaseVersion = fs.existsSync(versionFile)
+  ? fs.readFileSync(versionFile, "utf8").trim() || "unversioned"
+  : "unversioned";
 
 function fail(message) {
   console.error(`semantic-view: ${message}`);
@@ -899,6 +903,7 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     remote: (() => { try { return readReview(reviewId(repoRoot, manifest.implementationId)).remote || null; } catch { return null; } })(),
     title: manifest.title,
     skillVersion: manifest.skillVersion ?? null,
+    viewerReleaseVersion,
     summary: manifest.summary,
     targetBranch: manifest.targetBranch,
     baseRevision: manifest.baseRevision,
@@ -1847,6 +1852,7 @@ function serveViewer({
         skillDirectory: path.resolve(scriptDir, ".."),
         processId: process.pid,
         viewerVersion,
+        viewerReleaseVersion,
         healthy: dataSource.healthy,
       });
       return;
@@ -1980,7 +1986,7 @@ function serveViewer({
           response.end(cliErrorMessage(error)); return;
         }
         // The saved-review manager remains usable after deletion or worktree removal.
-        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title,
+        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
           summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" })};`;
       }
       const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify({ reviewId: context.reviewId, generation: context.generation })};\n`, "utf8");
@@ -2174,6 +2180,7 @@ async function main() {
   startupWorker = dataSource;
   const feedbackCli = locateFeedbackCli();
   const fingerprint = createHash("sha256");
+  fingerprint.update(viewerReleaseVersion);
   for (const file of [fileURLToPath(import.meta.url), feedbackCli, ...["app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))].filter(Boolean)) {
     fingerprint.update(fs.readFileSync(file));
   }

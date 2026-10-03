@@ -837,7 +837,7 @@ test("snapshot reads reject an implementation switch instead of changing feedbac
 });
 
 
-test("viewer skill version comes from artifact metadata and can be unavailable", (t) => {
+test("viewer release version is independent of artifact creation metadata", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
   const manifest = repository.readJson(".semantic-review/manifest.json");
@@ -845,10 +845,15 @@ test("viewer skill version comes from artifact metadata and can be unavailable",
   const data = () => JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
   manifest.skillVersion = "0.2.0";
   repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  const runningVersion = fs.readFileSync(path.resolve(scriptsDirectory, "..", "VERSION"), "utf8").trim();
   assert.equal(data().skillVersion, "0.2.0");
+  assert.equal(data().viewerReleaseVersion, runningVersion);
+  assert.equal(repository.readJson(".semantic-review/manifest.json").skillVersion, "0.2.0");
   delete manifest.skillVersion;
   repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
   assert.equal(data().skillVersion, null);
+  assert.equal(data().viewerReleaseVersion, runningVersion);
+  assert.equal("skillVersion" in repository.readJson(".semantic-review/manifest.json"), false);
 });
 
 test("repeated files compare with their last stage across gaps, renames, and cumulative bases", async (t) => {
