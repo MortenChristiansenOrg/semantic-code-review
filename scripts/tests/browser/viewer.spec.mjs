@@ -1412,6 +1412,54 @@ for (const mode of ['changes', 'full', 'approval']) {
   });
 }
 
+for (const scenario of ['diff', 'queued diff', 'approval']) {
+  test(`pending page scroll stays with its requesting node (${scenario})`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    const lines = Array.from({ length: 1800 }, (_, i) => ({ t: 'add', n: i + 1, s: `const row${i + 1} = ${i + 1};`, h: 1 }));
+    file.lines = lines.slice(0, 900); file.nextOffset = 900;
+    await mount(page, data, { fileView: { [fileId]: 'full' } });
+    const payload = offset => ({ ok: true, lines: lines.slice(offset, offset + 900), offset, nextOffset: offset ? null : 900, additions: 1800 });
+    let releasePage;
+    const pendingPage = new Promise(resolve => { releasePage = resolve; });
+    await page.route('**/api/diff*', async route => {
+      const offset = Number(new URL(route.request().url()).searchParams.get('offset'));
+      if (offset) await pendingPage;
+      await route.fulfill({ json: payload(offset) });
+    });
+    await page.route('**/api/approval-comparison*', async route => {
+      const offset = route.request().postDataJSON().offset;
+      if (offset) await pendingPage;
+      await route.fulfill({ json: payload(offset) });
+    });
+    await openFile(page);
+    if (scenario === 'approval') {
+      await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+      file.revision = 'changed'; data.viewerRevision = 'changed';
+      await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+      await openFile(page);
+    }
+    const first = page.locator('details[data-node="first-one"] .cinema-diff');
+    await expect(first.locator('.diff-pages span')).toHaveText('Rows 1–900');
+    const next = first.getByRole('button', { name: 'Next page', exact: true });
+    const routeName = scenario === 'approval' ? '/api/approval-comparison' : '/api/diff';
+    const request = page.waitForRequest(r => new URL(r.url()).pathname === routeName);
+    await next.evaluate(el => el.click()); await request;
+    if (scenario === 'queued diff') await next.evaluate(el => el.click());
+    await openFile(page, 'first-two');
+    const second = page.locator('details[data-node="first-two"] .cinema-diff');
+    const scroller = second.locator('.diff-scroll');
+    await scroller.evaluate(el => { el.scrollTop = 250; });
+    const responses = [];
+    page.on('response', r => { if (new URL(r.url()).pathname === routeName) responses.push(r); });
+    releasePage();
+    await expect.poll(() => responses.length).toBe(scenario === 'queued diff' ? 2 : 1);
+    if (scenario !== 'approval') await expect(second.locator('.diff-pages span')).toHaveText('Rows 901–1800');
+    // Let all response handlers and their renders complete before checking scroll.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    expect(await scroller.evaluate(el => el.scrollTop)).toBe(250);
+  });
+}
+
 for (const kind of ['modified', 'added', 'deleted']) {
   test(`line wrapping preserves source rows and anchors for ${kind} files`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 800 });

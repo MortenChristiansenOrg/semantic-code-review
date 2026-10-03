@@ -2023,9 +2023,11 @@
   function comparisonKey(id, entry) {
     return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
   }
-  function scrollDiffPage(id, direction) {
-    const scroller = cinemaHolder(id)?.querySelector(".diff-scroll");
-    if (scroller) scroller.scrollTop = direction === "backward" ? scroller.scrollHeight : 0;
+  function scrollDiffPage(id, navigation) {
+    // A response may arrive after this shared file was opened in another node.
+    if (activeFileNodeId(id) !== navigation.nodeId) return;
+    const scroller = cinemaHolder(id, navigation.nodeId)?.querySelector(".diff-scroll");
+    if (scroller) scroller.scrollTop = navigation.direction === "backward" ? scroller.scrollHeight : 0;
   }
   async function loadApprovalComparison(id, entry, offset = 0, pageScroll = null) {
     const approval = retainedApproval(id);
@@ -2940,7 +2942,9 @@
       const entry = approvalEntry(btn.dataset.id);
       const offset = Number(btn.dataset.offset);
       const previous = entry ? approvalComparisons.get(comparisonKey(btn.dataset.id, entry))?.offset || 0 : 0;
-      if (entry) void loadApprovalComparison(btn.dataset.id, entry, offset, offset > previous ? "forward" : "backward");
+      if (entry) void loadApprovalComparison(btn.dataset.id, entry, offset, {
+        direction: offset > previous ? "forward" : "backward", nodeId: entry.nodeId,
+      });
     } else if (a === "toggle-stage") {
       animateStageToggle(btn.dataset.id);
     } else if (a === "toggle-coverage") {
@@ -3000,7 +3004,9 @@
       persist(); render();
     } else if (a === "diff-page") {
       const entry = fileById.get(btn.dataset.id), offset = Number(btn.dataset.offset);
-      if (entry) ensureFileDiff(entry, offset, true, null, offset > (entry.file._pageOffset || 0) ? "forward" : "backward");
+      if (entry) ensureFileDiff(entry, offset, true, null, {
+        direction: offset > (entry.file._pageOffset || 0) ? "forward" : "backward", nodeId: activeFileNodeId(entry.id),
+      });
     } else if (a === "toggle-hide-removed") {
       const id = btn.dataset.id;
       state.hideDeleted[id] = !state.hideDeleted[id];
