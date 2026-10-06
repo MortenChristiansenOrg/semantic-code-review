@@ -46,11 +46,13 @@ never in commits. Commits record kept candidates. The log keeps every decision.
 
 ## results.jsonl
 
-One JSON object per run. Use `null` for metrics that were not measured.
+One JSON object per run. Use `null` for metrics that were not measured. List
+each violation check that failed in `violations`, by a short stable name such as
+`hand-edited-metadata`, so that `compliance` decisions can be reproduced.
 
 ```json
 {"variant":"c1","model":"<id>","harness":"<name version>","scenario":"feedback-compatible","repetition":2,
- "success":1,"compliance":0,"cliRejected":1,"cliUnrecovered":0,"prompts":0,"recovery":null,
+ "success":1,"compliance":0,"violations":[],"cliRejected":1,"cliUnrecovered":0,"prompts":0,"recovery":null,
  "tools":41,"tokens":{"input":18000,"cachedInput":160000,"output":5200},"seconds":312,"instructionBytes":null,
  "subjective":{"followability":4,"responses":5},"notes":"retried enum once after reading API.d.ts",
  "transcript":"transcripts/c1/<id>/feedback-compatible-2.jsonl"}
