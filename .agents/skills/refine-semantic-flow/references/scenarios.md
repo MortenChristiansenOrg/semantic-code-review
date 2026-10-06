@@ -1,99 +1,79 @@
-# Scenarios
+# Scenario contracts
 
-A scenario is a reproducible task given to an agent in a fresh context. Reuse
-existing fixtures and documented evaluations; add cards here when a focus has
-no coverage.
+Built-ins are maintained in `scripts/evaluations/refinement/scenarios.mjs`; the
+harness uses them directly. They have fresh repositories, no remotes, private
+review homes and no scripted replies. Their exact requests are frozen in each
+run's prompt. Setup errors consume no model calls. Never expose checks or expected
+outcomes to evaluated agents.
 
-## Running a scenario
+The broad set is six independent requests: `implement-small`,
+`cli-recovery-category`, `feedback-compatible`, `feedback-conflicting-intent`,
+`status`, and `help-feedback`. Splitting status/help makes the call budget accurate.
 
-1. Create the fixture in a fresh temporary directory, outside this checkout. Use
-   a fresh `SEMANTIC_FLOW_HOME` for each run.
-2. Start an independent agent with the selected model in non-interactive mode,
-   for example `claude -p` or `codex exec`. Check the installed harness's
-   `--help` for the model, permission, and machine-readable transcript flags.
-   Give it only the card's request, the copied skill path, the fixture path,
-   the review home, and the isolation limits: no remote operations and no writes
-   outside the fixture and review home.
-3. Never give the agent the expected outcome, the pass checks, or earlier
-   conclusions.
-4. If the agent asks a question, answer only with the card's scripted reply. If
-   no reply is scripted, the evaluated agent records the exact question and
-   stops dependent work. The question is scored, never forwarded to a real
-   user.
-5. Keep the transcript, then check the repository, artifact, and feedback
-   state against the card.
+| Scenario | Deterministic acceptance | Required transcript evidence |
+| --- | --- | --- |
+| implement-small | Independent discount assertions (default, bounds, fractions, invalid numbers, no input mutation), final-head tests, artifact publication and stack validation. | Complete acceptance path exercised; insight policy followed. Empty insights pass when no significant observation arose; evidenced omissions or filler fail. |
+| cli-recovery-category | Real unsupported-category failure injected before resumption; independent discount assertions, tests, finalized publication/stack and retained engineering decision. | Contract/help inspected, one-caller rationale preserved, work continued without asking about syntax. |
+| feedback-compatible | Enabled HTML confirmations, retries=2, delivery.md preserved; valid artifact/stack/feedback; exactly one agent reply, thread open, no pending reply; temporary recovery branches removed. | Prescribed recovery, original checkout restored before feedback edits, concise accurate reply, no mechanics question. |
+| feedback-conflicting-intent | Existing refs, implementation artifact, original application files and feedback preserved; diagnostic recovery refs may remain. | Ask whether to retain delivery pause or enable confirmations/retries; do not claim completion or choose a product behavior. This expected question is exempt from prompts. |
+| status | Refs, checkout, repository content, artifact and review-home snapshots unchanged. | Accurate stage/state summary; focused reads only. |
+| help-feedback | Same read-only snapshots. | Explain feedback without executing it; focused reading may include files explicitly required by the selected help path. |
 
-## Card format
+Implementation validation runs from the actual registered artifact worktree. Tests
+and independent acceptance use an export of its immutable final cumulative commit.
+Unused setup directories and arbitrary `.semantic-review` discoveries do not count.
 
-```markdown
-### <scenario-id>
+Every transcript-check ID has an explicit pass/fail and applicability rule in
+`transcriptCriteria`, supplied only to graders. IDs alone are not acceptance
+definitions. `insight-policy-followed` checks appropriate recording, not existence:
+do not require an insight from routine work. The insights quality metric is null
+when nothing substantive arose. Category recovery separately supplies a material
+decision and requires preserving its rationale, so that case still measures actual
+insight recording. Missing evidence of an observation is not evidence that the model
+concealed one.
 
-- Focus: <commands and aspects covered>
-- Fixture: <setup command or steps>
-- Request: <exact user message>
-- Scripted replies: <question pattern → reply, or none>
-- Pass checks: <observable conditions, all required>
-- Violation checks: <additions to the default list>
-- Expected questions: <decisions the agent should raise, or none>
+For a completed implementation, the exact structural checks are:
+
+```text
+node <skill>/scripts/semantic-implementation.mjs validate --publish
+node <skill>/scripts/semantic-implementation.mjs validate-stack --json
 ```
 
-## Catalog
+For compatible feedback, additionally run the read-only feedback validator:
 
-| ID | Focus | Source |
-| --- | --- | --- |
-| `feedback-compatible` | feedback, conflict recovery, prompts | [Feedback recovery evaluation](../../../../skills/semantic-flow/docs/feedback-recovery-evaluation.md) (compatible fixture from `scripts/evaluations/feedback-recovery.mjs`) |
-| `feedback-conflicting-intent` | feedback, user questions | Same evaluation, ambiguous fixture |
-| `feedback-concurrent-move` | sync safety guards | Same evaluation, safety control (needs a harness that can pause tools) |
-| `cli-recovery-category` | implement, CLI recovery | [CLI recovery evaluation](../../../../skills/semantic-flow/docs/cli-recovery-evaluation.md): unsupported decision category |
-| `cli-recovery-kind-argument` | implement, CLI recovery | Same evaluation: unsupported insight kind and missing argument |
-| `cli-recovery-boundary` | user questions | Same evaluation: conflicting criteria or unrelated user edits |
-| `report-scenarios` | report | [Report validation](../../../../docs/semantic-flow-report-validation.md) simulated checks |
-| `implement-small` | implement, staging, artifact quality | Card below |
-| `status-help` | status, help, routing | Card below |
+```text
+node <skill>/scripts/review-feedback.mjs validate
+```
 
-For fixture building blocks, see `createRepository`, `initializeImplementation`,
-`beginStage`, `finalizeStage`, and `repository.feedback` in
-`scripts/tests/helpers/repository.mjs`, as used by the feedback evaluation
-script. Importing the helper points `SEMANTIC_FLOW_HOME` at a temporary home
-that is deleted on exit. Override it after the import, as that script does, and
-pass `{ after() {} }` to `createRepository` so the repositories outlive the
-script.
-`examples/order-cancellation/` is a complete artifact for read-only scenarios.
+Read thread JSON to verify reply/open/pending state. Do not run feedback preflight or
+`next` merely to inspect results: those commands may refresh state. **Do not substitute
+`semantic-flow validate --publish` here**: that also requires the reviewer to resolve
+open threads, which this feedback scenario intentionally does not do. Artifact
+publication validity and whole-workflow readiness are different checks.
 
-### implement-small
+Category recovery resumes after a real failed CLI call, not a tool-interception
+experiment. Count the injected failure separately. File-read errors, safety refusals,
+and test failures are not CLI syntax rejections. Reference evaluations:
+[CLI recovery](../../../../skills/semantic-flow/docs/cli-recovery-evaluation.md) and
+[feedback recovery](../../../../skills/semantic-flow/docs/feedback-recovery-evaluation.md).
 
-- Focus: implement, stage organization, insight capture, efficiency
-- Fixture: a new Git repository with `main` and a small module, for example a
-  `prices.js` that exports `total(items)` and has a test.
-- Request: `/semantic-flow implement Add a percentage discount parameter to total() that rejects values outside 0–100, with tests.`
-- Scripted replies: none
-- Pass checks: the stage stack and publication validate; the final head passes
-  the module's tests; every changed file belongs to a change node; at least one
-  insight or validation-evidence entry is linked to nodes.
-- Violation checks: defaults
-- Expected questions: none
+## Extending coverage
 
-### status-help
+A custom scenario supplies the [adapter contract](harness.md#custom-project-scenarios)
+and a card recording: pinned fixture/source, request, capabilities, check IDs and
+commands/assertions, transcript checks, expected questions, metric applicability,
+and any exclusions. Use evaluator-controlled acceptance shared by all repetitions;
+agent-authored tests provide additional evidence. Add fixtures with both passing and
+failing outputs to test the verifier itself.
 
-- Focus: status, help, routing, instruction bytes
-- Fixture: the result of `implement-small`, or a feedback fixture.
-- Request: `/semantic-flow status`, then in a fresh run `/semantic-flow help feedback`
-- Scripted replies: none
-- Pass checks: status reports the stages and their state without mutating refs,
-  the artifact, or feedback; help explains feedback without running it.
-- Violation checks: any mutation; reading command files unrelated to the request
-- Expected questions: none
+The concurrent-ref-movement safety control requires a harness that can pause before
+a guarded write. The current runner does not support that interception; mark it
+unsupported rather than claiming coverage from deterministic CLI tests. Similar
+limitations apply to interactive scripted replies: the built-ins exercise either
+completion without questions or a correct question-and-stop boundary. A scenario
+requiring a follow-up needs an explicitly budgeted conversational adapter.
 
-## Broad regression set
-
-Run this set as described in the skill's broader workflows step:
-`feedback-compatible`, `feedback-conflicting-intent`, `cli-recovery-category`,
-`implement-small`, and `status-help`. Add the focus scenarios of earlier
-sessions when they cover workflows touched by kept edits.
-
-Periodic checks during a session may screen with one repetition per model. A
-screening run that differs from the original baseline is extended to the full
-repetition count before deciding. A matching screening run only defers the
-decision: it never establishes that there is no regression. The final check
-before finishing runs the full repetition count for both variants and applies
-the variability rules in [metrics](metrics.md).
+Baseline screens can use one repetition and report observations only. Comparison
+mode requires at least three per selected scenario/model/variant, including the broad
+set. Matching full comparison results also serve as the final broad check; no duplicate
+run is necessary unless inputs, capabilities or revisions changed.

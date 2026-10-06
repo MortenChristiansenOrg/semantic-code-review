@@ -5,130 +5,97 @@ description: Use when invoked by the user. The command must be invoked explicitl
 
 # Refine Semantic Flow
 
-Improve `skills/semantic-flow/` by hill climbing: measure a baseline, make one
-focused edit, evaluate it under the same conditions, keep improvements, revert
-regressions, and repeat. This is a maintainer tool. It lives outside
-`skills/semantic-flow/`, so builds and release archives never include it.
+Evaluate the built Semantic Flow skill in disposable repositories. Use **baseline**
+mode to establish how it behaves; use **compare** mode to test one evidence-based
+instruction change. Model behavior is stochastic; make preparation, checks, and
+records reproducible rather than promising deterministic model outputs.
 
-Never run Semantic Flow on this repository. Evaluated agents work only in
-disposable repositories with a copied built skill, a private
-`SEMANTIC_FLOW_HOME`, and no remote operations.
+This is a repository-local maintainer skill. Never implement work with Semantic
+Flow in this source repository. Evaluation installations, application repositories,
+worktrees, caches, and private review homes belong in the owned temporary workspace.
+No remote repository operations or live deployments are part of evaluation.
 
-## Resources
+## Choose the session
 
-- [Metrics and decision rules](references/metrics.md): what to measure, how to
-  score it, and how to judge conflicting results.
-- [Scenarios](references/scenarios.md): scenario cards, the focus catalog,
-  the broad regression set, and reusable fixtures.
-- [Records](references/records.md): the run workspace, result rows, and the
-  candidate log.
+Reuse the user's choices and authorization. Ask only for missing information that
+materially affects cost or scope; do not reconfirm an already settled budget.
+When the user delegates specifics, propose these defaults and proceed within their
+limits:
 
-## 1. Agree on the session
+- **Mode:** baseline for first use, a health check, or a quick evaluation. It makes
+  no candidate edits. Compare only when improvement work is requested.
+- **Models:** one explicitly identified implementer and a separate fresh grader,
+  with exact model IDs and effort. A grader is not a second implementer. Add more
+  implementer models when the user wants cross-model evidence; report them separately.
+- **Baseline scope:** the six built-in scenarios, three repetitions of
+  `implement-small` and one of each other scenario. This is eight evaluated runs
+  plus four grading contexts, within a default 45-minute / 12-call ceiling.
+  User project scenarios can replace or extend that plan within the budget.
+- **Compare scope:** one candidate at a time, three repetitions per scenario,
+  including the full broad set for both variants. A one-model comparison needs
+  at least 36 evaluated runs plus grading. Budget before editing or launching.
+- **Metrics:** all applicable metrics by default. Null values require reasons;
+  unavailable measurements and metrics irrelevant to the mode are not failures.
 
-Settle these with the user before spending budget. Propose defaults rather than
-asking open questions.
+Read [harness.md](references/harness.md) to configure and run the maintained helper.
+Use [scenarios.md](references/scenarios.md) for scenario contracts and custom project
+acceptance checks, and [metrics.md](references/metrics.md) for scoring and decisions.
+Do not invent a replacement runner inside a session directory.
 
-- **Focus**: a command (`feedback`, `implement`, …), a section of a file, or an
-  aspect across files (recovery, artifact quality, instruction clarity, skill
-  size, efficiency, review responses, user questions). Note which metrics it
-  targets.
-- **Models**: at least two that users actually run Semantic Flow with, ideally
-  from different vendors or capability tiers. Record exact model IDs,
-  harness, harness version, and reasoning or effort settings.
-- **Scenarios**: focus scenarios plus the broad regression set from
-  [scenarios](references/scenarios.md). Add new cards when the focus lacks
-  coverage.
-- **Budget**: maximum candidates (default 5), maximum evaluated runs or spend,
-  and wall-clock limit. Repetitions default to 3 per scenario, model, and
-  variant.
-- **Target** (optional): a concrete goal, such as "feedback scenarios pass 3/3
-  on every model" or "median tokens down 15% with no success regression".
+## Establish a baseline
 
-Work on a branch from the target branch. Create the run workspace described in
-[records](references/records.md) and record the agreed conditions before any
-evaluation.
+1. Inspect the source branch and changes. Preserve unrelated work. Use an existing
+   appropriate working branch or create an evaluation branch; a baseline alone
+   does not require source changes or commits.
+2. Run `npm test --prefix scripts` (which builds the skill). A failure blocks model
+   evaluation until fixed or explicitly excluded with a reason. Do not rebuild
+   again without changed inputs.
+3. Copy the sample config from `assets/baseline.json`, set model IDs and paths, and
+   run the helper's `plan`. It counts every implementer and grader call. Reduce
+   scope when necessary; do not quietly reduce repetitions in a comparison.
+4. Run `prepare` into a new `.refinement/<date>-<focus>/` directory. It checks
+   prerequisites and harness capabilities, freezes installation hashes, records
+   harness versions, creates fresh fixtures, and pins the rubric before any model call. Investigate setup
+   failures as evaluator failures; do not give their expected outcomes to agents.
+5. Run `run`, `verify`, `grade`, and `report`. Evaluated agents receive only the
+   task, installation, fixture, available capabilities, and isolation rules.
+   Questions stay in their transcript; the built-in cards have no scripted replies.
+   Grade only completed, valid evidence in fresh contexts. Inspect failing checks
+   and grader findings before reporting. Never fix evaluated output to make it pass.
+6. Report the baseline using [records.md](references/records.md). Stop here in
+   baseline mode. Retain artifacts and offer cleanup; do not start hill climbing.
 
-## 2. Establish the baseline
+If a harness, adapter, fixture, acceptance check, or rubric is wrong, preserve the
+original evidence and classify affected results as invalid or superseded. Document
+any read-only verification correction and use the helper’s `invalidate` command
+for an evidence-based exclusion; when it could affect agent behavior or A/B
+comparability, start a fresh matched session. Do not count environment failures as
+skill regressions or silently retry failed model calls.
 
-1. Run `npm test --prefix scripts` and `npm run build --prefix scripts`. A red
-   deterministic suite must be fixed or excluded from the session first.
-2. Copy the built `skills/semantic-flow/` outside the source checkout as the
-   baseline installation for this session.
-3. Run every selected scenario for every model and repetition, each in a fresh
-   agent context. Capture the transcript and the telemetry listed in
-   [metrics](references/metrics.md).
-4. Score the runs and write result rows. Summarize per model and per
-   scenario; never collapse models into one number.
+## Compare one candidate
 
-The baseline is the reference for the first candidate. After a candidate is
-kept, its results become the new baseline.
+Record a hypothesis tied to observed evidence and a primary metric. Change only
+that hypothesis in `skills/semantic-flow/`; follow repository instructions. Preserve
+an immutable original baseline installation. Test and build the candidate, then
+prepare a comparison using the same fixtures, prompts, models, effort, capabilities,
+permissions, rubric, and check versions. Do not reuse old behavioral runs when these
+conditions changed. The runner alternates variant order and hides variant identities
+from graders; it does not supply the hypothesis or earlier scores.
 
-## 3. Propose one candidate
+The comparison includes the full broad set at full repetitions. These runs also
+serve as the final broader-workflow check; do not rerun unchanged checks merely to
+satisfy a second heading. Screens may help select a hypothesis but cannot establish
+an improvement or absence of regression.
 
-Choose a single hypothesis from observed evidence: failed checks, confusion in
-transcripts, unnecessary questions, wasted tool calls, or reread instructions.
-State in the log what changes, why, and which metric should move. Do not
-combine independent ideas; a mixed candidate cannot be attributed.
+Apply [the decision rules](references/metrics.md) per implementer and scenario.
+Keep only an evidenced improvement with satisfied gates and sufficient coverage.
+Commit a kept source change and rebuilt outputs together, naming the candidate ID.
+For a rejected or inconclusive candidate, restore only the changes owned by that
+candidate, preserving user edits. Record every decision and attribution.
 
-Prefer edits that remove ambiguity or duplication over edits that add text.
-Follow the existing skill conventions and [AGENTS.md](../../../AGENTS.md).
-Do not tailor instructions to one model or harness unless the skill already
-has a dedicated place for that variation.
-
-## 4. Evaluate the candidate
-
-1. Edit the source skill, then run `npm test --prefix scripts` and rebuild. A
-   failing deterministic test either reverts the candidate or is fixed as part
-   of the same hypothesis when the test asserts outdated wording.
-2. Copy the built skill to a new candidate installation.
-3. Run the same scenarios, models, and repetitions with the same settings.
-   Interleave baseline and candidate runs, or rerun the baseline when the
-   model, harness, or fixture changed since it was measured.
-4. Score the runs. Give subjective graders the A/B outputs without saying which
-   is the candidate.
-
-## 5. Decide
-
-Apply the decision rules in [metrics](references/metrics.md). Results are
-**keep**, **revert**, or **inconclusive**. When the evidence is borderline, add
-repetitions up to the agreed cap before deciding. If it is still inconclusive,
-revert: an unproven change is not an improvement.
-
-- **Keep**: commit the source change and rebuilt outputs as one commit whose
-  message names the candidate ID. The candidate installation becomes the
-  baseline.
-- **Revert**: restore the source and built files to the last kept commit.
-
-Record the decision, the scores, and any per-model tradeoff before starting
-the next candidate.
-
-## 6. Check broader workflows
-
-The focus scenarios can improve while other workflows degrade. Run the broad
-regression set against the current baseline and the session's original
-baseline:
-
-- after every second kept candidate,
-- whenever a kept edit touches a shared file (`SKILL.md`, `docs/runtime.md`,
-  `docs/user-decisions.md`, or a file other commands require), and
-- before finishing.
-
-A regression there reverts the responsible candidate, or the most recent one
-when no single candidate can be identified. Then rerun the check.
-
-## 7. Stop and report
-
-Stop when any of these holds:
-
-- the budget is exhausted,
-- the target is met on every selected model,
-- three consecutive candidates were reverted or inconclusive,
-- no evidence-based hypothesis remains, or
-- the user stops the session.
-
-Run the final broad regression check. Report to the user per model:
-baseline against final results for each metric, the kept candidates with
-their rationale, the reverted candidates and what they showed, unresolved
-tradeoffs, and the remaining hypotheses. Keep the run workspace; offer to
-remove the disposable repositories, review homes, and copied installations.
-Open a pull request only if the user asks for one.
+For another candidate, the last kept installation becomes the baseline. Retain the
+session's original installation and compare it again whenever accumulated changes
+need an end-to-end check. Reuse existing matched evidence where valid. Stop at the
+user's budget, target, three consecutive unsuccessful candidates, or no supported
+hypothesis. Budget exhaustion does not authorize a final extra run: report missing
+coverage and leave the candidate unproven. Open a PR only when requested.
