@@ -12,7 +12,7 @@ try {
   node scripts/evaluations/refine.mjs prepare <config.json> <new-session-directory>
   node scripts/evaluations/refine.mjs run <session-directory>
   node scripts/evaluations/refine.mjs verify <session-directory>
-  node scripts/evaluations/refine.mjs grade <session-directory>
+  node scripts/evaluations/refine.mjs grade <session-directory> [--partial]
   node scripts/evaluations/refine.mjs report <session-directory>
   node scripts/evaluations/refine.mjs invalidate <session-directory> <run-id> <evidence-based-reason>
 Run and grade launch the configured models. Existing attempts are never automatically retried.
@@ -24,12 +24,12 @@ Read .agents/skills/refine-semantic-flow/references/harness.md for config and cu
   } else if (command === 'invalidate' && args.length === 3) {
     const directory = path.resolve(args[0]);
     await withLock(directory, async () => { invalidate(directory, args[1], args[2]); report(directory); });
-  } else if (['run', 'verify', 'grade', 'report'].includes(command) && args.length === 1) {
+  } else if (['run', 'verify', 'grade', 'report'].includes(command) && (args.length === 1 || command === 'grade' && args.length === 2 && args[1] === '--partial')) {
     const directory = path.resolve(args[0]);
     await withLock(directory, async () => {
       if (command === 'run') await runEvaluations(directory);
       if (command === 'verify') await verify(directory);
-      if (command === 'grade') await grade(directory);
+      if (command === 'grade') await grade(directory, { partial: args[1] === '--partial' });
       if (command === 'report') { const rows = report(directory); console.log(`${rows.length} result rows; report: ${path.join(directory, 'report.md')}`); }
     });
   } else throw new Error('Invalid command or argument count; use --help');

@@ -62,6 +62,8 @@ Do not invent a replacement runner inside a session directory.
    Questions stay in their transcript; the built-in cards have no scripted replies.
    Grade only completed, valid evidence in fresh contexts. Inspect failing checks
    and grader findings before reporting. Never fix evaluated output to make it pass.
+   If runs must remain unattempted, verify existing attempts and use `grade --partial`;
+   it records the omission and permanently closes further evaluations in that session.
 6. Report the baseline using [records.md](references/records.md). Stop here in
    baseline mode. Retain artifacts and offer cleanup; do not start hill climbing.
 

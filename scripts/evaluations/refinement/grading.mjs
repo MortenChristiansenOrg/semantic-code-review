@@ -85,8 +85,24 @@ function buildPacket(directory, session, job) {
   // They do not receive the original variant IDs, hypothesis, or baseline/candidate mapping.
   return JSON.parse(redact(JSON.stringify({ kind: 'runs', labels, runs }), replacements));
 }
-export async function grade(directory) {
+export async function grade(directory, { partial = false } = {}) {
   const session = loadSession(directory); checkPins(session);
+  const pending = [], omitted = [];
+  for (const job of session.plan.jobs) {
+    const file = path.join(directory, 'runs', job.id, 'result.json');
+    if (!fs.existsSync(file)) {
+      omitted.push(job.id);
+      if (!partial && !session.evaluationsClosedAt) pending.push(job.id);
+      continue;
+    }
+    const result = readJson(file);
+    if (result.state === 'running' || result.state === 'completed' && !fs.existsSync(path.join(directory, 'runs', job.id, 'checks.json'))) pending.push(job.id);
+  }
+  if (pending.length) throw new Error(`Evaluations not yet run or verified: ${pending.join(', ')}. Finish run/verify before grading, or use grade --partial to permanently omit unattempted jobs.`);
+  if (partial && !session.evaluationsClosedAt) {
+    session.evaluationsClosedAt = new Date().toISOString(); session.omittedEvaluations = omitted;
+    writeJson(path.join(directory, 'session.json'), session);
+  }
   for (const job of session.plan.gradeJobs) {
     const destination = path.join(directory, 'runs', job.id), resultPath = path.join(destination, 'result.json');
     if (fs.existsSync(resultPath)) continue;
@@ -199,6 +215,7 @@ export function report(directory) {
     '- Agent-written tests supplement evaluator checks. Live services and unconfigured browser capabilities are outside the evidence.',
     '- Fixtures and copied installations remain in the owned disposable workspace; report does not clean or mutate them.',
     '- No automatic keep decision: review attributed findings and apply the recorded gates. Budget exhaustion cannot authorize extra runs.');
+  if (session.evaluationsClosedAt) lines.push(`- Partial grading closed further evaluations at ${session.evaluationsClosedAt}. Unattempted jobs: ${session.omittedEvaluations.join(', ') || 'none'}.`);
   fs.writeFileSync(path.join(directory, 'report.md'), lines.join('\n') + '\n');
   return rows;
 }

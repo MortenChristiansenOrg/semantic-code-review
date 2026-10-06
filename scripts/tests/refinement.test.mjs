@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import Ajv from 'ajv';
 import { plan } from '../evaluations/refinement/plan.mjs';
 import { codexTelemetry } from '../evaluations/refinement/telemetry.mjs';
-import { checked, environment, execute, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
+import { checked, environment, execute, inside, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
 import { begin, finish, initialize, prepareFixture, priceAcceptance, scenarios, verifyFixture } from '../evaluations/refinement/scenarios.mjs';
 import { adapterFor, checkPins, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
 import { collectResults, grade, invalidate, redact, report, validateGrades } from '../evaluations/refinement/grading.mjs';
@@ -19,6 +19,19 @@ const sample = () => readJson(path.join(source, '.agents/skills/refine-semantic-
 const calibration = { mechanicsStop: 1, productQuestion: 0, stageOnlyTraceability: 5, routineInsightPolicy: true, missingSignificantInsightPolicy: false };
 function temp(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'refinement tests ')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
 function fixture(t, scenario) { const root = temp(t), env = environment(root); return { root, env, fixture: prepareFixture(root, skill, scenario, env) }; }
+
+function completeCompatible(f, env) {
+  const r = repository(f.repo, skill, env), manifest = readJson(path.join(f.repo, '.semantic-review/manifest.json'));
+  const stage = readJson(path.join(f.repo, '.semantic-review/stages/notifications.json'));
+  const finalBranch = r.git('branch', '--show-current');
+  // Evaluator-controlled known-good completion: replay the stage onto the updated target.
+  const rebase = execute(['git', 'rebase', '--onto', 'main', manifest.baseRevision, stage.change.branch], f.repo, env);
+  assert.notEqual(rebase.exitCode, 0); // The deliberately compatible textual conflict.
+  r.write('notifications.json', '{"enabled":true,"format":"html","retries":2}\n'); r.git('add', 'notifications.json');
+  checked(['git', '-c', 'core.editor=true', 'rebase', '--continue'], f.repo, env);
+  r.git('switch', 'main'); r.cli('semantic-implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
+  r.cli('review-feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
+}
 
 test('plans count grader calls, retain exact roles, pair variants and enforce the budget', () => {
   const config = sample(), baseline = plan(config, source);
@@ -42,6 +55,16 @@ test('environment isolates cache/temp/review paths while preserving harness auth
   const root = temp(t), env = environment(root);
   for (const key of ['TMPDIR', 'TMP', 'TEMP', 'SEMANTIC_FLOW_HOME', 'npm_config_cache', 'NPM_CONFIG_CACHE', 'XDG_CACHE_HOME', 'YARN_CACHE_FOLDER']) assert.ok(env[key].startsWith(root + path.sep));
   assert.equal(env.HOME, process.env.HOME); assert.equal(env.CODEX_HOME, process.env.CODEX_HOME);
+});
+
+test('worktree containment accepts physical aliases and rejects symlink escapes, including new files', t => {
+  const root = temp(t), actual = path.join(root, 'actual'), alias = path.join(root, 'alias'), outside = path.join(root, 'outside');
+  fs.mkdirSync(actual); fs.mkdirSync(outside); fs.mkdirSync(path.join(actual, 'project'));
+  fs.symlinkSync(actual, alias, 'junction'); fs.symlinkSync(outside, path.join(actual, 'escape'), 'junction');
+  assert.equal(inside(alias, path.join(actual, 'project')), true);
+  assert.equal(inside(actual, path.join(alias, 'project/new/file')), true);
+  assert.equal(inside(actual, path.join(actual, 'escape/new/file')), false);
+  assert.equal(inside(actual, outside), false);
 });
 
 test('telemetry counts unique asynchronous tools and separates cached tokens', () => {
@@ -84,16 +107,7 @@ test('ambiguous feedback permits diagnostic refs but catches changed product or 
 
 test('compatible feedback verifier uses artifact publication gate and never resolves an open replied thread', t => {
   const { root, env, fixture: f } = fixture(t, 'feedback-compatible');
-  const r = repository(f.repo, skill, env), manifest = readJson(path.join(f.repo, '.semantic-review/manifest.json'));
-  const stage = readJson(path.join(f.repo, '.semantic-review/stages/notifications.json'));
-  const finalBranch = r.git('branch', '--show-current');
-  // Evaluator-controlled known-good completion: replay the stage onto the updated target.
-  const rebase = execute(['git', 'rebase', '--onto', 'main', manifest.baseRevision, stage.change.branch], f.repo, env);
-  assert.notEqual(rebase.exitCode, 0); // The deliberately compatible textual conflict.
-  r.write('notifications.json', '{"enabled":true,"format":"html","retries":2}\n'); r.git('add', 'notifications.json');
-  checked(['git', '-c', 'core.editor=true', 'rebase', '--continue'], f.repo, env);
-  r.git('switch', 'main'); r.cli('semantic-implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
-  r.cli('review-feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
+  completeCompatible(f, env);
   const before = snapshot(f.repo, env.SEMANTIC_FLOW_HOME), checks = verifyFixture(f, root, skill, 'feedback-compatible', env);
   assert.ok(checks.checks.every(c => c.passed), JSON.stringify(checks.checks));
   assert.deepEqual(snapshot(f.repo, env.SEMANTIC_FLOW_HOME), before);
@@ -225,12 +239,38 @@ test('invalid grader output returns a failing command status and resuming does n
   }
   writeJson(configFile, config); const session = await prepare(configFile, directory);
   t.after(() => fs.rmSync(session.workspace, { recursive: true, force: true }));
+  await runEvaluations(directory); await verify(directory);
   const result = execute([process.execPath, path.join(source, 'scripts/evaluations/refine.mjs'), 'grade', directory], source);
   assert.equal(result.exitCode, 1); assert.match(result.stderr, /Invalid grader output/);
   const file = path.join(directory, 'runs/grade-instructions/result.json'), raw = fs.readFileSync(file, 'utf8');
-  await assert.rejects(() => grade(directory), /incomplete or invalid attempts/);
+  await assert.rejects(() => grade(directory), /Invalid grader output/);
   assert.equal(fs.readFileSync(file, 'utf8'), raw);
   assert.equal(readJson(file).state, 'invalid');
+  await assert.rejects(() => grade(directory), /incomplete or invalid attempts/);
+  assert.equal(fs.readFileSync(file, 'utf8'), raw);
+});
+
+test('grading cannot consume an unfinished group; explicit partial grading closes further evaluations', async t => {
+  const root = temp(t), config = sample(), configFile = path.join(root, 'config.json'), directory = path.join(root, 'session');
+  config.variants[0].skill = skill; config.scenarios = [{ id: 'status', repetitions: 2 }]; config.grading.instructions = false;
+  for (const agent of [...config.implementers, config.grader]) {
+    agent.command = [process.execPath, '-e', 'console.log("Status")']; agent.versionCommand = [process.execPath, '--version']; agent.transcript = 'text'; agent.preflight = 'none';
+  }
+  const answer = { calibration, runs: [{ id: 'run-1', checks: scenarios.status.transcriptChecks.map(id => ({ id, passed: true, evidence: 'Scripted transcript evidence' })), violations: [], cliRejected: 0, cliUnrecovered: 0, prompts: 0, countEvidence: 'Scripted fixture', subjective: Object.fromEntries(['organization', 'insights', 'traceability', 'readability', 'responses', 'followability'].map(k => [k, { score: null, reason: 'Scripted harness' }])) }] };
+  const fakeGrader = path.join(root, 'grader.mjs'); fs.writeFileSync(fakeGrader, `console.log(${JSON.stringify(JSON.stringify(answer))});`);
+  config.grader.command = [process.execPath, fakeGrader];
+  writeJson(configFile, config); const session = await prepare(configFile, directory);
+  t.after(() => fs.rmSync(session.workspace, { recursive: true, force: true }));
+  const job = session.plan.jobs[0], f = readJson(path.join(directory, 'runs', job.id, 'fixture.json'));
+  await runJob(directory, session, job, session.plan.implementers[0], f.root, f.repo, 'Status');
+  await assert.rejects(() => grade(directory), /not yet run or verified/);
+  await verify(directory);
+  await assert.rejects(() => grade(directory), /not yet run or verified/);
+  assert.equal(fs.existsSync(path.join(directory, 'runs/grade-runs-1/result.json')), false);
+  await grade(directory, { partial: true });
+  assert.equal(collectResults(directory)[0].success, 1); assert.equal(collectResults(directory)[1].state, 'not-run');
+  await assert.rejects(() => runEvaluations(directory), /closed for partial grading/);
+  assert.equal(fs.existsSync(path.join(directory, 'runs', session.plan.jobs[1].id, 'result.json')), false);
 });
 
 test('acceptance checks the final cumulative head when a lower stage is checked out', t => {
@@ -252,6 +292,32 @@ test('malformed agent artifact is a failed check, not an evaluator infrastructur
   fs.mkdirSync(path.join(f.repo, '.semantic-review')); fs.writeFileSync(path.join(f.repo, '.semantic-review/manifest.json'), '{broken');
   const checks = verifyFixture(f, root, skill, 'implement-small', env);
   assert.equal(checks.checks.find(c => c.id === 'artifact-publication').passed, false);
+});
+
+test('nonterminating implementation is a failed acceptance check, while a missing tool is infrastructure', t => {
+  const { root, env, fixture: f } = fixture(t, 'implement-small'), r = repository(f.repo, skill, env);
+  initialize(r, 'Discount totals'); begin(r, 'discount', 'Discount totals');
+  r.commit('prices.js', 'export function total(items,d=0){if(d===25)while(true){}return items.reduce((s,i)=>s+i.price*i.quantity,0)*(1-d/100)}\n', 'Implement discount');
+  finish(r, 'discount', 'prices.js');
+  const result = verifyFixture(f, root, skill, 'implement-small', env, { acceptanceTimeoutMs: 250 });
+  assert.equal(result.checks.find(c => c.id === 'evaluator-acceptance').passed, false);
+  assert.equal(result.evidence['evaluator-acceptance'].errorCode, 'ETIMEDOUT');
+  assert.match(result.checks.find(c => c.id === 'evaluator-acceptance').evidence, /ETIMEDOUT/);
+  assert.equal(execute(['missing-refinement-executable'], root, env).infrastructureFailure, true);
+});
+
+test('corrupted or deleted feedback is failed task evidence, not a verifier crash', t => {
+  const { root, env, fixture: f } = fixture(t, 'feedback-compatible');
+  completeCompatible(f, env);
+  assert.ok(verifyFixture(f, root, skill, 'feedback-compatible', env).checks.every(c => c.passed));
+  const inspection = JSON.parse(repository(f.repo, skill, env).cli('semantic-flow', 'inspect', '--json'));
+  const thread = path.join(inspection.selected.feedbackDirectory, 'threads/delivery-retries.json');
+  fs.writeFileSync(thread, '{broken');
+  for (const mutate of [() => {}, () => fs.rmSync(thread)]) {
+    mutate(); const result = verifyFixture(f, root, skill, 'feedback-compatible', env);
+    assert.equal(result.checks.find(c => c.id === 'one-open-agent-reply').passed, false);
+    assert.equal(result.checks.find(c => c.id === 'no-pending-reply').passed, false);
+  }
 });
 
 

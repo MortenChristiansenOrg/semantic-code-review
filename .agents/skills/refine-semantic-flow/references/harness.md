@@ -45,6 +45,13 @@ retry a failed call or recheck unchanged results. Interrupted/failed calls consu
 budget and remain visible. After fixing apparatus problems, prepare a new session
 with a separately accounted remaining budget. Do not edit session state to buy calls.
 If stopped midway, `verify` and `report` still expose missing/invalid evidence.
+Default grading requires every evaluation to have a final attempt state, with checks
+for every completed attempt, before spending any grader calls. After deliberately
+ending evaluations early (for example, to preserve the grading time reserve), run
+`grade <session-directory> --partial`. It records unattempted jobs and permanently
+closes further evaluations, so a later `run` cannot add members to an already-graded
+group or split a comparison pair across grader contexts. Completed runs still need
+verification; active/incomplete attempts still block grading.
 
 ## Config contract
 
@@ -150,6 +157,11 @@ Every transcript check also requires a nonempty `transcriptCriteria` rule descri
 pass/fail conditions and applicability. Graders receive those rules with the packet;
 evaluated agents do not. Avoid acceptance predicates that demand filler to produce
 an otherwise inapplicable metric.
+
+Built-in verifier timeouts, unreadable agent-produced state and malformed feedback
+are failed task checks with retained diagnostics. A missing or unavailable executable
+is infrastructure failure. Do not exclude a nonterminating implementation from
+behavioral conclusions merely because its acceptance command times out.
 
 For UI tasks, make interactive acceptance a named check. Preflight an automation
 capability supported by the current environment, provide its exact invocation to

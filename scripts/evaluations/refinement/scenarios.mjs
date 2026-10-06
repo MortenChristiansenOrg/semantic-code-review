@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { checked, execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
+import { execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
 
 const pricesRequest = '/semantic-flow implement Add an optional percentage discount to total(items), defaulting to zero. Preserve item price × quantity totals; accept 0 through 100 inclusive, including fractional discounts, and reject negative, over-100, and non-finite numeric discounts. Add tests.';
 const scenario = (request, transcriptCriteria, extra = {}) => ({ request, transcriptCriteria, transcriptChecks: Object.keys(transcriptCriteria), ...extra });
@@ -104,15 +104,21 @@ for (const invalid of [-0.1,100.1,NaN,Infinity,-Infinity]) assert.throws(()=>tot
 assert.deepEqual(items,[{price:20,quantity:2},{price:10,quantity:1}]);
 console.log('Evaluator discount acceptance passed');`;
 
-export function verifyFixture(fixture, root, skill, scenario, env) {
+export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceTimeoutMs = 120_000 } = {}) {
   const checks = [], evidence = {};
   const add = (id, passed, detail) => checks.push({ id, passed, evidence: detail });
-  const run = (id, command, cwd = fixture.repo) => {
-    const result = execute(command, cwd, env); evidence[id] = result;
-    if (result.error) throw new Error(`Verifier infrastructure failed: ${result.error}`);
-    add(id, result.exitCode === 0, result.stdout + result.stderr); return result;
+  const run = (id, command, cwd = fixture.repo, commandEnv = env) => {
+    const result = execute(command, cwd, commandEnv, undefined, id === 'evaluator-acceptance' ? acceptanceTimeoutMs : 120_000); evidence[id] = result;
+    if (result.infrastructureFailure) throw Object.assign(new Error(`Verifier infrastructure failed: ${result.error}`), { infrastructure: true });
+    add(id, result.exitCode === 0 && !result.error, [result.stdout, result.stderr, result.error].filter(Boolean).join('\n')); return result;
   };
-  const after = snapshot(fixture.repo, env.SEMANTIC_FLOW_HOME);
+  let after;
+  try { after = snapshot(fixture.repo, env.SEMANTIC_FLOW_HOME); }
+  catch (error) {
+    if (error.infrastructure) throw error;
+    add('readable-state', false, error.message);
+    return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
+  }
   if (scenario === 'status' || scenario === 'help-feedback') {
     add('read-only', JSON.stringify(after) === JSON.stringify(fixture.before), { before: fixture.before, after });
     return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
@@ -126,8 +132,9 @@ export function verifyFixture(fixture, root, skill, scenario, env) {
     add('no-feedback-reply', JSON.stringify(after.review) === JSON.stringify(fixture.before.review), after.review);
     return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   }
-  const listed = checked(['git', 'worktree', 'list', '--porcelain'], fixture.repo, env);
-  const roots = listed.split('\n').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
+  const listed = run('worktrees-readable', ['git', 'worktree', 'list', '--porcelain']);
+  if (listed.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
+  const roots = listed.stdout.split(/\r?\n/).filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
   if (roots.some(repo => !inside(root, repo))) { add('worktree-scope', false, roots); return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks }; }
   const artifacts = roots.filter(repo => fs.existsSync(path.join(repo, '.semantic-review/manifest.json')));
   add('one-artifact', artifacts.length === 1, artifacts);
@@ -137,8 +144,14 @@ export function verifyFixture(fixture, root, skill, scenario, env) {
   const validation = run('artifact-publication', cli('semantic-implementation', 'validate', '--publish'), repo);
   if (validation.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   run('stack', cli('semantic-implementation', 'validate-stack', '--json'), repo);
-  const manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));
-  const stages = manifest.stages.map(id => readJson(path.join(repo, '.semantic-review/stages', `${id}.json`)));
+  let manifest, stages;
+  try {
+    manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));
+    stages = manifest.stages.map(id => readJson(path.join(repo, '.semantic-review/stages', `${id}.json`)));
+  } catch (error) {
+    add('artifact-readable', false, error.message);
+    return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
+  }
   evidence.artifact = { repo, manifest, stages };
   const targetBefore = fixture.before.refs.split('\n').find(ref => ref.endsWith(` refs/heads/${manifest.targetBranch}`));
   add('target-preserved', !targetBefore || after.refs.split('\n').includes(targetBefore), after.refs);
@@ -151,22 +164,31 @@ export function verifyFixture(fixture, root, skill, scenario, env) {
     add('compatible-settings', settings?.enabled === true && settings?.format === 'html' && settings?.retries === 2, contents);
     run('delivery-preserved', ['git', 'cat-file', '-e', `${head}:delivery.md`], repo);
     run('feedback-valid', cli('review-feedback', 'validate'), repo);
-    const inspection = JSON.parse(checked(cli('semantic-flow', 'inspect', '--json'), repo, env));
-    const thread = readJson(path.join(inspection.selected.feedbackDirectory, 'threads/delivery-retries.json'));
-    add('one-open-agent-reply', thread.status === 'open' && thread.comments.filter(c => c.author === 'agent').length === 1 && thread.comments.at(-1)?.author === 'agent', thread);
-    const threads = fs.readdirSync(inspection.selected.feedbackDirectory + '/threads').filter(name => name.endsWith('.json')).map(name => readJson(path.join(inspection.selected.feedbackDirectory, 'threads', name)));
-    add('no-pending-reply', !threads.some(t => t.status === 'open' && t.comments.at(-1)?.author !== 'agent'), threads);
-    const branches = checked(['git', 'for-each-ref', '--format=%(refname)', 'refs/heads/'], repo, env).split('\n');
+    const inspectionResult = run('feedback-inspection', cli('semantic-flow', 'inspect', '--json'), repo);
+    try {
+      if (inspectionResult.exitCode !== 0) throw new Error(inspectionResult.stderr || inspectionResult.error || 'Feedback inspection failed');
+      const inspection = JSON.parse(inspectionResult.stdout);
+      const directory = path.join(inspection.selected.feedbackDirectory, 'threads');
+      const thread = readJson(path.join(directory, 'delivery-retries.json'));
+      const threads = fs.readdirSync(directory).filter(name => name.endsWith('.json')).map(name => readJson(path.join(directory, name)));
+      const hasReply = thread.status === 'open' && thread.comments.filter(c => c.author === 'agent').length === 1 && thread.comments.at(-1)?.author === 'agent';
+      const pending = threads.some(t => t.status === 'open' && t.comments.at(-1)?.author !== 'agent');
+      add('one-open-agent-reply', hasReply, thread); add('no-pending-reply', !pending, threads);
+    } catch (error) {
+      add('one-open-agent-reply', false, error.message); add('no-pending-reply', false, error.message);
+    }
+    const branchResult = run('branches-readable', ['git', 'for-each-ref', '--format=%(refname)', 'refs/heads/'], repo);
+    const branches = branchResult.stdout.trim().split(/\r?\n/);
     const expected = new Set(['refs/heads/main', ...stages.map(s => `refs/heads/${s.change.branch}`)]);
-    add('recovery-refs-removed', branches.every(branch => expected.has(branch)), branches);
+    add('recovery-refs-removed', branchResult.exitCode === 0 && branches.every(branch => expected.has(branch)), branches);
   } else {
     // Export the immutable cumulative commit; never run acceptance on whichever lower stage is checked out.
     const checkout = path.join(root, 'acceptance'); fs.mkdirSync(checkout, { recursive: true });
     const checkoutPrefix = checkout + path.sep;
     const index = path.join(root, 'tmp', 'acceptance-index'); fs.rmSync(index, { force: true });
     const exportEnv = { ...env, GIT_INDEX_FILE: index };
-    checked(['git', 'read-tree', head], repo, exportEnv);
-    checked(['git', 'checkout-index', '--all', '--force', `--prefix=${checkoutPrefix}`], repo, exportEnv);
+    if (run('acceptance-tree', ['git', 'read-tree', head], repo, exportEnv).exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
+    if (run('acceptance-export', ['git', 'checkout-index', '--all', '--force', `--prefix=${checkoutPrefix}`], repo, exportEnv).exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
     run('evaluator-acceptance', [process.execPath, '--input-type=module', '-e', priceAcceptance, pathToFileURL(path.join(checkout, 'prices.js')).href], checkout);
     run('project-tests', [process.execPath, '--test'], checkout);
     if (scenario === 'cli-recovery-category') {

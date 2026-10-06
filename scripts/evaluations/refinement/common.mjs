@@ -11,9 +11,24 @@ export function writeJson(file, data) {
   fs.renameSync(temporary, file);
 }
 export const hash = value => createHash('sha256').update(value).digest('hex');
+function physicalPath(file) {
+  let current = path.resolve(file);
+  const missing = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(current), ...missing); }
+    catch (error) {
+      if (error.code !== 'ENOENT' || fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      missing.unshift(path.basename(current)); current = parent;
+    }
+  }
+}
 export function inside(root, file) {
-  const relative = path.relative(path.resolve(root), path.resolve(file));
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  try {
+    const relative = path.relative(physicalPath(root), physicalPath(file));
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  } catch { return false; }
 }
 export function files(root) {
   if (!fs.existsSync(root)) return [];
@@ -32,15 +47,16 @@ export function instructionSizes(root) {
     return name === 'SKILL.md' || /^(commands|docs|references)\/.*\.md$/.test(name);
   }).map(file => [path.relative(root, file).split(path.sep).join('/'), fs.statSync(file).size]));
 }
-export function execute(command, cwd, env, input) {
+export function execute(command, cwd, env, input, timeoutMs = 120_000) {
   const result = spawnSync(command[0], command.slice(1), {
-    cwd, env, input, encoding: 'utf8', timeout: 120_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
+    cwd, env, input, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024, windowsHide: true,
   });
-  return { command, exitCode: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error?.message ?? null };
+  const infrastructureFailure = ['ENOENT', 'EACCES', 'EPERM', 'ENOMEM', 'EAGAIN', 'EMFILE', 'ENFILE'].includes(result.error?.code) && (!cwd || fs.existsSync(cwd));
+  return { command, exitCode: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', error: result.error?.message ?? null, errorCode: result.error?.code ?? null, infrastructureFailure };
 }
 export function checked(command, cwd, env, input) {
   const result = execute(command, cwd, env, input);
-  if (result.exitCode !== 0) throw new Error(`${command.join(' ')}\n${result.stderr}\n${result.stdout}\n${result.error ?? ''}`);
+  if (result.exitCode !== 0) throw Object.assign(new Error(`${command.join(' ')}\n${result.stderr}\n${result.stdout}\n${result.error ?? ''}`), { infrastructure: result.infrastructureFailure });
   return result.stdout.trim();
 }
 export function environment(root) {
@@ -80,6 +96,6 @@ export function snapshot(repo, reviewHome) {
     const file = path.join(repo, name);
     return [name, !fs.existsSync(file) ? null : hash(fs.lstatSync(file).isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file))];
   }));
-  return { refs: git('show-ref'), head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'),
+  return { refs: git('show-ref').replaceAll('\r\n', '\n'), head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'),
     content, artifact: inventory(path.join(repo, '.semantic-review')), review: inventory(reviewHome) };
 }

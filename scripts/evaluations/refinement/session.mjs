@@ -169,6 +169,7 @@ export async function runJob(directory, session, job, agent, root, repo, prompt)
 export async function runEvaluations(directory) {
   const session = loadSession(directory); checkPins(session);
   if (session.state !== 'ready') throw new Error('Session preparation did not complete');
+  if (session.evaluationsClosedAt) throw new Error('Evaluations are closed for partial grading; prepare a fresh session for additional runs.');
   for (const job of session.plan.jobs) {
     // Existing attempts are never silently repeated, even if interrupted or invalid.
     if (fs.existsSync(recordFile(directory, job.id))) continue;
