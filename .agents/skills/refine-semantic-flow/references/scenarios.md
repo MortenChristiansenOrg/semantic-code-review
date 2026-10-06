@@ -89,6 +89,11 @@ script.
 Run this set as described in the skill's broader workflows step:
 `feedback-compatible`, `feedback-conflicting-intent`, `cli-recovery-category`,
 `implement-small`, and `status-help`. Add the focus scenarios of earlier
-sessions when they cover workflows touched by kept edits. One repetition per
-model is enough unless a result differs from the original baseline. Then repeat
-until the variability rules in [metrics](metrics.md) give a decision.
+sessions when they cover workflows touched by kept edits.
+
+Periodic checks during a session may screen with one repetition per model. A
+screening run that differs from the original baseline is extended to the full
+repetition count before deciding. A matching screening run only defers the
+decision: it never establishes that there is no regression. The final check
+before finishing runs the full repetition count for both variants and applies
+the variability rules in [metrics](metrics.md).

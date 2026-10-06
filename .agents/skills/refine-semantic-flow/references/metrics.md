@@ -61,7 +61,12 @@ variants. Run at least three repetitions. Treat a difference as real only when:
   repetitions,
 - a median count or duration (`tools`, `tokens`, `time`) changes by more than
   10% and the interquartile ranges of the two variants do not overlap, or
-- a median subjective score changes by at least one point.
+- a median subjective score changes by at least one point, or
+- for the counts `compliance`, `prompts`, and rejected `cli` invocations, the
+  number of runs with at least one occurrence changes by the pass-rate
+  threshold above. Compare per-run occurrence rather than totals, so that one
+  run with many repeats cannot outweigh the others. A violation of a kind the
+  other variant never showed is real once it occurs in two runs.
 
 When a result is borderline, add repetitions to both variants, up to five
 unless the user agreed on a different cap. Report pass counts such as `2/3`

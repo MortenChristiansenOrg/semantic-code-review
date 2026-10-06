@@ -123,7 +123,9 @@ test('actual archive installs complete CLI without a source checkout and reports
 test('repository-local maintainer skills stay out of the distributed skill', () => {
   const skill = path.resolve(scriptsDirectory, '..'), repository = path.resolve(skill, '..', '..');
   assert.ok(fs.existsSync(path.join(repository, '.agents/skills/refine-semantic-flow/SKILL.md')));
+  // distribution() selects files exactly as packageRelease() does.
   for (const [name, bytes] of distribution()) {
+    assert.doesNotMatch(name, /refine-semantic-flow|\.agents/, `${name} is a maintainer skill file`);
     assert.doesNotMatch(bytes.toString(), /refine-semantic-flow|\.agents\/skills/, `${name} references a maintainer skill`);
   }
 });
