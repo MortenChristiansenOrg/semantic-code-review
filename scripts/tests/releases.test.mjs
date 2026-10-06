@@ -120,6 +120,14 @@ test('actual archive installs complete CLI without a source checkout and reports
 
 });
 
+test('repository-local maintainer skills stay out of the distributed skill', () => {
+  const skill = path.resolve(scriptsDirectory, '..'), repository = path.resolve(skill, '..', '..');
+  assert.ok(fs.existsSync(path.join(repository, '.agents/skills/refine-semantic-flow/SKILL.md')));
+  for (const [name, bytes] of distribution()) {
+    assert.doesNotMatch(bytes.toString(), /refine-semantic-flow|\.agents\/skills/, `${name} references a maintainer skill`);
+  }
+});
+
 test('archive validation rejects wrong versions, missing files, changed contents, incompatible runtime, traversal, duplicates, and symlinks', async (t) => {
   const root = temp(t);
   const original = distribution();

@@ -13,6 +13,12 @@ Do not use Semantic Flow to implement work in this repository; it is a workflow
 that other projects install and use. `/semantic-flow report` may be used here to
 diagnose and report defects in the skill, CLI, or viewer.
 
+### Refining the skill
+
+To improve the Semantic Flow skill through measured model evaluations, use the
+maintainer skill in [.agents/skills/refine-semantic-flow](.agents/skills/refine-semantic-flow/SKILL.md).
+Repository-local skills under `.agents/skills/` are never packaged or released.
+
 ### Releases
 
 When asked to bump the version or create a release, follow [docs/releases.md](docs/releases.md).

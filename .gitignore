@@ -3,6 +3,9 @@ Thumbs.db
 [Dd]esktop.ini
 *:Zone.Identifier
 
+# Session records from the repository-local refine-semantic-flow skill.
+/.refinement/
+
 scripts/test-results/
 scripts/playwright-report/
 
