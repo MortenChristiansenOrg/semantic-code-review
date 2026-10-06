@@ -28,6 +28,7 @@ never in commits. Commits record kept candidates. The log keeps every decision.
 
 ## Baseline-0
 <per-model table: scenario, success x/n, compliance, prompts, median tools/tokens/time, subjective medians>
+<skill size per instruction file and total; clarity per document>
 
 ## C1: <short title>
 - Hypothesis and rationale: <evidence from runs → expected metric change>
@@ -53,7 +54,7 @@ each violation check that failed in `violations`, by a short stable name such as
 ```json
 {"variant":"c1","model":"<id>","harness":"<name version>","scenario":"feedback-compatible","repetition":2,
  "success":1,"compliance":0,"violations":[],"cliRejected":1,"cliUnrecovered":0,"prompts":0,"recovery":null,
- "tools":41,"tokens":{"input":18000,"cachedInput":160000,"output":5200},"seconds":312,"instructionBytes":null,
- "subjective":{"followability":4,"responses":5},"notes":"retried enum once after reading API.d.ts",
+ "tools":41,"tokens":{"input":18000,"cachedInput":160000,"output":5200},"seconds":312,"bytesRead":null,
+ "subjective":{"followability":4,"readability":4,"responses":5},"notes":"retried enum once after reading API.d.ts",
  "transcript":"transcripts/c1/<id>/feedback-compatible-2.jsonl"}
 ```

@@ -1,6 +1,6 @@
 ---
 name: refine-semantic-flow
-description: Use when a maintainer of this repository asks to refine, tune, or evaluate the Semantic Flow skill's instructions, or a selected command, section, or aspect of it, through measured model evaluations. Not distributed with the skill.
+description: Use when invoked by the user. The command must be invoked explicitly, not just as a prose reference to refining Semantic Flow.
 ---
 
 # Refine Semantic Flow
@@ -29,8 +29,9 @@ Settle these with the user before spending budget. Propose defaults rather than
 asking open questions.
 
 - **Focus**: a command (`feedback`, `implement`, …), a section of a file, or an
-  aspect across files (recovery, instruction clarity, efficiency, review
-  responses, user questions). Note which metrics it targets.
+  aspect across files (recovery, artifact quality, instruction clarity, skill
+  size, efficiency, review responses, user questions). Note which metrics it
+  targets.
 - **Models**: at least two that users actually run Semantic Flow with, ideally
   from different vendors or capability tiers. Record exact model IDs,
   harness, harness version, and reasoning or effort settings.
