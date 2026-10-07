@@ -19,7 +19,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const inside = (root, file) => {
   try {
-    const relative = path.relative(fs.realpathSync(root), fs.realpathSync(file));
+    const relative = path.relative(fs.realpathSync.native(root), fs.realpathSync.native(file));
     return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith('..' + path.sep));
   } catch { return false; }
 };
@@ -39,9 +39,20 @@ function run(command, cwd, env, { input, timeout = 30_000, binary = false } = {}
   return { command, exitCode: result.status, stdout: result.stdout ?? (binary ? Buffer.alloc(0) : ''), stderr: String(result.stderr ?? ''), error: result.error?.message ?? null };
 }
 function checked(command, cwd, env, settings) {
-  const result = run(command, cwd, env, settings);
-  if (result.exitCode !== 0 || result.error) throw new Error(`${command.join(' ')}: ${result.stderr || result.error || result.stdout}`);
+  return checkedResult(run(command, cwd, env, settings));
+}
+function checkedResult(result) {
+  if (result.exitCode !== 0 || result.error) throw new Error(`${result.command.join(' ')}: ${result.stderr || result.error || result.stdout}`);
   return result.stdout;
+}
+export function extractArchive(tar, archive, destination, cwd, env) {
+  // bsdtar can close stdin before spawnSync finishes writing, producing EPIPE.
+  const temporary = fs.mkdtempSync(path.join(path.dirname(destination), 'chat-archive-'));
+  try {
+    const file = path.join(temporary, 'source.tar');
+    fs.writeFileSync(file, archive);
+    return run([tar, '-xf', file, '-C', destination], cwd, env);
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
 function toolPins(capabilities) {
   for (const tool of Object.values(capabilities.tools)) if (hash(fs.readFileSync(tool.path)) !== tool.sha256) throw new Error(`Pinned evaluator executable changed: ${tool.path}`);
@@ -105,7 +116,7 @@ export async function preflight({ options = {}, workspace }) {
   const archive = checked([tools.git.path, 'archive', '--format=tar', revision, '--', ...entries.map(entry => entry.name)], project, undefined, { binary: true });
   const probe = fs.mkdtempSync(path.join(workspace, 'chat-adapter-probe-'));
   try {
-    checked([tools.tar.path, '-xf', '-', '-C', probe], project, undefined, { input: archive });
+    checkedResult(extractArchive(tools.tar.path, archive, probe, project));
     checked([tools.node.path, '--input-type=module', '-e', "import assert from 'node:assert/strict'; assert.equal(Array.from('😀').length,1);"], probe);
     checked([tools.git.path, 'init', '-b', 'main'], probe);
   } finally { fs.rmSync(probe, { recursive: true, force: true }); }
@@ -118,7 +129,7 @@ export async function prepare({ root, env, capabilities }) {
   const { tools, project, revision, entries } = capabilities;
   const archive = checked([tools.git.path, 'archive', '--format=tar', revision, '--', ...entries.map(entry => entry.name)], project, env, { binary: true });
   if (hash(archive) !== capabilities.archiveHash) throw new Error('Pinned source archive changed');
-  checked([tools.tar.path, '-xf', '-', '-C', repo], root, env, { input: archive });
+  checkedResult(extractArchive(tools.tar.path, archive, repo, root, env));
   const git = (...args) => checked([tools.git.path, ...args], repo, env).trim();
   git('init', '-b', 'main'); git('config', 'user.name', 'Semantic Flow Evaluation'); git('config', 'user.email', 'evaluation@example.invalid'); git('config', 'commit.gpgsign', 'false'); git('config', 'core.hooksPath', path.join(root, 'empty-hooks'));
   // The fresh index must retain even source files matched by exported ignore rules.
@@ -143,7 +154,12 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   if (listed.exitCode !== 0 || !roots.length || roots.some(repo => !inside(root, repo))) { add('worktree-scope', false, listed); return done(); }
   const inspection = invoke('inspection', cli('semantic-flow', 'inspect', '--json'));
   let selected;
-  try { const parsed = JSON.parse(inspection.stdout); if (parsed.candidates.length !== 1) throw new Error('Expected exactly one linked artifact'); selected = parsed.selected; if (!selected || !roots.includes(selected.worktree)) throw new Error('No selected linked artifact'); }
+  try {
+    const parsed = JSON.parse(inspection.stdout);
+    if (parsed.candidates.length !== 1) throw new Error('Expected exactly one linked artifact');
+    selected = parsed.selected;
+    if (!selected || !roots.some(repo => path.relative(fs.realpathSync.native(repo), fs.realpathSync.native(selected.worktree)) === '')) throw new Error('No selected linked artifact');
+  }
   catch (error) { add('worktree-scope', false, `${inspection.stderr}\n${error.message}`); return done(); }
   add('worktree-scope', true, { roots, selected: selected.worktree });
   const repo = selected.worktree;
@@ -186,8 +202,9 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   evidence['acceptance-archive'] = { ...archive, stdout: `<${archive.stdout.length} bytes>` };
   const unsafe = [...files].filter(([name, entry]) => name.split('/').includes('..') || !['100644', '100755'].includes(entry.mode) || entry.type !== 'blob');
   if (archive.exitCode !== 0 || unsafe.length) { add('application-acceptance', false, unsafe.length ? { unsafe } : evidence['acceptance-archive']); return done(); }
-  const exported = invoke('acceptance-export', [capabilities.tools.tar.path, '-xf', '-', '-C', checkout], repo, { input: archive.stdout });
-  if (exported.exitCode !== 0) { add('application-acceptance', false, exported); return done(); }
+  const exported = extractArchive(capabilities.tools.tar.path, archive.stdout, checkout, repo, env);
+  evidence['acceptance-export'] = exported;
+  if (exported.exitCode !== 0 || exported.error) { add('application-acceptance', false, exported); return done(); }
   const result = invoke('application-acceptance', [capabilities.tools.node.path, '--input-type=module', '-e', acceptance, pathToFileURL(path.join(checkout, 'team-chat/lib/message-preview.mjs')).href], checkout);
   add('application-acceptance', result.exitCode === 0 && !result.error, result);
   const tests = invoke('project-tests', [capabilities.tools.node.path, '--test', '--test-reporter=tap', 'lib/message-preview.test.mjs'], path.join(checkout, 'team-chat'));

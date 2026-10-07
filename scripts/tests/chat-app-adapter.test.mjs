@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
-import { checkIds, preflight, prepare, verify } from '../evaluations/adapters/chat-app.mjs';
+import { checkIds, extractArchive, preflight, prepare, verify } from '../evaluations/adapters/chat-app.mjs';
 import { environment, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -87,6 +87,37 @@ test('known-good verifier passes every fixed check from registered cumulative co
   assert.ok(result.checks.every(item => item.passed), JSON.stringify(result.checks, null, 2));
   assert.deepEqual(snapshot(c.f.repo, c.env.SEMANTIC_FLOW_HOME), before);
   assert.doesNotThrow(() => JSON.stringify(result));
+});
+
+test('archive extraction reads a file and cleans transfer inputs after success or failure', async t => {
+  const c = await fixture(t); complete(c);
+  const result = await check(c);
+  assert.ok(result.checks.every(item => item.passed), JSON.stringify(result.checks, null, 2));
+  const exported = result.evidence['acceptance-export'];
+  assert.equal(exported.exitCode, 0);
+  assert.notEqual(exported.command[2], '-');
+  assert.equal(fs.existsSync(exported.command[2]), false);
+
+  const destination = path.join(c.root, 'broken-extraction'); fs.mkdirSync(destination);
+  const before = fs.readdirSync(c.root).sort();
+  const broken = extractArchive(c.capabilities.tools.tar.path, Buffer.from('invalid archive'), destination, c.root, c.env);
+  assert.notEqual(broken.exitCode, 0);
+  assert.equal(fs.existsSync(broken.command[2]), false);
+  assert.deepEqual(fs.readdirSync(c.root).sort(), before);
+});
+
+test('worktree confinement accepts physical aliases and rejects registered paths outside the case', async t => {
+  const c = await fixture(t); complete(c);
+  const alias = path.join(c.workspace, 'case-alias');
+  fs.symlinkSync(c.root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const aliased = await verify({ fixture: { ...c.f, repo: path.join(alias, 'project') }, root: alias, skill, env: c.env, capabilities: c.capabilities });
+  assert.ok(aliased.checks.every(item => item.passed), JSON.stringify(aliased.checks, null, 2));
+
+  const outside = path.join(c.workspace, 'outside-case');
+  c.r.git('worktree', 'add', '-b', 'outside-case', outside, 'main');
+  const escaped = byId(await check(c));
+  assert.equal(escaped['worktree-scope'].passed, false);
+  assert.equal(escaped['application-acceptance'].passed, false);
 });
 
 test('independent verifier catches UTF-16 truncation even when agent tests pass', async t => {
