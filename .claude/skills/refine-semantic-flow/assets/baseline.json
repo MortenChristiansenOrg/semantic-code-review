@@ -1,0 +1,122 @@
+{
+  "version": 1,
+  "mode": "baseline",
+  "budget": {
+    "maxModelRuns": 12,
+    "wallMinutes": 45,
+    "runMinutes": 12
+  },
+  "grading": {
+    "batchSize": 3,
+    "instructions": true,
+    "reserveMinutes": 10
+  },
+  "implementers": [
+    {
+      "id": "sol",
+      "model": "gpt-6.1-sol",
+      "effort": "high",
+      "command": [
+        "codex",
+        "exec",
+        "--ignore-user-config",
+        "--ephemeral",
+        "--json",
+        "--skip-git-repo-check",
+        "-m",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"{effort}\"",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_workspace_write.network_access=true",
+        "--sandbox",
+        "workspace-write",
+        "--add-dir",
+        "{case}",
+        "--add-dir",
+        "{repo}/.git",
+        "-C",
+        "{repo}",
+        "-"
+      ],
+      "versionCommand": [
+        "codex",
+        "--version"
+      ],
+      "transcript": "codex-jsonl",
+      "isolation": "sandbox",
+      "preflight": "codex-sandbox"
+    }
+  ],
+  "grader": {
+    "id": "astra",
+    "model": "gpt-6-astra",
+    "effort": "high",
+    "command": [
+      "codex",
+      "exec",
+      "--ignore-user-config",
+      "--ephemeral",
+      "--json",
+      "--skip-git-repo-check",
+      "-m",
+      "{model}",
+      "-c",
+      "model_reasoning_effort=\"{effort}\"",
+      "-c",
+      "approval_policy=\"never\"",
+      "-c",
+      "sandbox_workspace_write.network_access=true",
+      "--sandbox",
+      "workspace-write",
+      "--add-dir",
+      "{case}",
+      "--output-schema",
+      "{schema}",
+      "-C",
+      "{repo}",
+      "-"
+    ],
+    "versionCommand": [
+      "codex",
+      "--version"
+    ],
+    "transcript": "codex-jsonl",
+    "isolation": "sandbox",
+    "preflight": "codex-sandbox"
+  },
+  "variants": [
+    {
+      "id": "baseline",
+      "skill": "../../../../skills/semantic-flow"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "implement-small",
+      "repetitions": 3
+    },
+    {
+      "id": "cli-recovery-category",
+      "repetitions": 1
+    },
+    {
+      "id": "feedback-compatible",
+      "repetitions": 1
+    },
+    {
+      "id": "feedback-conflicting-intent",
+      "repetitions": 1
+    },
+    {
+      "id": "status",
+      "repetitions": 1
+    },
+    {
+      "id": "help-feedback",
+      "repetitions": 1
+    }
+  ]
+}

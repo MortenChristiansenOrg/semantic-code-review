@@ -244,13 +244,20 @@ test('ten-level subjective scores agree across schema and runtime without boundi
   }
 });
 
-test('Codex and Claude discover the same refinement skill and supporting resources', () => {
+test('Codex and Claude refinement skills are matching regular directory copies', () => {
   const codex = path.join(source, '.agents/skills/refine-semantic-flow');
   const claude = path.join(source, '.claude/skills/refine-semantic-flow');
-  assert.equal(fs.realpathSync(claude), fs.realpathSync(codex));
-  for (const resource of ['SKILL.md', 'references/harness.md', 'references/metrics.md', 'assets/baseline.json']) {
-    assert.equal(fs.realpathSync(path.join(claude, resource)), fs.realpathSync(path.join(codex, resource)));
-  }
+  const inventory = (directory, relative = '') => {
+    assert.ok(fs.lstatSync(directory).isDirectory(), `${directory} must be a regular directory`);
+    return fs.readdirSync(directory).sort().flatMap(name => {
+      const file = path.join(directory, name), entry = path.posix.join(relative, name);
+      const stat = fs.lstatSync(file);
+      if (stat.isDirectory()) return inventory(file, entry);
+      assert.ok(stat.isFile(), `${file} must be a regular file`);
+      return [[entry, fs.readFileSync(file)]];
+    });
+  };
+  assert.deepEqual(inventory(claude), inventory(codex));
 });
 
 test('sandbox preflight reproduces the declared network and Git permissions without silently broadening them', () => {
