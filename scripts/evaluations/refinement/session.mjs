@@ -8,6 +8,7 @@ import { loadPlan } from './plan.mjs';
 import { checked, environment, hash, inside, inventory, instructionSizes, readJson, writeJson } from './common.mjs';
 import { prepareFixture, verifyFixture } from './scenarios.mjs';
 import { codexTelemetry } from './telemetry.mjs';
+import { subjectiveScale } from './grade-schema.mjs';
 import { preflightAgent } from './preflight.mjs';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -93,7 +94,7 @@ export async function prepare(configFile, directory) {
     }
     // Freeze grading instructions too; later documentation edits cannot silently change the rubric.
     fs.cpSync(path.join(skillSource, 'references'), path.join(directory, 'rubric'), { recursive: true });
-    session.rubric = { path: path.join(directory, 'rubric'), hash: hash(JSON.stringify(inventory(path.join(directory, 'rubric')))) };
+    session.rubric = { subjectiveScale, path: path.join(directory, 'rubric'), hash: hash(JSON.stringify(inventory(path.join(directory, 'rubric')))) };
     session.state = 'ready'; writeJson(sessionFile(directory), session);
   } catch (error) {
     session.state = 'setup-failed'; session.error = error.message; writeJson(sessionFile(directory), session); throw error;

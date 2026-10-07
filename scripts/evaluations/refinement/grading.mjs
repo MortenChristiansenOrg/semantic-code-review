@@ -4,17 +4,20 @@ import { randomInt } from 'node:crypto';
 import { readJson, writeJson } from './common.mjs';
 import { checkPins, loadSession, runJob } from './session.mjs';
 import { scenarios } from './scenarios.mjs';
-import { gradeSchema } from './grade-schema.mjs';
+import { gradeSchema, subjectiveScale } from './grade-schema.mjs';
 
 const metricNames = ['organization', 'insights', 'traceability', 'readability', 'responses', 'followability'];
 export function validateGrades(value, packet) {
-  if (value.calibration?.mechanicsStop !== 1 || value.calibration?.productQuestion !== 0 || value.calibration?.stageOnlyTraceability !== 5 || value.calibration?.routineInsightPolicy !== true || value.calibration?.missingSignificantInsightPolicy !== false) throw new Error('Grader calibration mismatch');
+  const anchors = { mechanicsStop: 1, productQuestion: 0, stageOnlyTraceability: subjectiveScale.maximum,
+    ambiguousClarity: 3, neutralMaintainability: subjectiveScale.neutral,
+    routineInsightPolicy: true, missingSignificantInsightPolicy: false };
+  if (Object.entries(anchors).some(([name, expected]) => value.calibration?.[name] !== expected)) throw new Error('Grader calibration mismatch');
   if (packet.kind === 'instructions') {
     if (!Array.isArray(value.documents) || !Array.isArray(value.consistency)) throw new Error('Instruction grades require documents and consistency findings');
     const expected = packet.documents.map(d => `${d.label}:${d.path}`).sort();
     const actual = value.documents.map(d => `${d.label}:${d.path}`).sort();
     if (JSON.stringify(expected) !== JSON.stringify(actual)) throw new Error('Grade every instruction document exactly once');
-    for (const d of value.documents) if (!Number.isInteger(d.clarity) || d.clarity < 1 || d.clarity > 5 || !d.reason) throw new Error('Invalid document clarity grade');
+    for (const d of value.documents) if (!Number.isInteger(d.clarity) || d.clarity < 1 || d.clarity > subjectiveScale.maximum || !d.reason) throw new Error('Invalid document clarity grade');
     for (const group of value.consistency) {
       if (!packet.labels.includes(group.label) || !Array.isArray(group.findings)) throw new Error('Invalid consistency group');
       for (const f of group.findings) if (!['minor', 'material', 'blocking'].includes(f.severity) || !f.explanation || !Array.isArray(f.files) || !f.files.length) throw new Error('Consistency findings require severity, affected files and explanation');
@@ -22,7 +25,7 @@ export function validateGrades(value, packet) {
     if (JSON.stringify(value.consistency.map(g => g.label).sort()) !== JSON.stringify([...packet.labels].sort())) throw new Error('Grade consistency for each label exactly once');
     const directions = packet.labels.length === 2 ? packet.labels.map((from, i) => `${from}:${packet.labels[1 - i]}`).sort() : [];
     if (!Array.isArray(value.maintainability) || JSON.stringify(value.maintainability.map(m => `${m.from}:${m.to}`).sort()) !== JSON.stringify(directions)) throw new Error('Grade maintainability in both directions for comparisons; leave empty for baselines');
-    for (const m of value.maintainability) if (!Number.isInteger(m.score) || m.score < 1 || m.score > 5 || !m.reason) throw new Error('Invalid maintainability score');
+    for (const m of value.maintainability) if (!Number.isInteger(m.score) || m.score < 1 || m.score > subjectiveScale.maximum || !m.reason) throw new Error('Invalid maintainability score');
     return;
   }
   if (!Array.isArray(value.runs) || value.runs.length !== packet.runs.length) throw new Error('Grade every run exactly once');
@@ -42,7 +45,7 @@ export function validateGrades(value, packet) {
     if (r.cliUnrecovered > r.cliRejected || !r.countEvidence) throw new Error('CLI counts need evidence and unrecovered cannot exceed rejected');
     for (const name of metricNames) {
       const metric = r.subjective?.[name];
-      if (!metric || !(metric.score === null || Number.isInteger(metric.score) && metric.score >= 1 && metric.score <= 5) || !metric.reason) throw new Error(`Missing score/reason for ${name}`);
+      if (!metric || !(metric.score === null || Number.isInteger(metric.score) && metric.score >= 1 && metric.score <= subjectiveScale.maximum) || !metric.reason) throw new Error(`Missing score/reason for ${name}`);
     }
   }
 }
@@ -63,7 +66,7 @@ function buildPacket(directory, session, job) {
   const labels = Object.values(mapping).sort();
   if (job.kind === 'instructions') {
     const documents = session.plan.variants.flatMap(v => Object.keys(v.sizes).map(name => ({ label: mapping[v.id], path: name, content: fs.readFileSync(path.join(v.install, name), 'utf8') })));
-    return { kind: 'instructions', labels, documents: documents.sort((a, b) => a.label.localeCompare(b.label) || a.path.localeCompare(b.path)) };
+    return { kind: 'instructions', scoreScale: subjectiveScale, labels, documents: documents.sort((a, b) => a.label.localeCompare(b.label) || a.path.localeCompare(b.path)) };
   }
   const runs = [], ids = {};
   for (const [index, member] of job.members.entries()) {
@@ -83,7 +86,7 @@ function buildPacket(directory, session, job) {
   writeJson(path.join(directory, 'runs', job.id, 'id-map.json'), ids);
   // Graders see opaque labels, normalized paths, observed evidence and identical rubrics.
   // They do not receive the original variant IDs, hypothesis, or baseline/candidate mapping.
-  return JSON.parse(redact(JSON.stringify({ kind: 'runs', labels, runs }), replacements));
+  return JSON.parse(redact(JSON.stringify({ kind: 'runs', scoreScale: subjectiveScale, labels, runs }), replacements));
 }
 export async function grade(directory, { partial = false } = {}) {
   const session = loadSession(directory); checkPins(session);
@@ -173,6 +176,8 @@ export function invalidate(directory, id, reason) {
 }
 export function report(directory) {
   const session = loadSession(directory), rows = collectResults(directory);
+  // Sessions prepared before scale metadata was introduced retain their five-level meaning.
+  const scoreMaximum = session.rubric?.subjectiveScale?.maximum ?? 5;
   fs.writeFileSync(path.join(directory, 'results.jsonl'), rows.map(r => JSON.stringify(r)).join('\n') + '\n');
   const render = value => value === null || value === undefined ? 'not measured' : String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
   const attempts = [...session.plan.jobs, ...session.plan.gradeJobs].map(j => path.join(directory, 'runs', j.id, 'result.json')).filter(f => fs.existsSync(f)).map(readJson);
@@ -190,7 +195,7 @@ export function report(directory) {
   for (const row of rows.filter(row => row.exclusion)) lines.push(`- ${row.id}: excluded from behavioral conclusions — ${render(row.exclusion.reason)}. Raw attempt and grades are preserved.`);
   lines.push('', '## Quality scores', '', '| Run | Organization | Insights | Traceability | Readability | Responses | Followability |', '| --- | ---: | ---: | ---: | ---: | ---: | ---: |');
   for (const r of rows) lines.push('| ' + [r.id, ...metricNames.map(k => r.subjective?.[k]?.score)].map(render).join(' | ') + ' |');
-  lines.push('', 'Scores are 1–5. Null scores need applicability reasons in the grader output. Raw grades retain every justification, finding and infrastructure attribution.', '', '## Instruction size', '', '| Variant | Document | UTF-8 bytes |', '| --- | --- | ---: |');
+  lines.push('', `Scores are 1–${scoreMaximum}. Null scores need applicability reasons in the grader output. Raw grades retain every justification, finding and infrastructure attribution.`, '', '## Instruction size', '', '| Variant | Document | UTF-8 bytes |', '| --- | --- | ---: |');
   for (const v of session.plan.variants) {
     for (const [name, bytes] of Object.entries(v.sizes)) lines.push(`| ${v.id} | ${name} | ${bytes} |`);
     lines.push(`| ${v.id} | **Total** | **${Object.values(v.sizes).reduce((a, b) => a + b, 0)}** |`);
@@ -204,7 +209,7 @@ export function report(directory) {
     for (const d of grades.documents) lines.push(`| ${name(d.label)} | ${d.path} | ${d.clarity} | ${render(d.reason)} |`);
     lines.push('', 'Consistency is reported as localized findings, not a global minimum score.');
     for (const group of grades.consistency) for (const f of group.findings) lines.push(`- ${name(group.label)} / ${f.severity}: ${render(f.explanation)} (${f.files.join(', ')})`);
-    for (const m of grades.maintainability) lines.push(`- Maintainability ${name(m.from)} → ${name(m.to)}: ${m.score}/5. ${render(m.reason)}`);
+    for (const m of grades.maintainability) lines.push(`- Maintainability ${name(m.from)} → ${name(m.to)}: ${m.score}/${scoreMaximum}. ${render(m.reason)}`);
   } else lines.push('Not measured: instruction grading omitted, incomplete, or invalid.');
   lines.push('', '## Limits and evidence', '', `- Broad scenarios omitted: ${session.plan.coverage.omitted.join(', ') || 'none'}. Single repetitions are screens, not reliability estimates.`,
     '- Harness versions, source state, exact model settings, skill hashes and capability fingerprints are in session.json.',
