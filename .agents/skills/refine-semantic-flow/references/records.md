@@ -31,6 +31,10 @@ when deterministic and required transcript checks are complete and not excluded.
 `fixedChecksPassed` reports the independent checks separately; it does
 not imply full success or cancel an infrastructure exclusion. Null telemetry means
 not measured; null subjective scores need applicability reasons in grades.json.
+New sessions pin their integer 1–10 subjective scale in
+`session.json` under `rubric.subjectiveScale`; historical sessions without that
+metadata retain their 1–5 labels and raw grades. Objective binary checks and count
+metrics keep their existing units.
 Record all three token fields; `input` excludes cached input. `violations` retains
 stable IDs, evidence and agent/infrastructure/uncertain attribution. The compliance
 count contains agent-attributable occurrences only. Do not infer absent violations

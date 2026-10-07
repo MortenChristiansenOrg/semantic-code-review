@@ -116,6 +116,20 @@ from that group or run in an external browser host.
 
 ## Custom project scenarios
 
+Default to `/home/morten/code/chat-app`
+(`\\wsl.localhost\Ubuntu\home\morten\code\chat-app` from Windows) for realistic
+application scenarios unless the user chooses another project. Record its pinned
+commit in the capability fingerprint; export a fresh copy for every run within
+the owned workspace. Never install into, switch branches in, or copy evaluator
+output back to the original project. Exclude secrets and local review state from
+the fixture. The built-in broad controls remain required in comparisons.
+
+The maintained [chat-app adapter](../../../../scripts/evaluations/adapters/chat-app.mjs)
+adds `chat-app-message-preview` coverage using `options.project` and
+`options.revision`. It exercises dependency-free utility authoring in the actual
+application tree, with evaluator-controlled checks against the final stage head;
+it does not establish browser, backend or deployment coverage.
+
 Use a committed, self-contained `.mjs` adapter instead of one-off runner edits.
 A scenario entry adds `adapter` and optional `options`; paths resolve from the
 config. The adapter is copied and content-hashed before running. It must export:

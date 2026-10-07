@@ -15,6 +15,16 @@ Flow in this source repository. Evaluation installations, application repositori
 worktrees, caches, and private review homes belong in the owned temporary workspace.
 No remote repository operations or live deployments are part of evaluation.
 
+For realistic project scenarios, the default test project is
+`/home/morten/code/chat-app` (Windows:
+`\\wsl.localhost\Ubuntu\home\morten\code\chat-app`), which exists for this purpose.
+Use another project when the user specifies it. Pin a committed source revision
+and evaluate fresh disposable copies with the custom adapter described in
+[harness.md](references/harness.md#custom-project-scenarios); preserve the original
+checkout, local changes, configuration and secrets. Keep the built-in fixtures as
+the broad workflow controls. This maintainer skill is shared by Codex and Claude
+through `.agents/skills/` and `.claude/skills/` respectively.
+
 ## Choose the session
 
 Reuse the user's choices and authorization. Ask only for missing information that

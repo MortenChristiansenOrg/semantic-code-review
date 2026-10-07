@@ -11,8 +11,9 @@ The insight policy has no minimum record count. Empty insights pass when no
 significant observation is evidenced; their quality score is null with a reason.
 An evidenced significant omission or filler still fails the policy check.
 
-Apply the metrics rubric. Separate task success, workflow compliance, inherited
-fixture content, and evaluator failures. Agent-written tests and SSR output do not
+Apply the metrics rubric using integer 1–10 subjective scores. Objective binary
+checks and occurrence counts retain their own units. Separate task success, workflow
+compliance, inherited fixture content, and evaluator failures. Agent-written tests and SSR output do not
 establish an interactive acceptance path. Judge only the acceptance contract the
 scenario requires; do not invent extra product requirements. Expected product
 questions are exempt from unnecessary stops. An injected CLI failure is not a new
@@ -27,7 +28,14 @@ Calibration samples (synthetic, first-use compatible):
   work. Score its unnecessary stops.
 - `stageOnlyTraceability`: one criterion accurately references its one responsible
   stage, with one clearly described implementation node and directly linked tests.
-  The schema only supports criterion references on stages. Score traceability.
+  The schema only supports criterion references on stages. Score traceability
+  against the complete high anchor.
+- `ambiguousClarity`: the document gives a purpose and some executable steps, but
+  contradictory preconditions and missing output definitions require major inference
+  before it can be used. Score its clarity using the shared level-3 anchor.
+- `neutralMaintainability`: a diff only corrects a spelling error in a descriptive
+  heading; it changes no procedure, duplication, ambiguity or special case. Score
+  the diff's maintainability relative to the neutral anchor.
 - `routineInsightPolicy`: the complete transcript shows routine implementation and
   ordinary tests only, with no significant observation. The artifact has no insights.
   Return the boolean result of the insight-policy compliance check.
@@ -35,7 +43,7 @@ Calibration samples (synthetic, first-use compatible):
   nonroutine compatibility risk relevant to review, but omits it from the artifact.
   Return the boolean result of the insight-policy compliance check.
 
-Return a `calibration` object with all five computed values with every result. If an anchor seems
+Return a `calibration` object with all seven computed values with every result. If an anchor seems
 inconsistent with the evidence/rubric, explain the disagreement instead of silently
 changing the real-run scores. A calibration mismatch invalidates the grade pending
 review. No historical calibration is claimed.
@@ -44,7 +52,7 @@ For an instruction packet, return only JSON of this shape:
 
 ```json
 {
-  "documents": [{"label":"A","path":"SKILL.md","clarity":4,"reason":"Evidence and explanation."}],
+  "documents": [{"label":"A","path":"SKILL.md","clarity":8,"reason":"Evidence and explanation."}],
   "consistency": [{"label":"A","findings":[{"severity":"material","files":["docs/runtime.md:10","commands/example.md:20"],"explanation":"Both rules and the affected workflow; observed or static."}]}],
   "maintainability": []
 }
@@ -54,7 +62,7 @@ Add your calibration object to the illustrated structure. Grade every supplied d
 conflict is found. Report consistency as localized findings, never a global minimum.
 Do not guess which opaque label is a candidate. For a two-label comparison, also
 return exactly two maintainability entries, one in each direction, using
-`{from:"A",to:"B",score:4,reason:"Evidence from the document changes."}` and its
+`{from:"A",to:"B",score:8,reason:"Evidence from the document changes."}` and its
 reverse. Judge each direction independently. For one label leave the array empty.
 
 For a runs packet, return only JSON of this shape:
@@ -70,12 +78,12 @@ For a runs packet, return only JSON of this shape:
     "prompts":0,
     "countEvidence":"Transcript locations supporting counts, including zero counts.",
     "subjective":{
-      "organization":{"score":5,"reason":"Evidence."},
-      "insights":{"score":3,"reason":"Evidence."},
-      "traceability":{"score":5,"reason":"Evidence."},
-      "readability":{"score":4,"reason":"Evidence."},
-      "responses":{"score":5,"reason":"Evidence."},
-      "followability":{"score":4,"reason":"Evidence."}
+      "organization":{"score":10,"reason":"Evidence."},
+      "insights":{"score":6,"reason":"Evidence."},
+      "traceability":{"score":10,"reason":"Evidence."},
+      "readability":{"score":8,"reason":"Evidence."},
+      "responses":{"score":10,"reason":"Evidence."},
+      "followability":{"score":8,"reason":"Evidence."}
     }
   }]
 }

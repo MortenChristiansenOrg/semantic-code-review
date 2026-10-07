@@ -66,7 +66,7 @@ retain two or three independently reviewed examples and check for grader drift;
 never tune the rubric after seeing which variant won. Grader disagreement makes a
 subjective comparison inconclusive until reviewed, not a reason to cherry-pick.
 
-| Metric | 1 | 3 | 5 |
+| Metric | 1 | 6 | 10 |
 | --- | --- | --- | --- |
 | `clarity` (per document) | Purpose or steps are ambiguous or depend on unstated context. | Usable, but conditions/order/terms require inference. | Purpose, preconditions, steps and outputs are clear. |
 | `maintainability` (candidate diff) | Adds duplication or unrelated special cases. | Neutral. | Removes duplication/ambiguity with a focused change. |
@@ -77,7 +77,33 @@ subjective comparison inconclusive until reviewed, not a reason to cherry-pick.
 | `responses` | Inaccurate, unsupported completion, or questions about mechanics. | Accurate but omits what changed or why. | Accurate, complete, concise; questions identify the product decision. |
 | `followability` | Instruction-caused wrong turns or substantial backtracking. | Minor hesitation or redundant reads. | Direct use of the prescribed path. |
 
-Intermediate 2/4 scores are allowed. Traceability must respect the installed schema:
+Subjective scores are integer **1–10**, with these shared levels. Apply the metric's
+anchors above to judge the specific dimension; do not add points for length,
+record count, or unsupported detail.
+
+| Level | Meaning |
+| --- | --- |
+| 1 | Unusable or severely harmful on the measured dimension. |
+| 2 | Slightly better than 1; pervasive defects remain. |
+| 3 | Substantial defects; using or reviewing the result requires major inference or repair. |
+| 4 | Significant defects, but some parts are useful. |
+| 5 | Mostly usable; noticeable gaps or friction remain. |
+| 6 | Usable middle anchor in the table; neutral for maintainability. |
+| 7 | Better than the middle anchor; a few concrete weaknesses remain. |
+| 8 | Strong result with minor gaps or friction. |
+| 9 | Almost fully satisfies the high anchor; one small, evidenced weakness remains. |
+| 10 | Fully satisfies the high anchor with no observed deficiency in the supplied evidence. |
+
+For maintainability, scores below neutral 6 indicate harm, with lower scores meaning
+more harm; scores above 6 indicate benefit, with higher scores meaning more benefit.
+Interpolate between anchors using cited observations;
+a 10 means the available evidence meets the anchor, not a guarantee of perfection.
+Use null for inapplicability; never encode null as zero. Pin this scale with the
+rubric before launching either variant. Historical 1–5 grades retain their original
+scale: do not double, relabel or pool them with new grades. A regrade requires fresh
+budgeted contexts with preserved original evidence.
+
+Traceability must respect the installed schema:
 when criterion references exist only on stages, do not demand an unsupported node
 field or force one stage per criterion. Inspect stage scope and node descriptions.
 
@@ -88,7 +114,7 @@ Fail the policy check for evidenced substantive omissions or filler, and grade
 applicable records normally. Synthetic calibration covers both routine work with
 no insights and an omitted significant observation.
 
-**Consistency is a findings list, not a global 1–5 minimum.** Cite both sides of a
+**Consistency is a findings list, not a global numerical minimum.** Cite both sides of a
 conflict, affected files/workflows, and whether it caused an observed problem:
 
 - `minor`: terminology drift or duplication with one clear interpretation.
@@ -117,10 +143,17 @@ A measurable change requires one of:
 - Median tools/tokens/time changes >10%, with non-overlapping interquartile ranges
   (linear interpolation, percentile position `(n-1)*p`). Compare matched successful
   runs with equivalent acceptance coverage; skipped work is never an efficiency win.
-- Median subjective score changes by at least one point with cited evidence. A static
+- Median subjective score changes by at least two points on the 1–10 scale with
+  cited evidence. This retains roughly the former one-point resolution;
+  smaller changes are observations, not demonstrated improvement. A static
   clarity improvement alone requires independent review of the changed documents.
 - Byte size changes, measured exactly. A resolved consistency finding is an instruction
   improvement only after independent confirmation; no severity arithmetic.
+
+For an objective-focused improvement, review subjective drops even below the
+two-point threshold. That threshold identifies measurable score changes; it does
+not make evidenced degradation neutral. Resolve lower scores against their cited
+evidence before claiming that subjective quality was preserved.
 
 Apply in this order:
 

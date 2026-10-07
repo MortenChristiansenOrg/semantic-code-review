@@ -3,15 +3,16 @@ const string = { type: 'string', minLength: 1 };
 const integer = (minimum, maximum) => ({ type: 'integer', minimum, ...(maximum === undefined ? {} : { maximum }) });
 const choice = values => ({ type: 'string', enum: values });
 const array = items => ({ type: 'array', items });
-const score = object({ score: { anyOf: [integer(1, 5), { type: 'null' }] }, reason: string });
+export const subjectiveScale = Object.freeze({ minimum: 1, maximum: 10, neutral: 6, version: 'ten-level-v1' });
+const score = object({ score: { anyOf: [integer(1, subjectiveScale.maximum), { type: 'null' }] }, reason: string });
 
 export function gradeSchema(packet) {
-  const calibration = object({ mechanicsStop: integer(0, 5), productQuestion: integer(0, 5), stageOnlyTraceability: integer(0, 5), routineInsightPolicy: { type: 'boolean' }, missingSignificantInsightPolicy: { type: 'boolean' } });
+  const calibration = object({ mechanicsStop: integer(0), productQuestion: integer(0), stageOnlyTraceability: integer(1, subjectiveScale.maximum), ambiguousClarity: integer(1, subjectiveScale.maximum), neutralMaintainability: integer(1, subjectiveScale.maximum), routineInsightPolicy: { type: 'boolean' }, missingSignificantInsightPolicy: { type: 'boolean' } });
   if (packet.kind === 'instructions') return object({
     calibration,
-    documents: array(object({ label: choice(packet.labels), path: choice([...new Set(packet.documents.map(d => d.path))]), clarity: integer(1, 5), reason: string })),
+    documents: array(object({ label: choice(packet.labels), path: choice([...new Set(packet.documents.map(d => d.path))]), clarity: integer(1, subjectiveScale.maximum), reason: string })),
     consistency: array(object({ label: choice(packet.labels), findings: array(object({ severity: choice(['minor', 'material', 'blocking']), files: array(string), explanation: string })) })),
-    maintainability: { ...array(object({ from: choice(packet.labels), to: choice(packet.labels), score: integer(1, 5), reason: string })), ...(packet.labels.length === 1 ? { maxItems: 0 } : {}) },
+    maintainability: { ...array(object({ from: choice(packet.labels), to: choice(packet.labels), score: integer(1, subjectiveScale.maximum), reason: string })), ...(packet.labels.length === 1 ? { maxItems: 0 } : {}) },
   });
   return object({ calibration, runs: array({ anyOf: packet.runs.map(run => object({
     id: choice([run.id]),

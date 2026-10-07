@@ -16,7 +16,7 @@ import { sandboxProbeCommand } from '../evaluations/refinement/preflight.mjs';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), skill = path.join(source, 'skills/semantic-flow');
 const sample = () => readJson(path.join(source, '.agents/skills/refine-semantic-flow/assets/baseline.json'));
-const calibration = { mechanicsStop: 1, productQuestion: 0, stageOnlyTraceability: 5, routineInsightPolicy: true, missingSignificantInsightPolicy: false };
+const calibration = { mechanicsStop: 1, productQuestion: 0, stageOnlyTraceability: 10, ambiguousClarity: 3, neutralMaintainability: 6, routineInsightPolicy: true, missingSignificantInsightPolicy: false };
 function temp(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'refinement tests ')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
 function fixture(t, scenario) { const root = temp(t), env = environment(root); return { root, env, fixture: prepareFixture(root, skill, scenario, env) }; }
 
@@ -147,7 +147,7 @@ test('full harness lifecycle with scripted models: budget, resume, verification,
 let prompt=''; for await (const part of process.stdin) prompt+=part;
 let result='The implementation has two finalized stages: notifications and delivery-docs.';
 if(fs.existsSync(path.join(process.cwd(),'packet.json'))){
- const packet=JSON.parse(fs.readFileSync('packet.json')); result=JSON.stringify({calibration:{mechanicsStop:1,productQuestion:0,stageOnlyTraceability:5,routineInsightPolicy:true,missingSignificantInsightPolicy:false},runs:packet.runs.map(r=>({id:r.id,checks:r.transcriptChecks.map(id=>({id,passed:true,evidence:'Scripted fixture check'})),violations:[],cliRejected:0,cliUnrecovered:0,prompts:0,countEvidence:'Scripted harness transcript',subjective:Object.fromEntries(['organization','insights','traceability','readability','responses','followability'].map(k=>[k,{score:null,reason:'Harness double, no behavioral grading'}]))}))});
+ const packet=JSON.parse(fs.readFileSync('packet.json')); result=JSON.stringify({calibration:{mechanicsStop:1,productQuestion:0,stageOnlyTraceability:10,ambiguousClarity:3,neutralMaintainability:6,routineInsightPolicy:true,missingSignificantInsightPolicy:false},runs:packet.runs.map(r=>({id:r.id,checks:r.transcriptChecks.map(id=>({id,passed:true,evidence:'Scripted fixture check'})),violations:[],cliRejected:0,cliUnrecovered:0,prompts:0,countEvidence:'Scripted harness transcript',subjective:Object.fromEntries(['organization','insights','traceability','readability','responses','followability'].map(k=>[k,{score:null,reason:'Harness double, no behavioral grading'}]))}))});
 }
 console.log(JSON.stringify({type:'turn.started'}));
 console.log(JSON.stringify({type:'item.completed',item:{id:'answer',type:'agent_message',text:result}}));
@@ -164,10 +164,20 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:100,cached
   await grade(directory);
   const packet = readJson(path.join(session.workspace, 'graders/grade-runs-1/packet.json'));
   assert.deepEqual(packet.runs[0].rules.transcriptCriteria, scenarios.status.transcriptCriteria);
+  assert.deepEqual(packet.scoreScale, session.rubric.subjectiveScale);
+  assert.equal(session.rubric.subjectiveScale.maximum, 10);
   const rows = report(directory); assert.equal(rows[0].success, 1); assert.equal(rows[0].state, 'scored');
   assert.deepEqual(rows[0].tokens, { input: 70, cachedInput: 30, output: 10 });
   assert.match(fs.readFileSync(path.join(directory, 'report.md'), 'utf8'), /Uncached input/);
+  assert.match(fs.readFileSync(path.join(directory, 'report.md'), 'utf8'), /Scores are 1–10/);
   const rawGrade = fs.readFileSync(path.join(directory, 'runs/grade-runs-1/grades.json'), 'utf8');
+  // Legacy metadata must retain its historical scale when reporting, without regrading.
+  const legacySession = structuredClone(session); delete legacySession.rubric.subjectiveScale;
+  writeJson(path.join(directory, 'session.json'), legacySession);
+  report(directory);
+  assert.match(fs.readFileSync(path.join(directory, 'report.md'), 'utf8'), /Scores are 1–5/);
+  assert.equal(fs.readFileSync(path.join(directory, 'runs/grade-runs-1/grades.json'), 'utf8'), rawGrade);
+  writeJson(path.join(directory, 'session.json'), session);
   invalidate(directory, session.plan.jobs[0].id, 'Observed infrastructure workaround; exclude this evidence.');
   assert.equal(collectResults(directory)[0].state, 'invalid'); assert.equal(collectResults(directory)[0].success, null);
   assert.equal(collectResults(directory)[0].fixedChecksPassed, true);
@@ -193,6 +203,54 @@ test('generated grader schema rejects the live-trial mistakes before coverage va
   const omitted = structuredClone(valid); delete omitted.runs[0].countEvidence; assert.equal(check(omitted), false);
   const instructionCheck = new Ajv().compile(gradeSchema({ kind: 'instructions', labels: ['A'], documents: [{ label: 'A', path: 'SKILL.md' }] }));
   assert.equal(instructionCheck({ calibration, documents: [{ label: 'A', path: 'SKILL.md', clarity: 5, reason: 'Clear' }], consistency: [{ label: 'A', findings: [] }], maintainability: [] }), true);
+});
+
+test('ten-level subjective scores agree across schema and runtime without bounding objective counts', () => {
+  const packet = { kind: 'runs', runs: [{ id: 'run-1', transcriptChecks: ['acceptance'] }] };
+  const check = new Ajv().compile(gradeSchema(packet));
+  const answer = { calibration, runs: [{ id: 'run-1', checks: [{ id: 'acceptance', passed: true, evidence: 'Item 1' }], violations: [], cliRejected: 21, cliUnrecovered: 20, prompts: 12, countEvidence: 'Counted transcript invocations and stops', subjective: Object.fromEntries(['organization', 'insights', 'traceability', 'readability', 'responses', 'followability'].map(k => [k, { score: null, reason: 'Not applicable' }])) }] };
+  for (const score of [null, ...Array.from({ length: 10 }, (_, i) => i + 1)]) {
+    for (const metric of Object.values(answer.runs[0].subjective)) metric.score = score;
+    assert.equal(check(answer), true, JSON.stringify(check.errors));
+    assert.doesNotThrow(() => validateGrades(answer, packet));
+  }
+  for (const score of [0, 11, 5.5]) {
+    answer.runs[0].subjective.organization.score = score;
+    assert.equal(check(answer), false);
+    assert.throws(() => validateGrades(answer, packet), /organization/);
+  }
+  for (const [anchor, wrong] of [['stageOnlyTraceability', 5], ['ambiguousClarity', 6], ['neutralMaintainability', 5]]) {
+    const miscalibrated = structuredClone(answer); miscalibrated.calibration[anchor] = wrong;
+    assert.throws(() => validateGrades(miscalibrated, packet), /calibration mismatch/);
+  }
+
+  const instructions = { kind: 'instructions', labels: ['A', 'B'], documents: [{ label: 'A', path: 'SKILL.md' }, { label: 'B', path: 'SKILL.md' }] };
+  const instructionCheck = new Ajv().compile(gradeSchema(instructions));
+  const grade = { calibration, documents: instructions.documents.map(d => ({ ...d, clarity: 10, reason: 'Fully satisfies the anchor' })), consistency: instructions.labels.map(label => ({ label, findings: [] })), maintainability: [{ from: 'A', to: 'B', score: 6, reason: 'Neutral' }, { from: 'B', to: 'A', score: 6, reason: 'Neutral' }] };
+  for (const score of Array.from({ length: 10 }, (_, i) => i + 1)) {
+    for (const document of grade.documents) document.clarity = score;
+    for (const direction of grade.maintainability) direction.score = score;
+    assert.equal(instructionCheck(grade), true, JSON.stringify(instructionCheck.errors));
+    assert.doesNotThrow(() => validateGrades(grade, instructions));
+  }
+  for (const score of [0, 11, 5.5]) {
+    grade.documents[0].clarity = score;
+    assert.equal(instructionCheck(grade), false);
+    assert.throws(() => validateGrades(grade, instructions), /clarity/);
+    grade.documents[0].clarity = 10; grade.maintainability[0].score = score;
+    assert.equal(instructionCheck(grade), false);
+    assert.throws(() => validateGrades(grade, instructions), /maintainability/);
+    grade.maintainability[0].score = 6;
+  }
+});
+
+test('Codex and Claude discover the same refinement skill and supporting resources', () => {
+  const codex = path.join(source, '.agents/skills/refine-semantic-flow');
+  const claude = path.join(source, '.claude/skills/refine-semantic-flow');
+  assert.equal(fs.realpathSync(claude), fs.realpathSync(codex));
+  for (const resource of ['SKILL.md', 'references/harness.md', 'references/metrics.md', 'assets/baseline.json']) {
+    assert.equal(fs.realpathSync(path.join(claude, resource)), fs.realpathSync(path.join(codex, resource)));
+  }
 });
 
 test('sandbox preflight reproduces the declared network and Git permissions without silently broadening them', () => {
