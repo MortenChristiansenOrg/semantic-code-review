@@ -1,7 +1,14 @@
 # Review command
 
-Use to open the local semantic review viewer. This command is read-only with
-respect to implementation artifacts and implementation branches.
+Use to open the local semantic review viewer. Without `-i`, this command is
+read-only with respect to implementation artifacts and implementation branches.
+
+## Interactive review
+
+`/semantic-flow review -i` (or `--interactive`) opens the viewer and keeps the
+agent listening for feedback until the review ends. Read
+`../docs/interactive-review.md` completely and follow it. It applies only to
+local implementations, not to `--branch` reviews.
 
 `<semantic-flow>` means `node <installed-skill-root>/scripts/semantic-flow.mjs`.
 Quote the script path. Launch:
@@ -21,7 +28,8 @@ or terminal command completes.
 The viewer renders stages, change nodes, project-grouped files, linked insights,
 full-context diffs, and feedback threads. A user can add and edit draft notes
 before sending. Sent notes become open threads; agent follow-ups appear in
-the same thread after the feedback workflow runs. It refreshes changed artifacts and feedback in place, retaining drafts and
+the same thread after the feedback workflow runs. The viewer shows whether an
+agent is listening and offers `/semantic-flow review -i` when none is. It refreshes changed artifacts and feedback in place, retaining drafts and
 unchanged diffs. A matching healthy viewer is reused when reopening review.
 Large files load in pages; full context remains available on demand.
 

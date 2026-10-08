@@ -33,7 +33,10 @@ import {
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
-import { feedbackDirectory, listReviews } from "./shared/review-store.js";
+import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } from "./shared/review-store.js";
+import { claimActive, claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, releaseClaims, sendInProgress, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
+import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { withCheckedFeedback } from "./review-feedback.js";
 import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
 
@@ -770,7 +773,7 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
   };
 }
 
-function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null) {
+function validateArtifactForFeedback(candidate: ArtifactCandidate) {
   const artifactValidation = executeCapture(
     process.execPath,
     [semanticImplementationScript, "validate"],
@@ -780,6 +783,11 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
+}
+
+/** Claiming marks the returned threads as one round so no other run answers them. */
+function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
+  validateArtifactForFeedback(candidate);
 
   const worktreeStatus =
     git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
@@ -797,10 +805,13 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
     );
   }
   let stages: PendingFeedbackStage[] = [];
+  let claimId: string | null = null;
+  let claimedElsewhere = 0;
   if (candidate.feedbackExists) {
     const pending = executeCaptureStreams(
       process.execPath,
-      [reviewFeedbackScript, "next", "--json", "--compact"],
+      [reviewFeedbackScript, "next", "--json", "--compact",
+        ...(claim ? ["--claim", ...(claim.session ? ["--session", claim.session] : [])] : [])],
       candidate.worktree,
     );
     if (!pending.passed) {
@@ -812,11 +823,16 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
     }
     if (pending.stderr) console.error(pending.stderr);
     try {
-      stages = JSON.parse(pending.stdout);
+      const parsed = JSON.parse(pending.stdout);
+      if (claim) ({ stages, claim: claimId, claimedElsewhere } = parsed);
+      else stages = parsed;
     } catch {
       fail("Feedback command returned invalid JSON.");
     }
   }
+  const responses = claim && candidate.feedbackExists
+    ? updateAgentState(reviewId(candidate.worktree, candidate.implementationId), (state) => takeResponses(state, claim.session))
+    : [];
   if (targetRestack) {
     const replayed = new Set(targetRestack.replayedThreadIds);
     stages = stages.map((stage) => ({
@@ -835,12 +851,94 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
     targetRestack,
     feedbackExists: candidate.feedbackExists,
     stages,
+    ...(claim ? { claim: claimId, claimedElsewhere, responses } : {}),
   };
 }
 
-function feedback(options: Options): void {
+const DEFAULT_WAIT_SECONDS = 540;
+const WAIT_POLL_MS = 1000;
+const HEARTBEAT_MS = 5000;
+
+/** Pending feedback that no running round has claimed. Caller holds the review lock. */
+function unclaimedFeedbackWaiting(candidate: ArtifactCandidate, claimed: Set<string>): boolean {
+  const directory = feedbackDirectory(candidate.worktree, candidate.implementationId);
+  const manifest = path.join(directory, "manifest.json");
+  if (!fs.existsSync(manifest)) return false;
+  return (readJson(manifest).threads ?? []).some((id: string) =>
+    !claimed.has(id) && awaitsAgentReply(readJson(path.join(directory, "threads", `${id}.json`))));
+}
+
+/** Listens as the review's agent until a round, an answer, a stop, or the timeout. */
+async function waitForFeedback(options: Options): Promise<void> {
+  if (!flag(options, "json")) fail("--wait requires --json.");
+  const timeout = option(options, "timeout");
+  const seconds = timeout === undefined ? DEFAULT_WAIT_SECONDS : Number(timeout);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 86_400) fail("--timeout must be a whole number of seconds from 1 to 86400.");
+  const requested = option(options, "session");
+  const candidate = resolveSingle(options, "feedback");
+  const review = reviewId(candidate.worktree, candidate.implementationId);
+  registerReview(candidate.worktree, candidate.implementationId, candidate.title);
+  const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
+  // Continuing a session first checks the round just completed.
+  if (requested) {
+    validateArtifactForFeedback(candidate);
+    if (candidate.feedbackExists) {
+      const feedbackValidation = executeCapture(process.execPath, [reviewFeedbackScript, "validate"], candidate.worktree);
+      if (!feedbackValidation.passed) {
+        if (feedbackValidation.output) console.error(feedbackValidation.output);
+        fail("Feedback validation failed.");
+      }
+    }
+  }
+  const start = updateAgentState(review, (state, now) => {
+    if (!requested) return { session: startSession(state, now).id };
+    const session = liveSession(state);
+    if (session?.id === requested) {
+      session.heartbeatAt = new Date(now).toISOString();
+      return { session: session.id };
+    }
+    return { stopped: state.session?.id === requested ? state.session.endReason || "stopped" : "superseded" };
+  });
+  if (!start.session) { print({ session: requested, stopped: true, reason: start.stopped }); return; }
+  const session = start.session;
+  const deadline = Date.now() + seconds * 1000;
+  let heartbeat = Date.now();
+  while (true) {
+    const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean } => {
+      const live = liveSession(state);
+      if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
+      if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
+      const reason = live.stopRequestedAt ? "stopped" : readReview(review).completedAt ? "completed"
+        : now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS ? "idle" : null;
+      if (reason) { endSession(state, now, reason); return { stop: reason }; }
+      const responses = takeResponses(state, session);
+      if (responses.length) return { responses };
+      if (state.claims.some((claim) => claim.sessionId === session && claimActive(claim, now))) {
+        // A round waiting for the reviewer's answer keeps its threads.
+        if (state.requests.some((request) => request.sessionId === session && !request.response)) return {};
+        releaseClaims(state, session); // Threads left unanswered return to the queue.
+      }
+      if (sendInProgress(state, now)) return {};
+      return { pending: unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now)) };
+    });
+    if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
+    if (step.responses) { print({ session, responses: step.responses }); return; }
+    if (step.pending) {
+      const { candidate: current, targetRestack } = refreshAdvancedTarget(resolveSingle(options, "feedback"));
+      const result = feedbackSnapshot(current, targetRestack, { session });
+      if (result.stages.length || (result.responses as unknown[]).length) { print({ ...result, session }); return; }
+      // Another run claimed the threads first; keep listening.
+    }
+    if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
+    await delay(WAIT_POLL_MS);
+  }
+}
+
+async function feedback(options: Options): Promise<void> {
+  if (flag(options, "wait")) return waitForFeedback(options);
+  if (options.has("session") || options.has("timeout")) fail("--session and --timeout require --wait.");
   const { candidate, targetRestack } = refreshAdvancedTarget(resolveSingle(options, "feedback"));
-  const result = feedbackSnapshot(candidate, targetRestack);
+  const result = feedbackSnapshot(candidate, targetRestack, { session: null });
   const { worktreeChanges, stages } = result;
   if (flag(options, "json")) {
     console.log(JSON.stringify(result));
@@ -860,6 +958,10 @@ function feedback(options: Options): void {
     console.log("No feedback has been sent.");
     return;
   }
+  for (const response of result.responses as Array<{ id: string; question: string; answer: string }>) {
+    console.log(`Reviewer answered ${response.id}: ${response.answer}`);
+  }
+  if (result.claimedElsewhere) console.log(`${result.claimedElsewhere} thread(s) are being answered by another agent run.`);
   if (!stages.length) {
     console.log("No feedback awaits an agent reply.");
     return;
@@ -1441,7 +1543,7 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
     return;
   }
   if (command === "feedback") {
-    feedback(options);
+    await feedback(options);
     return;
   }
   if (command === "sync") {

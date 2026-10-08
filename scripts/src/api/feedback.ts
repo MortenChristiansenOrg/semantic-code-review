@@ -75,10 +75,16 @@ export interface NextFeedbackOptions {
   json?: true;
   /** Omits repeated metadata and reports stale and automatic re-anchoring status. Requires `json`. */
   compact?: true;
+  /** Claims the returned threads for one round, skipping threads another round is answering. Emits `{claim, claimedElsewhere, stages}`. Requires `json`. */
+  claim?: true;
+  /** Interactive review session that owns the claim. Requires `claim`. */
+  session?: string;
 }
 
 /**
  * Lists open feedback threads awaiting an agent reply, grouped by stage.
+ * A thread awaits a reply while a user comment follows the comment its latest
+ * agent reply answered.
  * @cli review-feedback.mjs
  * @command next
  */
@@ -99,7 +105,8 @@ export interface ReplyFeedbackThreadOptions {
 
 /**
  * Appends a comment to an open thread. Replying to a resolved thread reopens
- * it — closing a conversation is always the reviewer's decision.
+ * it — closing a conversation is always the reviewer's decision. An agent reply
+ * records the user comment it answers; comments added while its round ran stay queued.
  * @cli review-feedback.mjs
  * @command thread reply
  */
@@ -192,3 +199,26 @@ export interface ShowAttachmentOptions {
  * @command attachment show
  */
 export declare function showAttachment(options: ShowAttachmentOptions): void;
+
+export interface AskReviewerOptions {
+  /** Stable request identifier; repeating identical content is a no-op. */
+  id: string;
+  /** Plain-language question about a problem that is not about one feedback thread. */
+  body: string;
+  /** Optional answer the reviewer can pick; repeat for up to six choices. The reviewer can always write a different answer. */
+  choice?: string[];
+}
+/** Shows a question in the viewer. The answer is returned in `responses` by the next `semantic-flow feedback` call.
+ * @cli review-feedback.mjs
+ * @command agent ask
+ */
+export declare function askReviewer(options: AskReviewerOptions): void;
+export interface ReportAgentProgressOptions {
+  /** Short description of the running round's current work, shown in the viewer. */
+  body: string;
+}
+/** Updates the progress note of the feedback round in progress.
+ * @cli review-feedback.mjs
+ * @command agent progress
+ */
+export declare function reportAgentProgress(options: ReportAgentProgressOptions): void;

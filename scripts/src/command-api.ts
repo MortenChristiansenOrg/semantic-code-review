@@ -224,7 +224,7 @@ export const reviewFeedbackApi: CliSignature = {
     },
     {
       command: "next",
-      options: [option("json"), option("compact")],
+      options: [option("json"), option("compact"), option("claim"), option("session", "<session-id>")],
     },
     {
       command: "thread reply",
@@ -256,6 +256,15 @@ export const reviewFeedbackApi: CliSignature = {
       command: "validate",
       options: [option("require-resolved")],
     },
+    {
+      command: "agent ask",
+      options: [
+        option("id", "<request-id>", { required: true }),
+        option("body", "<text>", { required: true }),
+        option("choice", "<text>", { repeatable: true }),
+      ],
+    },
+    { command: "agent progress", options: [option("body", "<text>", { required: true })] },
   ],
 };
 
@@ -295,7 +304,7 @@ export const semanticFlowApi: CliSignature = {
     },
     {
       command: "feedback",
-      options: [...projectSelectionOptions, option("json")],
+      options: [...projectSelectionOptions, option("json"), option("wait"), option("session", "<session-id>"), option("timeout", "<seconds>")],
     },
     {
       command: "sync",

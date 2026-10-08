@@ -28,6 +28,8 @@ import { fail } from "./shared/errors.js";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { listJsonFiles, readJson, writeJson } from "./shared/json.js";
+import { reviewId, withReviewLock } from "./shared/review-store.js";
+import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const MANIFEST_SCHEMA =
   "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json";
@@ -1975,6 +1977,16 @@ function updateRefsAtomically(root, updates) {
   );
 }
 
+/** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
+function withArtifactLock<T>(paths, implementationId: string, write: () => T): T {
+  const review = reviewId(paths.root, implementationId);
+  return withReviewLock(review, () => {
+    const result = write();
+    updateAgentState(review, touchAgent);
+    return result;
+  });
+}
+
 function restack(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
   const json = flag(options, "json");
@@ -2111,45 +2123,45 @@ function restack(paths, options) {
         `Target branch ${artifact.manifest.targetBranch} moved during restacking; retry from its new head.`,
       );
     }
-    updateRefsAtomically(paths.root, refUpdates);
+    // Diff outside the lock; readers take it, so the viewer never sees a partly restacked stack.
+    const changes = new Map(plans.map((plan) => [plan.id, changedFiles(paths.root, plan.baseRevision, plan.nextHead)]));
+    withArtifactLock(paths, artifact.manifest.implementationId, () => {
+      updateRefsAtomically(paths.root, refUpdates);
 
-    const oldManifest = structuredClone(artifact.manifest);
-    const backups = new Map(
-      plans.map(({ file, stage }) => [file, structuredClone(stage)]),
-    );
-    artifact.manifest.baseRevision = newBase;
-    try {
-      for (const plan of plans) {
-        plan.stage.change = {
-          branch: plan.branch,
-          baseBranch: plan.baseBranch,
-          baseRevision: plan.baseRevision,
-          headRevision: plan.nextHead,
-          files: changedFiles(
-            paths.root,
-            plan.baseRevision,
-            plan.nextHead,
-          ),
-        };
-        writeJson(plan.file, plan.stage);
-      }
-      writeJson(paths.manifest, artifact.manifest);
-      validateArtifact(paths, { quiet: true, validateGit: false });
-    } catch (error) {
-      updateRefsAtomically(
-        paths.root,
-        refUpdates.map(({ branch, previous, next }) => ({
-          branch,
-          previous: next,
-          next: previous,
-        })),
+      const oldManifest = structuredClone(artifact.manifest);
+      const backups = new Map(
+        plans.map(({ file, stage }) => [file, structuredClone(stage)]),
       );
-      for (const [file, value] of backups) {
-        writeJson(file, value);
+      artifact.manifest.baseRevision = newBase;
+      try {
+        for (const plan of plans) {
+          plan.stage.change = {
+            branch: plan.branch,
+            baseBranch: plan.baseBranch,
+            baseRevision: plan.baseRevision,
+            headRevision: plan.nextHead,
+            files: changes.get(plan.id),
+          };
+          writeJson(plan.file, plan.stage);
+        }
+        writeJson(paths.manifest, artifact.manifest);
+        validateArtifact(paths, { quiet: true, validateGit: false });
+      } catch (error) {
+        updateRefsAtomically(
+          paths.root,
+          refUpdates.map(({ branch, previous, next }) => ({
+            branch,
+            previous: next,
+            next: previous,
+          })),
+        );
+        for (const [file, value] of backups) {
+          writeJson(file, value);
+        }
+        writeJson(paths.manifest, oldManifest);
+        throw error;
       }
-      writeJson(paths.manifest, oldManifest);
-      throw error;
-    }
+    });
 
     if (json) {
       console.log(

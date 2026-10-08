@@ -28,6 +28,8 @@ import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, re
 
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, releaseClaims, touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 function commentAttachments(paths, options) { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
 function commentInput(paths, options) {
@@ -366,6 +368,12 @@ function validateFeedback(
       if (commentIds.has(comment.id)) {
         fail(`Feedback thread ${id} repeats comment ID ${comment.id}.`);
       }
+      if (comment.respondsTo !== undefined) {
+        const answered = thread.comments.find((item) => item.id === comment.respondsTo);
+        if (comment.author !== "agent" || !commentIds.has(comment.respondsTo) || answered?.author !== "user") {
+          fail(`Feedback thread ${id} comment ${comment.id} must answer an earlier user comment.`);
+        }
+      }
       commentIds.add(comment.id);
       validateAttachmentReferences(paths.reviewId, comment.attachments);
     }
@@ -660,12 +668,23 @@ function nextFeedback(paths, options) {
   const json = flag(options, "json");
   const compact = flag(options, "compact");
   if (compact && !json) fail("--compact requires --json.");
+  const claim = flag(options, "claim");
+  const sessionId = option(options, "session") ?? null;
+  if (claim && !json) fail("--claim requires --json.");
+  if (sessionId && !claim) fail("--session requires --claim.");
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
-  const awaiting = [...feedback.threads.values()].filter(
-    (thread) =>
-      thread.status === "open" &&
-      thread.comments[thread.comments.length - 1]?.author !== "agent",
-  );
+  let awaiting = [...feedback.threads.values()].filter(awaitsAgentReply);
+  let claimedElsewhere = 0;
+  if (claim) {
+    // The caller holds the review lock, so this exclusion and the claim below are one step.
+    const state = readAgentState(paths.reviewId);
+    if (sessionId && liveSession(state)?.id !== sessionId) fail("This interactive review session was replaced or stopped.");
+    // A standalone run replaces earlier standalone runs; interactive sessions keep theirs.
+    if (!sessionId) releaseClaims(state, null);
+    const taken = claimedThreadIds(state, Date.now());
+    claimedElsewhere = awaiting.filter((thread) => taken.has(thread.id)).length;
+    awaiting = awaiting.filter((thread) => !taken.has(thread.id));
+  }
   const reanchored = new Set();
   const originals = new Map();
   for (const thread of awaiting) {
@@ -707,6 +726,8 @@ function nextFeedback(paths, options) {
           ? {
               stageId,
               stageBranch: stage.change.branch,
+              stageBase: stage.change.baseRevision,
+              stageHead: stage.change.headRevision,
               threads: threads.map((thread) => {
                 const {
                   stageBranch: _targetBranch,
@@ -744,6 +765,15 @@ function nextFeedback(paths, options) {
             },
       );
     }
+  }
+  if (claim) {
+    const claimed = groups.flatMap((group) => group.threads.map((thread) => thread.id));
+    const claimId = updateAgentState(paths.reviewId, (state, now) => {
+      if (!sessionId) releaseClaims(state, null);
+      return createClaim(state, now, sessionId, claimed.map((id) => ({ id, through: latestUserCommentId(feedback.threads.get(id))! })));
+    });
+    console.log(JSON.stringify({ claim: claimId, claimedElsewhere, stages: groups }, null, compact ? undefined : 2));
+    return;
   }
   if (json) {
     console.log(JSON.stringify(groups, null, compact ? undefined : 2));
@@ -790,11 +820,16 @@ function applyReply(paths, options, feedback) {
   if (!["user", "agent"].includes(author)) {
     fail("--author must be user or agent.");
   }
+  // An agent reply answers what its round claimed; comments added meanwhile stay queued.
+  const respondsTo = author === "agent"
+    ? claimedThrough(readAgentState(paths.reviewId), Date.now(), id) ?? latestUserCommentId(thread)
+    : undefined;
   thread.comments.push({
     id: commentId,
     author,
     ...commentInput(paths, options),
     createdAt: new Date().toISOString(),
+    ...(respondsTo ? { respondsTo } : {}),
   });
   if (thread.status === "resolved") {
     thread.status = "open";
@@ -823,6 +858,7 @@ function replyThreads(paths, optionSets: Options[]) {
     for (const [id, thread] of originals) writeThread(paths, thread);
     throw error;
   }
+  recordReplies(paths, optionSets.filter((options) => option(options, "author") === "agent").map((options) => option(options, "id")));
   return replies;
 }
 
@@ -886,6 +922,7 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
   const knownIds = new Set<string>(feedback.threads.keys());
   const accepted = [];
   const rejected = [];
+  const agentReplies: string[] = [];
   for (const [index, value] of values.entries()) {
     let id;
     let before;
@@ -916,6 +953,7 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
       } else {
         const reply = applyReply(paths, options, feedback);
         validateDocument(ajv, reply.thread, "Feedback reply input");
+        if (option(options, "author") === "agent") agentReplies.push(id);
       }
       changed.add(id);
       accepted.push({ index, id, commentId: option(options, "comment-id") });
@@ -941,8 +979,42 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
       if (mode === "add") writeJson(paths.feedbackManifest, originalManifest);
       throw error;
     }
+    recordReplies(paths, agentReplies.filter((id) => changed.has(id)));
   }
   return { accepted, rejected };
+}
+
+function recordReplies(paths, threadIds: string[]) {
+  if (threadIds.length) updateAgentState(paths.reviewId, (state, now) => recordAgentReplies(state, now, threadIds));
+}
+
+const ID_PATTERN = /^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** Shows a question that is not about one thread in the viewer; its answer returns through `feedback`. */
+function askReviewer(paths, options) {
+  const id = option(options, "id", { required: true })!;
+  if (id.length > 80 || !ID_PATTERN.test(id)) fail("--id must be a lowercase hyphenated identifier of at most 80 characters.");
+  const body = (option(options, "body", { required: true }) || "").trim();
+  if (!body || body.length > 4000) fail("--body must contain 1 to 4000 characters.");
+  const choices = repeatedOption(options, "choice").map((choice) => choice.trim());
+  if (choices.length > 6 || choices.some((choice) => !choice || choice.length > 200)) fail("Use at most six nonblank --choice values of up to 200 characters.");
+  updateAgentState(paths.reviewId, (state, now) => addRequest(state, now, id, body, choices));
+  console.log(`Asked the reviewer in the viewer (${id}). The answer is returned by the next feedback command.`);
+}
+
+/** Describes the running round's current work in the viewer. */
+function reportProgress(paths, options) {
+  const body = (option(options, "body", { required: true }) || "").trim();
+  if (!body || body.length > 200) fail("--body must contain 1 to 200 characters.");
+  updateAgentState(paths.reviewId, (state, now) => {
+    const session = liveSession(state)?.id ?? null;
+    const claims = state.claims.filter((claim) => claimActive(claim, now));
+    const claim = claims.filter((item) => item.sessionId === session).at(-1) ?? claims.at(-1);
+    if (!claim) fail("No feedback round is in progress.");
+    claim.note = body;
+    touchAgent(state, now);
+  });
+  console.log("Updated the viewer's progress note.");
 }
 
 function resolveThread(paths, options) {
@@ -1037,6 +1109,8 @@ function dispatch(paths, positionals, options) {
   if (command === "thread" && subcommand === "resolve") {
     return resolveThread(paths, options);
   }
+  if (command === "agent" && subcommand === "ask") return askReviewer(paths, options);
+  if (command === "agent" && subcommand === "progress") return reportProgress(paths, options);
   if (command === "thread" && subcommand === "reopen") {
     return reopenThread(paths, options);
   }

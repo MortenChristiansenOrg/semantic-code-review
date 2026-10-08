@@ -39,6 +39,10 @@
           "type": "string",
           "format": "date-time"
         },
+        "respondsTo": {
+          "$ref": "#/$defs/id",
+          "description": "Agent replies only: the latest user comment this reply answers. Later user comments still await a reply."
+        },
         "attachments": {
           "type": "array",
           "maxItems": 10,

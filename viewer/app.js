@@ -47,11 +47,124 @@
   const approvalErrors = new Map();
   const markdownPreviews = new Map();
 
-  let observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
+  // Listening-agent status from the server; null until the first poll answers.
+  let agent = null;
+  let roundNotice = null;
+  let agentCommandCopied = false;
+  const agentAnswers = new Map();
+  const agentAnswerOps = new Map();
+  const AGENT_COMMAND = "/semantic-flow review -i";
+  const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
     if (!snapshot || typeof snapshot.revision !== "string") return;
-    observedAwaitingAgentReplies = Number(snapshot.awaitingAgentReplies) || 0;
+    adoptAgentStatus(snapshot.agent);
+  }
+  const agentMinutes = (status) => status?.working
+    ? Math.max(0, Math.floor((Date.parse(status.serverTime) - Date.parse(status.working.startedAt)) / 60000)) : 0;
+  const agentView = (status) => status && JSON.stringify({ ...status, serverTime: null, minutes: agentMinutes(status) });
+  function adoptAgentStatus(next) {
+    if (!next || typeof next !== "object" || data.remote) return;
+    const previous = agent;
+    agent = next;
+    if (previous && next.lastRound && next.lastRound.id !== previous.lastRound?.id) announceRound(next.lastRound);
+    if (agentView(previous) !== agentView(next)) render();
+  }
+  function announceRound(round) {
+    const count = round.threadIds.length;
+    roundNotice = { count, threadIds: round.threadIds };
+    refreshNotice = "";
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      const notice = new Notification("Agent replied", {
+        body: `${count} feedback thread${count === 1 ? "" : "s"} answered in ${data.title || data.implementationId}.`,
+        tag: `semantic-flow-${data.implementationId}`,
+      });
+      notice.onclick = () => { window.focus(); showUnreadReplies(); notice.close(); };
+    }
+  }
+  // Mirrors the CLI: a user comment after the latest answered comment awaits the agent.
+  function awaitsAgent(thread) {
+    if (thread.status !== "open") return false;
+    const comments = thread.comments || [];
+    let through = -1;
+    comments.forEach((comment, index) => {
+      if (comment.author !== "agent") return;
+      const answered = comment.respondsTo ? comments.findIndex((item) => item.id === comment.respondsTo) : index - 1;
+      through = Math.max(through, answered);
+    });
+    return comments.some((comment, index) => index > through && comment.author === "user");
+  }
+  const agentWorkingOn = (id) => Boolean(agent?.working?.threads.some((thread) => thread.id === id && !thread.answered));
+  const isUnreadReply = (comment) => comment.author === "agent" && !data.remote && !state.readReplies?.[comment.id];
+  const unreadReplyCount = () => artifactThreads.reduce((count, thread) => count + (thread.comments || []).filter(isUnreadReply).length, 0);
+  function threadAgentState(thread) {
+    if (data.remote || thread.status !== "open") return null;
+    if (agentWorkingOn(thread.id)) return "working";
+    if (awaitsAgent(thread)) return "queued";
+    if ((thread.comments || []).some(isUnreadReply)) return "new";
+    return (thread.comments || []).some((comment) => comment.author === "agent") ? "answered" : null;
+  }
+  function markRepliesRead(ids) {
+    const fresh = ids.filter((id) => !state.readReplies?.[id]);
+    if (!fresh.length) return;
+    state.readReplies = { ...(state.readReplies || {}), ...Object.fromEntries(fresh.map((id) => [id, true])) };
+    persist(); render();
+  }
+  // A reply counts as read once most of it has been on screen for a moment.
+  const readTimers = new Map();
+  const observedReplies = new WeakSet();
+  const replyObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const element = entry.target;
+      if (entry.intersectionRatio >= 0.6 && !document.hidden && element.classList.contains("is-unread")) {
+        if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => { readTimers.delete(element); markRepliesRead([element.dataset.commentId]); }, 1200));
+      } else { clearTimeout(readTimers.get(element)); readTimers.delete(element); }
+    }
+  }, { threshold: [0, 0.6] }) : null;
+  function observeUnreadReplies() {
+    if (!replyObserver) return;
+    app.querySelectorAll(".tmsg.is-unread").forEach((element) => {
+      if (!observedReplies.has(element)) { observedReplies.add(element); replyObserver.observe(element); }
+    });
+  }
+  function showUnreadReplies() {
+    roundNotice = null;
+    const thread = artifactThreads.find((item) => (item.comments || []).some(isUnreadReply))
+      || artifactThreads.find((item) => item.status === "open" && (item.comments || []).at(-1)?.author === "agent");
+    if (!thread) { render(); return; }
+    state.notesOpen = true; state.coverageOpen = false;
+    state.notesFilter = thread.status === "resolved" ? "resolved" : "active";
+    if (!state.threadCollapsed) state.threadCollapsed = {};
+    state.threadCollapsed[thread.id] = false;
+    persist(); render();
+    requestAnimationFrame(() => app.querySelector(`.side.notes .tthread[data-thread-id="${cssEsc(thread.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  }
+  async function stopAgent() {
+    try {
+      const response = await fetch("/api/agent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not stop the agent.");
+      adoptAgentStatus(result.agent);
+    } catch (error) { refreshNotice = error.message; render(); }
+  }
+  async function answerAgent(id, body) {
+    body = body.trim();
+    if (!body || agentAnswerOps.get(id)?.busy) return;
+    agentAnswers.set(id, body);
+    agentAnswerOps.set(id, { busy: true, error: "" }); render();
+    try {
+      const response = await fetch("/api/agent/respond", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: id, body }) });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || "Could not send the answer.");
+      agentAnswerOps.delete(id); agentAnswers.delete(id);
+      adoptAgentStatus(result.agent); render();
+    } catch (error) { agentAnswerOps.set(id, { busy: false, error: error.message }); render(); }
+  }
+  async function copyAgentCommand() {
+    try { await navigator.clipboard.writeText(AGENT_COMMAND); agentCommandCopied = true; }
+    catch { agentCommandCopied = false; refreshNotice = `Copy this command into your agent: ${AGENT_COMMAND}`; }
+    render();
+    setTimeout(() => { agentCommandCopied = false; render(); }, 2000);
   }
 
   let polling = false;
@@ -59,8 +172,12 @@
   let refreshingRemote = false;
   const draftSnapshots = new WeakMap();
 
+  let lastHiddenPoll = 0;
   async function pollViewerRevision() {
-    if (reviewDeleted || polling || document.hidden) return;
+    if (reviewDeleted || polling) return;
+    // Hidden tabs keep checking slowly while the agent owes replies, so the round can notify.
+    if (document.hidden && (!agent?.working || Date.now() - lastHiddenPoll < 5000)) return;
+    if (document.hidden) lastHiddenPoll = Date.now();
     polling = true;
     try {
       const response = await fetch("/api/revision", { cache: "no-store" });
@@ -70,7 +187,8 @@
         return;
       }
       const snapshot = await response.json();
-      if (!snapshot.ok || snapshot.revision === data.viewerRevision) return;
+      if (!snapshot.ok) return;
+      if (snapshot.revision === data.viewerRevision) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
@@ -80,7 +198,7 @@
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const selection = window.getSelection();
       const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
-      refreshNotice = "Review updated";
+      if (!roundNotice) refreshNotice = "Review updated";
       if (selected) {
         // A code selection must not prevent an open conversation from refreshing.
         // Keep metadata aligned with the visible diff until the selection clears.
@@ -88,6 +206,7 @@
         artifactThreads.splice(0, artifactThreads.length, ...(payload.implementation.feedback || []));
         artifactThreads.forEach((thread) => updateThreadEls(thread, threadCollapsed(thread), selection));
       } else { adoptImplementation(payload.implementation); render(); }
+      adoptAgentStatus(snapshot.agent);
     } catch {
       // External artifact writes can be transient; retry without replacing good data.
     } finally { polling = false; }
@@ -150,7 +269,6 @@
     requirements.splice(0, requirements.length, ...(data.requirements || []));
     allAcceptance.splice(0, allAcceptance.length, ...requirements.flatMap((r) => (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` }))));
     artifactThreads.splice(0, artifactThreads.length, ...(data.feedback || []));
-    observedAwaitingAgentReplies = Number(data.awaitingAgentReplies) || 0;
   }
 
   const INSIGHT = {
@@ -1354,9 +1472,10 @@
     const msgs = (t.comments || [])
       .map((cm) => {
         const agent = cm.author === "agent";
+        const unread = isUnreadReply(cm);
         const stamp = fmtTime(cm.createdAt);
-        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}">
-          <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
+        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}${unread ? " is-unread" : ""}"${agent ? ` data-comment-id="${esc(cm.id)}"` : ""}>
+          <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}${unread ? `<span class="tmsg-new">New</span>` : ""}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
           <p class="comment-body">${formatCommentBody(cm.body)}</p>${attachmentList(cm.attachments)}
         </div>`;
       })
@@ -1377,6 +1496,10 @@
     );
     const assignedTag = showAssigned
       ? `<span class="tthread-stage" title="Assigned to stage: ${esc(assignedStage.title)}">${esc(assignedStage.title)}</span>`
+      : "";
+    const agentState = threadAgentState(t);
+    const agentTag = agentState
+      ? `<span class="tthread-agent is-${agentState}">${{ queued: "Queued", working: "Agent working", new: "New reply", answered: "Answered" }[agentState]}</span>`
       : "";
     const jump = !withLabel
       ? ""
@@ -1444,6 +1567,7 @@
         <span class="tthread-type" title="${esc(threadTypeLabel(kind))}" aria-label="${esc(threadTypeLabel(kind))}">${threadTypeIcon(kind)}</span>
         ${title}
         ${assignedTag}
+        ${agentTag}
         <span class="tthread-status-ic s-${t.status}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
         ${jump}
       </div>
@@ -2109,6 +2233,7 @@
           <div><strong>${data.remote ? "Remote review" : "Implementation"}</strong><span>${esc(data.remote?.branch || data.implementationId)}</span></div>
         </div>
         <div class="tb-actions">
+          ${agentPill()}
           <button class="tb-btn" data-action="file-search" type="button" aria-keyshortcuts="t" title="Find file (T)">Find file <kbd aria-hidden="true">T</kbd></button>
           ${data.remote ? `<button class="tb-btn" data-action="refresh-remote" type="button" ${refreshingRemote ? "disabled" : ""}>${refreshingRemote ? "Refreshing…" : "Refresh branch"}</button>` : ""}
           <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
@@ -2118,6 +2243,50 @@
       </header>
       <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
     </div>`;
+  }
+
+  // Always-visible agent presence; stopping is offered while a session runs.
+  function agentPill() {
+    if (data.remote || !agent) return "";
+    const stop = agent.session && !agent.stopRequested
+      ? `<button class="tb-btn agent-stop" data-action="stop-agent" type="button" title="The agent finishes its current round, then stops listening">Stop agent</button>` : "";
+    if (agent.stopRequested) return `<span class="agent-pill is-stopping" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent stopping</span>`;
+    if (agent.working) return `<span class="agent-pill is-working" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent working</span>${stop}`;
+    if (agent.listening) return `<span class="agent-pill is-listening" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent listening</span>${stop}`;
+    return `<button class="tb-btn agent-pill is-offline" data-action="copy-agent-command" type="button" title="No agent is listening. Copy ${AGENT_COMMAND} and run it in your agent."><span class="agent-dot" aria-hidden="true"></span>${agentCommandCopied ? "Command copied" : "No agent listening"}</button>`;
+  }
+  // Round progress, an offline prompt when feedback waits, and the agent's questions.
+  function agentBar() {
+    if (data.remote || !agent) return "";
+    const queued = artifactThreads.filter((thread) => awaitsAgent(thread) && !agentWorkingOn(thread.id)).length;
+    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+    let status = "";
+    if (agent.working) {
+      const total = agent.working.threads.length, answered = agent.working.threads.filter((thread) => thread.answered).length;
+      const minutes = agentMinutes(agent);
+      const parts = [`${answered} of ${total} answered`, agent.working.note ? esc(agent.working.note) : "",
+        minutes ? `${minutes} min` : "", queued ? `${queued} queued for the next round` : ""].filter(Boolean);
+      status = `<div class="agent-bar is-working" role="status"><strong>Agent working on ${plural(total, "thread")}</strong><span>${parts.join(" · ")}</span>${agent.stopRequested ? "<span>Stops after this round</span>" : ""}</div>`;
+    } else if (queued && !agent.listening) {
+      status = `<div class="agent-bar is-offline" role="status"><strong>${plural(queued, "thread")} waiting for an agent</strong>
+        <span>Run <code>${AGENT_COMMAND}</code> in your agent to have feedback handled as you send it.</span>
+        <button class="tb-btn" data-action="copy-agent-command" type="button">${agentCommandCopied ? "Copied" : "Copy command"}</button></div>`;
+    }
+    const questions = agent.requests.length ? `<div class="agent-questions">${agent.requests.map(agentQuestion).join("")}</div>` : "";
+    return status + questions;
+  }
+  function agentQuestion(request) {
+    const op = agentAnswerOps.get(request.id) || {};
+    return `<section class="agent-question" data-render-key="agent-question-${esc(request.id)}" aria-label="Question from the agent">
+      <p class="agent-question-h">The agent needs your answer</p>
+      <p class="comment-body">${formatCommentBody(request.body)}</p>
+      ${request.choices.length ? `<div class="agent-choices">${request.choices.map((choice, index) => `<button class="tb-btn" type="button" data-action="agent-choice" data-id="${esc(request.id)}" data-choice="${index}" ${op.busy ? "disabled" : ""}>${esc(choice)}</button>`).join("")}</div>` : ""}
+      <form class="agent-answer" data-agent-answer data-id="${esc(request.id)}">
+        <textarea name="agent-answer-${esc(request.id)}" rows="2" placeholder="${request.choices.length ? "Or write a different answer…" : "Write your answer…"}" ${op.busy ? "disabled" : ""}>${esc(agentAnswers.get(request.id) || "")}</textarea>
+        <div class="nc-actions"><button class="nc-save" type="submit" ${op.busy ? "disabled" : ""}>${op.busy ? "Sending…" : "Send answer"}</button></div>
+      </form>
+      ${op.error ? `<p class="tthread-err">${esc(op.error)}</p>` : ""}
+    </section>`;
   }
 
   function markReviewDeleted(external = false) {
@@ -2592,7 +2761,7 @@
   const renderedNodes = new WeakMap();
   function renderKey(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return String(node.nodeType);
-    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "name", "value"];
+    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "data-comment-id", "name", "value"];
     return JSON.stringify([node.tagName, (node.getAttribute("class") || "").split(/\s+/)[0], ...identity.map((key) => node.getAttribute(key))]);
   }
   function rememberRendered(node, template) {
@@ -2649,7 +2818,10 @@
   function render() {
     if (reviewDeleted) { app.innerHTML = ""; setReviewsOpen(true); updateReviewList(); return; }
     const next = document.createElement("div");
-    next.innerHTML = `${topbar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : ""}
+    const roundMessage = roundNotice
+      ? `<div class="review-update agent-round" role="status"><span>Agent replied to ${roundNotice.count} thread${roundNotice.count === 1 ? "" : "s"}</span><button type="button" data-action="show-unread">Show</button><button type="button" data-action="dismiss-round" aria-label="Dismiss">×</button></div>`
+      : refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : "";
+    next.innerHTML = `${topbar()}${agentBar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${roundMessage}
       <main class="shell v-cinema">
         ${storyColumn()}
       </main>
@@ -2672,6 +2844,9 @@
 
   function enhance() {
     animateDetails();
+    observeUnreadReplies();
+    const unread = unreadReplyCount();
+    document.title = unread ? `(${unread}) ${baseTitle}` : baseTitle;
     if (pendingHighlight) {
       const { id, nodeId } = pendingHighlight;
       pendingHighlight = null;
@@ -2929,6 +3104,17 @@
 
     } else if (a === "refresh-remote") {
       if (!refreshingRemote) void refreshRemote();
+    } else if (a === "stop-agent") {
+      void stopAgent();
+    } else if (a === "copy-agent-command") {
+      void copyAgentCommand();
+    } else if (a === "agent-choice") {
+      const request = agent?.requests.find((item) => item.id === btn.dataset.id);
+      if (request) void answerAgent(request.id, request.choices[Number(btn.dataset.choice)] || "");
+    } else if (a === "show-unread") {
+      showUnreadReplies();
+    } else if (a === "dismiss-round") {
+      roundNotice = null; render();
     } else if (a === "refresh-reviews") {
       if (!reviewListBusy) void refreshReviews();
     } else if (a === "open-review" || a === "complete-review") {
@@ -3204,50 +3390,6 @@
     render();
   }
 
-  // Send all pending reviewer replies as one feedback mutation.
-  async function submitReplyDrafts(drafts) {
-    const sendable = drafts.filter((draft) => artifactThreadById(draft.threadId));
-    const skips = drafts
-      .filter((draft) => !artifactThreadById(draft.threadId))
-      .map(() => "reply — thread no longer exists");
-    if (!sendable.length) return { sentIds: [], skips };
-    try {
-      const res = await fetch("/api/feedback/reply-batch", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          implementationId: data.implementationId,
-          replies: sendable.map((draft) => ({
-            ref: draft.id,
-            threadId: draft.threadId,
-            body: draft.body,
-            attachments: draft.attachments || [],
-          })),
-        }),
-      });
-      let out = {};
-      try { out = await res.json(); } catch { /* non-JSON */ }
-      if (!res.ok || !out.ok) throw new Error(out.error || `Replies failed (HTTP ${res.status}).`);
-      adoptViewerSnapshot(out);
-      (out.replied || []).forEach((entry) => {
-        const thread = artifactThreadById(entry.threadId);
-        if (!thread) return;
-        if (entry.comment) thread.comments.push(entry.comment);
-        if (entry.status) thread.status = entry.status;
-        if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
-      });
-      return {
-        sentIds: (out.replied || []).map((entry) => entry.ref),
-        skips: skips.concat((out.skipped || []).map((entry) => `reply — ${entry.reason}`)),
-      };
-    } catch (err) {
-      return {
-        sentIds: [],
-        skips: skips.concat(sendable.map(() => `reply — ${err.message || "reply failed"}`)),
-      };
-    }
-  }
-
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
   // The render wrapper preserves scroll and drafts while refreshing every count
   // and grouped list after a successful mutation.
@@ -3321,23 +3463,33 @@
     persist();
     render();
   }
+  function requestReplyNotifications() {
+    if ((agent?.listening || agent?.working) && "Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission().catch(() => {});
+    }
+  }
+  // Notes and replies go in one request, so a listening agent picks them up as one round.
   async function exportFeedback() {
     if (exportState.phase === "working") return;
     const pending = pendingFeedback();
     const replies = pendingReplies().slice();
     if (!pending.length && !replies.length) return;
+    requestReplyNotifications();
     exportState = { phase: "working", message: "" };
     render();
-    const skips = [];
+    const skips = replies.filter((draft) => !artifactThreadById(draft.threadId)).map(() => "reply — thread no longer exists");
+    const sendable = replies.filter((draft) => artifactThreadById(draft.threadId));
     let notesSent = 0;
-    if (pending.length) {
+    let repliesSent = 0;
+    if (pending.length || sendable.length) {
       try {
         const res = await fetch("/api/feedback/export", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; })
+            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
+            replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
           })
         });
         let out = {};
@@ -3347,6 +3499,7 @@
           const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
           skips.push(`${label} — ${s.reason}`);
         });
+        (out.replySkipped || []).forEach((entry) => skips.push(`reply — ${entry.reason}`));
         if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
         adoptViewerSnapshot(out);
         const byRef = new Map(pending.map(({ c, i }) => [i, c]));
@@ -3359,6 +3512,16 @@
           }
         });
         notesSent = (out.exported || []).length;
+        (out.replied || []).forEach((entry) => {
+          const thread = artifactThreadById(entry.threadId);
+          if (!thread) return;
+          if (entry.comment) thread.comments.push(entry.comment);
+          if (entry.status) thread.status = entry.status;
+          if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+        });
+        const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
+        repliesSent = sentIds.size;
+        state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
       } catch (err) {
         persist();
         exportState = { phase: "error", message: err.message || "Export failed.", skips };
@@ -3366,21 +3529,16 @@
         return;
       }
     }
-    let repliesSent = 0;
-    if (replies.length) {
-      const result = await submitReplyDrafts(replies);
-      const sentIds = new Set(result.sentIds);
-      repliesSent = sentIds.size;
-      state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
-      skips.push(...result.skips);
-    }
     persist();
     const parts = [];
     if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
     if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
+    const next = agent?.listening || agent?.working
+      ? "The listening agent picks this up automatically."
+      : `Run “${AGENT_COMMAND}” in your agent to have it handled.`;
     exportState = {
       phase: "done",
-      message: `Sent ${parts.join(" and ")} to the artifact${skips.length ? `, ${skips.length} skipped` : ""}. Run “/semantic-flow feedback” in your agent. Replies and edits appear here when it finishes.`,
+      message: `Sent ${parts.join(" and ")}${skips.length ? `, ${skips.length} skipped` : ""}. ${next} Replies and edits appear here.`,
       skips
     };
     render();
@@ -3571,6 +3729,8 @@
       replyDraft = t.value;
       replyDirty = true;
       persist(true);
+    } else if (t.matches(".agent-answer textarea")) {
+      agentAnswers.set(t.closest("[data-agent-answer]").dataset.id, t.value);
     }
   });
   document.addEventListener("change", (e) => {
@@ -3604,6 +3764,11 @@
       compose = null;
       persist();
       render();
+      return;
+    }
+    if (e.target.matches("[data-agent-answer]")) {
+      e.preventDefault();
+      void answerAgent(e.target.dataset.id, e.target.querySelector("textarea").value);
       return;
     }
     if (e.target.matches("[data-reply-form]")) {
@@ -3813,6 +3978,12 @@
   for (const note of [...state.comments, compose].filter(Boolean)) {
     if (note.snapshot) draftSnapshots.set(note, note.snapshot);
   }
+  // Replies that existed before unread tracking are treated as read.
+  if (!data.remote && !reviewDeleted && (!state.readReplies || typeof state.readReplies !== "object")) {
+    state.readReplies = Object.fromEntries(artifactThreads.flatMap((thread) => (thread.comments || [])
+      .filter((comment) => comment.author === "agent").map((comment) => [comment.id, true])));
+    persist();
+  }
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
   render();
@@ -3823,4 +3994,5 @@
   if (reviewDeleted) void refreshReviews();
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
+  void pollViewerRevision();
 })();
