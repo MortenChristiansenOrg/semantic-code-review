@@ -436,9 +436,15 @@ export interface NextFeedbackOptions {
     json?: true;
     /** Omits repeated metadata and reports stale and automatic re-anchoring status. Requires `json`. */
     compact?: true;
+    /** Claims the returned threads for one round, skipping threads another round is answering. Emits `{claim, claimedElsewhere, stages}`. Requires `json`. */
+    claim?: true;
+    /** Interactive review session that owns the claim. Requires `claim`. */
+    session?: string;
 }
 /**
  * Lists open feedback threads awaiting an agent reply, grouped by stage.
+ * A thread awaits a reply while a user comment follows the comment its latest
+ * agent reply answered.
  * @cli review-feedback.mjs
  * @command next
  */
@@ -454,10 +460,13 @@ export interface ReplyFeedbackThreadOptions {
     attachments?: string[];
     /** Comment author; defaults to `user`. Implementation agents reply with `agent`. */
     author?: "user" | "agent";
+    /** Agent replies only: the round (`claim` from the feedback preflight) this reply belongs to. The reply then answers through the comment that round claimed, even if the round was replaced. */
+    claim?: string;
 }
 /**
  * Appends a comment to an open thread. Replying to a resolved thread reopens
- * it — closing a conversation is always the reviewer's decision.
+ * it — closing a conversation is always the reviewer's decision. An agent reply
+ * records the user comment it answers; comments added while its round ran stay queued.
  * @cli review-feedback.mjs
  * @command thread reply
  */
@@ -467,6 +476,8 @@ export interface ReplyFeedbackThreadsOptions {
     partial?: true;
     /** JSON array of reply inputs using the same fields as `thread reply`. */
     replies: string;
+    /** Round for every agent reply that does not name its own `claim`. */
+    claim?: string;
 }
 /**
  * Appends several replies as one locked and validated mutation.
@@ -531,6 +542,28 @@ export interface ShowAttachmentOptions {
  * @command attachment show
  */
 export declare function showAttachment(options: ShowAttachmentOptions): void;
+export interface AskReviewerOptions {
+    /** Stable request identifier; repeating identical content is a no-op. */
+    id: string;
+    /** Plain-language question about a problem that is not about one feedback thread. */
+    body: string;
+    /** Optional answer the reviewer can pick; repeat for up to six choices. The reviewer can always write a different answer. */
+    choice?: string[];
+}
+/** Shows a question in the viewer. The answer is returned in `responses` by the next `semantic-flow feedback` call.
+ * @cli review-feedback.mjs
+ * @command agent ask
+ */
+export declare function askReviewer(options: AskReviewerOptions): void;
+export interface ReportAgentProgressOptions {
+    /** Short description of the running round's current work, shown in the viewer. */
+    body: string;
+}
+/** Updates the progress note of the feedback round in progress.
+ * @cli review-feedback.mjs
+ * @command agent progress
+ */
+export declare function reportAgentProgress(options: ReportAgentProgressOptions): void;
 export interface SelectSemanticFlowImplementationOptions {
     /** Repository or worktree used to discover linked semantic implementation artifacts. */
     project?: string;
@@ -606,12 +639,24 @@ export interface SemanticFlowFeedbackOptions {
     "implementation-id"?: string;
     /** Emits a compact machine-readable preflight and pending-feedback snapshot. */
     json?: true;
+    /** Listens for the next feedback round instead of returning immediately. Requires `json`. */
+    wait?: true;
+    /** Continues the interactive session returned by an earlier wait; omit to start a new session. Requires `wait`. */
+    session?: string;
+    /** Maximum seconds to wait before returning `timedOut` (default 540). Requires `wait`. */
+    timeout?: string;
 }
 /**
  * Resolves one active artifact, automatically restacks a clean finalized stack
  * after its target branch advances, validates it, and lists feedback awaiting
  * an agent reply. The result also reports the artifact worktree and local
- * changes.
+ * changes. Returned threads are claimed for this round (`claim`); threads
+ * another round is answering are counted in `claimedElsewhere`. Answers to
+ * `agent ask` questions are returned in `responses`.
+ *
+ * With `wait`, it heartbeats as the review's listening agent and returns when
+ * feedback arrives, a question is answered, the session stops (`stopped` with
+ * `reason`), or the timeout passes (`timedOut`). Every result includes `session`.
  * @cli semantic-flow.mjs
  * @command feedback
  */

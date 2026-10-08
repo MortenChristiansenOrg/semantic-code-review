@@ -428,6 +428,28 @@ reviewer then resolves the thread in the viewer or with:
 Reopening or replying to a resolved thread makes it open again. Later stage
 rewrites require no feedback metadata updates.
 
+### Interactive review
+
+`/semantic-flow review -i` opens the viewer and keeps the agent listening, so
+you never run the feedback command between rounds. The agent waits with:
+
+```text
+<semantic-flow> feedback --json --wait [--session <session-id>] [--timeout <seconds>]
+```
+
+Each send from the viewer becomes a round. The agent claims its threads, answers
+questions in parallel as soon as they are ready, makes code changes (one
+subagent per stage when several stages change independently), restacks once, and
+replies. Feedback you send meanwhile is queued for the next round, including
+follow-ups to threads in progress.
+
+The viewer shows whether an agent is listening or working, each thread as
+queued, in progress, or answered, and a notice with unread markers when a round
+finishes; it can also notify you while the tab is hidden. When the agent needs
+a decision that is not about one thread, its question appears at the top of the
+viewer. **Stop agent** ends listening after the current round, as does marking
+the review complete or two hours without feedback.
+
 ## 10. Publish and prepare local outputs
 
 Once human review is complete, validate readiness, publish metadata, and report

@@ -58,6 +58,26 @@ disappeared.
 
 The agent does not resolve threads.
 
+An agent comment may record `respondsTo`, the ID of the latest user comment it
+answers. A thread awaits the agent while a user comment follows the latest
+answered comment, so a follow-up sent while the agent works is not lost when the
+reply lands. Agent comments without `respondsTo` answer every earlier comment.
+
+### Rounds and listening agents
+
+Runtime coordination lives in the review's `agent.json`, outside the feedback
+format. When an agent takes pending feedback it claims those threads for one
+round, recording the latest user comment of each; its reply to a claimed thread
+answers through that comment. Other runs skip claimed threads. A claim ends when
+every thread has a reply, and expires after 30 minutes without agent activity.
+
+An interactive review (`review -i`) records one listening session with a
+heartbeat. Starting another session replaces it and returns its claimed threads
+to the queue. The viewer shows the session, the running round, and questions the
+agent asks with `agent ask`; reviewer answers, stop requests, and completing the
+review are written to the same file. A viewer send marks itself in progress so a
+listener takes its notes and replies as one round.
+
 Feedback mutations and validation share the per-review lock used by viewer state.
 Batch reads in the viewer use the same lock. Feedback files are replaced atomically,
 and successful feedback writes update the review's last-edited timestamp.

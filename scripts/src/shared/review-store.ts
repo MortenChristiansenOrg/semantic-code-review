@@ -81,7 +81,18 @@ function retireLock(lock: string) {
   try { fs.rmSync(retired, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }); }
   catch { /* A retired directory cannot block or interfere with subsequent writers. */ }
 }
+const heldLocks = new Set<string>();
+/** Reentrant within one process, so a locked operation can call another locked helper. */
 export function withReviewLock<T>(id: string, operation: () => T): T {
+  const key = path.join(reviewHome(), id);
+  if (heldLocks.has(key)) return operation();
+  return acquireReviewLock(id, () => {
+    heldLocks.add(key);
+    try { return operation(); }
+    finally { heldLocks.delete(key); }
+  });
+}
+function acquireReviewLock<T>(id: string, operation: () => T): T {
   const locks = path.join(reviewHome(), "locks");
   fs.mkdirSync(locks, { recursive: true, mode: 0o700 });
   const lock = path.join(locks, path.basename(reviewDirectory(id)) + ".lock");

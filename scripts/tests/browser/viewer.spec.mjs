@@ -88,7 +88,14 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
     }
     if (url.pathname === '/api/approval-snapshots') return json({ ok: true, snapshotId: 'a'.repeat(32), capturedAt: new Date().toISOString() });
     if (url.pathname === '/api/feedback/export') return json({ ok: true, exported: route.request().postDataJSON().notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })), skipped: [] });
-    if (url.pathname === '/api/revision') return json({ ok: true, revision: currentData.viewerRevision });
+    if (url.pathname === '/api/revision') return json({ ok: true, revision: currentData.viewerRevision, ...(currentData.agent ? { agent: currentData.agent } : {}) });
+    if (url.pathname === '/api/agent/respond') {
+      const input = route.request().postDataJSON();
+      (currentData.answers ||= []).push(input);
+      currentData.agent.requests = currentData.agent.requests.filter((request) => request.id !== input.requestId);
+      return json({ ok: true, agent: currentData.agent });
+    }
+    if (url.pathname === '/api/agent/stop') { currentData.agent.stopRequested = true; return json({ ok: true, agent: currentData.agent }); }
     if (url.pathname === '/api/implementation') return json({ ok: true, implementation: currentData });
     if (url.pathname === '/api/feedback/resolve' || url.pathname === '/api/feedback/reopen') {
       const target = currentData.feedback.find((t) => t.id === route.request().postDataJSON().threadId);
@@ -2193,4 +2200,66 @@ for (const changed of [false, true]) test(`existing line drafts resolve their or
     await expect(page.locator('.side.notes')).toContainText('The file changed since this line draft was written.');
     await expect(page.locator('.side.notes .tnote')).toContainText('Existing draft');
   }
+});
+
+test('interactive review shows agent presence, round progress, unread replies, and agent questions', async ({ page }) => {
+  const now = new Date().toISOString();
+  const comment = (id, author, body, extra = {}) => ({ id, author, body, attachments: [], createdAt: '2026-10-08T10:00:00Z', ...extra });
+  const stageTarget = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [
+    { id: 'answered', status: 'open', target: stageTarget, comments: [comment('u1', 'user', 'Why?'), comment('a1', 'agent', 'Because.')] },
+  ], agent: { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: { id: 'r0', completedAt: now, threadIds: ['answered'] }, serverTime: now } };
+  await mount(page, data);
+  await expect(page.locator('.agent-pill.is-listening')).toHaveText('Agent listening');
+  await expect(page.locator('[data-action="stop-agent"]')).toBeVisible();
+  await showNotes(page);
+  await expect(page.locator('.side.notes .tthread[data-thread-id="answered"] .tthread-agent')).toHaveText('Answered');
+  await expect(page.locator('.tmsg.is-unread')).toHaveCount(0);
+
+  data.feedback.push({ id: 'pending', status: 'open', target: stageTarget, comments: [comment('u2', 'user', 'Rename this.')] });
+  data.agent = { ...data.agent, working: { startedAt: now, threads: [{ id: 'pending', answered: false }] } };
+  data.viewerRevision = 'working';
+  await expect(page.locator('.agent-bar.is-working')).toContainText('Agent working on 1 thread');
+  await expect(page.locator('.side.notes .tthread[data-thread-id="pending"] .tthread-agent')).toHaveText('Agent working');
+
+  data.feedback[1].comments.push(comment('u3', 'user', 'Also add a test.'));
+  data.feedback[1].comments.push(comment('a2', 'agent', 'Renamed it.', { respondsTo: 'u2' }));
+  data.agent = { ...data.agent, working: null, lastRound: { id: 'r1', completedAt: now, threadIds: ['pending'] } };
+  data.viewerRevision = 'answered';
+  await expect(page.locator('.agent-round')).toContainText('Agent replied to 1 thread');
+  await expect(page.locator('.side.notes .tthread[data-thread-id="pending"] .tthread-agent')).toHaveText('Queued');
+  expect(await page.title()).toMatch(/^\(1\)/);
+  await page.locator('[data-action="show-unread"]').click();
+  await expect(page.locator('.agent-round')).toHaveCount(0);
+  await expect(page.locator('.tmsg.is-unread')).toHaveCount(0, { timeout: 8000 });
+  expect(await page.title()).not.toMatch(/^\(/);
+
+  data.agent = { ...data.agent, requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] };
+  data.viewerRevision = 'question';
+  await expect(page.locator('.agent-question')).toContainText('Should refunds skip the email?');
+  await page.locator('.agent-question [data-action="agent-choice"]', { hasText: 'Yes' }).click();
+  await expect(page.locator('.agent-question')).toHaveCount(0);
+  expect(data.answers).toEqual([{ requestId: 'refund-email', body: 'Yes' }]);
+
+  await page.locator('.side.notes [data-action="toggle-notes"]').click();
+  await page.locator('[data-action="stop-agent"]').click();
+  await expect(page.locator('.agent-pill.is-stopping')).toBeVisible();
+  data.agent = { ...data.agent, session: false, listening: false, stopRequested: false };
+  data.viewerRevision = 'offline';
+  await expect(page.locator('.agent-bar.is-offline')).toContainText('1 thread waiting for an agent');
+  await expect(page.locator('.agent-bar.is-offline code')).toHaveText('/semantic-flow review -i');
+  await expect(page.locator('.agent-pill.is-offline')).toHaveText('No agent listening');
+});
+
+test('a hidden tab keeps checking slowly while an agent listens', async ({ page }) => {
+  const now = new Date().toISOString();
+  const listening = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now };
+  await mount(page, { ...fixture(), agent: listening });
+  await expect(page.locator('.agent-pill.is-listening')).toBeVisible();
+  await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+  let polls = 0;
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/revision') polls++; });
+  await page.waitForTimeout(6500);
+  expect(polls).toBeGreaterThanOrEqual(1);
+  expect(polls).toBeLessThanOrEqual(2);
 });

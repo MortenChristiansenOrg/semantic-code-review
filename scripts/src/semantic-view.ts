@@ -45,6 +45,8 @@ import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } f
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
 import { refreshRemoteReview } from "./shared/remote-review.js";
+import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
+import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -185,11 +187,7 @@ function readViewerSnapshot(repoRoot, implementationId) {
     for (const threadId of manifest.threads || []) {
       const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
       files.push(file);
-      const thread = readJson(file);
-      const lastComment = thread.comments?.[thread.comments.length - 1];
-      if (thread.status === "open" && lastComment?.author !== "agent") {
-        awaitingAgentReplies += 1;
-      }
+      if (awaitsAgentReply(readJson(file))) awaitingAgentReplies += 1;
     }
   }
   const hash = createHash("sha256");
@@ -228,18 +226,19 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
       return nextDocuments.get(file).value;
     };
     const semantic = path.join(repoRoot, ".semantic-review");
-    const artifact = read(path.join(semantic, "manifest.json"));
-    const feedback = feedbackDirectory(repoRoot, artifact.implementationId);
-    for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
+    const { implementationId } = read(path.join(semantic, "manifest.json"));
+    const feedback = feedbackDirectory(repoRoot, implementationId);
     let awaitingAgentReplies = 0;
-    withReviewLock(reviewId(repoRoot, artifact.implementationId), () => {
-    if (fs.existsSync(path.join(feedback, "manifest.json"))) {
-      const manifest = read(path.join(feedback, "manifest.json"));
-      for (const id of manifest.threads || []) {
-        const thread = read(path.join(feedback, "threads", `${id}.json`));
-        if (thread.status === "open" && thread.comments?.at(-1)?.author !== "agent") awaitingAgentReplies++;
+    // Artifact writers that change several documents hold this lock, so one snapshot is never mixed.
+    withReviewLock(reviewId(repoRoot, implementationId), () => {
+      read(path.join(semantic, "manifest.json"));
+      for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
+      if (fs.existsSync(path.join(feedback, "manifest.json"))) {
+        const manifest = read(path.join(feedback, "manifest.json"));
+        for (const id of manifest.threads || []) {
+          if (awaitsAgentReply(read(path.join(feedback, "threads", `${id}.json`)))) awaitingAgentReplies++;
+        }
       }
-    }
     });
     for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
     if (changed) {
@@ -960,8 +959,9 @@ export function createViewerDataSource(
 
   return {
     implementationDataScript() {
-      const snapshot = snapshotReader();
-      if (snapshot.revision !== cachedRevision) {
+      let snapshot = snapshotReader();
+      // Building reads documents individually; rebuild if a write landed meanwhile.
+      for (let attempt = 0; snapshot.revision !== cachedRevision && attempt < 3; attempt++) {
         const data = withValidationContext(() => buildImplementationData(
           repoRoot,
           (stage) => stageRecord(stage).stats,
@@ -970,6 +970,7 @@ export function createViewerDataSource(
         ));
         cachedScript = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(data)};\n`;
         cachedRevision = snapshot.revision;
+        snapshot = snapshotReader(true);
       }
       return cachedScript;
     },
@@ -1096,6 +1097,7 @@ function buildFeedbackThreads(repoRoot, stages, implementationId) {
         body: c.body,
         attachments: c.attachments || [],
         createdAt: c.createdAt,
+        ...(c.respondsTo ? { respondsTo: c.respondsTo } : {}),
       })),
       assignedStageId: thread.assignedStageId,
       stageHead: thread.stageHead,
@@ -1434,6 +1436,43 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null },
 
 }
 
+/** One viewer send. Listening agents wait until its notes and replies are both written. */
+export function sendFeedback({ repoRoot, implementation = null, feedbackCli, context = null }, notes, replies) {
+  const hasNotes = Array.isArray(notes) && notes.length > 0;
+  const hasReplies = Array.isArray(replies) && replies.length > 0;
+  if (!hasNotes && !hasReplies) return { ok: false, error: "No feedback to send." };
+  context = feedbackContext(repoRoot, context, hasNotes);
+  updateAgentState(context.reviewId, (state, now) => markSending(state, now, true));
+  try {
+    const sent: Record<string, any> | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), feedbackCli, context }, notes) : null;
+    const answered: Record<string, any> | null = hasReplies ? exportFeedbackReplies({ repoRoot, feedbackCli, context }, replies) : null;
+    const ok = Boolean(sent?.ok || answered?.ok);
+    return {
+      ok,
+      exported: sent?.exported || [], skipped: sent?.skipped || [],
+      replied: answered?.replied || [], replySkipped: answered?.skipped || [],
+      ...(ok ? {} : { error: sent?.error || answered?.error || "Nothing could be sent." }),
+    };
+  } finally {
+    updateAgentState(context.reviewId, (state, now) => markSending(state, now, false));
+  }
+}
+
+/** Reviewer controls for the listening agent. */
+export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: string, payload) {
+  return updateAgentState(context.reviewId, (state, now) => {
+    if (action === "stop") {
+      const session = liveSession(state);
+      if (session && !session.stopRequestedAt) session.stopRequestedAt = new Date(now).toISOString();
+    } else {
+      const body = typeof payload?.body === "string" ? payload.body.trim() : "";
+      if (typeof payload?.requestId !== "string" || !body || body.length > 4000) throw new Error("Write an answer of up to 4000 characters.");
+      respondToRequest(state, now, payload.requestId, body);
+    }
+    return agentStatus(state, now);
+  });
+}
+
 // Reject cross-origin drivers. A local page served by this server has no
 // Origin (same-origin fetch) or an Origin matching our own host; a third-party
 // web page attempting a request will carry a foreign Origin. Combined with the
@@ -1480,53 +1519,7 @@ async function handleFeedbackExport(request, response, context) {
       });
       return;
     }
-    const result = await context.jobs.call("exportFeedback", [payload.implementationId, payload.notes]);
-    sendJson(response, result.ok ? 200 : 422, {
-      ...result,
-      ...await context.jobs.call("snapshot", [true]),
-    });
-  } catch (error) {
-    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
-  }
-}
-
-async function handleFeedbackReplyBatch(request, response, context) {
-  try {
-    if (!isTrustedRequest(request, context.port)) {
-      sendJson(response, 403, {
-        ok: false,
-        error: "Feedback replies require a same-origin application/json request.",
-      });
-      return;
-    }
-    if (!context.feedbackCli) {
-      sendJson(response, 422, {
-        ok: false,
-        error: "The review-feedback CLI was not found next to the viewer.",
-      });
-      return;
-    }
-    const raw = await readRequestBody(request);
-    let payload;
-    try {
-      payload = JSON.parse(raw || "{}");
-    } catch {
-      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
-      return;
-    }
-    const currentImplementationId = activeImplementationId(context.repoRoot);
-    if (
-      !payload ||
-      payload.implementationId !== context.implementationId ||
-      payload.implementationId !== currentImplementationId
-    ) {
-      sendJson(response, 409, {
-        ok: false,
-        error: "This viewer is showing a different implementation than the one being edited.",
-      });
-      return;
-    }
-    const result = await context.jobs.call("exportFeedbackReplies", [payload.implementationId, payload.replies]);
+    const result = await context.jobs.call("sendFeedback", [payload.implementationId, payload.notes, payload.replies]);
     sendJson(response, result.ok ? 200 : 422, {
       ...result,
       ...await context.jobs.call("snapshot", [true]),
@@ -1730,7 +1723,7 @@ function serveViewer({
       catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
     }
 
-    if (review.remote && pathname.startsWith("/api/feedback/")) {
+    if (review.remote && (pathname.startsWith("/api/feedback/") || pathname.startsWith("/api/agent/"))) {
       sendJson(response, 403, { ok: false, error: "Remote reviews support personal notes only." }); return;
     }
     if (pathname === "/api/remote/refresh" && request.method === "POST") {
@@ -1839,6 +1832,15 @@ function serveViewer({
       return;
     }
 
+    if (request.method === "POST" && ["/api/agent/stop", "/api/agent/respond"].includes(pathname)) {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
+        const payload = JSON.parse(await readRequestBody(request));
+        sendJson(response, 200, { ok: true, agent: await dataSource.call("controlAgent", [implementationId, pathname.slice("/api/agent/".length), payload]) });
+      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/api/whoami") {
       sendJson(response, 200, {
         ok: true,
@@ -1939,17 +1941,6 @@ function serveViewer({
         feedbackCli,
         jobs: dataSource,
         port,
-      });
-      return;
-    }
-
-    if (request.method === "POST" && pathname === "/api/feedback/reply-batch") {
-      handleFeedbackReplyBatch(request, response, {
-        repoRoot,
-        feedbackCli,
-        jobs: dataSource,
-        port,
-        implementationId,
       });
       return;
     }
@@ -2103,14 +2094,16 @@ if (!isMainThread && workerData?.repoRoot) {
       let result;
       if (method === "readReview") result = readReview(context.reviewId);
       else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
-      else if (["snapshot", "fileDiff", "fileContent", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      else if (method === "snapshot") result = { ...source.snapshot(...args), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
+      else if (["fileDiff", "fileContent", "implementationDataScript"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
         else if (method === "resolveLineDraftSnapshots") result = resolveLineDraftSnapshots(root, args[1]);
         else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
         else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
-        else if (method === "exportFeedback") result = exportFeedback({ repoRoot: root, feedbackCli, implementation: buildFeedbackTargetData(root), context }, args[1]);
+        else if (method === "sendFeedback") result = sendFeedback({ repoRoot: root, feedbackCli, context }, args[1], args[2]);
+        else if (method === "controlAgent") result = controlAgent(context, args[1], args[2]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
         else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, context, args[1]);
         else throw new Error("Unknown viewer operation.");
