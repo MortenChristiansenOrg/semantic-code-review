@@ -29,7 +29,7 @@ import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, re
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
-import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, releaseClaims, touchAgent, updateAgentState } from "./shared/agent-session.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, releaseClaims, roundThrough, sendInProgress, touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 function commentAttachments(paths, options) { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
 function commentInput(paths, options) {
@@ -679,6 +679,8 @@ function nextFeedback(paths, options) {
     // The caller holds the review lock, so this exclusion and the claim below are one step.
     const state = readAgentState(paths.reviewId);
     if (sessionId && liveSession(state)?.id !== sessionId) fail("This interactive review session was replaced or stopped.");
+    // A viewer send writes notes and replies separately; the listener takes them together.
+    if (sessionId && sendInProgress(state, Date.now())) awaiting = [];
     // A standalone run replaces earlier standalone runs; interactive sessions keep theirs.
     if (!sessionId) releaseClaims(state, null);
     const taken = claimedThreadIds(state, Date.now());
@@ -821,9 +823,15 @@ function applyReply(paths, options, feedback) {
     fail("--author must be user or agent.");
   }
   // An agent reply answers what its round claimed; comments added meanwhile stay queued.
-  const respondsTo = author === "agent"
-    ? claimedThrough(readAgentState(paths.reviewId), Date.now(), id) ?? latestUserCommentId(thread)
-    : undefined;
+  // Naming the round fences late replies from a round that was replaced or expired.
+  const claimId = option(options, "claim");
+  if (claimId && author !== "agent") fail("--claim applies only to agent replies.");
+  let respondsTo;
+  if (author === "agent") {
+    const state = readAgentState(paths.reviewId);
+    respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
+    if (!respondsTo) fail(`Feedback thread ${id} is not part of round ${claimId}.`);
+  }
   thread.comments.push({
     id: commentId,
     author,
@@ -858,7 +866,8 @@ function replyThreads(paths, optionSets: Options[]) {
     for (const [id, thread] of originals) writeThread(paths, thread);
     throw error;
   }
-  recordReplies(paths, optionSets.filter((options) => option(options, "author") === "agent").map((options) => option(options, "id")));
+  recordReplies(paths, optionSets.filter((options) => option(options, "author") === "agent")
+    .map((options) => ({ threadId: option(options, "id"), claimId: option(options, "claim") })));
   return replies;
 }
 
@@ -900,13 +909,18 @@ function replyThreadBatch(paths, options) {
   if (!Array.isArray(values) || values.length === 0) {
     fail("--replies must contain a non-empty JSON array.");
   }
+  // A batch-level round applies to every reply that does not name its own.
+  const claim = option(options, "claim");
+  const items = claim
+    ? values.map((value) => value && typeof value === "object" && !Array.isArray(value) && !("claim" in value) ? { ...value, claim } : value)
+    : values;
   if (flag(options, "partial")) {
-    console.log(JSON.stringify(partialFeedbackBatch(paths, values, "reply")));
+    console.log(JSON.stringify(partialFeedbackBatch(paths, items, "reply")));
     return;
   }
   const replies = replyThreads(
     paths,
-    values.map((value, index) => batchReplyOptions(value, index)),
+    items.map((value, index) => batchReplyOptions(value, index)),
   );
   console.log(`Added ${replies.length} feedback reply/replies.`);
 }
@@ -922,7 +936,7 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
   const knownIds = new Set<string>(feedback.threads.keys());
   const accepted = [];
   const rejected = [];
-  const agentReplies: string[] = [];
+  const agentReplies: { threadId: string; claimId?: string }[] = [];
   for (const [index, value] of values.entries()) {
     let id;
     let before;
@@ -953,7 +967,7 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
       } else {
         const reply = applyReply(paths, options, feedback);
         validateDocument(ajv, reply.thread, "Feedback reply input");
-        if (option(options, "author") === "agent") agentReplies.push(id);
+        if (option(options, "author") === "agent") agentReplies.push({ threadId: id, claimId: option(options, "claim") });
       }
       changed.add(id);
       accepted.push({ index, id, commentId: option(options, "comment-id") });
@@ -979,13 +993,13 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
       if (mode === "add") writeJson(paths.feedbackManifest, originalManifest);
       throw error;
     }
-    recordReplies(paths, agentReplies.filter((id) => changed.has(id)));
+    recordReplies(paths, agentReplies.filter((reply) => changed.has(reply.threadId)));
   }
   return { accepted, rejected };
 }
 
-function recordReplies(paths, threadIds: string[]) {
-  if (threadIds.length) updateAgentState(paths.reviewId, (state, now) => recordAgentReplies(state, now, threadIds));
+function recordReplies(paths, replies: { threadId: string; claimId?: string }[]) {
+  if (replies.length) updateAgentState(paths.reviewId, (state, now) => recordAgentReplies(state, now, replies));
 }
 
 const ID_PATTERN = /^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$/;

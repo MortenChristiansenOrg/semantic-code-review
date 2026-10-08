@@ -2250,3 +2250,16 @@ test('interactive review shows agent presence, round progress, unread replies, a
   await expect(page.locator('.agent-bar.is-offline code')).toHaveText('/semantic-flow review -i');
   await expect(page.locator('.agent-pill.is-offline')).toHaveText('No agent listening');
 });
+
+test('a hidden tab keeps checking slowly while an agent listens', async ({ page }) => {
+  const now = new Date().toISOString();
+  const listening = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now };
+  await mount(page, { ...fixture(), agent: listening });
+  await expect(page.locator('.agent-pill.is-listening')).toBeVisible();
+  await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+  let polls = 0;
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/revision') polls++; });
+  await page.waitForTimeout(6500);
+  expect(polls).toBeGreaterThanOrEqual(1);
+  expect(polls).toBeLessThanOrEqual(2);
+});

@@ -103,7 +103,7 @@ Answer questions first so their replies reach the reviewer while code changes
 are still running. Where the harness supports subagents, answer them in parallel,
 one subagent per thread (one for threads about the same file or node). Give each
 subagent the thread conversation, its group's `stageId`, `stageBase`, and
-`stageHead`, and the artifact worktree path. Each subagent:
+`stageHead`, the round's `claim`, and the artifact worktree path. Each subagent:
 
 - reads code only at the recorded commits, with commands such as
   `git show <stageHead>:<path>`, `git grep <pattern> <stageHead>`, and
@@ -113,7 +113,7 @@ subagent the thread conversation, its group's `stageId`, `stageBase`, and
 - posts its answer from the artifact worktree:
 
   ```text
-  <review-feedback> thread reply --id <thread-id> --comment-id <new-comment-id> --author agent --body "<answer>"
+  <review-feedback> thread reply --id <thread-id> --comment-id <new-comment-id> --author agent --claim <claim> --body "<answer>"
   ```
 
 If the answer reveals a defect, say so in the reply instead of changing code.
@@ -203,11 +203,12 @@ OS temporary file outside the repository:
 
 ```text
 <review-feedback> thread reply-batch --input -
-{"replies":[{"id":"<thread-id>","comment-id":"<new-comment-id>","author":"agent","body":"<change-summary>"}]}
+{"claim":"<claim>","replies":[{"id":"<thread-id>","comment-id":"<new-comment-id>","author":"agent","body":"<change-summary>"}]}
 ```
 
-Each reply automatically records the reviewer comment it answers. Comments the
-reviewer added during the round stay queued for the next round. Never resolve
+Pass the round's `claim` with every reply. The reply then records the reviewer
+comment the round answered, and comments the reviewer added during the round
+stay queued for the next round, even if the round was replaced meanwhile. Never resolve
 a thread. Closing the conversation is the reviewer's decision.
 
 ## Finish

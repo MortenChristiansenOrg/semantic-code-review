@@ -175,8 +175,8 @@
   let lastHiddenPoll = 0;
   async function pollViewerRevision() {
     if (reviewDeleted || polling) return;
-    // Hidden tabs keep checking slowly while the agent owes replies, so the round can notify.
-    if (document.hidden && (!agent?.working || Date.now() - lastHiddenPoll < 5000)) return;
+    // Hidden tabs keep checking slowly while an agent listens or works, so a finished round can notify.
+    if (document.hidden && (!(agent?.working || agent?.listening) || Date.now() - lastHiddenPoll < 5000)) return;
     if (document.hidden) lastHiddenPoll = Date.now();
     polling = true;
     try {

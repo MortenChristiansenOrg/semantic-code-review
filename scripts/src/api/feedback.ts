@@ -101,6 +101,8 @@ export interface ReplyFeedbackThreadOptions {
   attachments?: string[];
   /** Comment author; defaults to `user`. Implementation agents reply with `agent`. */
   author?: "user" | "agent";
+  /** Agent replies only: the round (`claim` from the feedback preflight) this reply belongs to. The reply then answers through the comment that round claimed, even if the round was replaced. */
+  claim?: string;
 }
 
 /**
@@ -119,6 +121,8 @@ export interface ReplyFeedbackThreadsOptions {
   partial?: true;
   /** JSON array of reply inputs using the same fields as `thread reply`. */
   replies: string;
+  /** Round for every agent reply that does not name its own `claim`. */
+  claim?: string;
 }
 
 /**

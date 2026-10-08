@@ -234,11 +234,12 @@ export const reviewFeedbackApi: CliSignature = {
         option("body", "<text>"),
         option("attachments", "<attachment-id>", { repeatable: true }),
         option("author", "<user|agent>"),
+        option("claim", "<claim-id>"),
       ],
     },
     {
       command: "thread reply-batch",
-      options: [option("replies", "<json-array>", { required: true }), option("partial")],
+      options: [option("replies", "<json-array>", { required: true }), option("partial"), option("claim", "<claim-id>")],
     },
     {
       command: "thread resolve",

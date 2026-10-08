@@ -14,6 +14,8 @@ export const LISTENER_GRACE_MS = 90_000;
 export const SENDING_LIMIT_MS = 60_000;
 /** An interactive session ends after this long without new feedback. */
 export const IDLE_LIMIT_MS = 2 * 60 * 60_000;
+/** Released and completed rounds remembered for fencing late replies. */
+const RETIRED_CLAIM_LIMIT = 50;
 
 export interface ClaimedThread { id: string; through: string; answeredAt?: string }
 export interface AgentClaim {
@@ -28,9 +30,12 @@ export interface AgentSession {
   id: string; startedAt: string; heartbeatAt: string; feedbackAt: string;
   stopRequestedAt?: string; endedAt?: string; endReason?: string;
 }
+/** What a released or completed round answered, so its late replies stay fenced. */
+export interface RetiredClaim { id: string; threads: { id: string; through: string }[] }
 export interface AgentState {
   session: AgentSession | null;
   claims: AgentClaim[];
+  retiredClaims: RetiredClaim[];
   requests: AgentRequest[];
   sendingUntil?: string;
   lastRound?: { id: string; completedAt: string; threadIds: string[] };
@@ -51,6 +56,7 @@ export function readAgentState(reviewId: string): AgentState {
   return {
     session: value?.session && typeof value.session.id === "string" ? value.session : null,
     claims: Array.isArray(value?.claims) ? value.claims : [],
+    retiredClaims: Array.isArray(value?.retiredClaims) ? value.retiredClaims : [],
     requests: Array.isArray(value?.requests) ? value.requests : [],
     ...(typeof value?.sendingUntil === "string" ? { sendingUntil: value.sendingUntil } : {}),
     ...(value?.lastRound ? { lastRound: value.lastRound } : {}),
@@ -62,9 +68,14 @@ export function updateAgentState<T>(reviewId: string, change: (state: AgentState
   return withReviewLock(reviewId, () => {
     const state = readAgentState(reviewId);
     const before = JSON.stringify(state);
+    const previous = [...state.claims];
     const now = Date.now();
     const result = change(state, now);
     state.claims = state.claims.filter((claim) => claimActive(claim, now));
+    const remaining = new Set(state.claims.map((claim) => claim.id));
+    const retired = previous.filter((claim) => !remaining.has(claim.id))
+      .map((claim) => ({ id: claim.id, threads: claim.threads.map(({ id, through }) => ({ id, through })) }));
+    if (retired.length) state.retiredClaims = [...state.retiredClaims, ...retired].slice(-RETIRED_CLAIM_LIMIT);
     if (JSON.stringify(state) !== before && fs.existsSync(path.join(reviewDirectory(reviewId), "review.json"))) atomicJson(agentFile(reviewId), state);
     return result;
   });
@@ -133,11 +144,20 @@ export function claimedThrough(state: AgentState, now: number, threadId: string)
   return undefined;
 }
 
-/** Marks agent replies; a round completes when every claimed thread has one. */
-export function recordAgentReplies(state: AgentState, now: number, threadIds: string[]) {
+/** The comment a named round answers in a thread, even after the round was released. */
+export function roundThrough(state: AgentState, claimId: string, threadId: string) {
+  const claim = state.claims.find((item) => item.id === claimId) ?? state.retiredClaims.find((item) => item.id === claimId);
+  return claim?.threads.find((thread) => thread.id === threadId)?.through;
+}
+
+/** Marks agent replies; a round completes when every claimed thread has one.
+ * A reply naming its round only counts for that round, so a replaced round never ends a newer one. */
+export function recordAgentReplies(state: AgentState, now: number, replies: { threadId: string; claimId?: string }[]) {
   for (const claim of state.claims) {
     if (!claimActive(claim, now)) continue;
-    for (const thread of claim.threads) if (threadIds.includes(thread.id) && !thread.answeredAt) thread.answeredAt = iso(now);
+    for (const thread of claim.threads) {
+      if (!thread.answeredAt && replies.some((reply) => reply.threadId === thread.id && (!reply.claimId || reply.claimId === claim.id))) thread.answeredAt = iso(now);
+    }
     if (claim.threads.every((thread) => thread.answeredAt)) {
       state.lastRound = { id: claim.id, completedAt: iso(now), threadIds: claim.threads.map((thread) => thread.id) };
     }

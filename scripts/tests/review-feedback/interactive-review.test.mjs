@@ -132,3 +132,41 @@ test("restacking renews the running round and reports progress notes", (t) => {
   assert.ok(Date.now() - Date.parse(renewed.activityAt) < 60_000);
   assert.equal(renewed.note, "Changing the implementation stage");
 });
+
+test("a replaced round's late reply answers only what that round claimed", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "late");
+  const earlier = flowJson(repository);
+  reply(repository, "late", "follow-up", "user");
+  const replacement = flowJson(repository);
+  assert.notEqual(replacement.claim, earlier.claim);
+  assert.deepEqual(threadIds(replacement), ["late"]);
+
+  repository.feedback("thread", "reply", "--id", "late", "--comment-id", "late-answer", "--author", "agent", "--claim", earlier.claim, "--body", "Answered the first note.");
+  let thread = repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json"));
+  assert.equal(thread.comments.at(-1).respondsTo, "late-note");
+  assert.deepEqual(agentState(repository).claims.map((claim) => [claim.id, claim.threads[0].answeredAt]), [[replacement.claim, undefined]]);
+  repository.expectFeedbackFailure("is not part of round", "thread", "reply", "--id", "late", "--comment-id", "unknown", "--author", "agent", "--claim", "missing-round", "--body", "?");
+  repository.expectFeedbackFailure("--claim applies only to agent replies", "thread", "reply", "--id", "late", "--comment-id", "user-claim", "--claim", earlier.claim, "--body", "?");
+
+  repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "late", "comment-id": "final", author: "agent", body: "Done." }]), "--claim", replacement.claim);
+  thread = repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json"));
+  assert.equal(thread.comments.at(-1).respondsTo, "follow-up");
+  assert.equal(agentState(repository).lastRound.id, replacement.claim);
+  assert.deepEqual(flowJson(repository).stages, []);
+});
+
+test("a listener does not claim feedback while a viewer send is still writing", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const { session } = await waitAsync(repository, "--timeout", "1");
+  addThread(repository, "sending");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const claimNext = () => JSON.parse(repository.feedback("next", "--json", "--compact", "--claim", "--session", session));
+  fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), sendingUntil: new Date(Date.now() + 60_000).toISOString() }));
+  assert.deepEqual(claimNext(), { claim: null, claimedElsewhere: 0, stages: [] });
+  const { sendingUntil, ...settled } = agentState(repository);
+  fs.writeFileSync(file, JSON.stringify(settled));
+  assert.deepEqual(claimNext().stages.flatMap((stage) => stage.threads.map((thread) => thread.id)), ["sending"]);
+});
