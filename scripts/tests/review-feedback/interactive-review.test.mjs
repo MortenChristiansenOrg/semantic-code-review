@@ -170,3 +170,26 @@ test("a listener does not claim feedback while a viewer send is still writing", 
   fs.writeFileSync(file, JSON.stringify(settled));
   assert.deepEqual(claimNext().stages.flatMap((stage) => stage.threads.map((thread) => thread.id)), ["sending"]);
 });
+
+test("JSON input carries agent messages verbatim and a batch round applies only to agent replies", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "mixed");
+  const round = flowJson(repository);
+  const input = (name, value) => {
+    const file = path.join(fs.mkdtempSync(path.join(path.dirname(repository.root), "semantic-input-")), `${name}.json`);
+    t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
+    fs.writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  repository.feedback("agent", "ask", "--input", input("ask", { id: "shell-text", body: "Keep `$(rm -rf x)` literal?", choice: ["Yes", "No"] }));
+  assert.deepEqual(agentState(repository).requests.map(({ body, choices }) => ({ body, choices })), [{ body: "Keep `$(rm -rf x)` literal?", choices: ["Yes", "No"] }]);
+  repository.feedback("thread", "reply-batch", "--input", input("batch", { claim: round.claim, replies: [
+    { id: "mixed", "comment-id": "reviewer-note", author: "user", body: "Reviewer aside." },
+    { id: "mixed", "comment-id": "agent-note", author: "agent", body: "Renamed to `isCancellable`." },
+  ] }));
+  const comments = repository.readAbsoluteJson(repository.feedbackPath("threads", "mixed.json")).comments;
+  assert.equal(comments.find((comment) => comment.id === "agent-note").body, "Renamed to `isCancellable`.");
+  assert.equal(comments.find((comment) => comment.id === "agent-note").respondsTo, "mixed-note");
+  assert.equal(agentState(repository).lastRound.id, round.claim);
+});

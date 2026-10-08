@@ -81,14 +81,18 @@ The reviewer works in the viewer. Ask every question there, never in the chat:
   worktree, or a restack conflict that needs a behavior decision, ask with:
 
   ```text
-  <review-feedback> agent ask --id <request-id> --body "<question>" [--choice "<option>" ...]
+  <review-feedback> agent ask --input -
+  {"id":"<request-id>","body":"<question>","choice":["<option>","<option>"]}
   ```
 
   Choices are optional; the reviewer can always write a different answer. The
   answer is returned in `responses` by the next feedback command. Continue the
   work that does not depend on it.
 
-Follow `../docs/user-decisions.md` for what to ask and how to phrase it. Write
+Pass message text only through JSON input (`--input -` or an OS temporary file
+outside the repository), never inside shell-quoted arguments, where characters
+such as backticks would be interpreted by the shell. Follow
+`../docs/user-decisions.md` for what to ask and how to phrase it. Write
 in the chat only one short closing line, or when a failure makes the viewer or
 its review data unusable.
 
@@ -113,7 +117,8 @@ subagent the thread conversation, its group's `stageId`, `stageBase`, and
 - posts its answer from the artifact worktree:
 
   ```text
-  <review-feedback> thread reply --id <thread-id> --comment-id <new-comment-id> --author agent --claim <claim> --body "<answer>"
+  <review-feedback> thread reply --input -
+  {"id":"<thread-id>","comment-id":"<new-comment-id>","author":"agent","claim":"<claim>","body":"<answer>"}
   ```
 
 If the answer reveals a defect, say so in the reply instead of changing code.

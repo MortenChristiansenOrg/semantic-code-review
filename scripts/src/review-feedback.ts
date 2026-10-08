@@ -909,10 +909,10 @@ function replyThreadBatch(paths, options) {
   if (!Array.isArray(values) || values.length === 0) {
     fail("--replies must contain a non-empty JSON array.");
   }
-  // A batch-level round applies to every reply that does not name its own.
+  // A batch-level round applies to every agent reply that does not name its own.
   const claim = option(options, "claim");
   const items = claim
-    ? values.map((value) => value && typeof value === "object" && !Array.isArray(value) && !("claim" in value) ? { ...value, claim } : value)
+    ? values.map((value) => value && typeof value === "object" && !Array.isArray(value) && value.author === "agent" && !("claim" in value) ? { ...value, claim } : value)
     : values;
   if (flag(options, "partial")) {
     console.log(JSON.stringify(partialFeedbackBatch(paths, items, "reply")));

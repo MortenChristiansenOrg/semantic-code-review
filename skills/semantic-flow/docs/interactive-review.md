@@ -57,7 +57,8 @@ again with the session instead of rerunning the preflight.
 Before long steps, you may show what the round is doing:
 
 ```text
-<review-feedback> agent progress --body "Changing the cancellation and refund stages"
+<review-feedback> agent progress --input -
+{"body":"Changing the cancellation and refund stages"}
 ```
 
 When a round needs an answer from `agent ask`, wait with the session as usual.
