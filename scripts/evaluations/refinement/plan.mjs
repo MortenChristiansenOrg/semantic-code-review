@@ -38,6 +38,7 @@ export function plan(config, directory = process.cwd()) {
   });
   const selections = config.scenarios.map(s => {
     positive(s.repetitions, `${s.id}.repetitions`);
+    if (s.runMinutes !== undefined) positive(s.runMinutes, `${s.id}.runMinutes`);
     if (!idPattern.test(s.id ?? '')) throw new Error('Invalid scenario id');
     if (config.mode === 'compare' && s.repetitions < 3) throw new Error('Comparisons require at least three repetitions per scenario');
     if (s.adapter) {

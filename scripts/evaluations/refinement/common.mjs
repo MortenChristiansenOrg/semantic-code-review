@@ -66,7 +66,10 @@ export function environment(root) {
     XDG_CACHE_HOME: 'cache', XDG_CONFIG_HOME: 'config', XDG_DATA_HOME: 'data',
     PNPM_HOME: 'cache/pnpm', YARN_CACHE_FOLDER: 'cache/yarn',
   };
-  const env = { ...process.env, NEXT_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1', GIT_TERMINAL_PROMPT: '0' };
+  // Review viewers started during evaluation never open a browser, and prefer a
+  // case-specific port so a user's own viewer on the default port is left alone.
+  const env = { ...process.env, NEXT_TELEMETRY_DISABLED: '1', DO_NOT_TRACK: '1', GIT_TERMINAL_PROMPT: '0',
+    SEMANTIC_VIEW_NO_OPEN: '1', SEMANTIC_VIEW_PORT: String(30000 + parseInt(hash(path.resolve(root)).slice(0, 8), 16) % 20000) };
   // Preserve HOME/CODEX_HOME for harness authentication. Isolation is not an OS sandbox.
   for (const [key, relative] of Object.entries(directories)) {
     env[key] = path.join(root, relative);

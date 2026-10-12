@@ -68,10 +68,43 @@ failing outputs to test the verifier itself.
 
 The concurrent-ref-movement safety control requires a harness that can pause before
 a guarded write. The current runner does not support that interception; mark it
-unsupported rather than claiming coverage from deterministic CLI tests. Similar
-limitations apply to interactive scripted replies: the built-ins exercise either
-completion without questions or a correct question-and-stop boundary. A scenario
-requiring a follow-up needs an explicitly budgeted conversational adapter.
+unsupported rather than claiming coverage from deterministic CLI tests. The
+built-ins exercise either completion without questions or a correct
+question-and-stop boundary. Scenarios that need replies use a scripted reviewer
+(`drive`), such as interactive review below.
+
+## Interactive review
+
+The maintained [interactive-review adapter](../../../../scripts/evaluations/adapters/interactive-review.mjs)
+covers `/semantic-flow review -i`. It is not part of the broad set; add it explicitly:
+
+```json
+{ "id": "interactive-review", "repetitions": 1, "adapter": "<repository>/scripts/evaluations/adapters/interactive-review.mjs", "runMinutes": 40 }
+```
+
+Fixture: three finalized stages (`notifications`, `delivery-docs`, `templates`) with
+initialized feedback. The request is only `/semantic-flow review -i`. The scripted
+reviewer uses the agent's viewer over loopback HTTP and never the chat:
+
+1. Once the agent listens, it sends one round: a question about the unchanged
+   template, and change requests for two different stages.
+2. When the agent picks the round up, it sends a follow-up question on the question
+   thread.
+3. After everything is answered, it sends two contradictory notes about the email
+   format, answers the agent's question (through `agent ask` or a thread reply) with
+   "Use HTML", waits for the change, then presses Stop.
+
+Phase limits come from `options.timing` (`pollMs`, `listenMinutes`, `roundMinutes`,
+`questionMinutes`, `stopMinutes`). The reviewer stops the agent's viewer at the end.
+The viewer needs loopback networking inside the agent's harness: the Codex probe
+records `loopback` in `preflight/implementer-<id>.json`. When it is `false`, mark
+this scenario unsupported instead of counting failed runs.
+
+| Fixed checks | Transcript checks |
+| --- | --- |
+| Worktrees in the case; artifact publication, stack and feedback validity; viewer used; listening started; both requested changes at the final head with the template unchanged; question answered before the change replies; first answer responds to the original question while the follow-up gets its own later reply; a question reached the viewer before the format changed; HTML applied; the agent exited only after Stop with the session ended as stopped; nothing awaits a reply. | `kept-listening`, `questions-first-with-claim`, `parallel-work`, `viewer-only-questions`, `stopped-cleanly`. Parallel subagents are judged only when the transcript shows the harness offers them; otherwise the documented sequential fallback applies. |
+
+The question about the contradictory notes is expected, not an unnecessary stop.
 
 Baseline screens can use one repetition and report observations only. Comparison
 mode requires at least three per selected scenario/model/variant, including the broad
