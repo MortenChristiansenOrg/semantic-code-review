@@ -46,6 +46,9 @@ limits:
 - **Compare scope:** one candidate at a time, three repetitions per scenario,
   including the full broad set for both variants. A one-model comparison needs
   at least 36 evaluated runs plus grading. Budget before editing or launching.
+- **Interactive review:** opt-in. Add the maintained `interactive-review` adapter
+  scenario with its own `runMinutes` when `review -i` behavior is in scope; see
+  [scenarios.md](references/scenarios.md#interactive-review).
 - **Metrics:** all applicable metrics by default. Null values require reasons;
   unavailable measurements and metrics irrelevant to the mode are not failures.
 

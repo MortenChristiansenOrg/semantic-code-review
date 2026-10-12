@@ -33,6 +33,7 @@ export async function adapterFor(selection) {
   if (!selection.adapter) return null;
   const adapter = await import(pathToFileURL(selection.adapter).href);
   for (const name of ['preflight', 'prepare', 'verify']) if (typeof adapter[name] !== 'function') throw new Error(`Adapter ${selection.id} must export ${name}()`);
+  if (adapter.drive !== undefined && typeof adapter.drive !== 'function') throw new Error(`Adapter ${selection.id} drive must be a function`);
   if (!Array.isArray(adapter.transcriptChecks) || !adapter.transcriptChecks.length || !Array.isArray(adapter.checkIds) || !adapter.checkIds.length) throw new Error('Adapter must declare nonempty transcriptChecks and checkIds');
   if (!adapter.transcriptCriteria || JSON.stringify(Object.keys(adapter.transcriptCriteria).sort()) !== JSON.stringify([...adapter.transcriptChecks].sort()) || Object.values(adapter.transcriptCriteria).some(value => typeof value !== 'string' || !value.trim())) throw new Error('Adapter must define a nonempty transcriptCriteria rule for every transcript check, including applicability');
   return adapter;
@@ -88,7 +89,10 @@ export async function prepare(configFile, directory) {
         `Use the Semantic Flow skill at ${path.join(variant.install, 'SKILL.md')}.`,
         `Repository: ${fixture.repo}. All writes (including worktrees, temporary files and caches) must stay under ${root}.`,
         `SEMANTIC_FLOW_HOME=${env.SEMANTIC_FLOW_HOME}; temporary files: ${env.TMPDIR}; npm cache: ${env.npm_config_cache}.`,
-        'Do not edit the installed skill or perform remote operations. This is a non-interactive run. If user input is essential, state the exact question and stop dependent work; no scripted reply is available.',
+        // A driven scenario has a scripted reviewer acting in the review viewer, never in the chat.
+        adapter?.drive
+          ? 'Do not edit the installed skill or perform remote operations. This is a non-interactive run: nobody reads the chat until it ends. A reviewer uses the review viewer during the run.'
+          : 'Do not edit the installed skill or perform remote operations. This is a non-interactive run. If user input is essential, state the exact question and stop dependent work; no scripted reply is available.',
         fixture.agentSetup ?? '', '', fixture.request, '',
       ].join('\n'));
     }
@@ -143,7 +147,8 @@ export async function launch(command, options) {
     });
   });
 }
-export async function runJob(directory, session, job, agent, root, repo, prompt) {
+/** `drive` runs beside an evaluated agent (a scripted reviewer); it receives the agent's exit. */
+export async function runJob(directory, session, job, agent, root, repo, prompt, { drive, runMinutes } = {}) {
   const destination = path.join(directory, 'runs', job.id); fs.mkdirSync(destination, { recursive: true });
   const output = path.join(destination, 'final.txt');
   const substitutions = { model: agent.model, effort: agent.effort, case: root, repo, output, schema: path.join(root, 'output-schema.json') };
@@ -157,15 +162,44 @@ export async function runJob(directory, session, job, agent, root, repo, prompt)
   const record = { ...job, state: 'running', startedAt: new Date().toISOString(), modelId: agent.model, effort: agent.effort, command, isolation: agent.isolation };
   writeJson(recordFile(directory, job.id), record); console.log(`Starting ${job.id}`);
   const started = Date.now();
-  const execution = await launch(command, { cwd: repo, env: environment(root), prompt, stdoutFile: path.join(destination, 'transcript.jsonl'), stderrFile: path.join(destination, 'stderr.log'), timeoutMs: Math.min(callTime, session.plan.budget.runMinutes * 60_000) });
+  const running = launch(command, { cwd: repo, env: environment(root), prompt, stdoutFile: path.join(destination, 'transcript.jsonl'), stderrFile: path.join(destination, 'stderr.log'), timeoutMs: Math.min(callTime, (runMinutes ?? session.plan.budget.runMinutes) * 60_000) });
+  const driving = drive ? driveBeside(drive, running, path.join(destination, 'driver.json')) : null;
+  const execution = await running;
+  const driverError = driving ? await driving : null;
   const raw = fs.readFileSync(path.join(destination, 'transcript.jsonl'), 'utf8');
   if (execution.timedOut) execution.error = 'Harness timed out';
   if (execution.interrupted) execution.error = 'Harness interrupted';
   const telemetry = agent.transcript === 'codex-jsonl' ? codexTelemetry(raw) : { tools: null, tokens: null, bytesRead: null, final: raw, completed: true, errors: [] };
-  // A harness failure is invalid evidence, not an application failure or an unnecessary user stop.
-  Object.assign(record, execution, { seconds: (Date.now() - started) / 1000, telemetry, state: execution.exitCode === 0 && !execution.timedOut && !execution.interrupted && telemetry.completed && !telemetry.errors.length ? 'completed' : 'invalid' });
+  // A harness or scripted-reviewer failure is invalid evidence, not an application failure or an unnecessary user stop.
+  if (driverError) execution.error = `Scripted reviewer failed: ${driverError}`;
+  Object.assign(record, execution, { seconds: (Date.now() - started) / 1000, telemetry, state: execution.exitCode === 0 && !execution.timedOut && !execution.interrupted && !driverError && telemetry.completed && !telemetry.errors.length ? 'completed' : 'invalid' });
   fs.writeFileSync(output, telemetry.final); writeJson(recordFile(directory, job.id), record);
   console.log(`${job.id}: ${record.state}`); return record;
+}
+/** Runs a scenario's scripted reviewer until it finishes after the agent exits. Returns an
+ * evaluator failure message, or null; the reviewer's record is saved either way. The
+ * reviewer is aborted after the grace period and abandoned shortly after that. */
+const DRIVER_GRACE_MS = 120_000, DRIVER_ABANDON_MS = 10_000;
+export async function driveBeside(drive, running, file, graceMs = DRIVER_GRACE_MS, abandonMs = DRIVER_ABANDON_MS) {
+  const controller = new AbortController();
+  const driving = Promise.resolve().then(() => drive({ signal: controller.signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) }));
+  driving.catch(() => {}); // Observed after the agent exits; never an unhandled rejection meanwhile.
+  await running;
+  const timers = [];
+  const overrun = new Promise((_, reject) => {
+    timers.push(setTimeout(() => controller.abort(), graceMs));
+    timers.push(setTimeout(() => reject(new Error(`Scripted reviewer did not finish within ${Math.round(graceMs / 1000)} seconds after the agent exited`)), graceMs + abandonMs));
+  });
+  try {
+    const record = await Promise.race([driving, overrun]);
+    if (!record || typeof record !== 'object') throw new Error('drive() must return its serializable record');
+    writeJson(file, record);
+    return null;
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error ?? '')) || 'Scripted reviewer failed without a message';
+    writeJson(file, { error: message, ...(error?.record && typeof error.record === 'object' ? { record: error.record } : {}) });
+    return message;
+  } finally { timers.forEach(clearTimeout); }
 }
 export async function runEvaluations(directory) {
   const session = loadSession(directory); checkPins(session);
@@ -178,7 +212,10 @@ export async function runEvaluations(directory) {
     if (remaining <= session.plan.grading.reserveMinutes * 60_000) { console.log('Remaining time reserved for grading; unlaunched evaluations remain not-run.'); break; }
     const fixture = readJson(path.join(directory, 'runs', job.id, 'fixture.json'));
     const agent = session.plan.implementers.find(a => a.id === job.model);
-    const result = await runJob(directory, session, job, agent, fixture.root, fixture.repo, fs.readFileSync(path.join(directory, 'runs', job.id, 'prompt.txt'), 'utf8'));
+    const selection = session.plan.scenarios.find(s => s.id === job.scenario), adapter = await adapterFor(selection);
+    const variant = session.plan.variants.find(v => v.id === job.variant);
+    const drive = adapter?.drive && (controls => adapter.drive({ fixture, root: fixture.root, skill: variant.install, env: environment(fixture.root), options: selection.options ?? {}, capabilities: selection.capabilities, ...controls }));
+    const result = await runJob(directory, session, job, agent, fixture.root, fixture.repo, fs.readFileSync(path.join(directory, 'runs', job.id, 'prompt.txt'), 'utf8'), { drive, runMinutes: selection.runMinutes });
     if (result.state === 'invalid') throw new Error(`Evaluation ${job.id} is invalid; inspect its result and transcript. No automatic retry.`);
   }
   const invalid = session.plan.jobs.filter(job => fs.existsSync(recordFile(directory, job.id)) && readJson(recordFile(directory, job.id)).state !== 'completed');
@@ -195,7 +232,9 @@ export async function verify(directory) {
     let verification;
     try {
       const adapter = await adapterFor(selection);
-      verification = adapter ? await adapter.verify({ fixture, root: fixture.root, skill: variant.install, env, options: selection.options ?? {}, capabilities: selection.capabilities }) : verifyFixture(fixture, fixture.root, variant.install, job.scenario, env);
+      const driverFile = path.join(directory, 'runs', job.id, 'driver.json');
+      const driver = fs.existsSync(driverFile) ? readJson(driverFile) : undefined;
+      verification = adapter ? await adapter.verify({ fixture, root: fixture.root, skill: variant.install, env, options: selection.options ?? {}, capabilities: selection.capabilities, driver }) : verifyFixture(fixture, fixture.root, variant.install, job.scenario, env);
       if (!Array.isArray(verification.checks) || !verification.checks.length || verification.checks.some(c => typeof c.passed !== 'boolean' || !c.id)) throw new Error('Verifier returned invalid checks');
       if (adapter) {
         if (JSON.stringify(verification.checks.map(c => c.id).sort()) !== JSON.stringify([...adapter.checkIds].sort())) throw new Error('Adapter omitted or changed its declared checks');

@@ -106,6 +106,8 @@ The current helper implements Codex JSONL usage semantics only; other adapters m
 
 The environment supplies private `SEMANTIC_FLOW_HOME`, TMPDIR/TMP/TEMP, npm caches,
 XDG cache/config/data paths, pnpm and Yarn cache paths, and Git configuration.
+Review viewers never open a browser (`SEMANTIC_VIEW_NO_OPEN`) and prefer a
+case-specific `SEMANTIC_VIEW_PORT`, so a user's own viewer is left alone.
 HOME and CODEX_HOME remain intact for harness authentication. Custom frameworks
 must pin any additional cache/profile paths in their fixture setup. API access by
 the harness is expected; agents cannot push, fetch, deploy or use live application
@@ -160,6 +162,31 @@ export async function verify({ fixture, root, skill, env, options, capabilities 
   return { checks: [/* {id, passed, evidence} */], evidence: {} };
 }
 ```
+
+A scenario entry may also set `runMinutes`, replacing `budget.runMinutes` for its
+runs; a driven scenario usually needs much longer than a one-shot request.
+
+### Scripted reviewers
+
+An adapter may also export `drive`, a scripted reviewer that runs beside the
+evaluated agent:
+
+```js
+export async function drive({ fixture, root, skill, env, options, capabilities, signal, agentExited }) {
+  // Act only through the interfaces a real reviewer uses (for example the viewer's
+  // HTTP API), record what happened, stop any service the agent left running, and
+  // return a serializable record. agentExited resolves with the agent's exit and
+  // time; signal aborts the reviewer if it overruns after the agent exits.
+  return { events: [] };
+}
+```
+
+The runner starts it with the agent, saves its record as `driver.json` and passes
+it to `verify` as `driver`. Agent behavior belongs in the record and the checks; throw
+only for evaluator failures, which make the attempt invalid. For a driven scenario
+the prompt says a reviewer acts in the review viewer during the run instead of
+saying that no scripted reply exists. Keep the reviewer's script out of the request
+and setup text.
 
 The adapter must use Node built-ins or absolute, preflight-verified tool paths, not
 relative imports that break when it is copied. Pin acceptance scripts and dependency

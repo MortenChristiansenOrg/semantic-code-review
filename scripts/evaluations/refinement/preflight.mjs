@@ -27,6 +27,7 @@ export function sandboxProbeCommand(agent, root, repo) {
 // Exercise stdin/EOF through the same Node runtime used by the bundled CLI.
 // A runtime that echoes input but never closes the pipe must fail before paid calls.
 const program = `import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 function run(command,args,options={}) {
@@ -46,7 +47,9 @@ if(process.argv[2]==='implementer') {
  run('git',['-C',worktree,'commit','--allow-empty','-qm','Worktree capability probe']);
  run('git',['worktree','remove',worktree]);
 }
-console.log(JSON.stringify({node:process.version,stdin:true,filesystem:true,git:process.argv[2]==='implementer'}));
+// Review viewers listen on loopback; record whether the sandbox allows it.
+const loopback=await new Promise(resolve=>{const server=net.createServer();server.once('error',()=>resolve(false));server.listen(0,'127.0.0.1',()=>server.close(()=>resolve(true)));});
+console.log(JSON.stringify({node:process.version,stdin:true,filesystem:true,git:process.argv[2]==='implementer',loopback}));
 `;
 
 export function preflightAgent(agent, role, root, record) {

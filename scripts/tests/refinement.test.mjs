@@ -9,7 +9,7 @@ import { plan } from '../evaluations/refinement/plan.mjs';
 import { codexTelemetry } from '../evaluations/refinement/telemetry.mjs';
 import { checked, environment, execute, inside, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
 import { begin, finish, initialize, prepareFixture, priceAcceptance, scenarios, verifyFixture } from '../evaluations/refinement/scenarios.mjs';
-import { adapterFor, checkPins, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
+import { adapterFor, checkPins, driveBeside, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
 import { collectResults, grade, invalidate, redact, report, validateGrades } from '../evaluations/refinement/grading.mjs';
 import { gradeSchema } from '../evaluations/refinement/grade-schema.mjs';
 import { sandboxProbeCommand } from '../evaluations/refinement/preflight.mjs';
@@ -55,6 +55,9 @@ test('environment isolates cache/temp/review paths while preserving harness auth
   const root = temp(t), env = environment(root);
   for (const key of ['TMPDIR', 'TMP', 'TEMP', 'SEMANTIC_FLOW_HOME', 'npm_config_cache', 'NPM_CONFIG_CACHE', 'XDG_CACHE_HOME', 'YARN_CACHE_FOLDER']) assert.ok(env[key].startsWith(root + path.sep));
   assert.equal(env.HOME, process.env.HOME); assert.equal(env.CODEX_HOME, process.env.CODEX_HOME);
+  // Evaluation viewers never open a browser and avoid the default viewer port.
+  assert.equal(env.SEMANTIC_VIEW_NO_OPEN, '1'); assert.ok(Number(env.SEMANTIC_VIEW_PORT) >= 30000 && Number(env.SEMANTIC_VIEW_PORT) < 50000);
+  assert.equal(environment(root).SEMANTIC_VIEW_PORT, env.SEMANTIC_VIEW_PORT);
 });
 
 test('worktree containment accepts physical aliases and rejects symlink escapes, including new files', t => {
@@ -398,4 +401,60 @@ test('evaluated calls cannot consume the time reserved for graders', async t => 
   session.createdAt = new Date(Date.now() - 61_000).toISOString();
   await assert.rejects(() => runJob(root, session, second, agent, root, root, 'test'), /reserved for grading/);
   assert.equal(fs.existsSync(path.join(root, 'runs/not-started/result.json')), false);
+});
+
+test('driven scenarios run a scripted reviewer beside the agent and verification receives its record', async t => {
+  const root = temp(t), config = sample(), configFile = path.join(root, 'config.json'), directory = path.join(root, 'records');
+  const fake = path.join(root, 'fake-model.mjs');
+  fs.writeFileSync(fake, `for await (const part of process.stdin) {}
+console.log(JSON.stringify({type:'turn.started'}));
+console.log(JSON.stringify({type:'item.completed',item:{id:'answer',type:'agent_message',text:'Listening ended.'}}));
+console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_input_tokens:0,output_tokens:1}}));`);
+  const adapter = (name, drive) => {
+    const file = path.join(root, `${name}.mjs`);
+    fs.writeFileSync(file, `import fs from 'node:fs'; import path from 'node:path'; import { execFileSync } from 'node:child_process';
+export const checkIds = ['reviewed']; export const transcriptChecks = ['observed'];
+export const transcriptCriteria = { observed: 'Pass when the scripted exchange is visible; always applicable here.' };
+export async function preflight() { return { scripted: true }; }
+export async function prepare({ root }) { const repo = path.join(root, 'project'); fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]); return { repo, request: 'Review interactively.' }; }
+export async function drive({ agentExited, signal }) { ${drive} }
+export async function verify({ driver }) { return { checks: [{ id: 'reviewed', passed: driver?.sawExit === true, evidence: driver }] }; }`);
+    return file;
+  };
+  for (const agent of [...config.implementers, config.grader]) { agent.command = [process.execPath, fake]; agent.versionCommand = [process.execPath, '--version']; agent.isolation = 'prompt'; agent.preflight = 'none'; }
+  config.variants[0].skill = skill; config.grading.instructions = false;
+  config.scenarios = [{ id: 'driven', repetitions: 1, adapter: adapter('driven', 'const exit = await agentExited; return { sawExit: exit.exitCode === 0 && !signal.aborted, at: exit.at };'), runMinutes: 2 }];
+  assert.throws(() => plan({ ...config, scenarios: [{ ...config.scenarios[0], runMinutes: 0 }] }, root), /runMinutes/);
+  writeJson(configFile, config);
+  const session = await prepare(configFile, directory); t.after(() => fs.rmSync(session.workspace, { recursive: true, force: true }));
+  const job = session.plan.jobs[0];
+  assert.match(fs.readFileSync(path.join(directory, 'runs', job.id, 'prompt.txt'), 'utf8'), /A reviewer uses the review viewer during the run/);
+  await runEvaluations(directory);
+  assert.equal(readJson(path.join(directory, 'runs', job.id, 'result.json')).state, 'completed');
+  assert.equal(readJson(path.join(directory, 'runs', job.id, 'driver.json')).sawExit, true);
+  await verify(directory);
+  assert.equal(readJson(path.join(directory, 'runs', job.id, 'checks.json')).checks[0].passed, true);
+
+  // A reviewer failure is evaluator infrastructure: the attempt is invalid, not a task failure.
+  const failing = path.join(root, 'failing-records'), failingConfig = path.join(root, 'failing.json');
+  writeJson(failingConfig, { ...config, scenarios: [{ id: 'driven', repetitions: 1, adapter: adapter('failing', "await agentExited; throw new Error('viewer unreachable');") }] });
+  const failed = await prepare(failingConfig, failing); t.after(() => fs.rmSync(failed.workspace, { recursive: true, force: true }));
+  await assert.rejects(() => runEvaluations(failing), /is invalid/);
+  const result = readJson(path.join(failing, 'runs', failed.plan.jobs[0].id, 'result.json'));
+  assert.equal(result.state, 'invalid'); assert.match(result.error, /Scripted reviewer failed: viewer unreachable/);
+  assert.equal(readJson(path.join(failing, 'runs', failed.plan.jobs[0].id, 'driver.json')).error, 'viewer unreachable');
+});
+
+test('a scripted reviewer that fails silently or hangs makes the attempt invalid instead of passing', async t => {
+  const root = temp(t), file = name => path.join(root, `${name}.json`), exited = Promise.resolve({ exitCode: 0 });
+  assert.equal(await driveBeside(async () => { throw new Error(''); }, exited, file('empty')), 'Scripted reviewer failed without a message');
+  assert.equal(await driveBeside(async () => { throw 'plain text'; }, exited, file('string')), 'plain text');
+  assert.equal(await driveBeside(async () => 'not a record', exited, file('invalid')), 'drive() must return its serializable record');
+  const hung = await driveBeside(() => new Promise(() => {}), exited, file('hung'), 20, 20);
+  assert.match(hung, /did not finish/); assert.match(readJson(file('hung')).error, /did not finish/);
+  // A cooperative reviewer finishes when aborted after the grace period and keeps its record.
+  const aborted = await driveBeside(({ signal }) => new Promise(resolve => signal.addEventListener('abort', () => resolve({ aborted: true }))), exited, file('aborted'), 20, 1000);
+  assert.equal(aborted, null); assert.deepEqual(readJson(file('aborted')), { aborted: true });
+  const failed = await driveBeside(async () => { throw Object.assign(new Error('viewer refused'), { record: { events: ['sent'] } }); }, exited, file('record'));
+  assert.equal(failed, 'viewer refused'); assert.deepEqual(readJson(file('record')).record, { events: ['sent'] });
 });
