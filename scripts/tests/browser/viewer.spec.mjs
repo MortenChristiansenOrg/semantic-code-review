@@ -2223,7 +2223,7 @@ test('interactive review shows agent presence, round progress, unread replies, a
   await expect(page.locator('.side.notes .tthread[data-thread-id="pending"] .tthread-agent')).toHaveText('Agent working');
 
   data.feedback[1].comments.push(comment('u3', 'user', 'Also add a test.'));
-  data.feedback[1].comments.push(comment('a2', 'agent', 'Renamed it.', { respondsTo: 'u2' }));
+  data.feedback[1].comments.push(comment('a2', 'agent', 'Renamed it.', { respondsTo: 'u2', createdAt: '2026-10-08T10:05:00Z' }));
   data.agent = { ...data.agent, working: null, lastRound: { id: 'r1', completedAt: now, threadIds: ['pending'] } };
   data.viewerRevision = 'answered';
   await expect(page.locator('.agent-round')).toContainText('Agent replied to 1 thread');
@@ -2262,4 +2262,27 @@ test('a hidden tab keeps checking slowly while an agent listens', async ({ page 
   await page.waitForTimeout(6500);
   expect(polls).toBeGreaterThanOrEqual(1);
   expect(polls).toBeLessThanOrEqual(2);
+});
+
+test('unread replies persist from an empty start, are tracked per thread, and long replies can be read', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 600 });
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [
+    { id: 'one', status: 'open', target, comments: [comment('u1', 'user', 'First?')] },
+    { id: 'two', status: 'open', target, comments: [comment('u1', 'user', 'Second?')] },
+  ] };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data);
+  await baseline;
+
+  data.feedback[0].comments.push(comment('answer', 'agent', Array.from({ length: 80 }, (_, i) => `Line ${i + 1}`).join('\n'), '2026-10-08T10:05:00Z'));
+  data.feedback[1].comments.push(comment('answer', 'agent', 'Short answer.', '2026-10-08T10:05:00Z'));
+  data.viewerRevision = 'replied';
+  await expect.poll(() => page.title()).toMatch(/^\(2\)/);
+  await showNotes(page);
+  await page.locator('.side.notes [data-reply-key=\'["one","answer"]\']').evaluate((element) => element.scrollIntoView({ block: 'start' }));
+  await expect.poll(() => page.title(), { timeout: 8000 }).toMatch(/^\(1\)/);
+  await expect(page.locator('.side.notes [data-reply-key=\'["two","answer"]\']')).toHaveClass(/is-unread/);
 });

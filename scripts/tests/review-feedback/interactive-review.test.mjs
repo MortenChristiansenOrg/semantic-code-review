@@ -87,7 +87,7 @@ test("a listening session times out, takes one viewer send as one round, and sto
     [{ ref: 0, kind: "stage", id: "implementation", body: "A new note", attachments: [], clientId: "1" }],
     [{ ref: "reply-1", threadId: "earlier", body: "One more thing", attachments: [] }]);
   assert.equal(sent.ok, true);
-  assert.equal(agentState(repository).sendingUntil, undefined);
+  assert.deepEqual(agentState(repository).sends, {});
   const round = await listening;
   assert.equal(round.stages[0].threads.length, 2);
   assert.ok(threadIds(round).includes("earlier"));
@@ -133,13 +133,25 @@ test("restacking renews the running round and reports progress notes", (t) => {
   assert.equal(renewed.note, "Changing the implementation stage");
 });
 
-test("a replaced round's late reply answers only what that round claimed", (t) => {
+test("standalone runs leave another run's active round alone", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "busy");
+  const first = flowJson(repository);
+  assert.deepEqual(threadIds(first), ["busy"]);
+  const second = flowJson(repository);
+  assert.deepEqual(second.stages, []);
+  assert.equal(second.claimedElsewhere, 1);
+  assert.equal(second.claim, null);
+});
+
+test("a replaced round's late reply answers only what that round claimed", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "late");
-  const earlier = flowJson(repository);
+  const earlier = await waitAsync(repository, "--timeout", "5");
   reply(repository, "late", "follow-up", "user");
-  const replacement = flowJson(repository);
+  const replacement = await waitAsync(repository, "--timeout", "5");
   assert.notEqual(replacement.claim, earlier.claim);
   assert.deepEqual(threadIds(replacement), ["late"]);
 
@@ -164,10 +176,13 @@ test("a listener does not claim feedback while a viewer send is still writing", 
   addThread(repository, "sending");
   const file = path.join(reviewDirectory(repository), "agent.json");
   const claimNext = () => JSON.parse(repository.feedback("next", "--json", "--compact", "--claim", "--session", session));
-  fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), sendingUntil: new Date(Date.now() + 60_000).toISOString() }));
+  const until = new Date(Date.now() + 60_000).toISOString();
+  const sends = (value) => fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), sends: value }));
+  sends({ first: until, second: until });
   assert.deepEqual(claimNext(), { claim: null, claimedElsewhere: 0, stages: [] });
-  const { sendingUntil, ...settled } = agentState(repository);
-  fs.writeFileSync(file, JSON.stringify(settled));
+  sends({ second: until }); // One send finishing never clears another's marker.
+  assert.deepEqual(claimNext(), { claim: null, claimedElsewhere: 0, stages: [] });
+  sends({});
   assert.deepEqual(claimNext().stages.flatMap((stage) => stage.threads.map((thread) => thread.id)), ["sending"]);
 });
 
@@ -192,4 +207,41 @@ test("JSON input carries agent messages verbatim and a batch round applies only 
   assert.equal(comments.find((comment) => comment.id === "agent-note").body, "Renamed to `isCancellable`.");
   assert.equal(comments.find((comment) => comment.id === "agent-note").respondsTo, "mixed-note");
   assert.equal(agentState(repository).lastRound.id, round.claim);
+});
+
+test("a round waiting for the reviewer keeps its work, lease, and answers through Stop", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "decide");
+  const round = await waitAsync(repository, "--timeout", "5");
+  // An unrestacked correction makes the stack temporarily invalid while the round waits.
+  repository.commitFile("implementation.txt", "implementation v2\n", "Work in progress");
+  repository.feedback("agent", "ask", "--id", "which-way", "--body", "Which way?");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const stale = new Date(Date.now() - 20 * 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), claims: agentState(repository).claims.map((claim) => ({ ...claim, activityAt: stale })) }));
+  controlAgent(reviewContext(repository), "stop", {});
+  assert.deepEqual(await waitAsync(repository, "--session", round.session, "--timeout", "2"), { session: round.session, timedOut: true });
+  assert.ok(Date.parse(agentState(repository).claims[0].activityAt) > Date.parse(stale));
+
+  controlAgent(reviewContext(repository), "respond", { requestId: "which-way", body: "Left" });
+  assert.deepEqual((await waitAsync(repository, "--session", round.session, "--timeout", "5")).responses, [{ id: "which-way", question: "Which way?", answer: "Left" }]);
+  repository.semantic("restack", "--from", "implementation");
+  repository.feedback("thread", "reply", "--id", "decide", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Went left.");
+  assert.deepEqual(await waitAsync(repository, "--session", round.session, "--timeout", "5"), { session: round.session, stopped: true, reason: "stopped" });
+});
+
+test("idle sessions still take waiting feedback before ending", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const { session } = await waitAsync(repository, "--timeout", "1");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const age = (state) => ({ ...state, session: { ...state.session, feedbackAt: new Date(Date.now() - 3 * 60 * 60_000).toISOString() } });
+  addThread(repository, "late-night");
+  fs.writeFileSync(file, JSON.stringify(age(agentState(repository))));
+  const round = await waitAsync(repository, "--session", session, "--timeout", "5");
+  assert.deepEqual(threadIds(round), ["late-night"]);
+  repository.feedback("thread", "reply", "--id", "late-night", "--comment-id", "answered", "--author", "agent", "--claim", round.claim, "--body", "Done.");
+  fs.writeFileSync(file, JSON.stringify(age(agentState(repository))));
+  assert.deepEqual(await waitAsync(repository, "--session", session, "--timeout", "5"), { session, stopped: true, reason: "idle" });
 });

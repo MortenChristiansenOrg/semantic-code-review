@@ -14,7 +14,7 @@ export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.j
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs";
 import http from "node:http";
@@ -1442,7 +1442,8 @@ export function sendFeedback({ repoRoot, implementation = null, feedbackCli, con
   const hasReplies = Array.isArray(replies) && replies.length > 0;
   if (!hasNotes && !hasReplies) return { ok: false, error: "No feedback to send." };
   context = feedbackContext(repoRoot, context, hasNotes);
-  updateAgentState(context.reviewId, (state, now) => markSending(state, now, true));
+  const token = randomUUID();
+  updateAgentState(context.reviewId, (state, now) => markSending(state, now, token, true));
   try {
     const sent: Record<string, any> | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), feedbackCli, context }, notes) : null;
     const answered: Record<string, any> | null = hasReplies ? exportFeedbackReplies({ repoRoot, feedbackCli, context }, replies) : null;
@@ -1454,7 +1455,7 @@ export function sendFeedback({ repoRoot, implementation = null, feedbackCli, con
       ...(ok ? {} : { error: sent?.error || answered?.error || "Nothing could be sent." }),
     };
   } finally {
-    updateAgentState(context.reviewId, (state, now) => markSending(state, now, false));
+    updateAgentState(context.reviewId, (state, now) => markSending(state, now, token, false));
   }
 }
 

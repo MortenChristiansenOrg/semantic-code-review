@@ -44,8 +44,9 @@ Each result has one of these shapes:
 A round's result has the same fields as the `feedback --json` preflight in
 `../commands/feedback.md`, with the threads already claimed. Never end the loop
 on your own and never ask whether to continue. Waiting again with a session
-first validates the stack and feedback; fix any failure it reports before
-continuing.
+after a round first validates the stack and feedback; fix any failure it
+reports before continuing. Stop and two hours without feedback take effect only
+after the current round.
 
 ## Rounds
 

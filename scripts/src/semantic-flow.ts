@@ -34,7 +34,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } from "./shared/review-store.js";
-import { claimActive, claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, releaseClaims, sendInProgress, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, releaseClaims, renewSessionClaims, roundAwaitingAnswer, sendInProgress, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { withCheckedFeedback } from "./review-feedback.js";
@@ -879,8 +879,9 @@ async function waitForFeedback(options: Options): Promise<void> {
   const review = reviewId(candidate.worktree, candidate.implementationId);
   registerReview(candidate.worktree, candidate.implementationId, candidate.title);
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
-  // Continuing a session first checks the round just completed.
-  if (requested) {
+  // Continuing a session first checks the round just completed. A round still waiting
+  // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
+  if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
     validateArtifactForFeedback(candidate);
     if (candidate.feedbackExists) {
       const feedbackValidation = executeCapture(process.execPath, [reviewFeedbackScript, "validate"], candidate.worktree);
@@ -908,18 +909,28 @@ async function waitForFeedback(options: Options): Promise<void> {
       const live = liveSession(state);
       if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
       if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
-      const reason = live.stopRequestedAt ? "stopped" : readReview(review).completedAt ? "completed"
-        : now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS ? "idle" : null;
-      if (reason) { endSession(state, now, reason); return { stop: reason }; }
+      const end = (reason: string) => { endSession(state, now, reason); return { stop: reason }; };
+      const idle = now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS;
+      // Answers come first: stopping must never discard a decision the reviewer already made.
       const responses = takeResponses(state, session);
-      if (responses.length) return { responses };
-      if (state.claims.some((claim) => claim.sessionId === session && claimActive(claim, now))) {
-        // A round waiting for the reviewer's answer keeps its threads.
-        if (state.requests.some((request) => request.sessionId === session && !request.response)) return {};
-        releaseClaims(state, session); // Threads left unanswered return to the queue.
+      if (responses.length) {
+        live.feedbackAt = new Date(now).toISOString();
+        renewSessionClaims(state, now, session);
+        return { responses };
       }
+      if (roundAwaitingAnswer(state, now, session)) {
+        // The round keeps its threads while the reviewer decides; Stop applies once it finishes.
+        if (readReview(review).completedAt) return end("completed");
+        if (idle) return end("idle");
+        renewSessionClaims(state, now, session);
+        return {};
+      }
+      releaseClaims(state, session); // Threads a finished round left unanswered return to the queue.
+      if (live.stopRequestedAt) return end("stopped");
+      if (readReview(review).completedAt) return end("completed");
       if (sendInProgress(state, now)) return {};
-      return { pending: unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now)) };
+      if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
+      return idle ? end("idle") : {};
     });
     if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
     if (step.responses) { print({ session, responses: step.responses }); return; }

@@ -37,7 +37,8 @@ export interface AgentState {
   claims: AgentClaim[];
   retiredClaims: RetiredClaim[];
   requests: AgentRequest[];
-  sendingUntil?: string;
+  /** Viewer sends in progress, by send token, with their expiry. */
+  sends: Record<string, string>;
   lastRound?: { id: string; completedAt: string; threadIds: string[] };
 }
 
@@ -58,7 +59,7 @@ export function readAgentState(reviewId: string): AgentState {
     claims: Array.isArray(value?.claims) ? value.claims : [],
     retiredClaims: Array.isArray(value?.retiredClaims) ? value.retiredClaims : [],
     requests: Array.isArray(value?.requests) ? value.requests : [],
-    ...(typeof value?.sendingUntil === "string" ? { sendingUntil: value.sendingUntil } : {}),
+    sends: value?.sends && typeof value.sends === "object" && !Array.isArray(value.sends) ? value.sends : {},
     ...(value?.lastRound ? { lastRound: value.lastRound } : {}),
   };
 }
@@ -72,6 +73,7 @@ export function updateAgentState<T>(reviewId: string, change: (state: AgentState
     const now = Date.now();
     const result = change(state, now);
     state.claims = state.claims.filter((claim) => claimActive(claim, now));
+    for (const [token, until] of Object.entries(state.sends)) if (age(now, until) >= 0) delete state.sends[token];
     const remaining = new Set(state.claims.map((claim) => claim.id));
     const retired = previous.filter((claim) => !remaining.has(claim.id))
       .map((claim) => ({ id: claim.id, threads: claim.threads.map(({ id, through }) => ({ id, through })) }));
@@ -111,11 +113,13 @@ export function startSession(state: AgentState, now: number): AgentSession {
   return session;
 }
 
+/** Ends the live session; threads its unfinished round still holds return to the queue. */
 export function endSession(state: AgentState, now: number, reason: string) {
   const session = liveSession(state);
   if (!session) return;
   session.endedAt = iso(now);
   session.endReason = reason;
+  releaseClaims(state, session.id);
   state.requests = state.requests.filter((request) => request.sessionId !== session.id);
 }
 
@@ -132,6 +136,17 @@ export function createClaim(state: AgentState, now: number, sessionId: string | 
 /** Releases claims so their unanswered threads can be picked up again. */
 export function releaseClaims(state: AgentState, sessionId: string | null) {
   state.claims = state.claims.filter((claim) => claim.sessionId !== sessionId);
+}
+
+/** A session's round that asked the reviewer something keeps its threads until the answer is collected. */
+export function roundAwaitingAnswer(state: AgentState, now: number, sessionId: string) {
+  return state.claims.some((claim) => claim.sessionId === sessionId && claimActive(claim, now)) &&
+    state.requests.some((request) => request.sessionId === sessionId);
+}
+
+/** Keeps the session's running round from expiring while it waits for the reviewer. */
+export function renewSessionClaims(state: AgentState, now: number, sessionId: string) {
+  for (const claim of state.claims) if (claim.sessionId === sessionId && claimActive(claim, now)) claim.activityAt = iso(now);
 }
 
 /** The user comment a reply to this thread answers, when a running round claimed it. */
@@ -160,18 +175,22 @@ export function recordAgentReplies(state: AgentState, now: number, replies: { th
     }
     if (claim.threads.every((thread) => thread.answeredAt)) {
       state.lastRound = { id: claim.id, completedAt: iso(now), threadIds: claim.threads.map((thread) => thread.id) };
+      // A finished round counts as activity, so a long round does not end the session as idle.
+      const session = liveSession(state);
+      if (session && session.id === claim.sessionId) session.feedbackAt = iso(now);
     }
   }
   touchAgent(state, now);
 }
 
-export function markSending(state: AgentState, now: number, sending: boolean) {
-  if (sending) state.sendingUntil = iso(now + SENDING_LIMIT_MS);
-  else delete state.sendingUntil;
+/** Each send owns a token, so one finishing send never clears another's marker. */
+export function markSending(state: AgentState, now: number, token: string, sending: boolean) {
+  if (sending) state.sends[token] = iso(now + SENDING_LIMIT_MS);
+  else delete state.sends[token];
 }
 
 export function sendInProgress(state: AgentState, now: number) {
-  return age(now, state.sendingUntil) < 0;
+  return Object.values(state.sends).some((until) => age(now, until) < 0);
 }
 
 export function addRequest(state: AgentState, now: number, id: string, body: string, choices: string[]) {

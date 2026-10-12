@@ -95,32 +95,41 @@
     return comments.some((comment, index) => index > through && comment.author === "user");
   }
   const agentWorkingOn = (id) => Boolean(agent?.working?.threads.some((thread) => thread.id === id && !thread.answered));
-  const isUnreadReply = (comment) => comment.author === "agent" && !data.remote && !state.readReplies?.[comment.id];
-  const unreadReplyCount = () => artifactThreads.reduce((count, thread) => count + (thread.comments || []).filter(isUnreadReply).length, 0);
+  // Comment IDs are unique only within a thread, so read markers name both.
+  const replyKey = (thread, comment) => JSON.stringify([thread.id, comment.id]);
+  // Replies from before unread tracking started (repliesSeenThrough) count as read.
+  const isUnreadReply = (thread, comment) => comment.author === "agent" && !data.remote &&
+    typeof state.repliesSeenThrough === "string" && String(comment.createdAt || "") > state.repliesSeenThrough &&
+    !state.readReplies?.[replyKey(thread, comment)];
+  const unreadReplies = (thread) => (thread.comments || []).filter((comment) => isUnreadReply(thread, comment));
+  const unreadReplyCount = () => artifactThreads.reduce((count, thread) => count + unreadReplies(thread).length, 0);
   function threadAgentState(thread) {
     if (data.remote || thread.status !== "open") return null;
     if (agentWorkingOn(thread.id)) return "working";
     if (awaitsAgent(thread)) return "queued";
-    if ((thread.comments || []).some(isUnreadReply)) return "new";
+    if (unreadReplies(thread).length) return "new";
     return (thread.comments || []).some((comment) => comment.author === "agent") ? "answered" : null;
   }
-  function markRepliesRead(ids) {
-    const fresh = ids.filter((id) => !state.readReplies?.[id]);
+  function markRepliesRead(keys) {
+    const fresh = keys.filter((key) => !state.readReplies?.[key]);
     if (!fresh.length) return;
-    state.readReplies = { ...(state.readReplies || {}), ...Object.fromEntries(fresh.map((id) => [id, true])) };
+    state.readReplies = { ...(state.readReplies || {}), ...Object.fromEntries(fresh.map((key) => [key, true])) };
     persist(); render();
   }
-  // A reply counts as read once most of it has been on screen for a moment.
+  // A reply counts as read once most of it, or half the visible area for a long
+  // reply, has been on screen for a moment.
   const readTimers = new Map();
   const observedReplies = new WeakSet();
   const replyObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
     for (const entry of entries) {
       const element = entry.target;
-      if (entry.intersectionRatio >= 0.6 && !document.hidden && element.classList.contains("is-unread")) {
-        if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => { readTimers.delete(element); markRepliesRead([element.dataset.commentId]); }, 1200));
+      const visibleHeight = entry.rootBounds?.height || window.innerHeight;
+      const seen = entry.intersectionRatio >= 0.6 || entry.intersectionRect.height >= visibleHeight * 0.5;
+      if (seen && !document.hidden && element.classList.contains("is-unread")) {
+        if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => { readTimers.delete(element); markRepliesRead([element.dataset.replyKey]); }, 1200));
       } else { clearTimeout(readTimers.get(element)); readTimers.delete(element); }
     }
-  }, { threshold: [0, 0.6] }) : null;
+  }, { threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1] }) : null;
   function observeUnreadReplies() {
     if (!replyObserver) return;
     app.querySelectorAll(".tmsg.is-unread").forEach((element) => {
@@ -129,7 +138,7 @@
   }
   function showUnreadReplies() {
     roundNotice = null;
-    const thread = artifactThreads.find((item) => (item.comments || []).some(isUnreadReply))
+    const thread = artifactThreads.find((item) => unreadReplies(item).length)
       || artifactThreads.find((item) => item.status === "open" && (item.comments || []).at(-1)?.author === "agent");
     if (!thread) { render(); return; }
     state.notesOpen = true; state.coverageOpen = false;
@@ -1472,9 +1481,9 @@
     const msgs = (t.comments || [])
       .map((cm) => {
         const agent = cm.author === "agent";
-        const unread = isUnreadReply(cm);
+        const unread = isUnreadReply(t, cm);
         const stamp = fmtTime(cm.createdAt);
-        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}${unread ? " is-unread" : ""}"${agent ? ` data-comment-id="${esc(cm.id)}"` : ""}>
+        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}${unread ? " is-unread" : ""}"${agent ? ` data-reply-key="${esc(replyKey(t, cm))}"` : ""}>
           <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}${unread ? `<span class="tmsg-new">New</span>` : ""}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
           <p class="comment-body">${formatCommentBody(cm.body)}</p>${attachmentList(cm.attachments)}
         </div>`;
@@ -2761,7 +2770,7 @@
   const renderedNodes = new WeakMap();
   function renderKey(node) {
     if (node.nodeType !== Node.ELEMENT_NODE) return String(node.nodeType);
-    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "data-comment-id", "name", "value"];
+    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "data-reply-key", "name", "value"];
     return JSON.stringify([node.tagName, (node.getAttribute("class") || "").split(/\s+/)[0], ...identity.map((key) => node.getAttribute(key))]);
   }
   function rememberRendered(node, template) {
@@ -3978,10 +3987,11 @@
   for (const note of [...state.comments, compose].filter(Boolean)) {
     if (note.snapshot) draftSnapshots.set(note, note.snapshot);
   }
-  // Replies that existed before unread tracking are treated as read.
-  if (!data.remote && !reviewDeleted && (!state.readReplies || typeof state.readReplies !== "object")) {
-    state.readReplies = Object.fromEntries(artifactThreads.flatMap((thread) => (thread.comments || [])
-      .filter((comment) => comment.author === "agent").map((comment) => [comment.id, true])));
+  // Replies that existed before unread tracking are treated as read. A timestamp
+  // always persists, unlike an empty object, so later replies stay unread.
+  if (!data.remote && !reviewDeleted && typeof state.repliesSeenThrough !== "string") {
+    state.repliesSeenThrough = artifactThreads.flatMap((thread) => (thread.comments || []).filter((comment) => comment.author === "agent"))
+      .map((comment) => String(comment.createdAt || "")).sort().at(-1) || "";
     persist();
   }
   const recoveredStage = compose && noteStage(compose);

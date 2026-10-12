@@ -29,7 +29,7 @@ import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, re
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
-import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, releaseClaims, roundThrough, sendInProgress, touchAgent, updateAgentState } from "./shared/agent-session.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundThrough, sendInProgress, touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 function commentAttachments(paths, options) { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
 function commentInput(paths, options) {
@@ -681,8 +681,6 @@ function nextFeedback(paths, options) {
     if (sessionId && liveSession(state)?.id !== sessionId) fail("This interactive review session was replaced or stopped.");
     // A viewer send writes notes and replies separately; the listener takes them together.
     if (sessionId && sendInProgress(state, Date.now())) awaiting = [];
-    // A standalone run replaces earlier standalone runs; interactive sessions keep theirs.
-    if (!sessionId) releaseClaims(state, null);
     const taken = claimedThreadIds(state, Date.now());
     claimedElsewhere = awaiting.filter((thread) => taken.has(thread.id)).length;
     awaiting = awaiting.filter((thread) => !taken.has(thread.id));
@@ -770,10 +768,8 @@ function nextFeedback(paths, options) {
   }
   if (claim) {
     const claimed = groups.flatMap((group) => group.threads.map((thread) => thread.id));
-    const claimId = updateAgentState(paths.reviewId, (state, now) => {
-      if (!sessionId) releaseClaims(state, null);
-      return createClaim(state, now, sessionId, claimed.map((id) => ({ id, through: latestUserCommentId(feedback.threads.get(id))! })));
-    });
+    const claimId = updateAgentState(paths.reviewId, (state, now) =>
+      createClaim(state, now, sessionId, claimed.map((id) => ({ id, through: latestUserCommentId(feedback.threads.get(id))! }))));
     console.log(JSON.stringify({ claim: claimId, claimedElsewhere, stages: groups }, null, compact ? undefined : 2));
     return;
   }
