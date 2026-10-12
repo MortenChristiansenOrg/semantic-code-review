@@ -1,7 +1,8 @@
 // Deterministic stand-in for an evaluated agent in interactive review. It exercises
 // the scripted reviewer and verifier, not model behavior. Modes: good (follows the
 // skill), early-exit (stops after the first round), decides (settles the
-// contradictory notes itself instead of asking).
+// contradictory notes itself instead of asking), sloppy (documents that deliveries
+// are never retried and resolves the reviewer's threads).
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -41,6 +42,10 @@ for (;;) {
   if (result.responses?.length) {
     edit('notifications', 'notifications.json', setting('format', 'html')); restack('notifications');
     for (const id of pending.threads) reply(id, pending.claim, 'Confirmations now use HTML, as you decided.');
+    if (mode === 'sloppy') {
+      const reviews = path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews'), threads = path.join(reviews, fs.readdirSync(reviews)[0], 'feedback', 'threads');
+      for (const name of fs.readdirSync(threads)) cli('review-feedback', 'thread', 'resolve', '--id', name.slice(0, -'.json'.length));
+    }
     pending = null; continue;
   }
   rounds++;
@@ -50,7 +55,7 @@ for (;;) {
   const changed = [];
   for (const thread of threads) {
     if (/retry count to 2/.test(last(thread))) { edit(thread.stage, 'notifications.json', setting('retries', 2)); changed.push(thread); }
-    else if (/retried automatically/.test(last(thread))) { edit(thread.stage, 'delivery.md', text => text + 'Failed deliveries are retried automatically.\n'); changed.push(thread); }
+    else if (/retried automatically/.test(last(thread))) { edit(thread.stage, 'delivery.md', text => text + (mode === 'sloppy' ? 'Failed deliveries are never retried.\n' : 'Failed deliveries are retried automatically.\n')); changed.push(thread); }
   }
   if (changed.length) {
     restack(result.stages.find(stage => changed.some(thread => thread.stage === stage.stageId)).stageId);

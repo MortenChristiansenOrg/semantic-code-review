@@ -177,26 +177,29 @@ export async function runJob(directory, session, job, agent, root, repo, prompt,
   console.log(`${job.id}: ${record.state}`); return record;
 }
 /** Runs a scenario's scripted reviewer until it finishes after the agent exits. Returns an
- * evaluator error message, or null; the reviewer's record is saved either way. */
-const DRIVER_GRACE_MS = 120_000;
-async function driveBeside(drive, running, file) {
+ * evaluator failure message, or null; the reviewer's record is saved either way. The
+ * reviewer is aborted after the grace period and abandoned shortly after that. */
+const DRIVER_GRACE_MS = 120_000, DRIVER_ABANDON_MS = 10_000;
+export async function driveBeside(drive, running, file, graceMs = DRIVER_GRACE_MS, abandonMs = DRIVER_ABANDON_MS) {
   const controller = new AbortController();
-  let record;
+  const driving = Promise.resolve().then(() => drive({ signal: controller.signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) }));
+  driving.catch(() => {}); // Observed after the agent exits; never an unhandled rejection meanwhile.
+  await running;
+  const timers = [];
+  const overrun = new Promise((_, reject) => {
+    timers.push(setTimeout(() => controller.abort(), graceMs));
+    timers.push(setTimeout(() => reject(new Error(`Scripted reviewer did not finish within ${Math.round(graceMs / 1000)} seconds after the agent exited`)), graceMs + abandonMs));
+  });
   try {
-    const driving = Promise.resolve().then(() => drive({ signal: controller.signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) }));
-    driving.catch(() => {}); // Observed after the agent exits; never an unhandled rejection meanwhile.
-    await running;
-    // Let the reviewer record the end state; abort it if it does not finish.
-    const grace = setTimeout(() => controller.abort(), DRIVER_GRACE_MS);
-    try { record = await driving; } finally { clearTimeout(grace); }
+    const record = await Promise.race([driving, overrun]);
     if (!record || typeof record !== 'object') throw new Error('drive() must return its serializable record');
     writeJson(file, record);
     return null;
   } catch (error) {
-    await running;
-    writeJson(file, { error: error.message, ...(record && typeof record === 'object' ? { record } : {}) });
-    return error.message;
-  }
+    const message = (error instanceof Error ? error.message : String(error ?? '')) || 'Scripted reviewer failed without a message';
+    writeJson(file, { error: message, ...(error?.record && typeof error.record === 'object' ? { record: error.record } : {}) });
+    return message;
+  } finally { timers.forEach(clearTimeout); }
 }
 export async function runEvaluations(directory) {
   const session = loadSession(directory); checkPins(session);

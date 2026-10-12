@@ -60,6 +60,15 @@ test('an agent that stops listening after the first round fails the listening ch
   for (const id of ['follow-up-queued', 'asked-in-viewer', 'decision-applied', 'stopped-on-request']) assert.equal(checks[id].passed, false, id);
 });
 
+test('negated retry documentation and resolved reviewer threads fail their checks', async t => {
+  const { execution, checks } = await session(t, 'sloppy');
+  assert.equal(execution.exitCode, 0);
+  assert.equal(checks['round-one-changes'].passed, false);
+  assert.equal(checks['threads-open'].passed, false);
+  assert.equal(checks['decision-applied'].passed, true);
+  assert.equal(checks['stopped-on-request'].passed, true);
+});
+
 test('an agent that settles contradictory notes itself fails the viewer question check', async t => {
   const { execution, driver, checks } = await session(t, 'decides');
   assert.equal(execution.exitCode, 0);

@@ -102,9 +102,12 @@ this scenario unsupported instead of counting failed runs.
 
 | Fixed checks | Transcript checks |
 | --- | --- |
-| Worktrees in the case; artifact publication, stack and feedback validity; viewer used; listening started; both requested changes at the final head with the template unchanged; question answered before the change replies; first answer responds to the original question while the follow-up gets its own later reply; a question reached the viewer before the format changed; HTML applied; the agent exited only after Stop with the session ended as stopped; nothing awaits a reply. | `kept-listening`, `questions-first-with-claim`, `parallel-work`, `viewer-only-questions`, `stopped-cleanly`. Parallel subagents are judged only when the transcript shows the harness offers them; otherwise the documented sequential fallback applies. |
+| Worktrees in the case; artifact publication, stack and feedback validity; viewer used; listening started; retries set to 2 and delivery.md affirming automatic retries at the final head, with the template unchanged; question answered before the change replies; first answer responds to the original question while the follow-up gets its own later reply; a question reached the viewer before the format changed; HTML applied; the agent exited only after the Stop the viewer recorded, with the session ended as stopped; nothing awaits a reply; every reviewer thread still open. | `kept-listening`, `questions-first-with-claim`, `parallel-work`, `viewer-only-questions`, `stopped-cleanly`. Question subagents are judged only when the transcript shows the harness offers them. The two stage edits are small, so sequential changes in the artifact worktree comply. |
 
 The question about the contradictory notes is expected, not an unnecessary stop.
+When a phase times out, the reviewer presses Stop so the agent can finish; the
+missing behavior then fails its checks. A failed or refused viewer call is
+evaluator evidence and makes the attempt invalid.
 
 Baseline screens can use one repetition and report observations only. Comparison
 mode requires at least three per selected scenario/model/variant, including the broad

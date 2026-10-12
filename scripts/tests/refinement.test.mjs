@@ -9,7 +9,7 @@ import { plan } from '../evaluations/refinement/plan.mjs';
 import { codexTelemetry } from '../evaluations/refinement/telemetry.mjs';
 import { checked, environment, execute, inside, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
 import { begin, finish, initialize, prepareFixture, priceAcceptance, scenarios, verifyFixture } from '../evaluations/refinement/scenarios.mjs';
-import { adapterFor, checkPins, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
+import { adapterFor, checkPins, driveBeside, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
 import { collectResults, grade, invalidate, redact, report, validateGrades } from '../evaluations/refinement/grading.mjs';
 import { gradeSchema } from '../evaluations/refinement/grade-schema.mjs';
 import { sandboxProbeCommand } from '../evaluations/refinement/preflight.mjs';
@@ -443,4 +443,18 @@ export async function verify({ driver }) { return { checks: [{ id: 'reviewed', p
   const result = readJson(path.join(failing, 'runs', failed.plan.jobs[0].id, 'result.json'));
   assert.equal(result.state, 'invalid'); assert.match(result.error, /Scripted reviewer failed: viewer unreachable/);
   assert.equal(readJson(path.join(failing, 'runs', failed.plan.jobs[0].id, 'driver.json')).error, 'viewer unreachable');
+});
+
+test('a scripted reviewer that fails silently or hangs makes the attempt invalid instead of passing', async t => {
+  const root = temp(t), file = name => path.join(root, `${name}.json`), exited = Promise.resolve({ exitCode: 0 });
+  assert.equal(await driveBeside(async () => { throw new Error(''); }, exited, file('empty')), 'Scripted reviewer failed without a message');
+  assert.equal(await driveBeside(async () => { throw 'plain text'; }, exited, file('string')), 'plain text');
+  assert.equal(await driveBeside(async () => 'not a record', exited, file('invalid')), 'drive() must return its serializable record');
+  const hung = await driveBeside(() => new Promise(() => {}), exited, file('hung'), 20, 20);
+  assert.match(hung, /did not finish/); assert.match(readJson(file('hung')).error, /did not finish/);
+  // A cooperative reviewer finishes when aborted after the grace period and keeps its record.
+  const aborted = await driveBeside(({ signal }) => new Promise(resolve => signal.addEventListener('abort', () => resolve({ aborted: true }))), exited, file('aborted'), 20, 1000);
+  assert.equal(aborted, null); assert.deepEqual(readJson(file('aborted')), { aborted: true });
+  const failed = await driveBeside(async () => { throw Object.assign(new Error('viewer refused'), { record: { events: ['sent'] } }); }, exited, file('record'));
+  assert.equal(failed, 'viewer refused'); assert.deepEqual(readJson(file('record')).record, { events: ['sent'] });
 });

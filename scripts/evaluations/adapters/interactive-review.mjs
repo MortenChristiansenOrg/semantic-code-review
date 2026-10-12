@@ -23,11 +23,11 @@ const defaults = { pollMs: 1000, listenMinutes: 6, roundMinutes: 15, questionMin
 
 export const checkIds = ['worktree-scope', 'artifact-publication', 'stack', 'feedback-valid', 'viewer-used', 'listened',
   'round-one-changes', 'question-without-change', 'question-answered-first', 'follow-up-queued', 'asked-in-viewer',
-  'decision-applied', 'stopped-on-request', 'nothing-pending'];
+  'decision-applied', 'stopped-on-request', 'nothing-pending', 'threads-open'];
 export const transcriptCriteria = {
   'kept-listening': 'Pass when the agent starts listening with `semantic-flow feedback --json --wait`, passes the returned session to every later wait, and waits again after each round, answer, and timeout until a wait returns `stopped`. Fail if it ends the run, stops waiting, or asks (in the chat or the viewer) whether to continue before that result.',
   'questions-first-with-claim': 'Pass when, within each round, the agent answers question-only threads before implementing change requests (an answer it deliberately holds because a change in the same round modifies the code it explains is allowed), and posts every agent reply with the round\'s claim (`--claim` on `thread reply`, or `claim` in `reply-batch` input). Fail replies without the round\'s claim or change work started before an unblocked question was answered.',
-  'parallel-work': 'Pass when the round procedure is followed. If the transcript shows the harness offering subagents, questions are answered by parallel subagents that read code at the recorded stage commit without editing, and the two independently changed stages are changed by separate subagents in separate linked worktrees that are detached before restacking. If no subagents are available, the documented sequential fallback is followed. Either way, the main agent alone writes the artifact and restacks once per round from the earliest changed stage, not after each stage. Fail subagents that run Semantic Flow commands or restack, shared worktrees, or per-stage restacks.',
+  'parallel-work': 'Pass when the round procedure is followed. If the transcript shows the harness offering subagents, questions are answered by parallel subagents that read code at the recorded stage commit without editing; otherwise the agent answers them itself before changing code. Parallel stage subagents are required only for substantial independent changes, so these small edits may be made sequentially in the artifact worktree; if the agent does use stage subagents, each works in its own linked worktree that is detached before restacking. Either way, the main agent alone writes the artifact and restacks once per round from the earliest changed stage, not after each stage. Fail subagents that edit while answering questions, run Semantic Flow commands, or restack; shared worktrees; or per-stage restacks.',
   'viewer-only-questions': 'Pass when every question for the reviewer goes through the viewer: a reply on the thread it concerns, or `review-feedback agent ask` (expected for the two contradictory notes about the email format). Fail any question or approval request in the chat, and fail choosing between the contradictory notes without asking. Chat output is limited to short status lines and failures that make the viewer unusable.',
   'stopped-cleanly': 'Pass when, after a wait returns `stopped`, the agent ends promptly with at most a short closing line and starts no further work or waits. Fail if it keeps waiting, restarts listening, or ended before that result.',
 };
@@ -63,15 +63,19 @@ function checked(command, cwd, env, settings) {
 function toolPins(capabilities) {
   for (const tool of Object.values(capabilities.tools)) if (hash(fs.readFileSync(tool.path)) !== tool.sha256) throw new Error(`Pinned evaluator executable changed: ${tool.path}`);
 }
-/** One JSON request to a viewer on 127.0.0.1, scoped like the viewer's own page. */
-function request(port, method, pathname, { query, body } = {}) {
+/** One JSON request to a viewer on 127.0.0.1, scoped like the viewer's own page.
+ * Always settles: a reset, early close, timeout or abort rejects. */
+function request(port, method, pathname, { query, body, signal } = {}) {
   const search = query ? '?' + new URLSearchParams(query) : '';
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path: pathname + search, timeout: 30_000,
+    const req = http.request({ host: '127.0.0.1', port, method, path: pathname + search, timeout: 30_000, signal,
       headers: body === undefined ? {} : { 'content-type': 'application/json' } }, response => {
-      let text = ''; response.setEncoding('utf8');
+      let text = '', ended = false; response.setEncoding('utf8');
       response.on('data', chunk => { text += chunk; });
-      response.on('end', () => { let json = null; try { json = JSON.parse(text); } catch { /* Non-JSON body. */ } resolve({ status: response.statusCode, json, text: json ? undefined : text.slice(0, 500) }); });
+      response.on('error', reject);
+      response.on('aborted', () => reject(new Error('Viewer response aborted')));
+      response.on('close', () => { if (!ended) reject(new Error('Viewer response closed early')); });
+      response.on('end', () => { ended = true; let json = null; try { json = JSON.parse(text); } catch { /* Non-JSON body. */ } resolve({ status: response.statusCode, json, text: json ? undefined : text.slice(0, 500) }); });
     });
     req.on('timeout', () => req.destroy(new Error('Viewer request timed out')));
     req.on('error', reject);
@@ -154,7 +158,8 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
   const note = (type, detail) => record.events.push({ at: iso(), type, ...(detail === undefined ? {} : { detail }) });
   let exited = false;
   agentExited.then(execution => { exited = true; record.agentExitedAt = execution.at; note('agent-exited', { exitCode: execution.exitCode, timedOut: execution.timedOut }); });
-  const sleep = ms => new Promise(resolve => { const timer = setTimeout(resolve, ms); signal.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true }); });
+  const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+  const sleep = ms => Promise.race([new Promise(resolve => setTimeout(resolve, ms)), aborted]);
   const home = env.SEMANTIC_FLOW_HOME;
   let review = null;
   const findReview = () => {
@@ -172,7 +177,15 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
       return JSON.parse(checked([capabilities.tools.git.path, 'show', `${head}:notifications.json`], fixture.repo, env)).format;
     } catch { return null; }
   };
-  const call = async (method, pathname, body) => request(review.port, method, pathname, { query: { review: review.id, generation: review.generation }, body });
+  // The viewer is the product under test, not the agent: a failed or refused call
+  // invalidates the attempt instead of counting against the agent.
+  const call = async (method, pathname, body) => {
+    let response;
+    try { response = await request(review.port, method, pathname, { query: { review: review.id, generation: review.generation }, body, signal }); }
+    catch (error) { throw Object.assign(new Error(`Viewer ${method} ${pathname} failed: ${error.message}`), { apparatus: true }); }
+    if (response.status !== 200 || !response.json?.ok) throw Object.assign(new Error(`Viewer ${method} ${pathname} answered ${response.status}: ${response.json?.error ?? response.text}`), { apparatus: true });
+    return response.json;
+  };
   /** Polls until the condition holds; null when the phase times out or the agent exits first. */
   const until = async (phase, minutes, condition) => {
     const deadline = Date.now() + minutes * 60_000;
@@ -185,56 +198,56 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     if (!signal.aborted) note(exited ? 'agent-exited-early' : 'timeout', { phase });
     return null;
   };
-  const send = async (notes, replies = []) => {
-    const response = await call('POST', '/api/feedback/export', { implementationId: 'evaluation', notes, replies });
-    if (response.status !== 200 || !response.json?.ok) throw Object.assign(new Error('send failed'), { response });
-    return response.json;
-  };
   const answered = ids => ids.every(id => { const value = thread(id); return value && !awaitsAgent(value); });
   const claimsActive = () => (agentState().claims ?? []).some(claim => claim.threads.some(item => !item.answeredAt));
+  /** Ends the interaction the way a reviewer would, whatever phase it reached. */
+  const finish = async reason => {
+    if (exited || signal.aborted || !review?.port || !agentState().session || agentState().session.endedAt) return;
+    note('stop-requested', { reason }); record.stopRequestedAt = iso();
+    await call('POST', '/api/agent/stop', {});
+    if (!await until('stop', timing.stopMinutes, () => exited)) note('not-stopped');
+  };
 
-  try {
+  const interact = async () => {
     // 1. The agent opened the viewer and is listening.
     const listening = await until('listen', timing.listenMinutes, async () => {
       review = findReview();
       if (!review?.port || !agentState().session || agentState().session.endedAt) return null;
-      const whoami = await request(review.port, 'GET', '/api/whoami').catch(() => null);
+      const whoami = await request(review.port, 'GET', '/api/whoami', { signal }).catch(() => null);
       return whoami?.json?.reviewId === review.id ? whoami.json : null;
     });
-    if (!listening) return record;
+    if (!listening) return;
     record.viewer = { port: review.port, reviewId: review.id };
     note('listening', { session: agentState().session.id });
 
     // 2. One send with a question and two independent change requests.
-    const notes = ['question', 'retries', 'retried'].map((key, ref) => ({ ref, kind: 'stage', id: script[key].stage, body: script[key].body, clientId: `evaluation-${key}` }));
-    try {
-      const sent = await send(notes);
-      for (const entry of sent.exported) record.threads[['question', 'retries', 'retried'][entry.ref]] = entry.threadId;
-      note('round-sent', { threads: record.threads });
-    } catch (error) { note('send-failed', error.response ?? error.message); return record; }
-    const roundOne = [record.threads.question, record.threads.retries, record.threads.retried];
+    const keys = ['question', 'retries', 'retried'];
+    const sent = await call('POST', '/api/feedback/export', { implementationId: 'evaluation', replies: [],
+      notes: keys.map((key, ref) => ({ ref, kind: 'stage', id: script[key].stage, body: script[key].body, clientId: `evaluation-${key}` })) });
+    for (const entry of sent.exported) record.threads[keys[entry.ref]] = entry.threadId;
+    note('round-sent', { threads: { ...record.threads } });
+    const roundOne = keys.map(key => record.threads[key]);
 
     // 3. Once the agent picks the round up, follow up on the question thread.
     const pickedUp = await until('pick-up', timing.roundMinutes, () => (agentState().claims ?? []).some(claim => claim.threads.some(item => item.id === record.threads.question))
       || (agentState().lastRound?.threadIds ?? []).includes(record.threads.question) || answered([record.threads.question]));
-    if (!pickedUp) return record;
-    try {
-      const sent = await send([], [{ ref: 'follow-up', threadId: record.threads.question, body: script.followUp, attachments: [] }]);
-      record.threads.followUpComment = sent.replied[0].comment.id;
-      note('follow-up-sent', { comment: record.threads.followUpComment, questionAnsweredAlready: thread(record.threads.question)?.comments.some(comment => comment.author === 'agent') ?? false });
-    } catch (error) { note('send-failed', error.response ?? error.message); return record; }
+    if (!pickedUp) return finish('timeout');
+    const followUp = await call('POST', '/api/feedback/export', { implementationId: 'evaluation', notes: [],
+      replies: [{ ref: 'follow-up', threadId: record.threads.question, body: script.followUp, attachments: [] }] });
+    record.threads.followUpComment = followUp.replied[0].comment.id;
+    note('follow-up-sent', { comment: record.threads.followUpComment, questionAnsweredAlready: thread(record.threads.question)?.comments.some(comment => comment.author === 'agent') ?? false });
 
     // 4. Everything so far is answered, including the follow-up.
-    if (!await until('round-one', timing.roundMinutes, () => answered(roundOne) && !claimsActive())) return record;
+    if (!await until('round-one', timing.roundMinutes, () => answered(roundOne) && !claimsActive())) return finish('timeout');
     note('round-one-answered');
 
     // 5. Two contradictory notes in one send.
-    try {
-      const sent = await send(['html', 'plain'].map((key, ref) => ({ ref, kind: 'stage', id: script[key].stage, body: script[key].body, clientId: `evaluation-${key}` })));
-      for (const entry of sent.exported) record.threads[['html', 'plain'][entry.ref]] = entry.threadId;
-      note('contradiction-sent', { html: record.threads.html, plain: record.threads.plain });
-    } catch (error) { note('send-failed', error.response ?? error.message); return record; }
-    const pair = [record.threads.html, record.threads.plain];
+    const pairKeys = ['html', 'plain'];
+    const contradiction = await call('POST', '/api/feedback/export', { implementationId: 'evaluation', replies: [],
+      notes: pairKeys.map((key, ref) => ({ ref, kind: 'stage', id: script[key].stage, body: script[key].body, clientId: `evaluation-${key}` })) });
+    for (const entry of contradiction.exported) record.threads[pairKeys[entry.ref]] = entry.threadId;
+    note('contradiction-sent', { html: record.threads.html, plain: record.threads.plain });
+    const pair = pairKeys.map(key => record.threads[key]);
 
     // 6. The agent asks in the viewer: with `agent ask`, or by replying on a thread.
     const asked = await until('question', timing.questionMinutes, async () => {
@@ -245,40 +258,48 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
         .find(item => item.comment.body.includes('?'));
       return question ? { via: 'thread', thread: question.thread, body: question.comment.body } : { via: 'none' };
     });
-    if (!asked) return record;
+    if (!asked) return finish('timeout');
     const formatAtQuestion = format();
-    if (asked.via === 'none') note('decided-without-asking', { format: formatAtQuestion });
-    else {
-      note('question', { ...asked, formatAtQuestion });
-      const answer = asked.via === 'agent-ask'
-        ? await call('POST', '/api/agent/respond', { requestId: asked.id, body: script.decision })
-        : await call('POST', '/api/feedback/export', { implementationId: 'evaluation', notes: [], replies: [{ ref: 'decision', threadId: asked.thread, body: script.decision, attachments: [] }] });
-      if (answer.status !== 200 || !answer.json?.ok) { note('answer-failed', answer); return record; }
-      note('answered');
-      // 7. The decision is applied and every note answered.
-      if (!await until('decision', timing.roundMinutes, () => answered(pair) && !claimsActive() && !(agentState().requests ?? []).some(item => !item.response) && format() === 'html')) return record;
-      note('decision-applied');
-    }
+    if (asked.via === 'none') { note('decided-without-asking', { format: formatAtQuestion }); return finish('done'); }
+    note('question', { ...asked, formatAtQuestion });
+    if (asked.via === 'agent-ask') await call('POST', '/api/agent/respond', { requestId: asked.id, body: script.decision });
+    else await call('POST', '/api/feedback/export', { implementationId: 'evaluation', notes: [], replies: [{ ref: 'decision', threadId: asked.thread, body: script.decision, attachments: [] }] });
+    note('answered');
 
-    // 8. Stop; the agent should finish and exit.
-    const stop = await call('POST', '/api/agent/stop', {});
-    if (stop.status !== 200 || !stop.json?.ok) { note('stop-failed', stop); return record; }
-    record.stopRequestedAt = iso(); note('stop-requested');
-    await until('stop', timing.stopMinutes, () => exited);
-    if (!exited && !signal.aborted) note('not-stopped');
-    return record;
-  } finally {
-    await agentExited;
-    record.agentState = review ? agentState() : null;
-    // The agent's viewer runs detached from its process group; stop it here.
-    if (review?.port) {
-      const current = await request(review.port, 'GET', '/api/whoami').catch(() => null);
-      if (current?.json?.reviewId === review.id) {
-        await request(review.port, 'POST', '/api/shutdown', { body: {} }).catch(() => null);
-        note('viewer-stopped', { processId: current.json.processId });
-      }
-    }
+    // 7. The decision is applied and every note answered; then Stop.
+    if (!await until('decision', timing.roundMinutes, () => answered(pair) && !claimsActive() && !(agentState().requests ?? []).some(item => !item.response) && format() === 'html')) return finish('timeout');
+    note('decision-applied');
+    return finish('done');
+  };
+
+  let failure = null;
+  try { await interact(); }
+  catch (error) {
+    failure = error;
+    note('evaluator-failure', error.message);
+    await finish('evaluator-failure').catch(() => {});
   }
+  await Promise.race([agentExited, aborted]);
+  review = findReview() ?? review;
+  record.agentState = review ? agentState() : null;
+  await stopViewer(review, home, note);
+  if (failure) throw Object.assign(new Error(failure.message || 'Scripted reviewer failed'), { record });
+  return record;
+}
+
+/** The agent's viewer runs detached from its process group. Rediscover it after the
+ * agent exits (it may have started late), confirm its identity, and confirm it stopped. */
+async function stopViewer(review, home, note) {
+  if (!review?.port) return;
+  const identity = async () => (await request(review.port, 'GET', '/api/whoami').catch(() => null))?.json;
+  const current = await identity();
+  if (current?.reviewId !== review.id || path.resolve(current.reviewHome ?? '') !== path.resolve(home)) return;
+  await request(review.port, 'POST', '/api/shutdown', { body: {} }).catch(() => null);
+  for (let attempt = 0; attempt < 25 && await identity(); attempt++) await new Promise(resolve => setTimeout(resolve, 200));
+  if (await identity()) {
+    try { process.kill(current.processId); note('viewer-killed', { processId: current.processId }); }
+    catch (error) { note('viewer-stop-failed', { processId: current.processId, error: error.message }); }
+  } else note('viewer-stopped', { processId: current.processId });
 }
 
 export async function verify({ fixture, root, skill, env, capabilities, driver }) {
@@ -312,7 +333,9 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const show = file => { const result = git('show', `${head}:${file}`); return result.exitCode === 0 ? result.stdout : null; };
   let settings = null; try { settings = JSON.parse(show('notifications.json')); } catch { /* Failed acceptance below. */ }
   const delivery = show('delivery.md') ?? '';
-  add('round-one-changes', settings?.retries === 2 && /retried/i.test(delivery), { settings, delivery });
+  // The documentation must say retries happen automatically, not merely mention them.
+  const affirmsRetries = delivery.split(/(?<=[.!?])\s+/).some(sentence => /\b(retried automatically|automatically retried|retries? (?:them |it )?automatically|automatic(?:ally)? retr)/i.test(sentence) && !/\b(never|not|no|manual(?:ly)?)\b/i.test(sentence));
+  add('round-one-changes', settings?.retries === 2 && affirmsRetries, { settings, delivery });
   add('question-without-change', show('templates/confirmation.txt') === fixture.before.template, show('templates/confirmation.txt'));
   add('decision-applied', settings?.format === 'html', settings);
 
@@ -328,11 +351,15 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const asked = at('question');
   add('asked-in-viewer', Boolean(asked && asked.detail.formatAtQuestion === 'plain' && !at('decided-without-asking')), asked ?? at('decided-without-asking') ?? 'No question reached the viewer');
 
-  const stop = events.findIndex(item => item.type === 'stop-requested'), exit = events.findIndex(item => item.type === 'agent-exited');
+  // Compare with the Stop the viewer persisted: the agent may exit before the HTTP response arrives.
   const session = driver?.agentState?.session;
-  add('stopped-on-request', stop >= 0 && exit > stop && !at('not-stopped') && session?.endReason === 'stopped', { stopRequestedAt: driver?.stopRequestedAt ?? null, agentExitedAt: driver?.agentExitedAt ?? null, session: session ?? null });
+  add('stopped-on-request', Boolean(session?.stopRequestedAt && session.endReason === 'stopped' && driver?.agentExitedAt && driver.agentExitedAt >= session.stopRequestedAt && !at('agent-exited-early') && !at('not-stopped')),
+    { stopRequestedAt: session?.stopRequestedAt ?? null, agentExitedAt: driver?.agentExitedAt ?? null, endReason: session?.endReason ?? null });
   const all = fs.existsSync(path.join(reviewDirectory, 'feedback', 'threads')) ? fs.readdirSync(path.join(reviewDirectory, 'feedback', 'threads')).map(name => readJson(path.join(reviewDirectory, 'feedback', 'threads', name))) : [];
   add('nothing-pending', all.length > 0 && all.every(value => !awaitsAgent(value)), all.filter(awaitsAgent).map(value => value.id));
+  // Closing a conversation is the reviewer's decision; the agent never resolves a thread.
+  const reviewerThreads = ['question', 'retries', 'retried', 'html', 'plain'].map(key => threads[key]).filter(Boolean);
+  add('threads-open', reviewerThreads.length > 0 && reviewerThreads.every(id => read(id)?.status === 'open'), reviewerThreads.map(id => ({ id, status: read(id)?.status ?? null })));
   evidence.diff = invoke('diff', [capabilities.tools.git.path, 'diff', fixture.before.baseRevision, head]);
   return done();
 }
