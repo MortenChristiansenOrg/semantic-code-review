@@ -1982,7 +1982,7 @@ function withArtifactLock<T>(paths, implementationId: string, write: () => T): T
   const review = reviewId(paths.root, implementationId);
   return withReviewLock(review, () => {
     const result = write();
-    updateAgentState(review, touchAgent);
+    updateAgentState(review, (state, now) => touchAgent(state, now));
     return result;
   });
 }

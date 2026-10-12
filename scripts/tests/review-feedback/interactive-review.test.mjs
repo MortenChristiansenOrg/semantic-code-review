@@ -245,3 +245,25 @@ test("idle sessions still take waiting feedback before ending", async (t) => {
   fs.writeFileSync(file, JSON.stringify(age(agentState(repository))));
   assert.deepEqual(await waitAsync(repository, "--session", session, "--timeout", "5"), { session, stopped: true, reason: "idle" });
 });
+
+test("agent activity renews only its own round, so an abandoned round still expires", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "active");
+  const round = await waitAsync(repository, "--timeout", "5");
+  assert.deepEqual(threadIds(round), ["active"]);
+  // A standalone run that crashed earlier still holds another thread.
+  addThread(repository, "orphaned");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const old = new Date(Date.now() - 20 * 60_000).toISOString();
+  const abandoned = { id: "abandoned", sessionId: null, startedAt: old, activityAt: old, threads: [{ id: "orphaned", through: "orphaned-note" }] };
+  fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), claims: [...agentState(repository).claims, abandoned] }));
+  const abandonedActivity = () => agentState(repository).claims.find((claim) => claim.id === "abandoned")?.activityAt;
+
+  repository.feedback("agent", "progress", "--body", "Working");
+  repository.feedback("agent", "ask", "--id", "check", "--body", "Check?");
+  repository.commitFile("implementation.txt", "implementation v2\n", "Address feedback");
+  repository.semantic("restack", "--from", "implementation");
+  repository.feedback("thread", "reply", "--id", "active", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Done.");
+  assert.equal(abandonedActivity(), old);
+});

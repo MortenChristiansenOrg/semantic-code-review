@@ -97,10 +97,16 @@ export function claimedThreadIds(state: AgentState, now: number) {
     .flatMap((claim) => claim.threads.filter((thread) => !thread.answeredAt).map((thread) => thread.id)));
 }
 
-/** Extends the lease of every running round and keeps the session visibly present. */
-export function touchAgent(state: AgentState, now: number) {
-  for (const claim of state.claims) if (claimActive(claim, now)) claim.activityAt = iso(now);
+/** Extends the lease of the named rounds and keeps the session visibly present.
+ * Without names it renews the live session's rounds, or standalone rounds when no
+ * session runs, so activity never keeps an abandoned round from expiring. */
+export function touchAgent(state: AgentState, now: number, claimIds?: Iterable<string>) {
   const session = liveSession(state);
+  const named = claimIds ? new Set(claimIds) : null;
+  for (const claim of state.claims) {
+    const owned = named ? named.has(claim.id) : claim.sessionId === (session?.id ?? null);
+    if (owned && claimActive(claim, now)) claim.activityAt = iso(now);
+  }
   if (session) session.heartbeatAt = iso(now);
 }
 
@@ -168,10 +174,14 @@ export function roundThrough(state: AgentState, claimId: string, threadId: strin
 /** Marks agent replies; a round completes when every claimed thread has one.
  * A reply naming its round only counts for that round, so a replaced round never ends a newer one. */
 export function recordAgentReplies(state: AgentState, now: number, replies: { threadId: string; claimId?: string }[]) {
+  const answering = new Set<string>();
   for (const claim of state.claims) {
     if (!claimActive(claim, now)) continue;
     for (const thread of claim.threads) {
-      if (!thread.answeredAt && replies.some((reply) => reply.threadId === thread.id && (!reply.claimId || reply.claimId === claim.id))) thread.answeredAt = iso(now);
+      if (!thread.answeredAt && replies.some((reply) => reply.threadId === thread.id && (!reply.claimId || reply.claimId === claim.id))) {
+        thread.answeredAt = iso(now);
+        answering.add(claim.id);
+      }
     }
     if (claim.threads.every((thread) => thread.answeredAt)) {
       state.lastRound = { id: claim.id, completedAt: iso(now), threadIds: claim.threads.map((thread) => thread.id) };
@@ -180,7 +190,7 @@ export function recordAgentReplies(state: AgentState, now: number, replies: { th
       if (session && session.id === claim.sessionId) session.feedbackAt = iso(now);
     }
   }
-  touchAgent(state, now);
+  touchAgent(state, now, answering);
 }
 
 /** Each send owns a token, so one finishing send never clears another's marker. */

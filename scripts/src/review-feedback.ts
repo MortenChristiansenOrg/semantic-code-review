@@ -1022,7 +1022,7 @@ function reportProgress(paths, options) {
     const claim = claims.filter((item) => item.sessionId === session).at(-1) ?? claims.at(-1);
     if (!claim) fail("No feedback round is in progress.");
     claim.note = body;
-    touchAgent(state, now);
+    touchAgent(state, now, [claim.id]);
   });
   console.log("Updated the viewer's progress note.");
 }
