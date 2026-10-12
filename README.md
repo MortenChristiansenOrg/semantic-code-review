@@ -89,7 +89,7 @@ story using semantic flow") or with explicit commands:
 | `implement` | Start a new piece of work and build it out in reviewable stages. |
 | `continue` | Resume an implementation that was interrupted. |
 | `sync` | Fetch the target branch's upstream and restack the implementation onto its latest changes. |
-| `review` or `rv` | Launch the review viewer for current work, or use `--branch <branch-name>` for a remote review. |
+| `review` or `rv` | Launch the review viewer for current work, or use `--branch <branch-name>` for a remote review. Add `-i` to have the agent handle feedback as you send it. |
 | `feedback` or `fb` | Have the agent address the feedback you submitted in the viewer. |
 | `reconcile` or `rc` | Have the agent distribute current manual edits into their responsible stages. |
 | `simulate` or `sim` | Reconstruct a completed external change as a reviewable semantic stage stack. |

@@ -158,7 +158,8 @@ test("feedback resolves, validates, and returns compact pending work", (t) => {
   assert.deepEqual(result.worktreeChanges, []);
   assert.equal(result.stages[0].stageId, "implementation");
   assert.equal(result.stages[0].threads[0].stale, false);
-  assert.equal("stageHead" in result.stages[0], false);
+  assert.match(result.stages[0].stageHead, /^[a-f0-9]{40}$/);
+  assert.equal("stageHead" in result.stages[0].threads[0], false);
   assert.deepEqual(result.stages[0].threads[0].comments, [
     { author: "user", body: "Tighten the implementation." },
   ]);

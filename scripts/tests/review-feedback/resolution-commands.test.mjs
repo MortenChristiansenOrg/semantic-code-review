@@ -270,7 +270,8 @@ test("next lists only open threads awaiting an agent reply", (t) => {
     .find((thread) => thread.id === "already-answered");
   assert.equal(compactOutput.includes("\n"), false);
   assert.equal(compactThread.stale, false);
-  assert.equal("stageHead" in compact[0], false);
+  assert.match(compact[0].stageHead, /^[a-f0-9]{40}$/);
+  assert.match(compact[0].stageBase, /^[a-f0-9]{40}$/);
   assert.equal("stageHead" in compactThread, false);
   assert.equal("stageBranch" in compactThread.target, false);
   assert.equal("stageHead" in compactThread.target, false);

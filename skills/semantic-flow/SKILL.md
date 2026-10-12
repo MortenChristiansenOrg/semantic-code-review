@@ -33,7 +33,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | --- | --- | --- |
 | Natural-language semantic-flow request | | `commands/implicit.md` |
 | `/semantic-flow implement` | | `commands/implement.md` |
-| `/semantic-flow review` | `rv` | `commands/review.md` |
+| `/semantic-flow review` (`-i` to keep handling feedback) | `rv` | `commands/review.md` |
 | `/semantic-flow feedback` | `fb` | `commands/feedback.md` |
 | `/semantic-flow reconcile` | `rc` | `commands/reconcile.md` |
 | `/semantic-flow simulate` | `sim` | `commands/simulate.md` |

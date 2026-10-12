@@ -73,12 +73,24 @@ export interface SemanticFlowFeedbackOptions {
     "implementation-id"?: string;
     /** Emits a compact machine-readable preflight and pending-feedback snapshot. */
     json?: true;
+    /** Listens for the next feedback round instead of returning immediately. Requires `json`. */
+    wait?: true;
+    /** Continues the interactive session returned by an earlier wait; omit to start a new session. Requires `wait`. */
+    session?: string;
+    /** Maximum seconds to wait before returning `timedOut` (default 540). Requires `wait`. */
+    timeout?: string;
 }
 /**
  * Resolves one active artifact, automatically restacks a clean finalized stack
  * after its target branch advances, validates it, and lists feedback awaiting
  * an agent reply. The result also reports the artifact worktree and local
- * changes.
+ * changes. Returned threads are claimed for this round (`claim`); threads
+ * another round is answering are counted in `claimedElsewhere`. Answers to
+ * `agent ask` questions are returned in `responses`.
+ *
+ * With `wait`, it heartbeats as the review's listening agent and returns when
+ * feedback arrives, a question is answered, the session stops (`stopped` with
+ * `reason`), or the timeout passes (`timedOut`). Every result includes `session`.
  * @cli semantic-flow.mjs
  * @command feedback
  */
