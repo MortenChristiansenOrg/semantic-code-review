@@ -3130,9 +3130,10 @@
       void copyAgentCommand();
     } else if (a === "minimize-agent-questions") {
       for (const request of agent?.requests || []) minimizedAgentQuestions.add(request.id);
-      render();
+      render(); document.querySelector('[data-action="show-agent-questions"]')?.focus();
     } else if (a === "show-agent-questions") {
       minimizedAgentQuestions.clear(); render();
+      document.querySelector('[data-action="minimize-agent-questions"]')?.focus();
     } else if (a === "agent-choice") {
       const request = agent?.requests.find((item) => item.id === btn.dataset.id);
       if (request) void answerAgent(request.id, request.choices[Number(btn.dataset.choice)] || "");
