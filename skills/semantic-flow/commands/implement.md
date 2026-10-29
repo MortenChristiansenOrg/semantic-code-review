@@ -103,7 +103,8 @@ stage and finalized flag outside the items array. Do not delay important
 observations or create filler to make a batch.
 
 Node references place an item beside the change it explains; a code link also
-shows it inline in the file diff at the exact lines. Add a code link when the
+lists it under the file's insights and shows it inline in the diff at the
+target's first line, unless the link needs review. Add a code link when the
 reasoning is about a specific line or span a reviewer would otherwise question
 while reading the diff, such as a non-obvious condition, ordering constraint,
 workaround, constant, compatibility shim, risk located at one call site,
