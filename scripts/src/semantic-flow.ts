@@ -930,7 +930,7 @@ async function waitForFeedback(options: Options): Promise<void> {
       // Stop and idle apply once the round settles, like after any other round.
       const { settling, released } = settleSessionClaims(state, now, session);
       const step = (() => {
-        if (live.stopRequestedAt && !settling) return end("stopped");
+        if (live.stopRequestedAt) return settling ? {} : end("stopped");
         if (readReview(review).completedAt) return end("completed");
         if (sendInProgress(state, now)) return {};
         if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };

@@ -192,6 +192,7 @@ test("an idle or stopping session lets a racing reply land before it ends", asyn
   repository.feedback("init");
   addThread(repository, "settling");
   const round = await waitAsync(repository, "--timeout", "5");
+  addThread(repository, "queued");
   const file = path.join(reviewDirectory(repository), "agent.json");
   const state = agentState(repository);
   state.session.feedbackAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
@@ -206,6 +207,7 @@ test("an idle or stopping session lets a racing reply land before it ends", asyn
   repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "settling", "comment-id": "settling-answer", author: "agent", body: "Done." }]), "--claim", round.claim);
   assert.deepEqual(await next, { session: round.session, stopped: true, reason: "stopped" });
   assert.equal(agentState(repository).lastRound.id, round.claim);
+  assert.deepEqual(agentState(repository).claims, []); // A pending Stop starts no new round.
 });
 
 test("a finished round's unanswered threads return after the grace, and a late reply answers the reissued round", async (t) => {
