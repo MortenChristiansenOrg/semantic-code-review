@@ -102,10 +102,20 @@ individual command options; validation items add `kind: "validation"`. Keep the
 stage and finalized flag outside the items array. Do not delay important
 observations or create filler to make a batch.
 
-When an insight explains particular code, optionally attach a committed line or
-span with `codePath`, `codeStart`, and optional `codeEnd` on `stage record` or
-`stage validation` (including batch items). All insight kinds support this.
-Coordinates are one-based and inclusive at the stage's committed head; do not
+Node references place an item beside the change it explains; a code link also
+shows it inline in the file diff at the exact lines. Add a code link when the
+reasoning is about a specific line or span a reviewer would otherwise question
+while reading the diff, such as a non-obvious condition, ordering constraint,
+workaround, constant, compatibility shim, risk located at one call site,
+assumption a particular expression relies on, or a probe or manual check of a
+particular function. Keep the item node-level only when it concerns the node's
+overall approach, spans several files or places equally, explains a stage
+boundary, or has no single span that carries it. Target the smallest span that
+the reasoning explains, in the file where a reviewer meets it.
+
+Attach the link with `codePath`, `codeStart`, and optional `codeEnd` on
+`stage record` or `stage validation` (including batch items). All insight kinds
+support this. Coordinates are one-based and inclusive at the stage's committed head; do not
 capture against uncommitted edits. To attach later, use `stage target` with
 `collection`, `itemId`, and the same code coordinates. Read the `stages` API module
 for its exact contract. Links supplement the required node references.

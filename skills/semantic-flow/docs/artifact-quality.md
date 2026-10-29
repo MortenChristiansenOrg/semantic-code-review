@@ -54,6 +54,9 @@ not a story reconstructed afterward.
   exactly once and use one selector style for that file.
 - Classify every membership with the schema-defined classification.
 - Link all recorded insights and validation evidence to their relevant nodes.
+- Also code-link an item to the smallest committed span when its reasoning is
+  about specific lines a reviewer would question in the diff; keep items about
+  a node's overall approach, several places, or a stage boundary node-level.
 
 ## Requirements and evidence
 
