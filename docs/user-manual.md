@@ -111,6 +111,19 @@ safe skill updates on Linux and Windows.
 
 ## 2. Initialize at trunk
 
+Before new work, the skill brings the local target branch up to date with its
+configured upstream:
+
+```text
+<semantic-flow> refresh-target --json --target-branch main
+```
+
+It fetches the upstream and fast-forwards the local branch, through its
+checkout when the branch is checked out in a clean worktree. Local commits
+ahead of the upstream are kept, and a branch without an upstream is left as
+is. Divergence, a dirty target checkout, or a failed fetch stops the command
+without changing refs.
+
 Implementation and simulation use isolated worktrees. An explicit destination
 takes precedence over an established repository location and naming convention.
 When neither applies, the default is `<main-project-path>.worktrees/<feature-slug>`:

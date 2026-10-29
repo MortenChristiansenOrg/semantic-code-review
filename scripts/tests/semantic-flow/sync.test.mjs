@@ -275,3 +275,41 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   repository.semantic("validate", "--publish");
   repository.git("branch", "-D", "sync-recovery");
 });
+
+test("refresh-target fast-forwards a target before new work and keeps local-only states", (t) => {
+  const repository = createRepository(t, "semantic-refresh-");
+  const refresh = (...args) => JSON.parse(repository.flow("refresh-target", "--json", "--target-branch", "main", ...args));
+  const initial = repository.git("rev-parse", "main");
+  assert.deepEqual(refresh(), { targetBranch: "main", previousRevision: initial, revision: initial, upstream: null, ahead: false });
+
+  const upstream = addUpstream(t, repository);
+  const advanced = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const checkedOut = refresh();
+  assert.deepEqual(checkedOut, { targetBranch: "main", previousRevision: initial, revision: advanced, ahead: false,
+    upstream: { remote: "upstream", branch: "refs/heads/main", revision: advanced } });
+  assert.equal(repository.read("trunk.txt"), "new upstream\n");
+
+  // A target checked out nowhere moves by ref; one checked out dirty is never moved.
+  const next = upstream.commitFile("trunk.txt", "newer upstream\n", "Advance again");
+  repository.git("switch", "-c", "elsewhere");
+  assert.equal(refresh().revision, next);
+  assert.equal(repository.git("rev-parse", "main"), next);
+  repository.git("switch", "main");
+  const dirty = upstream.commitFile("trunk.txt", "newest upstream\n", "Advance once more");
+  repository.write("README.md", "Local edit\n");
+  const failed = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /requires a clean worktree/);
+  assert.equal(repository.git("rev-parse", "main"), next);
+  repository.git("checkout", "--", "README.md");
+  assert.equal(refresh().revision, dirty);
+
+  const local = repository.commitFile("local.txt", "local\n", "Local work");
+  assert.deepEqual(refresh(), { targetBranch: "main", previousRevision: local, revision: local, ahead: true,
+    upstream: { remote: "upstream", branch: "refs/heads/main", revision: dirty } });
+  upstream.commitFile("other.txt", "other\n", "Diverge");
+  const diverged = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(diverged.status, 0);
+  assert.match(diverged.stderr, /diverged\. No refs were changed/);
+  assert.equal(repository.git("rev-parse", "main"), local);
+});

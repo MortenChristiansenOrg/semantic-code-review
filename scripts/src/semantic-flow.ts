@@ -1009,6 +1009,77 @@ function requireCleanSyncWorktree(root: string): void {
   }
 }
 
+/** The branch's single configured upstream; null when it has none, undefined when ambiguous. */
+function configuredUpstream(root: string, branch: string): { remote: string; branch: string } | null | undefined {
+  const remote = git(["config", "--get", `branch.${branch}.remote`], { cwd: root, allowFailure: true });
+  const merge = git(["config", "--get-all", `branch.${branch}.merge`], { cwd: root, allowFailure: true });
+  if (!remote && !merge) return null;
+  if (!remote || !merge || merge.includes("\n") || !merge.startsWith("refs/heads/")) return undefined;
+  return { remote, branch: merge };
+}
+
+/** Worktrees that have the branch ref checked out. */
+function branchCheckouts(root: string, ref: string): string[] {
+  return worktreeRoots(root).filter((worktree) => git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === ref);
+}
+
+/** Fast-forwards a branch through its clean checkout when one exists, so its files
+ * never fall behind the ref; otherwise moves the ref only if it is still at `from`. */
+function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
+  if (checkout) {
+    requireCleanSyncWorktree(checkout);
+    git(["merge", "--ff-only", "--no-edit", to], { cwd: checkout });
+  } else {
+    git(["update-ref", ref, to, from], { cwd: root });
+  }
+}
+
+/** Brings a target branch up to date with its upstream before new work starts from it. */
+function refreshTarget(options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticFlowApi, "refresh-target"));
+  const root = repositoryRoot(path.resolve(option(options, "project") ?? process.cwd()));
+  const targetBranch = option(options, "target-branch", { required: true })!;
+  const json = flag(options, "json");
+  git(["check-ref-format", "--branch", targetBranch], { cwd: root });
+  const targetRef = `refs/heads/${targetBranch}`;
+  const revision = (ref: string) => git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, allowFailure: true });
+  const isAncestor = (base: string, head: string): boolean =>
+    git(["merge-base", "--is-ancestor", base, head], { cwd: root, allowFailure: true }) !== null;
+  const previousRevision = revision(targetRef);
+  if (!previousRevision) fail(`Target branch ${targetBranch} does not exist locally.`);
+  const upstream = configuredUpstream(root, targetBranch);
+  if (upstream === undefined) fail(`Target branch ${targetBranch} needs exactly one configured upstream branch. Fix its upstream configuration before starting new work.`);
+  const checkouts = branchCheckouts(root, targetRef);
+  if (checkouts.length > 1) fail(`Target branch ${targetBranch} is checked out in multiple worktrees. Free the extra checkouts before refreshing it.`);
+
+  let upstreamRevision: string | null = null;
+  let targetRevision = previousRevision;
+  if (upstream) {
+    git(["fetch", "--no-tags", "--", upstream.remote, upstream.branch], { cwd: root });
+    upstreamRevision = revision("FETCH_HEAD")!;
+    if (isAncestor(previousRevision, upstreamRevision)) targetRevision = upstreamRevision;
+    else if (!isAncestor(upstreamRevision, previousRevision)) {
+      fail(`Target branch ${targetBranch} and its upstream ${upstream.remote} ${upstream.branch} diverged. No refs were changed; resolve the divergence before starting new work.`);
+    }
+  }
+  if (targetRevision !== previousRevision) {
+    if (revision(targetRef) !== previousRevision || JSON.stringify(branchCheckouts(root, targetRef)) !== JSON.stringify(checkouts)) {
+      fail(`Target branch ${targetBranch} or its checkout changed while refreshing; inspect it before retrying.`);
+    }
+    fastForwardBranch(root, targetRef, checkouts[0], previousRevision, targetRevision);
+  }
+  const ahead = Boolean(upstreamRevision && upstreamRevision !== targetRevision);
+  if (json) {
+    console.log(JSON.stringify({ targetBranch, previousRevision, revision: targetRevision, upstream: upstream ? { ...upstream, revision: upstreamRevision } : null, ahead }));
+  } else if (!upstream) {
+    console.log(`${targetBranch} has no configured upstream; new work starts from its local head ${targetRevision}.`);
+  } else if (targetRevision !== previousRevision) {
+    console.log(`Fast-forwarded ${targetBranch}: ${previousRevision} -> ${targetRevision}`);
+  } else {
+    console.log(ahead ? `${targetBranch} is ahead of ${upstream.remote} ${upstream.branch}; its local commits were kept.` : `${targetBranch} is up to date with ${upstream.remote} ${upstream.branch}.`);
+  }
+}
+
 function sync(options: Options): void {
   const candidate = resolveSingle(options, "sync");
   const local = flag(options, "local");
@@ -1044,11 +1115,11 @@ function sync(options: Options): void {
   let remote: string | null = null;
   let remoteBranch: string | null = null;
   if (!local) {
-    remote = git(["config", "--get", `branch.${candidate.targetBranch}.remote`], { cwd: root, allowFailure: true });
-    remoteBranch = git(["config", "--get-all", `branch.${candidate.targetBranch}.merge`], { cwd: root, allowFailure: true });
-    if (!remote || !remoteBranch || remoteBranch.includes("\n") || !remoteBranch.startsWith("refs/heads/")) {
+    const upstream = configuredUpstream(root, candidate.targetBranch);
+    if (!upstream) {
       fail(`Target branch ${candidate.targetBranch} needs one configured upstream. Configure its intended upstream, or use sync --local to use only its current local head.`);
     }
+    ({ remote, branch: remoteBranch } = upstream);
   }
 
   // A target checkout may live in the operational worktree while the artifact
@@ -1094,20 +1165,12 @@ function sync(options: Options): void {
   for (const [branch, head] of stageHeads) {
     if (revision(`refs/heads/${branch}`) !== head) fail(`Stage branch ${branch} moved during synchronization; retry after inspecting it.`);
   }
-  const currentTargetWorktrees = worktreeRoots(root).filter((worktree) =>
-    git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === targetRef,
-  );
+  const currentTargetWorktrees = branchCheckouts(root, targetRef);
   if (JSON.stringify(currentTargetWorktrees) !== JSON.stringify(targetWorktrees)) {
     fail("Target checkouts changed during synchronization; inspect the worktrees before retrying.");
   }
   if (targetRevision !== previousTargetRevision) {
-    if (targetWorktrees.length) {
-      const targetWorktree = targetWorktrees[0];
-      requireCleanSyncWorktree(targetWorktree);
-      git(["merge", "--ff-only", "--no-edit", targetRevision], { cwd: targetWorktree });
-    } else {
-      git(["update-ref", targetRef, targetRevision, previousTargetRevision], { cwd: root });
-    }
+    fastForwardBranch(root, targetRef, targetWorktrees[0], previousTargetRevision, targetRevision);
   }
 
   try {
@@ -1566,6 +1629,10 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
   }
   if (command === "sync") {
     sync(options);
+    return;
+  }
+  if (command === "refresh-target") {
+    refreshTarget(options);
     return;
   }
   if (command === "version") {
