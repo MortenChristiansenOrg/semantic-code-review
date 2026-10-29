@@ -1029,7 +1029,7 @@ function fetchUpstream(root: string, upstream: { remote: string; branch: string 
   const refmaps = (git(["config", "--get-all", `remote.${upstream.remote}.fetch`], { cwd: root, allowFailure: true }) ?? "")
     .split("\n").filter((spec) => /^\+?refs\/[^:]*:refs\/remotes\//.test(spec));
   try {
-    git(["fetch", "--no-tags", "--no-write-fetch-head", ...(refmaps.length ? refmaps.map((spec) => `--refmap=${spec}`) : ["--refmap="]),
+    git(["fetch", "--no-tags", ...(refmaps.length ? refmaps.map((spec) => `--refmap=${spec}`) : ["--refmap="]),
       "--", upstream.remote, `+${upstream.branch}:${scratch}`], { cwd: root });
     return git(["rev-parse", "--verify", `${scratch}^{commit}`], { cwd: root });
   } finally {
@@ -1042,21 +1042,20 @@ function branchCheckouts(root: string, ref: string): string[] {
   return worktreeRoots(root).filter((worktree) => git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === ref);
 }
 
-/** Fast-forwards a branch through its clean checkout when one exists, so its files
- * never fall behind the ref; otherwise moves the ref only if it is still at `from`. */
+/** Fast-forwards a branch only if it is still at `from`. The ref moves atomically,
+ * so a concurrent branch switch can never advance another branch; a clean checkout
+ * of the branch then follows with its index and files, or the ref moves back. */
 function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
+  const checkedOut = () => Boolean(checkout) && git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) === ref;
   if (checkout) {
     requireCleanSyncWorktree(checkout);
-    if (git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) !== ref ||
-      git(["rev-parse", "HEAD"], { cwd: checkout }) !== from) {
-      fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
-    }
-    git(["merge", "--ff-only", "--no-edit", to], { cwd: checkout });
-  } else {
-    git(["update-ref", ref, to, from], { cwd: root });
+    if (!checkedOut()) fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
   }
-  if (git(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: root }) !== to) {
-    fail(`${ref} did not reach ${to}; inspect it before retrying.`);
+  git(["update-ref", "-m", "semantic-flow: fast-forward to upstream", ref, to, from], { cwd: root });
+  if (!checkout || !checkedOut()) return;
+  if (git(["read-tree", "-m", "-u", from, to], { cwd: checkout, allowFailure: true }) === null) {
+    git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
+    fail(`Could not update the files of ${checkout} to ${to}; ${ref} was left at ${from}. Inspect the checkout before retrying.`);
   }
 }
 

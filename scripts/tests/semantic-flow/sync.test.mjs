@@ -288,6 +288,7 @@ test("refresh-target fast-forwards a target before new work and keeps local-only
   assert.deepEqual(checkedOut, { targetBranch: "main", previousRevision: initial, revision: advanced, ahead: false,
     upstream: { remote: "upstream", branch: "refs/heads/main", revision: advanced } });
   assert.equal(repository.read("trunk.txt"), "new upstream\n");
+  assert.equal(repository.git("status", "--porcelain=v1", "--untracked-files=all"), "");
 
   // A target checked out nowhere moves by ref; one checked out dirty is never moved.
   const next = upstream.commitFile("trunk.txt", "newer upstream\n", "Advance again");
