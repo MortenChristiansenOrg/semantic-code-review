@@ -312,6 +312,10 @@ export const semanticFlowApi: CliSignature = {
       options: [...projectSelectionOptions, option("local"), option("json")],
     },
     {
+      command: "refresh-target",
+      options: [option("project", "<repository-path>"), option("target-branch", "<branch>", { required: true }), option("json")],
+    },
+    {
       command: "version",
       options: [option("json")],
     },

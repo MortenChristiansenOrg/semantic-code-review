@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -128,11 +128,14 @@ function repositoryRoot(start: string): string {
   return path.resolve(root);
 }
 
+/** Checkouts of the repository; a bare repository's own entry has no files. */
 function worktreeRoots(root: string): string[] {
   const output = git(["worktree", "list", "--porcelain", "-z"], { cwd: root });
   return output
-    .split("\0")
-    .filter((line) => line.startsWith("worktree "))
+    .split("\0\0")
+    .map((entry) => entry.split("\0"))
+    .filter((lines) => !lines.includes("bare"))
+    .flatMap((lines) => lines.filter((line) => line.startsWith("worktree ")))
     .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
@@ -1009,6 +1012,108 @@ function requireCleanSyncWorktree(root: string): void {
   }
 }
 
+/** The branch's single configured upstream; null when it has none, undefined when ambiguous. */
+function configuredUpstream(root: string, branch: string): { remote: string; branch: string } | null | undefined {
+  const remote = git(["config", "--get", `branch.${branch}.remote`], { cwd: root, allowFailure: true });
+  const merge = git(["config", "--get-all", `branch.${branch}.merge`], { cwd: root, allowFailure: true });
+  if (!remote && !merge) return null;
+  // A refspec such as `refs/heads/main:refs/heads/other` would also move another ref.
+  if (!remote || !merge || merge.includes("\n") || !merge.startsWith("refs/heads/") ||
+    git(["check-ref-format", merge], { cwd: root, allowFailure: true }) === null) return undefined;
+  return { remote, branch: merge };
+}
+
+/** Fetches the upstream branch into a private ref and returns its commit. Only
+ * configured refspecs that update remote-tracking refs apply, so the fetch itself
+ * never moves a local branch, and the private ref keeps a concurrent fetch from
+ * changing the result. */
+function fetchUpstream(root: string, upstream: { remote: string; branch: string }): string {
+  const scratch = `refs/semantic-flow/fetch/${randomUUID()}`;
+  const refmaps = (git(["config", "--get-all", `remote.${upstream.remote}.fetch`], { cwd: root, allowFailure: true }) ?? "")
+    .split("\n").filter((spec) => /^\+?refs\/[^:]*:refs\/remotes\//.test(spec));
+  try {
+    git(["fetch", "--no-tags", ...(refmaps.length ? refmaps.map((spec) => `--refmap=${spec}`) : ["--refmap="]),
+      "--", upstream.remote, `+${upstream.branch}:${scratch}`], { cwd: root });
+    return git(["rev-parse", "--verify", `${scratch}^{commit}`], { cwd: root });
+  } finally {
+    git(["update-ref", "-d", scratch], { cwd: root, allowFailure: true });
+  }
+}
+
+/** Worktrees that have the branch ref checked out. */
+function branchCheckouts(root: string, ref: string): string[] {
+  return worktreeRoots(root).filter((worktree) => git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === ref);
+}
+
+/** Fast-forwards a branch only if it is still at `from`. The ref moves atomically,
+ * so a concurrent branch switch can never advance another branch; a clean checkout
+ * of the branch then follows with its index and files, or the ref moves back. */
+function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
+  const checkedOut = () => Boolean(checkout) && git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) === ref;
+  if (checkout) {
+    requireCleanSyncWorktree(checkout);
+    if (!checkedOut()) fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
+  }
+  git(["update-ref", "-m", "semantic-flow: fast-forward to upstream", ref, to, from], { cwd: root });
+  if (!checkout || !checkedOut()) return;
+  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
+  if (git(["read-tree", "-m", "-u", from, to], { cwd: checkout, allowFailure: true }) === null) {
+    undo();
+    fail(`Could not update the files of ${checkout} to ${to}; ${ref} was left at ${from}. Inspect the checkout before retrying.`);
+  }
+  // Git cannot lock a checkout's branch across commands; undo a switch that raced the file update.
+  if (!checkedOut()) {
+    git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true });
+    undo();
+    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; both were restored. Inspect it before retrying.`);
+  }
+}
+
+/** Brings a target branch up to date with its upstream before new work starts from it. */
+function refreshTarget(options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticFlowApi, "refresh-target"));
+  const root = repositoryRoot(path.resolve(option(options, "project") ?? process.cwd()));
+  const targetBranch = option(options, "target-branch", { required: true })!;
+  const json = flag(options, "json");
+  git(["check-ref-format", "--branch", targetBranch], { cwd: root });
+  const targetRef = `refs/heads/${targetBranch}`;
+  const revision = (ref: string) => git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root, allowFailure: true });
+  const isAncestor = (base: string, head: string): boolean =>
+    git(["merge-base", "--is-ancestor", base, head], { cwd: root, allowFailure: true }) !== null;
+  const previousRevision = revision(targetRef);
+  if (!previousRevision) fail(`Target branch ${targetBranch} does not exist locally.`);
+  const upstream = configuredUpstream(root, targetBranch);
+  if (upstream === undefined) fail(`Target branch ${targetBranch} needs exactly one configured upstream branch. Fix its upstream configuration before starting new work.`);
+  const checkouts = branchCheckouts(root, targetRef);
+  if (checkouts.length > 1) fail(`Target branch ${targetBranch} is checked out in multiple worktrees. Free the extra checkouts before refreshing it.`);
+
+  let upstreamRevision: string | null = null;
+  let targetRevision = previousRevision;
+  if (upstream) {
+    upstreamRevision = fetchUpstream(root, upstream);
+    if (isAncestor(previousRevision, upstreamRevision)) targetRevision = upstreamRevision;
+    else if (!isAncestor(upstreamRevision, previousRevision)) {
+      fail(`Target branch ${targetBranch} and its upstream ${upstream.remote} ${upstream.branch} diverged. No refs were changed; resolve the divergence before starting new work.`);
+    }
+  }
+  if (targetRevision !== previousRevision) {
+    if (revision(targetRef) !== previousRevision || JSON.stringify(branchCheckouts(root, targetRef)) !== JSON.stringify(checkouts)) {
+      fail(`Target branch ${targetBranch} or its checkout changed while refreshing; inspect it before retrying.`);
+    }
+    fastForwardBranch(root, targetRef, checkouts[0], previousRevision, targetRevision);
+  }
+  const ahead = Boolean(upstreamRevision && upstreamRevision !== targetRevision);
+  if (json) {
+    console.log(JSON.stringify({ targetBranch, previousRevision, revision: targetRevision, upstream: upstream ? { ...upstream, revision: upstreamRevision } : null, ahead }));
+  } else if (!upstream) {
+    console.log(`${targetBranch} has no configured upstream; new work starts from its local head ${targetRevision}.`);
+  } else if (targetRevision !== previousRevision) {
+    console.log(`Fast-forwarded ${targetBranch}: ${previousRevision} -> ${targetRevision}`);
+  } else {
+    console.log(ahead ? `${targetBranch} is ahead of ${upstream.remote} ${upstream.branch}; its local commits were kept.` : `${targetBranch} is up to date with ${upstream.remote} ${upstream.branch}.`);
+  }
+}
+
 function sync(options: Options): void {
   const candidate = resolveSingle(options, "sync");
   const local = flag(options, "local");
@@ -1044,11 +1149,11 @@ function sync(options: Options): void {
   let remote: string | null = null;
   let remoteBranch: string | null = null;
   if (!local) {
-    remote = git(["config", "--get", `branch.${candidate.targetBranch}.remote`], { cwd: root, allowFailure: true });
-    remoteBranch = git(["config", "--get-all", `branch.${candidate.targetBranch}.merge`], { cwd: root, allowFailure: true });
-    if (!remote || !remoteBranch || remoteBranch.includes("\n") || !remoteBranch.startsWith("refs/heads/")) {
+    const upstream = configuredUpstream(root, candidate.targetBranch);
+    if (!upstream) {
       fail(`Target branch ${candidate.targetBranch} needs one configured upstream. Configure its intended upstream, or use sync --local to use only its current local head.`);
     }
+    ({ remote, branch: remoteBranch } = upstream);
   }
 
   // A target checkout may live in the operational worktree while the artifact
@@ -1071,8 +1176,7 @@ function sync(options: Options): void {
   let upstreamRevision: string | null = null;
   let targetRevision = previousTargetRevision;
   if (remote && remoteBranch) {
-    git(["fetch", "--no-tags", "--", remote, remoteBranch], { cwd: root });
-    upstreamRevision = revision("FETCH_HEAD");
+    upstreamRevision = fetchUpstream(root, { remote, branch: remoteBranch });
     if (isAncestor(previousTargetRevision, upstreamRevision)) {
       targetRevision = upstreamRevision;
     } else if (!isAncestor(upstreamRevision, previousTargetRevision)) {
@@ -1094,20 +1198,12 @@ function sync(options: Options): void {
   for (const [branch, head] of stageHeads) {
     if (revision(`refs/heads/${branch}`) !== head) fail(`Stage branch ${branch} moved during synchronization; retry after inspecting it.`);
   }
-  const currentTargetWorktrees = worktreeRoots(root).filter((worktree) =>
-    git(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree, allowFailure: true }) === targetRef,
-  );
+  const currentTargetWorktrees = branchCheckouts(root, targetRef);
   if (JSON.stringify(currentTargetWorktrees) !== JSON.stringify(targetWorktrees)) {
     fail("Target checkouts changed during synchronization; inspect the worktrees before retrying.");
   }
   if (targetRevision !== previousTargetRevision) {
-    if (targetWorktrees.length) {
-      const targetWorktree = targetWorktrees[0];
-      requireCleanSyncWorktree(targetWorktree);
-      git(["merge", "--ff-only", "--no-edit", targetRevision], { cwd: targetWorktree });
-    } else {
-      git(["update-ref", targetRef, targetRevision, previousTargetRevision], { cwd: root });
-    }
+    fastForwardBranch(root, targetRef, targetWorktrees[0], previousTargetRevision, targetRevision);
   }
 
   try {
@@ -1566,6 +1662,10 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
   }
   if (command === "sync") {
     sync(options);
+    return;
+  }
+  if (command === "refresh-target") {
+    refreshTarget(options);
     return;
   }
   if (command === "version") {

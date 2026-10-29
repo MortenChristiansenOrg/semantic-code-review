@@ -26,7 +26,19 @@ instead of initializing another implementation.
 
 For new work:
 
-1. Require a clean source worktree at the intended target branch head.
+1. Require a clean source worktree at the intended target branch head, then
+   bring the target up to date with its remote:
+
+   ```text
+   <semantic-flow> refresh-target --json --target-branch <target-branch> [--project <repository-path>]
+   ```
+
+   It fetches the target's configured upstream and fast-forwards the local
+   branch, keeping local commits that are ahead. With `upstream: null` the
+   branch has no upstream; continue from its local head. Skip this step only
+   when the user asks to build on the current local target. Apply
+   `../docs/user-decisions.md` to a divergence or failed fetch; do not merge,
+   rebase, or reset the target to get past it.
 2. Create or use a clean isolated implementation worktree, selecting and
    reporting its path under [the shared worktree location rules](../docs/runtime.md#choose-an-isolated-worktree-location).
 3. Gather the source work items and apply the specification boundaries in

@@ -275,3 +275,80 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   repository.semantic("validate", "--publish");
   repository.git("branch", "-D", "sync-recovery");
 });
+
+test("refresh-target fast-forwards a target before new work and keeps local-only states", (t) => {
+  const repository = createRepository(t, "semantic-refresh-");
+  const refresh = (...args) => JSON.parse(repository.flow("refresh-target", "--json", "--target-branch", "main", ...args));
+  const initial = repository.git("rev-parse", "main");
+  assert.deepEqual(refresh(), { targetBranch: "main", previousRevision: initial, revision: initial, upstream: null, ahead: false });
+
+  const upstream = addUpstream(t, repository);
+  const advanced = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const checkedOut = refresh();
+  assert.deepEqual(checkedOut, { targetBranch: "main", previousRevision: initial, revision: advanced, ahead: false,
+    upstream: { remote: "upstream", branch: "refs/heads/main", revision: advanced } });
+  assert.equal(repository.read("trunk.txt"), "new upstream\n");
+  assert.equal(repository.git("status", "--porcelain=v1", "--untracked-files=all"), "");
+
+  // A target checked out nowhere moves by ref; one checked out dirty is never moved.
+  const next = upstream.commitFile("trunk.txt", "newer upstream\n", "Advance again");
+  repository.git("switch", "-c", "elsewhere");
+  assert.equal(refresh().revision, next);
+  assert.equal(repository.git("rev-parse", "main"), next);
+  repository.git("switch", "main");
+  const dirty = upstream.commitFile("trunk.txt", "newest upstream\n", "Advance once more");
+  repository.write("README.md", "Local edit\n");
+  const failed = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /requires a clean worktree/);
+  assert.equal(repository.git("rev-parse", "main"), next);
+  repository.git("checkout", "--", "README.md");
+  assert.equal(refresh().revision, dirty);
+
+  const local = repository.commitFile("local.txt", "local\n", "Local work");
+  assert.deepEqual(refresh(), { targetBranch: "main", previousRevision: local, revision: local, ahead: true,
+    upstream: { remote: "upstream", branch: "refs/heads/main", revision: dirty } });
+  upstream.commitFile("other.txt", "other\n", "Diverge");
+  const diverged = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(diverged.status, 0);
+  assert.match(diverged.stderr, /diverged\. No refs were changed/);
+  assert.equal(repository.git("rev-parse", "main"), local);
+});
+
+test("refresh-target never lets the fetch or the upstream configuration move other refs", (t) => {
+  const repository = createRepository(t, "semantic-refresh-refs-");
+  const upstream = addUpstream(t, repository);
+  const local = repository.commitFile("local.txt", "local\n", "Local work");
+  upstream.commitFile("other.txt", "other\n", "Diverge");
+  repository.git("switch", "-c", "elsewhere");
+  // A mirror-style refspec would force the target to the upstream during a plain fetch.
+  repository.git("config", "remote.upstream.fetch", "+refs/heads/*:refs/heads/*");
+  const diverged = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(diverged.status, 0);
+  assert.match(diverged.stderr, /diverged\. No refs were changed/);
+  assert.equal(repository.git("rev-parse", "main"), local);
+  assert.equal(repository.git("for-each-ref", "refs/semantic-flow/"), "");
+
+  repository.git("config", "branch.main.merge", "refs/heads/main:refs/heads/unrelated");
+  const injected = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(injected.status, 0);
+  assert.match(injected.stderr, /needs exactly one configured upstream branch/);
+  assert.equal(repository.git("for-each-ref", "refs/heads/unrelated"), "");
+});
+
+test("refresh-target ignores the entry of a bare repository with linked checkouts", (t) => {
+  const seed = createRepository(t, "semantic-refresh-seed-");
+  const upstream = createRepository(t, "semantic-refresh-bare-upstream-");
+  upstream.git("fetch", seed.root, "main");
+  upstream.git("reset", "--hard", "FETCH_HEAD");
+  const bare = `${seed.root}-bare.git`, checkout = `${seed.root}-checkout`;
+  t.after(() => { fs.rmSync(bare, { recursive: true, force: true }); fs.rmSync(checkout, { recursive: true, force: true }); });
+  seed.git("clone", "--bare", seed.root, bare);
+  seed.git("-C", bare, "worktree", "add", checkout, "main");
+  seed.git("-C", bare, "config", "branch.main.remote", upstream.root);
+  seed.git("-C", bare, "config", "branch.main.merge", "refs/heads/main");
+  const advanced = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const result = JSON.parse(seed.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main", "--project", checkout]).stdout);
+  assert.equal(result.revision, advanced);
+  assert.equal(fs.readFileSync(`${checkout}/trunk.txt`, "utf8"), "new upstream\n");
+});

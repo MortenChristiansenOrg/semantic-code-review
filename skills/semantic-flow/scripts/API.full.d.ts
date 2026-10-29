@@ -680,6 +680,23 @@ export interface SyncSemanticFlowOptions {
  * @command sync
  */
 export declare function syncSemanticFlow(options?: SyncSemanticFlowOptions): void;
+export interface RefreshTargetOptions {
+    /** Repository or worktree whose branch is refreshed; defaults to the current directory. */
+    project?: string;
+    /** Local target branch that new work will start from. */
+    "target-branch": string;
+    /** Emits the previous and current target revisions and the upstream as JSON. */
+    json?: true;
+}
+/**
+ * Before new work, fetches the target branch's configured upstream and
+ * fast-forwards the local branch, through its checkout when one exists.
+ * Preserves a locally ahead target, rejects divergence and a dirty target
+ * checkout, and reports `upstream: null` when the branch has no upstream.
+ * @cli semantic-flow.mjs
+ * @command refresh-target
+ */
+export declare function refreshTarget(options: RefreshTargetOptions): void;
 export interface SemanticFlowVersionOptions {
     /** Emits machine-readable installed skill and format versions. */
     json?: true;

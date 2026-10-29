@@ -52,7 +52,7 @@ const commands = new Map([
   ],
   [
     flowCli,
-    ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "sync", "version", "update"],
+    ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "sync", "refresh-target", "version", "update"],
   ],
 ]);
 
