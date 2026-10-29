@@ -34,7 +34,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, releaseClaims, renewSessionClaims, roundAwaitingAnswer, sendInProgress, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { withCheckedFeedback } from "./review-feedback.js";
@@ -905,7 +905,7 @@ async function waitForFeedback(options: Options): Promise<void> {
   const deadline = Date.now() + seconds * 1000;
   let heartbeat = Date.now();
   while (true) {
-    const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean } => {
+    const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean; released?: string[] } => {
       const live = liveSession(state);
       if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
       if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
@@ -925,13 +925,19 @@ async function waitForFeedback(options: Options): Promise<void> {
         renewSessionClaims(state, now, session);
         return {};
       }
-      releaseClaims(state, session); // Threads a finished round left unanswered return to the queue.
-      if (live.stopRequestedAt) return end("stopped");
-      if (readReview(review).completedAt) return end("completed");
-      if (sendInProgress(state, now)) return {};
-      if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
-      return idle ? end("idle") : {};
+      // Threads a finished round left unanswered return to the queue after a short
+      // grace, so a reply posted alongside this wait is not reissued as a new round.
+      const released = settleSessionClaims(state, now, session);
+      const step = (() => {
+        if (live.stopRequestedAt) return end("stopped");
+        if (readReview(review).completedAt) return end("completed");
+        if (sendInProgress(state, now)) return {};
+        if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
+        return idle ? end("idle") : {};
+      })();
+      return released.length ? { ...step, released } : step;
     });
+    if (step.released) console.error(`The previous round ended without replies to ${step.released.join(", ")}; returned to the queue. Post every reply before waiting again.`);
     if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
     if (step.responses) { print({ session, responses: step.responses }); return; }
     if (step.pending) {

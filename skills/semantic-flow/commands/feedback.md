@@ -222,7 +222,7 @@ a thread. Closing the conversation is the reviewer's decision.
 ## Finish
 
 In interactive review, continue with the next wait as
-`../docs/interactive-review.md` describes.
+`../docs/interactive-review.md` describes, once every reply of the round is posted.
 
 Otherwise rerun `<semantic-flow> feedback --json --project
 <artifact-worktree-path>`. It validates the revised stack and feedback in one

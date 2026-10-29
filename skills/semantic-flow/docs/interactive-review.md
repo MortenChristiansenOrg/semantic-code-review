@@ -53,7 +53,11 @@ after the current round.
 Process each round as `../commands/feedback.md` describes, including parallel
 subagents for questions and for independent stage changes. Reuse stage
 worktrees created in earlier rounds. After the change replies are posted, wait
-again with the session instead of rerunning the preflight.
+again with the session instead of rerunning the preflight. Start that wait only
+after `reply` or `reply-batch` has finished, never as a parallel tool call beside
+it, even when the harness encourages parallel calls. A wait that finds the round
+still unanswered returns its threads to the queue after a few seconds, and
+reports them on stderr.
 
 Before long steps, you may show what the round is doing:
 

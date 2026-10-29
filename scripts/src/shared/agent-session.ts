@@ -14,6 +14,9 @@ export const LISTENER_GRACE_MS = 90_000;
 export const SENDING_LIMIT_MS = 60_000;
 /** An interactive session ends after this long without new feedback. */
 export const IDLE_LIMIT_MS = 2 * 60 * 60_000;
+/** How long a listener leaves a finished round's unanswered threads claimed, so
+ * replies posted alongside the next wait land before the threads return to the queue. */
+export const REPLY_GRACE_MS = 10_000;
 /** Released and completed rounds remembered for fencing late replies. */
 const RETIRED_CLAIM_LIMIT = 50;
 
@@ -21,6 +24,8 @@ export interface ClaimedThread { id: string; through: string; answeredAt?: strin
 export interface AgentClaim {
   id: string; sessionId: string | null; startedAt: string; activityAt: string;
   threads: ClaimedThread[]; note?: string;
+  /** When a listener first found this round finished with threads still unanswered. */
+  releasingAt?: string;
 }
 export interface AgentRequest {
   id: string; sessionId: string | null; body: string; choices: string[]; createdAt: string;
@@ -144,6 +149,20 @@ export function releaseClaims(state: AgentState, sessionId: string | null) {
   state.claims = state.claims.filter((claim) => claim.sessionId !== sessionId);
 }
 
+/** Returns a finished round's unanswered threads to the queue once replies had
+ * time to land, and names the threads released now. */
+export function settleSessionClaims(state: AgentState, now: number, sessionId: string) {
+  const released: string[] = [];
+  state.claims = state.claims.filter((claim) => {
+    if (claim.sessionId !== sessionId || !claimActive(claim, now)) return true;
+    claim.releasingAt ??= iso(now);
+    if (age(now, claim.releasingAt) < REPLY_GRACE_MS) return true;
+    released.push(...claim.threads.filter((thread) => !thread.answeredAt).map((thread) => thread.id));
+    return false;
+  });
+  return released;
+}
+
 /** A session's round that asked the reviewer something keeps its threads until the answer is collected. */
 export function roundAwaitingAnswer(state: AgentState, now: number, sessionId: string) {
   return state.claims.some((claim) => claim.sessionId === sessionId && claimActive(claim, now)) &&
@@ -172,13 +191,16 @@ export function roundThrough(state: AgentState, claimId: string, threadId: strin
 }
 
 /** Marks agent replies; a round completes when every claimed thread has one.
- * A reply naming its round only counts for that round, so a replaced round never ends a newer one. */
+ * A reply naming its round only counts for that round, or for a newer round that
+ * holds the same reviewer comment, so a replaced round never ends a newer one early. */
 export function recordAgentReplies(state: AgentState, now: number, replies: { threadId: string; claimId?: string }[]) {
   const answering = new Set<string>();
+  const answers = (reply: { threadId: string; claimId?: string }, claim: AgentClaim, thread: ClaimedThread) =>
+    reply.threadId === thread.id && (!reply.claimId || reply.claimId === claim.id || roundThrough(state, reply.claimId, thread.id) === thread.through);
   for (const claim of state.claims) {
     if (!claimActive(claim, now)) continue;
     for (const thread of claim.threads) {
-      if (!thread.answeredAt && replies.some((reply) => reply.threadId === thread.id && (!reply.claimId || reply.claimId === claim.id))) {
+      if (!thread.answeredAt && replies.some((reply) => answers(reply, claim, thread))) {
         thread.answeredAt = iso(now);
         answering.add(claim.id);
       }
