@@ -169,6 +169,66 @@ test("a replaced round's late reply answers only what that round claimed", async
   assert.deepEqual(flowJson(repository).stages, []);
 });
 
+test("a wait started alongside the round's replies does not reissue the round", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "racing");
+  const round = await waitAsync(repository, "--timeout", "5");
+  const next = waitAsync(repository, "--session", round.session, "--timeout", "4");
+  // Reply only once the wait found the round unanswered, as when both run as parallel tool calls.
+  for (const deadline = Date.now() + 10_000; !agentState(repository).claims[0]?.releasingAt;) {
+    assert.ok(Date.now() < deadline, "the wait never examined the round");
+    await pause(20);
+  }
+  repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "racing", "comment-id": "racing-answer", author: "agent", body: "Done." }]), "--claim", round.claim);
+  assert.deepEqual(await next, { session: round.session, timedOut: true });
+  const state = agentState(repository);
+  assert.deepEqual(state.claims, []);
+  assert.equal(state.lastRound.id, round.claim);
+});
+
+test("an idle or stopping session lets a racing reply land before it ends", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "settling");
+  const round = await waitAsync(repository, "--timeout", "5");
+  addThread(repository, "queued");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.session.feedbackAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+  state.session.stopRequestedAt = new Date().toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const next = waitAsync(repository, "--session", round.session, "--timeout", "30");
+  for (const deadline = Date.now() + 10_000; !agentState(repository).claims[0]?.releasingAt;) {
+    assert.ok(Date.now() < deadline, "the wait never examined the round");
+    await pause(20);
+  }
+  assert.equal(agentState(repository).session.endedAt, undefined);
+  repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "settling", "comment-id": "settling-answer", author: "agent", body: "Done." }]), "--claim", round.claim);
+  assert.deepEqual(await next, { session: round.session, stopped: true, reason: "stopped" });
+  assert.equal(agentState(repository).lastRound.id, round.claim);
+  assert.deepEqual(agentState(repository).claims, []); // A pending Stop starts no new round.
+});
+
+test("a finished round's unanswered threads return after the grace, and a late reply answers the reissued round", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "late");
+  const first = await waitAsync(repository, "--timeout", "5");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].releasingAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const reissued = await waitAsync(repository, "--session", first.session, "--timeout", "5");
+  assert.notEqual(reissued.claim, first.claim);
+  assert.deepEqual(threadIds(reissued), ["late"]);
+
+  repository.feedback("thread", "reply", "--id", "late", "--comment-id", "late-answer", "--author", "agent", "--claim", first.claim, "--body", "Answered.");
+  assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json")).comments.at(-1).respondsTo, "late-note");
+  assert.deepEqual(agentState(repository).claims, []);
+  assert.equal(agentState(repository).lastRound.id, reissued.claim);
+});
+
 test("a listener does not claim feedback while a viewer send is still writing", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
