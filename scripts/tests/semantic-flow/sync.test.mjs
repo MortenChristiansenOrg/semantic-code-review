@@ -335,3 +335,20 @@ test("refresh-target never lets the fetch or the upstream configuration move oth
   assert.match(injected.stderr, /needs exactly one configured upstream branch/);
   assert.equal(repository.git("for-each-ref", "refs/heads/unrelated"), "");
 });
+
+test("refresh-target ignores the entry of a bare repository with linked checkouts", (t) => {
+  const seed = createRepository(t, "semantic-refresh-seed-");
+  const upstream = createRepository(t, "semantic-refresh-bare-upstream-");
+  upstream.git("fetch", seed.root, "main");
+  upstream.git("reset", "--hard", "FETCH_HEAD");
+  const bare = `${seed.root}-bare.git`, checkout = `${seed.root}-checkout`;
+  t.after(() => { fs.rmSync(bare, { recursive: true, force: true }); fs.rmSync(checkout, { recursive: true, force: true }); });
+  seed.git("clone", "--bare", seed.root, bare);
+  seed.git("-C", bare, "worktree", "add", checkout, "main");
+  seed.git("-C", bare, "config", "branch.main.remote", upstream.root);
+  seed.git("-C", bare, "config", "branch.main.merge", "refs/heads/main");
+  const advanced = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const result = JSON.parse(seed.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main", "--project", checkout]).stdout);
+  assert.equal(result.revision, advanced);
+  assert.equal(fs.readFileSync(`${checkout}/trunk.txt`, "utf8"), "new upstream\n");
+});

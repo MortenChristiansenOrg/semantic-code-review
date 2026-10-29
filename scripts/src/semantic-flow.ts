@@ -128,11 +128,14 @@ function repositoryRoot(start: string): string {
   return path.resolve(root);
 }
 
+/** Checkouts of the repository; a bare repository's own entry has no files. */
 function worktreeRoots(root: string): string[] {
   const output = git(["worktree", "list", "--porcelain", "-z"], { cwd: root });
   return output
-    .split("\0")
-    .filter((line) => line.startsWith("worktree "))
+    .split("\0\0")
+    .map((entry) => entry.split("\0"))
+    .filter((lines) => !lines.includes("bare"))
+    .flatMap((lines) => lines.filter((line) => line.startsWith("worktree ")))
     .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
