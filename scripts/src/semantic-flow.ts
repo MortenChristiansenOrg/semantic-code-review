@@ -1053,9 +1053,16 @@ function fastForwardBranch(root: string, ref: string, checkout: string | undefin
   }
   git(["update-ref", "-m", "semantic-flow: fast-forward to upstream", ref, to, from], { cwd: root });
   if (!checkout || !checkedOut()) return;
+  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
   if (git(["read-tree", "-m", "-u", from, to], { cwd: checkout, allowFailure: true }) === null) {
-    git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
+    undo();
     fail(`Could not update the files of ${checkout} to ${to}; ${ref} was left at ${from}. Inspect the checkout before retrying.`);
+  }
+  // Git cannot lock a checkout's branch across commands; undo a switch that raced the file update.
+  if (!checkedOut()) {
+    git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true });
+    undo();
+    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; both were restored. Inspect it before retrying.`);
   }
 }
 
