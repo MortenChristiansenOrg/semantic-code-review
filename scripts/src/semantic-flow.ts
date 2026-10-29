@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -1014,8 +1014,27 @@ function configuredUpstream(root: string, branch: string): { remote: string; bra
   const remote = git(["config", "--get", `branch.${branch}.remote`], { cwd: root, allowFailure: true });
   const merge = git(["config", "--get-all", `branch.${branch}.merge`], { cwd: root, allowFailure: true });
   if (!remote && !merge) return null;
-  if (!remote || !merge || merge.includes("\n") || !merge.startsWith("refs/heads/")) return undefined;
+  // A refspec such as `refs/heads/main:refs/heads/other` would also move another ref.
+  if (!remote || !merge || merge.includes("\n") || !merge.startsWith("refs/heads/") ||
+    git(["check-ref-format", merge], { cwd: root, allowFailure: true }) === null) return undefined;
   return { remote, branch: merge };
+}
+
+/** Fetches the upstream branch into a private ref and returns its commit. Only
+ * configured refspecs that update remote-tracking refs apply, so the fetch itself
+ * never moves a local branch, and the private ref keeps a concurrent fetch from
+ * changing the result. */
+function fetchUpstream(root: string, upstream: { remote: string; branch: string }): string {
+  const scratch = `refs/semantic-flow/fetch/${randomUUID()}`;
+  const refmaps = (git(["config", "--get-all", `remote.${upstream.remote}.fetch`], { cwd: root, allowFailure: true }) ?? "")
+    .split("\n").filter((spec) => /^\+?refs\/[^:]*:refs\/remotes\//.test(spec));
+  try {
+    git(["fetch", "--no-tags", "--no-write-fetch-head", ...(refmaps.length ? refmaps.map((spec) => `--refmap=${spec}`) : ["--refmap="]),
+      "--", upstream.remote, `+${upstream.branch}:${scratch}`], { cwd: root });
+    return git(["rev-parse", "--verify", `${scratch}^{commit}`], { cwd: root });
+  } finally {
+    git(["update-ref", "-d", scratch], { cwd: root, allowFailure: true });
+  }
 }
 
 /** Worktrees that have the branch ref checked out. */
@@ -1028,9 +1047,16 @@ function branchCheckouts(root: string, ref: string): string[] {
 function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
   if (checkout) {
     requireCleanSyncWorktree(checkout);
+    if (git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) !== ref ||
+      git(["rev-parse", "HEAD"], { cwd: checkout }) !== from) {
+      fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
+    }
     git(["merge", "--ff-only", "--no-edit", to], { cwd: checkout });
   } else {
     git(["update-ref", ref, to, from], { cwd: root });
+  }
+  if (git(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: root }) !== to) {
+    fail(`${ref} did not reach ${to}; inspect it before retrying.`);
   }
 }
 
@@ -1055,8 +1081,7 @@ function refreshTarget(options: Options): void {
   let upstreamRevision: string | null = null;
   let targetRevision = previousRevision;
   if (upstream) {
-    git(["fetch", "--no-tags", "--", upstream.remote, upstream.branch], { cwd: root });
-    upstreamRevision = revision("FETCH_HEAD")!;
+    upstreamRevision = fetchUpstream(root, upstream);
     if (isAncestor(previousRevision, upstreamRevision)) targetRevision = upstreamRevision;
     else if (!isAncestor(upstreamRevision, previousRevision)) {
       fail(`Target branch ${targetBranch} and its upstream ${upstream.remote} ${upstream.branch} diverged. No refs were changed; resolve the divergence before starting new work.`);
@@ -1142,8 +1167,7 @@ function sync(options: Options): void {
   let upstreamRevision: string | null = null;
   let targetRevision = previousTargetRevision;
   if (remote && remoteBranch) {
-    git(["fetch", "--no-tags", "--", remote, remoteBranch], { cwd: root });
-    upstreamRevision = revision("FETCH_HEAD");
+    upstreamRevision = fetchUpstream(root, { remote, branch: remoteBranch });
     if (isAncestor(previousTargetRevision, upstreamRevision)) {
       targetRevision = upstreamRevision;
     } else if (!isAncestor(upstreamRevision, previousTargetRevision)) {

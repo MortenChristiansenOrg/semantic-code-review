@@ -121,8 +121,8 @@ configured upstream:
 It fetches the upstream and fast-forwards the local branch, through its
 checkout when the branch is checked out in a clean worktree. Local commits
 ahead of the upstream are kept, and a branch without an upstream is left as
-is. Divergence, a dirty target checkout, or a failed fetch stops the command
-without changing refs.
+is. Divergence, a failed fetch, or a dirty target checkout that needs to
+advance stops the command without changing local branches.
 
 Implementation and simulation use isolated worktrees. An explicit destination
 takes precedence over an established repository location and naming convention.

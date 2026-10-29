@@ -313,3 +313,24 @@ test("refresh-target fast-forwards a target before new work and keeps local-only
   assert.match(diverged.stderr, /diverged\. No refs were changed/);
   assert.equal(repository.git("rev-parse", "main"), local);
 });
+
+test("refresh-target never lets the fetch or the upstream configuration move other refs", (t) => {
+  const repository = createRepository(t, "semantic-refresh-refs-");
+  const upstream = addUpstream(t, repository);
+  const local = repository.commitFile("local.txt", "local\n", "Local work");
+  upstream.commitFile("other.txt", "other\n", "Diverge");
+  repository.git("switch", "-c", "elsewhere");
+  // A mirror-style refspec would force the target to the upstream during a plain fetch.
+  repository.git("config", "remote.upstream.fetch", "+refs/heads/*:refs/heads/*");
+  const diverged = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(diverged.status, 0);
+  assert.match(diverged.stderr, /diverged\. No refs were changed/);
+  assert.equal(repository.git("rev-parse", "main"), local);
+  assert.equal(repository.git("for-each-ref", "refs/semantic-flow/"), "");
+
+  repository.git("config", "branch.main.merge", "refs/heads/main:refs/heads/unrelated");
+  const injected = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(injected.status, 0);
+  assert.match(injected.stderr, /needs exactly one configured upstream branch/);
+  assert.equal(repository.git("for-each-ref", "refs/heads/unrelated"), "");
+});
