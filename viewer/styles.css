@@ -2074,10 +2074,20 @@ html:has(.file-search[open]) { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .agent-pill.is-working .agent-dot { animation: none; } }
 .agent-stop { padding: 8px 11px; }
 .agent-bar { width: min(var(--story-w), calc(100% - 52px)); margin: 12px auto 0; border-radius: var(--radius-sm); }
-/* Questions stay above open panels: the reviewer is often reading notes when the agent asks. */
+/* Questions overlay the page above open panels at a readable width; the reviewer
+   can minimize them to consult the review before answering. */
 .agent-questions {
-  position: fixed; top: 76px; left: 16px; z-index: 85; display: grid; gap: 10px;
-  width: min(460px, calc(100vw - 32px)); max-height: calc(100dvh - 96px); overflow: auto;
+  position: fixed; top: 76px; left: 0; right: 0; margin: 0 auto; z-index: 85; display: grid; gap: 14px;
+  width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 96px); overflow: auto; overscroll-behavior: contain;
+  box-sizing: border-box; padding: 18px 22px 22px; border: 1px solid var(--signal); border-radius: 10px;
+  background: color-mix(in srgb, var(--signal) 6%, var(--panel)); box-shadow: 0 16px 48px #0009;
+}
+.agent-questions-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.agent-questions-show {
+  position: fixed; top: 76px; left: 50%; translate: -50% 0; z-index: 85; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: .05em; color: var(--text); white-space: nowrap;
+  padding: 9px 16px; border: 1px solid var(--signal); border-radius: 999px; box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--signal) 14%, var(--panel));
 }
 .agent-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 10px 14px;
@@ -2089,16 +2099,14 @@ html:has(.file-search[open]) { overflow: hidden; }
 .agent-bar code { font-family: var(--mono); font-size: .92em; color: var(--signal-2); }
 .agent-bar > span { flex: 1 1 280px; min-width: 0; }
 .agent-bar .tb-btn { flex: none; }
-.agent-question {
-  display: grid; gap: 10px; padding: 14px 16px; border-radius: var(--radius-sm); box-shadow: var(--shadow);
-  border: 1px solid var(--signal); background: color-mix(in srgb, var(--signal) 8%, var(--panel));
-}
+.agent-question { display: grid; gap: 14px; }
+.agent-question + .agent-question { padding-top: 16px; border-top: 1px solid var(--line); }
 .agent-question-h { margin: 0; font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--signal); }
-.agent-question .comment-body { margin: 0; color: var(--text); font-size: 13.5px; line-height: 1.55; }
+.agent-question .comment-body { margin: 0; color: var(--text); font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
 .agent-choices { display: flex; flex-wrap: wrap; gap: 8px; }
 .agent-answer { display: grid; gap: 8px; }
 .agent-answer textarea {
-  width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--ink-2);
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; color: var(--text); background: var(--ink-2);
   border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px; resize: vertical;
 }
 .agent-answer textarea:focus { outline: none; border-color: var(--signal); }

@@ -2237,6 +2237,12 @@ test('interactive review shows agent presence, round progress, unread replies, a
   data.agent = { ...data.agent, requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] };
   data.viewerRevision = 'question';
   await expect(page.locator('.agent-question')).toContainText('Should refunds skip the email?');
+  const overlay = await page.locator('.agent-questions').boundingBox(), layoutWidth = await page.evaluate(() => document.documentElement.clientWidth);
+  expect(overlay.width).toBeGreaterThan(600);
+  expect(Math.abs(overlay.x + overlay.width / 2 - layoutWidth / 2)).toBeLessThan(2);
+  await page.locator('[data-action="minimize-agent-questions"]').click();
+  await expect(page.locator('.agent-question')).toHaveCount(0);
+  await page.locator('[data-action="show-agent-questions"]').click();
   await page.locator('.agent-question [data-action="agent-choice"]', { hasText: 'Yes' }).click();
   await expect(page.locator('.agent-question')).toHaveCount(0);
   expect(data.answers).toEqual([{ requestId: 'refund-email', body: 'Yes' }]);

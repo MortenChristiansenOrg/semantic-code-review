@@ -53,6 +53,8 @@
   let agentCommandCopied = false;
   const agentAnswers = new Map();
   const agentAnswerOps = new Map();
+  // Questions the reviewer minimized; a new question opens the overlay again.
+  const minimizedAgentQuestions = new Set();
   const AGENT_COMMAND = "/semantic-flow review -i";
   const baseTitle = document.title;
 
@@ -67,6 +69,7 @@
     if (!next || typeof next !== "object" || data.remote) return;
     const previous = agent;
     agent = next;
+    for (const id of minimizedAgentQuestions) if (!next.requests?.some((request) => request.id === id)) minimizedAgentQuestions.delete(id);
     if (previous && next.lastRound && next.lastRound.id !== previous.lastRound?.id) announceRound(next.lastRound);
     if (agentView(previous) !== agentView(next)) render();
   }
@@ -2281,17 +2284,25 @@
         <span>Run <code>${AGENT_COMMAND}</code> in your agent to have feedback handled as you send it.</span>
         <button class="tb-btn" data-action="copy-agent-command" type="button">${agentCommandCopied ? "Copied" : "Copy command"}</button></div>`;
     }
-    const questions = agent.requests.length ? `<div class="agent-questions">${agent.requests.map(agentQuestion).join("")}</div>` : "";
-    return status + questions;
+    return status + agentQuestions();
+  }
+  function agentQuestions() {
+    const count = agent.requests.length;
+    if (!count) return "";
+    if (agent.requests.every((request) => minimizedAgentQuestions.has(request.id)))
+      return `<button class="agent-questions-show" data-action="show-agent-questions" type="button">The agent needs your answer${count > 1 ? ` (${count})` : ""} · Show</button>`;
+    return `<div class="agent-questions" role="region" aria-label="Questions from the agent">
+      <div class="agent-questions-h"><p class="agent-question-h">The agent needs your answer${count > 1 ? ` (${count})` : ""}</p>
+        <button class="tb-btn" data-action="minimize-agent-questions" type="button" title="Hide the question to read the review. It stays waiting for your answer.">Minimize</button></div>
+      ${agent.requests.map(agentQuestion).join("")}</div>`;
   }
   function agentQuestion(request) {
     const op = agentAnswerOps.get(request.id) || {};
     return `<section class="agent-question" data-render-key="agent-question-${esc(request.id)}" aria-label="Question from the agent">
-      <p class="agent-question-h">The agent needs your answer</p>
       <p class="comment-body">${formatCommentBody(request.body)}</p>
       ${request.choices.length ? `<div class="agent-choices">${request.choices.map((choice, index) => `<button class="tb-btn" type="button" data-action="agent-choice" data-id="${esc(request.id)}" data-choice="${index}" ${op.busy ? "disabled" : ""}>${esc(choice)}</button>`).join("")}</div>` : ""}
       <form class="agent-answer" data-agent-answer data-id="${esc(request.id)}">
-        <textarea name="agent-answer-${esc(request.id)}" rows="2" placeholder="${request.choices.length ? "Or write a different answer…" : "Write your answer…"}" ${op.busy ? "disabled" : ""}>${esc(agentAnswers.get(request.id) || "")}</textarea>
+        <textarea name="agent-answer-${esc(request.id)}" rows="3" placeholder="${request.choices.length ? "Or write a different answer…" : "Write your answer…"}" ${op.busy ? "disabled" : ""}>${esc(agentAnswers.get(request.id) || "")}</textarea>
         <div class="nc-actions"><button class="nc-save" type="submit" ${op.busy ? "disabled" : ""}>${op.busy ? "Sending…" : "Send answer"}</button></div>
       </form>
       ${op.error ? `<p class="tthread-err">${esc(op.error)}</p>` : ""}
@@ -3117,6 +3128,11 @@
       void stopAgent();
     } else if (a === "copy-agent-command") {
       void copyAgentCommand();
+    } else if (a === "minimize-agent-questions") {
+      for (const request of agent?.requests || []) minimizedAgentQuestions.add(request.id);
+      render();
+    } else if (a === "show-agent-questions") {
+      minimizedAgentQuestions.clear(); render();
     } else if (a === "agent-choice") {
       const request = agent?.requests.find((item) => item.id === btn.dataset.id);
       if (request) void answerAgent(request.id, request.choices[Number(btn.dataset.choice)] || "");
