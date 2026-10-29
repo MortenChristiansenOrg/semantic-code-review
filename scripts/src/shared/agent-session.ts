@@ -150,17 +150,18 @@ export function releaseClaims(state: AgentState, sessionId: string | null) {
 }
 
 /** Returns a finished round's unanswered threads to the queue once replies had
- * time to land, and names the threads released now. */
+ * time to land. Reports whether a round is still settling and the threads released now. */
 export function settleSessionClaims(state: AgentState, now: number, sessionId: string) {
   const released: string[] = [];
+  let settling = false;
   state.claims = state.claims.filter((claim) => {
     if (claim.sessionId !== sessionId || !claimActive(claim, now)) return true;
     claim.releasingAt ??= iso(now);
-    if (age(now, claim.releasingAt) < REPLY_GRACE_MS) return true;
+    if (age(now, claim.releasingAt) < REPLY_GRACE_MS) return settling = true;
     released.push(...claim.threads.filter((thread) => !thread.answeredAt).map((thread) => thread.id));
     return false;
   });
-  return released;
+  return { settling, released };
 }
 
 /** A session's round that asked the reviewer something keeps its threads until the answer is collected. */

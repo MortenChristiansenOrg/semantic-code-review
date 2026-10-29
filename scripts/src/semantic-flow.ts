@@ -927,13 +927,14 @@ async function waitForFeedback(options: Options): Promise<void> {
       }
       // Threads a finished round left unanswered return to the queue after a short
       // grace, so a reply posted alongside this wait is not reissued as a new round.
-      const released = settleSessionClaims(state, now, session);
+      // Stop and idle apply once the round settles, like after any other round.
+      const { settling, released } = settleSessionClaims(state, now, session);
       const step = (() => {
-        if (live.stopRequestedAt) return end("stopped");
+        if (live.stopRequestedAt && !settling) return end("stopped");
         if (readReview(review).completedAt) return end("completed");
         if (sendInProgress(state, now)) return {};
         if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
-        return idle ? end("idle") : {};
+        return idle && !settling ? end("idle") : {};
       })();
       return released.length ? { ...step, released } : step;
     });

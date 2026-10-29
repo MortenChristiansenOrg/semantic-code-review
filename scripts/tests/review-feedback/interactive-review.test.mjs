@@ -174,15 +174,38 @@ test("a wait started alongside the round's replies does not reissue the round", 
   repository.feedback("init");
   addThread(repository, "racing");
   const round = await waitAsync(repository, "--timeout", "5");
-  const listening = agentState(repository).session.heartbeatAt;
   const next = waitAsync(repository, "--session", round.session, "--timeout", "4");
-  // Reply only once the wait listens, as when both run as parallel tool calls.
-  while (agentState(repository).session.heartbeatAt === listening) await pause(20);
+  // Reply only once the wait found the round unanswered, as when both run as parallel tool calls.
+  for (const deadline = Date.now() + 10_000; !agentState(repository).claims[0]?.releasingAt;) {
+    assert.ok(Date.now() < deadline, "the wait never examined the round");
+    await pause(20);
+  }
   repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "racing", "comment-id": "racing-answer", author: "agent", body: "Done." }]), "--claim", round.claim);
   assert.deepEqual(await next, { session: round.session, timedOut: true });
   const state = agentState(repository);
   assert.deepEqual(state.claims, []);
   assert.equal(state.lastRound.id, round.claim);
+});
+
+test("an idle or stopping session lets a racing reply land before it ends", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "settling");
+  const round = await waitAsync(repository, "--timeout", "5");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.session.feedbackAt = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+  state.session.stopRequestedAt = new Date().toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const next = waitAsync(repository, "--session", round.session, "--timeout", "30");
+  for (const deadline = Date.now() + 10_000; !agentState(repository).claims[0]?.releasingAt;) {
+    assert.ok(Date.now() < deadline, "the wait never examined the round");
+    await pause(20);
+  }
+  assert.equal(agentState(repository).session.endedAt, undefined);
+  repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "settling", "comment-id": "settling-answer", author: "agent", body: "Done." }]), "--claim", round.claim);
+  assert.deepEqual(await next, { session: round.session, stopped: true, reason: "stopped" });
+  assert.equal(agentState(repository).lastRound.id, round.claim);
 });
 
 test("a finished round's unanswered threads return after the grace, and a late reply answers the reissued round", async (t) => {
