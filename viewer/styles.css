@@ -2074,7 +2074,6 @@ html:has(.file-search[open]) { overflow: hidden; }
 .evidence-dialog h4 { margin: 16px 0 6px; font-size: 13px; color: var(--muted); }
 .evidence-dialog figure { margin: 10px 0 0; }
 .evidence-dialog figcaption { margin-top: 5px; color: var(--muted); font-size: 12.5px; }
-.evidence-actions { display: flex; gap: 8px; }
 .evidence-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .code-insight-dialog button.evidence-zoom { display: block; max-width: 100%; padding: 0; border: 1px solid var(--line); cursor: zoom-in; overflow: hidden; }
 .evidence-zoom img { display: block; max-width: 100%; max-height: 60vh; }
@@ -2091,6 +2090,8 @@ html:has(.file-search[open]) { overflow: hidden; }
 .code-insight-dialog h2 { margin: 0; font-size: 20px; }
 .code-insight-dialog h3 { margin-top: 0; overflow-wrap: anywhere; }
 .code-insight-dialog button, .insight-picker select { font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; }
+.code-insight-dialog button.evidence-close { flex: none; width: 32px; height: 32px; padding: 0; border-radius: 8px; background: var(--panel-2); color: var(--muted); font-size: 18px; line-height: 1; }
+.code-insight-dialog button.evidence-close:hover { border-color: var(--signal); color: var(--text); }
 .insight-picker { display: block; margin-top: 16px; }
 .insight-picker select { max-width: 90%; }
 .insight-target-status { font-size: 13px; }

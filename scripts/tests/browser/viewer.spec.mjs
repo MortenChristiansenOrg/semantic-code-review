@@ -1418,24 +1418,31 @@ test('evidence opens from its pill with previews, compare view, text and links',
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(open).toBeFocused();
+  await open.click();
+  await expect(dialog.getByRole('button', { name: 'Add note' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Close evidence' })).toHaveText('×');
+  await dialog.getByRole('button', { name: 'Close evidence' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(open).toBeFocused();
   expect(errors).toEqual([]);
 });
 
 test('evidence linked to two nodes has one thread and reports a capture that fails to load', async ({ page }) => {
   const data = fixture();
   data.stages[0].insights.push({ ...evidenceInsight(), nodeRefs: ['first-one', 'first-two'] });
+  data.feedback = [thread('on-evidence', 'open', { kind: 'insight', stageId: 'first', collection: 'evidence', itemId: 'shot', label: 'Evidence' })];
   const errors = await mount(page, data);
   await page.route('**/api/evidence**', (route) => route.fulfill({ status: 404, json: { ok: false } }));
   await page.locator('.stage-title[data-id="first"]').click();
-  const second = page.locator('details[data-node="first-two"]');
+  const first = page.locator('details[data-node="first-one"]'), second = page.locator('details[data-node="first-two"]');
+  await first.locator('> summary').click();
   await second.locator('> summary').click();
+  await expect(first.locator('.tag.type-evidence .notes-toggle')).toBeVisible();
+  await expect(second.locator('.tag.type-evidence .notes-toggle')).toHaveCount(0);
   await second.getByRole('button', { name: 'View evidence' }).click();
   const dialog = page.getByRole('dialog', { name: 'Evidence' });
   await expect(dialog.getByRole('region', { name: 'Before' })).toContainText('could not be loaded');
   await expect(dialog.locator('img')).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'Add note' }).click();
-  await expect(page.locator('textarea[name="nc-body"]')).toHaveCount(1);
-  await expect(page.locator('details[data-node="first-one"] .node-reasoning textarea[name="nc-body"]')).toBeFocused();
   expect(errors).toEqual([]);
 });
 
@@ -1468,14 +1475,15 @@ test('stale evidence says so on the pill and in the dialog, and a recapture coun
   await expect(pill.locator('.insight-review')).toHaveText('!');
 });
 
-test('a note on evidence is composed beside its pill and sent as an insight target', async ({ page }) => {
+test('a thread on evidence takes further notes beside its pill, sent as an insight target', async ({ page }) => {
   const data = fixture();
   data.stages[0].insights.push(evidenceInsight({ attachments: [] }));
+  data.feedback = [thread('on-evidence', 'open', { kind: 'insight', stageId: 'first', collection: 'evidence', itemId: 'shot', label: 'Evidence' })];
   await mount(page, data);
   await openFile(page);
   const node = page.locator('details[data-node="first-one"]');
-  await node.getByRole('button', { name: 'View evidence' }).click();
-  await page.getByRole('dialog', { name: 'Evidence' }).getByRole('button', { name: 'Add note' }).click();
+  await node.locator('.tag.type-evidence .notes-toggle').click();
+  await node.locator('.node-reasoning .thread-add').click();
   const editor = node.locator('.node-reasoning textarea[name="nc-body"]');
   await expect(editor).toBeFocused();
   await editor.fill('This shows the wrong page');
