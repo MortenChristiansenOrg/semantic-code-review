@@ -284,8 +284,7 @@ warn about behavior changes with neither; they do not block.
 In the viewer, choose **View evidence** on an evidence pill to see images,
 recordings, text, before/after comparisons, and the linked criteria and changes.
 Select an image to zoom it. **Stale** means the stage has moved since the capture,
-which includes a restack; recapture it if the behavior could have changed. Use
-**Add note** to leave a personal note or feedback on the evidence.
+which includes a restack; recapture it if the behavior could have changed.
 
 Commit the implementation, then describe its causal change nodes in an
 organization document:
