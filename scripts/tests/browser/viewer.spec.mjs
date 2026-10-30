@@ -1315,7 +1315,10 @@ test('insight reviewed marks toggle, persist, flag rewrites and stay independent
   await expect(page.getByRole('tooltip')).toHaveText('Not reviewed – click to mark as reviewed');
 
   // Keyboard activation keeps focus and the open tooltip follows the new state.
+  await page.mouse.move(0, 0);
+  await expect(page.getByRole('tooltip')).toBeHidden();
   await toggle.focus();
+  await expect(page.getByRole('tooltip')).toHaveText('Not reviewed – click to mark as reviewed');
   await page.keyboard.press('Enter');
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(toggle).toBeFocused();

@@ -3136,8 +3136,10 @@
       const key = insightKey(stage.id, ins.collection, ins.id);
       if (insightReviewState(stage, ins) === "reviewed") delete state.insightReviews[key];
       else state.insightReviews[key] = { fingerprint: insightFingerprint(ins), at: Date.now() };
+      // Rendering hides the tooltip, so reopen it with the new state.
+      const tooltipOpen = popOwner === btn;
       persist(); render();
-      if (popOwner === btn) fillPop(btn);
+      if (tooltipOpen) showPop(btn);
     } else if (a === "code-insight") {
       const stage = stageById.get(btn.dataset.stage);
       openCodeInsight(stage, stage?.insights.find(ins => ins.collection === btn.dataset.collection && ins.id === btn.dataset.item));
