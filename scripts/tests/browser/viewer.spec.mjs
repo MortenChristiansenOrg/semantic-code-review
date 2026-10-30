@@ -622,6 +622,8 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await expect(page.locator('.cinema-diff .lact')).not.toHaveCount(0);
   await expect(page.locator('.cinema-diff')).toContainText('const first = 1;');
   await page.locator('details[data-node="first-one"] .mini-approve').click();
+  // Approving closes the file once it has saved. Opening it sooner would race that close.
+  await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toHaveCount(0);
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
 });
