@@ -1437,6 +1437,16 @@ test('evidence linked to two nodes has one thread and reports a capture that fai
   expect(errors).toEqual([]);
 });
 
+test('sent feedback on evidence is grouped under its stage in the notes panel', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push(evidenceInsight({ attachments: [] }));
+  data.feedback = [thread('on-evidence', 'open', { kind: 'insight', stageId: 'first', collection: 'evidence', itemId: 'shot', label: 'Evidence' })];
+  await mount(page, data);
+  await showNotes(page);
+  await expect(page.locator('.side.notes')).toContainText('Stage first');
+  await expect(page.locator('.side.notes')).not.toContainText('Other targets');
+});
+
 test('stale evidence says so on the pill and in the dialog, and a recapture counts as a change', async ({ page }) => {
   const data = fixture();
   data.stages[0].insights.push(evidenceInsight({ stale: true, attachments: [] }));

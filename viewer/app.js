@@ -1027,7 +1027,8 @@
       kind: target.kind,
       id: target.kind === "file" ? fileKey(target.stageId, target.path)
         : target.kind === "line" ? lineKey(target.stageId, target.side, target.line, target.path)
-        : target.kind === "stage" ? target.stageId : target.nodeId,
+        : target.kind === "stage" ? target.stageId
+        : target.kind === "insight" ? insightKey(target.stageId, target.collection, target.itemId) : target.nodeId,
       stageId: target.stageId || t.assignedStageId,
       nodeId: target.nodeId || local?.nodeId,
       createdAt: t.comments?.[0]?.createdAt,
@@ -2784,7 +2785,7 @@
     const entry = noteFileEntry(c.kind, c.id);
     const stage = c.kind === "stage" ? stageById.get(c.id) : entry?.stage || stageById.get(c.kind === "insight" ? parseInsightKey(c.id)?.stageId : c.stageId);
     const si = stage ? data.stages.indexOf(stage) : 900;
-    const nodeId = c.kind === "node" ? c.id : noteNodeId(c);
+    const nodeId = c.kind === "node" ? c.id : c.kind === "insight" ? insightByKey(c.id)?.nodeRefs?.[0] : noteNodeId(c);
     const ni = nodeId ? stage?.nodes.findIndex((n) => n.id === nodeId) ?? -1 : -1;
     return { si, stageTitle: stage?.title || "Other targets", ni,
       nodeKey: `${stage?.id || ""}::${nodeId || c.kind === "stage" && "overview" || "unknown"}`,
