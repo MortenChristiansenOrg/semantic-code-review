@@ -2314,14 +2314,17 @@
     if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
     if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
     if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
-    const info = `<div class="comparison-info"><p>Comparison with the approved file. Turn off Since approval to add line comments.</p>
+    const info = `<div class="comparison-info"><p>Comparison with the approved file. Lines removed since approval are no longer in the file, so they cannot take line comments.</p>
       ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
     if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
     if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
+    // Only current lines have a feedback anchor. A removed row's number belongs to
+    // the approved snapshot, not to the stage's old side, so it gets no affordance.
+    const ctx = { stageId: entry.stage.id, path: entry.file.path };
     const rows = []; let previousNew = 0;
     for (const row of comparison.lines) {
       if (previousNew && row.n > previousNew + 1) rows.push(gapHtml(row.n - previousNew - 1));
-      rows.push(drowHtml(row, langFor(entry.file.path), null));
+      rows.push(drowHtml(row, langFor(entry.file.path), row.t === "del" ? null : ctx));
       if (row.n) previousNew = row.n;
     }
     const pager = comparison.offset || comparison.nextOffset != null ? `<div class="diff-pages">
