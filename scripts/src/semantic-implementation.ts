@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
+import { assertEvidenceDirectories, ensureEvidenceAttributes, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -49,7 +50,7 @@ const INSIGHT_COLLECTIONS = [
   "risks",
   "openQuestions",
 ];
-const STAGE_ITEM_COLLECTIONS = [...INSIGHT_COLLECTIONS, "validation"];
+const STAGE_ITEM_COLLECTIONS = [...INSIGHT_COLLECTIONS, "validation", "evidence"];
 const ZERO_OID = "0000000000000000000000000000000000000000";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -458,7 +459,7 @@ function stageNodeErrors(stage, files, diffContext = undefined) {
 
   for (const collection of STAGE_ITEM_COLLECTIONS) {
     const recordName =
-      collection === "validation" ? "validation evidence" : "insight";
+      collection === "validation" ? "validation evidence" : collection === "evidence" ? "evidence" : "insight";
     for (const item of stage[collection]) {
       if (!Array.isArray(item.nodeRefs) || item.nodeRefs.length === 0) {
         errors.push(
@@ -640,6 +641,12 @@ function unresolvedRefHint(criterionIds, specificationId) {
   return ` Valid criteria: ${valid}.`;
 }
 
+function evidenceItemErrors(stage) {
+  return stage.evidence.flatMap((item) => (item.specificationRefs ?? [])
+    .filter((reference) => !stage.specificationRefs.includes(reference))
+    .map((reference) => `Stage ${stage.id} evidence ${item.id} references ${reference}, which the stage does not address.`));
+}
+
 function validateSemantic(
   paths,
   artifact,
@@ -647,6 +654,11 @@ function validateSemantic(
 ) {
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
+  // Checked only in full validation: an edit prunes replaced files once it has saved.
+  if (validateGit) {
+    const allStages = [...stages.values(), ...workStages.values()];
+    errors.push(...evidenceTreeErrors(paths.artifact, allStages), ...allStages.flatMap((stage) => evidenceAttachmentErrors(paths.artifact, stage)));
+  }
 
   const specificationFiles = listJsonFiles(paths.requirements).map((file) =>
     path.basename(file, ".json"),
@@ -713,6 +725,7 @@ function validateSemantic(
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
     errors.push(...stageNodeErrors(stage, stage.change.files));
+    errors.push(...evidenceItemErrors(stage));
     const expectedBranch = stageBranchName(
       manifest,
       manifest.stages.indexOf(id),
@@ -772,6 +785,7 @@ function validateSemantic(
         }
       }
     }
+    errors.push(...evidenceItemErrors(stage));
     for (const reference of stage.specificationRefs) {
       const [specificationId, criterionId] = reference.split("#", 2);
       if (!criterionIds.get(specificationId)?.has(criterionId)) {
@@ -917,12 +931,20 @@ function validateArtifact(
   }
 
   if (!quiet) {
+    if (!schemaOnly) reportEvidenceWarnings(artifact);
     const mode = schemaOnly ? "schema" : publish ? "publication" : "full";
     console.log(
       `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`,
     );
   }
   return artifact;
+}
+
+function reportEvidenceWarnings(artifact, stageIds = [...artifact.stages.keys()]) {
+  for (const id of stageIds) {
+    const stage = artifact.stages.get(id);
+    for (const warning of evidenceWarnings(stage, stage.change.headRevision)) console.error(`Warning: ${warning}`);
+  }
 }
 
 function ensureArtifactExcluded(root) {
@@ -1135,6 +1157,7 @@ function beginStage(paths, options) {
     failedAttempts: [],
     risks: [],
     validation: [],
+    evidence: [],
     openQuestions: [],
   };
   if (stage.specificationRefs.length === 0) {
@@ -1514,6 +1537,151 @@ function recordValidation(paths, options, batch = undefined) {
   );
 }
 
+// Evidence must show the committed stage head, so capture on the stage branch
+// with nothing uncommitted; the files themselves stay out of every stage diff.
+function evidenceStage(paths, options, command) {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, command));
+  const finalized = flag(options, "finalized");
+  const requested = option(options, "stage");
+  if (finalized && (!requested || requested === "current")) fail("--finalized requires an explicit --stage <stage-id>.");
+  const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
+  const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "stage");
+  const stage = (finalized ? artifact.stages : artifact.workStages).get(id);
+  if (!stage) fail(`Stage ${id} does not exist.`);
+  assertEvidenceDirectories(paths.artifact, id);
+  return { id, stage, finalized, branch: finalized ? stage.change.branch : stage.branch };
+}
+
+function pruneEvidenceFiles(paths, stage) {
+  assertEvidenceDirectories(paths.artifact, stage.id);
+  const directory = path.join(paths.artifact, "evidence", stage.id);
+  if (!fs.existsSync(directory)) return;
+  const referenced = new Set(stage.evidence.flatMap((item) => (item.attachments ?? []).map((attachment) => attachment.path)));
+  for (const name of fs.readdirSync(directory)) {
+    if (!referenced.has(`evidence/${stage.id}/${name}`)) fs.rmSync(path.join(directory, name), { force: true });
+  }
+  if (!fs.readdirSync(directory).length) fs.rmdirSync(directory);
+}
+
+function evidenceInputs(options) {
+  const named = [
+    ...repeatedOption(options, "before").map((value) => ({ value, role: "before" })),
+    ...repeatedOption(options, "after").map((value) => ({ value, role: "after" })),
+    ...repeatedOption(options, "file").map((value) => ({ value, role: undefined })),
+  ];
+  return named.map(({ value, role }) => {
+    // An existing path wins, so a path containing = still works without a caption.
+    const separator = fs.existsSync(value) ? -1 : value.indexOf("=");
+    const source = separator < 0 ? value : value.slice(0, separator);
+    const caption = separator < 0 ? undefined : value.slice(separator + 1);
+    const stat = fs.statSync(source, { throwIfNoEntry: false });
+    if (!stat?.isFile()) fail(`Evidence file ${source} does not exist.`);
+    if (stat.size > MAX_EVIDENCE_ATTACHMENT_BYTES) fail(`Evidence file ${source} is larger than 25 MiB.`);
+    const { extension, mediaType } = evidenceMediaType(source);
+    const bytes = fs.readFileSync(source);
+    return { bytes, extension, attachment: { mediaType, sha256: sha256Hex(bytes), ...(caption ? { caption } : {}), ...(role ? { role } : {}) } };
+  });
+}
+
+// Recording writes files before saving and prunes after, so concurrent evidence
+// edits must not interleave: one's rollback could delete the other's capture.
+function withEvidenceLock(paths, write) {
+  return withArtifactLock(paths, readJson(paths.manifest).implementationId, write);
+}
+
+function recordEvidence(paths, options) {
+  withEvidenceLock(paths, () => writeEvidence(paths, options));
+}
+
+function writeEvidence(paths, options) {
+  const { id, finalized, branch } = evidenceStage(paths, options, "stage evidence");
+  if (currentBranch(paths.root) !== branch) fail(`Recording evidence for ${id} requires checked-out stage branch ${branch}.`);
+  assertCleanWorkingTree(paths.root, "Recording evidence");
+  const replace = flag(options, "replace");
+  const inputs = evidenceInputs(options);
+  const inline = option(options, "inline");
+  if (!inputs.length && inline === undefined) fail("Evidence requires --file, --before, --after or --inline.");
+  const specificationRefs = repeatedOption(options, "specification-ref");
+  const nodeRefs = repeatedOption(options, "node-ref");
+  const reproduction = option(options, "reproduction");
+  const value: Record<string, unknown> = {
+    id: option(options, "item-id", { required: true }),
+    kind: option(options, "kind", { required: true }),
+    summary: option(options, "summary", { required: true }),
+    ...(specificationRefs.length ? { specificationRefs } : {}),
+    ...(inputs.length ? { attachments: inputs.map(({ attachment, extension }) => ({ path: evidenceAttachmentPath(id, attachment.sha256, extension), ...attachment })) } : {}),
+    ...(inline !== undefined ? { inline } : {}),
+    capturedAt: new Date().toISOString(),
+    headRevision: branchCommit(paths.root, branch),
+    ...(reproduction !== undefined ? { reproduction } : {}),
+    ...(nodeRefs.length ? { nodeRefs } : {}),
+  };
+  const written: string[] = [];
+  let updated;
+  try {
+    if (inputs.length) ensureEvidenceAttributes(paths.artifact);
+    for (const input of inputs) {
+      const file = path.join(paths.artifact, "evidence", id, `${input.attachment.sha256}.${input.extension}`);
+      // A file left damaged by an earlier crash is rewritten, not trusted for its name.
+      const stored = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (stored?.isFile() && sha256Hex(fs.readFileSync(file)) === input.attachment.sha256) continue;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const temporary = `${file}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporary, input.bytes);
+        fs.renameSync(temporary, file);
+      } finally { fs.rmSync(temporary, { force: true }); }
+      written.push(file);
+    }
+    updateStageInsight(paths, id, finalized, (current) => {
+      const index = current.evidence.findIndex((existing) => existing.id === value.id);
+      if (index >= 0 && !replace) fail(`Stage ${id} already has evidence ${value.id}.`);
+      if (index < 0 && replace) fail(`Stage ${id} has no evidence ${value.id} to replace.`);
+      if (index >= 0 && !value.nodeRefs && current.evidence[index].nodeRefs) value.nodeRefs = current.evidence[index].nodeRefs;
+      setRecordedCodeTarget(paths, current, options, value, current.evidence[index]);
+      validateRecordedNodeRefs(current, value);
+      if (index >= 0) current.evidence[index] = value;
+      else current.evidence.push(value);
+      updated = current;
+    });
+  } catch (error) {
+    for (const file of written) fs.rmSync(file, { force: true });
+    throw error;
+  }
+  pruneEvidenceFiles(paths, updated);
+  console.log(`${replace ? "Replaced" : "Recorded"} evidence ${value.id} for ${finalized ? "finalized " : ""}${id}.`);
+}
+
+function removeEvidence(paths, options) {
+  withEvidenceLock(paths, () => deleteEvidence(paths, options));
+}
+
+function deleteEvidence(paths, options) {
+  const { id, finalized } = evidenceStage(paths, options, "stage evidence-remove");
+  const itemId = option(options, "item-id", { required: true });
+  let updated;
+  updateStageInsight(paths, id, finalized, (current) => {
+    const index = current.evidence.findIndex((existing) => existing.id === itemId);
+    if (index < 0) fail(`Stage ${id} has no evidence ${itemId}.`);
+    current.evidence.splice(index, 1);
+    updated = current;
+  });
+  pruneEvidenceFiles(paths, updated);
+  console.log(`Removed evidence ${itemId} from ${finalized ? "finalized " : ""}${id}.`);
+}
+
+function recordNoEvidence(paths, options) {
+  const { id, finalized } = evidenceStage(paths, options, "stage no-evidence");
+  const remove = flag(options, "remove");
+  const reason = option(options, "reason");
+  if (remove === (reason !== undefined)) fail("Use either --reason or --remove.");
+  updateStageInsight(paths, id, finalized, (current) => {
+    if (remove) delete current.noEvidenceReason;
+    else current.noEvidenceReason = reason;
+  });
+  console.log(`${remove ? "Removed the reason for having no evidence from" : "Recorded why there is no evidence for"} ${id}.`);
+}
+
 function recordStageBatch(paths, options) {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage record-batch"));
   const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
@@ -1569,7 +1737,7 @@ function organizationPlan(paths, options) {
   const unlinkedItems = STAGE_ITEM_COLLECTIONS.flatMap((collection) => stage[collection]
     .filter((item) => !item.nodeRefs?.length)
     .map((item) => ({ collection, itemId: item.id })));
-  console.log(JSON.stringify({ stageId: id, branch, baseRevision: base, headRevision: head, files, unlinkedItems }));
+  console.log(JSON.stringify({ stageId: id, branch, baseRevision: base, headRevision: head, files, unlinkedItems, evidenceWarnings: evidenceWarnings(stage, head) }));
 }
 
 function applyOrganization(stage, organization) {
@@ -1729,6 +1897,8 @@ function canonicalStage(
     failedAttempts: workStage.failedAttempts,
     risks: workStage.risks,
     validation: workStage.validation,
+    evidence: workStage.evidence,
+    ...(workStage.noEvidenceReason ? { noEvidenceReason: workStage.noEvidenceReason } : {}),
     openQuestions: workStage.openQuestions,
   };
 }
@@ -1787,6 +1957,7 @@ function finishStage(paths, options) {
     writeJson(workFile, workStage);
     throw error;
   }
+  reportEvidenceWarnings({ stages: new Map([[id, stage]]) });
   if (flag(options, "json")) console.log(JSON.stringify({ worktree: paths.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
   else console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
 }
@@ -1843,6 +2014,7 @@ function discardStage(paths, options) {
     fs.writeFileSync(file, original);
     throw error;
   }
+  fs.rmSync(path.join(paths.artifact, "evidence", id), { recursive: true, force: true });
   console.log(`Discarded working stage ${id}.${branchNote}`);
 }
 
@@ -2809,6 +2981,9 @@ function dispatch(paths, positionals, options) {
     return;
   }
   if (command === "stage" && subcommand === "target") return targetInsight(paths, options);
+  if (command === "stage" && subcommand === "evidence") return recordEvidence(paths, options);
+  if (command === "stage" && subcommand === "evidence-remove") return removeEvidence(paths, options);
+  if (command === "stage" && subcommand === "no-evidence") return recordNoEvidence(paths, options);
   if (command === "stage" && subcommand === "record-batch") return recordStageBatch(paths, options);
   if (command === "stage" && subcommand === "plan") return organizationPlan(paths, options);
   if (command === "stage" && subcommand === "record") {

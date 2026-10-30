@@ -40,7 +40,9 @@ export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "
 import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+export { evidenceRange } from "./shared/evidence.js";
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
+import { evidenceMediaTypeMatches, evidenceRange, resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
@@ -770,6 +772,27 @@ function buildInsights(stage, repoRoot) {
       nodeRefs: v.nodeRefs || [],
     }),
   );
+  (stage.evidence || []).forEach((e) =>
+    insights.push({
+      type: "evidence",
+      collection: "evidence",
+      id: e.id,
+      title: e.summary,
+      body: e.reproduction ? `Reproduce: ${e.reproduction}` : "",
+      meta: e.kind,
+      nodeRefs: e.nodeRefs || [],
+      evidence: {
+        kind: e.kind,
+        attachments: (e.attachments || []).map(({ mediaType, sha256, caption, role }) => ({ mediaType, sha256, caption, role })),
+        inline: e.inline,
+        reproduction: e.reproduction,
+        specificationRefs: e.specificationRefs || [],
+        capturedAt: e.capturedAt,
+        headRevision: e.headRevision,
+        stale: e.headRevision !== stage.change.headRevision,
+      },
+    }),
+  );
   (stage.openQuestions || []).forEach((q) =>
     insights.push({
       type: "question",
@@ -958,6 +981,15 @@ export function createViewerDataSource(
   };
 
   return {
+    evidenceFile(stageId, itemId, index) {
+      const stage = readStage(stageId);
+      const attachment = stage.evidence?.find((item) => item.id === itemId)?.attachments?.[Number(index)];
+      if (!attachment || !evidenceMediaTypeMatches(attachment)) throw new Error("Evidence attachment does not exist.");
+      const { file } = resolveEvidenceFile(path.join(repoRoot, ".semantic-review"), stageId, attachment.path);
+      const bytes = fs.readFileSync(file);
+      if (sha256Hex(bytes) !== attachment.sha256) throw new Error("Evidence attachment is damaged.");
+      return { mediaType: attachment.mediaType, content: bytes.toString("base64") };
+    },
     implementationDataScript() {
       let snapshot = snapshotReader();
       // Building reads documents individually; rebuild if a write landed meanwhile.
@@ -1209,6 +1241,14 @@ export function mapNoteTarget(note, implementation) {
       label: `${filePath}:${line}`,
     };
   }
+  if (note.kind === "insight") {
+    const match = /^i:([^:]+):([^:]+):([^:]+)$/.exec(note.id || "");
+    if (!match) throw new Error(`unrecognized insight id "${note.id}"`);
+    const [, stageId, collection, item] = match;
+    const insight = implementation.stages.find((s) => s.id === stageId)?.insights.find((i) => i.collection === collection && i.id === item);
+    if (!insight) throw new Error(`unknown insight "${note.id}"`);
+    return { "target-kind": "insight", stage: stageId, collection, item, label: insight.title };
+  }
   throw new Error(`unsupported note kind "${note.kind}"`);
 }
 
@@ -1232,6 +1272,7 @@ export function buildFeedbackTargetData(repoRoot) {
           id: node.id,
           title: humanizeId(node.id),
         })),
+        insights: (stage.evidence || []).map((item) => ({ collection: "evidence", id: item.id, title: item.summary })),
       };
     }),
   };
@@ -1876,6 +1917,30 @@ function serveViewer({
       return;
     }
 
+    if (request.method === "GET" && pathname === "/api/evidence") {
+      try {
+        const result = await dataSource.call("evidenceFile", [url.searchParams.get("stage"), url.searchParams.get("item"), url.searchParams.get("index")]);
+        const bytes = Buffer.from(result.content, "base64");
+        const headers = { "content-type": result.mediaType, "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
+        // Safari refuses to play video from a server without range support.
+        const range = evidenceRange(request.headers.range, bytes.length);
+        if (!range) {
+          response.writeHead(200, { ...headers, "content-length": bytes.length });
+          response.end(bytes);
+          return;
+        }
+        if (range === "unsatisfiable") {
+          response.writeHead(416, { ...headers, "content-range": `bytes */${bytes.length}` });
+          response.end();
+          return;
+        }
+        const { start, end } = range;
+        response.writeHead(206, { ...headers, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${bytes.length}` });
+        response.end(bytes.subarray(start, end + 1));
+      } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
+      return;
+    }
+
     if (request.method === "GET" && pathname === "/api/file-content") {
       try {
         const result = await dataSource.call("fileContent", [url.searchParams.get("stage"), url.searchParams.get("path"), url.searchParams.get("base"), url.searchParams.get("head"), url.searchParams.get("target")]);
@@ -2096,7 +2161,7 @@ if (!isMainThread && workerData?.repoRoot) {
       if (method === "readReview") result = readReview(context.reviewId);
       else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
       else if (method === "snapshot") result = { ...source.snapshot(...args), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
-      else if (["fileDiff", "fileContent", "implementationDataScript"].includes(method)) result = await source[method](...args);
+      else if (["fileDiff", "fileContent", "implementationDataScript", "evidenceFile"].includes(method)) result = await source[method](...args);
       else {
         if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
         if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);

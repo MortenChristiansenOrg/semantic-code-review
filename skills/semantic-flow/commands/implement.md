@@ -158,7 +158,7 @@ Create an organization document conforming to
 Every changed file must be covered. Whole-file ownership needs no selector.
 Shared files must use `hunks` or `lineRanges` consistently and cover every
 changed hunk or line exactly once. Include `itemLinks` for every recorded
-insight and validation evidence.
+insight, validation evidence, and evidence entry.
 
 ### Validate and finish
 
@@ -173,6 +173,34 @@ rules in `../docs/artifact-quality.md`:
 ```text
 <semantic-implementation> stage validation --input -
 ```
+
+Then capture evidence as described in the next section.
+
+### Capture evidence
+
+Evidence shows the reviewer the feature working, so they don't have to trust a
+summary. Record at least one entry for each user-observable feature or acceptance
+criterion the stage addresses:
+
+```text
+<semantic-implementation> stage evidence --input -
+```
+
+- Commit first: the command requires the stage branch and a clean worktree, and
+  records the head revision. Keep captures outside the repository, such as in a
+  temporary directory; the command copies them into the artifact.
+- Prefer `screenshot` or `recording` whenever the change has visible output, using
+  `before` and `after` when the difference is the point. Otherwise use the most
+  direct kind: `terminal`, `http`, `log`, `output-file`, `measurement`, or `report`.
+- Capture by actually running the feature on the stage head. Never fabricate or
+  mock evidence, and don't resubmit test results that belong in validation.
+- Set `specificationRefs` to the criteria it supports and `reproduction` to the URL,
+  command, or steps.
+- Follow the capture and privacy rules in `../docs/artifact-quality.md`.
+
+When evidence is not feasible, such as a pure refactor or an internal-only change,
+state why with `stage no-evidence` instead of leaving it out silently. `stage plan`
+returns `evidenceWarnings`, and `stage finish` repeats them.
 
 Inspect the complete stage diff. Update its summary, rationale, dependencies,
 or specification references when needed. Regenerate organization after any

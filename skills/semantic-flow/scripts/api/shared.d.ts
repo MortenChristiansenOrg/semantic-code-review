@@ -4,6 +4,7 @@ export type InsightKind = "decision" | "assumption" | "alternative" | "failed-at
 export type DecisionCategory = "specification" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";
 export type ValidationStatus = "passed" | "failed" | "not-run";
+export type EvidenceKind = "screenshot" | "recording" | "terminal" | "http" | "log" | "output-file" | "measurement" | "report";
 export type ChangeClassification = "behavior" | "refactor" | "test" | "documentation" | "configuration" | "dependency" | "migration" | "generated" | "chore" | "trivial";
 export type FeedbackTargetKind = "specification" | "criterion" | "stage" | "node" | "insight" | "file" | "line";
 export type DiffSide = "old" | "new";

@@ -10,6 +10,15 @@ export type InsightKind =
 export type DecisionCategory = "specification" | "engineering";
 export type ValidationType = "automated" | "manual" | "analysis";
 export type ValidationStatus = "passed" | "failed" | "not-run";
+export type EvidenceKind =
+  | "screenshot"
+  | "recording"
+  | "terminal"
+  | "http"
+  | "log"
+  | "output-file"
+  | "measurement"
+  | "report";
 export type ChangeClassification =
   | "behavior"
   | "refactor"

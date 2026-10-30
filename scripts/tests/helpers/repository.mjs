@@ -326,6 +326,11 @@ export function organizeStage(
         itemId: item.id,
         nodeRefs: ["implementation-change"],
       })),
+      ...workStage.evidence.map((item) => ({
+        collection: "evidence",
+        itemId: item.id,
+        nodeRefs: ["implementation-change"],
+      })),
       ...workStage.openQuestions.map((item) => ({
         collection: "openQuestions",
         itemId: item.id,

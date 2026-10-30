@@ -192,6 +192,9 @@ function loadFeedback(paths, { required = true } = {}) {
 }
 
 function collectionExists(stage, collection, itemId) {
+  // Evidence can be removed, for example when a capture leaks a secret, without moving the
+  // stage head. Its threads stay valid; the viewer shows them on the stage instead.
+  if (collection === "evidence") return true;
   return Array.isArray(stage[collection]) &&
     stage[collection].some((item) => item.id === itemId);
 }

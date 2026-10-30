@@ -39,6 +39,7 @@
               "failedAttempts",
               "risks",
               "validation",
+              "evidence",
               "openQuestions"
             ]
           },
