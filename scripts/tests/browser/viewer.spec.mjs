@@ -1295,6 +1295,72 @@ test('node counts include only linked reasoning and open matching entries', asyn
 });
 
 
+test('insight reviewed marks toggle, persist, flag rewrites and stay independent of approvals', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights = [
+    { id: 'shared', collection: 'decisions', type: 'decision', title: 'Shared decision', body: 'Why', nodeRefs: ['first-one', 'first-two'] },
+    { id: 'risk', collection: 'risks', type: 'risk', title: 'A risk', body: 'What', nodeRefs: ['first-one'] },
+  ];
+  const errors = await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  await page.locator('details[data-node="first-one"] > summary').click();
+  const node = page.locator('details[data-node="first-one"]');
+  const pill = node.locator('.tag.type-decision');
+  const toggle = pill.locator('.insight-review');
+  await expect(toggle).toHaveAccessibleName('Reviewed: Shared decision');
+  const meta = page.locator('.stage[data-stage="first"] .stage-meta');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(meta).toContainText('0/2 insights reviewed');
+  await toggle.hover();
+  await expect(page.getByRole('tooltip')).toHaveText('Not reviewed – click to mark as reviewed');
+
+  // Keyboard activation keeps focus and the open tooltip follows the new state.
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveText('✓');
+  await expect(page.getByRole('tooltip')).toHaveText('Reviewed – click to mark as not reviewed');
+  await expect(meta).toContainText('1/2 insights reviewed');
+  await expect(pill).not.toHaveCSS('background-color', await node.locator('.tag.type-risk').evaluate((el) => getComputedStyle(el).backgroundColor));
+  // One insight linked to two nodes has one state.
+  await expect(page.locator('details[data-node="first-two"] .insight-review')).toHaveAttribute('aria-pressed', 'true');
+
+  // The pill body keeps pinning its tooltip and reports the state.
+  await pill.locator('.tag-face').click();
+  await expect(page.getByRole('tooltip').locator('.tag-pop-kind')).toContainText('Reviewed');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+
+  // Approval is untouched by the mark and does not change it.
+  await saveAction(page, () => node.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await expect(node.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await saveAction(page, () => node.locator('.mini-approve').click(), (state) => !state.approvals?.[approvalKey('first', 'first-one')]);
+  await expect(node.locator('.frow')).not.toHaveClass(/is-approved/);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+  // The mark survives a reload, and a rewritten insight says so instead of staying reviewed.
+  const state = await page.evaluate(async () => (await (await fetch('/api/review-state')).json()).state);
+  expect(Object.keys(state.insightReviews)).toEqual(['i:first:decisions:shared']);
+  await page.reload();
+  await openFile(page);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  data.stages[0].insights[0].body = 'A different reason';
+  await page.reload();
+  await openFile(page);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveText('!');
+  await expect(toggle).toHaveAccessibleName('Reviewed before it changed: Shared decision');
+  await expect(meta).toContainText('0/2 insights reviewed');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveText('');
+  expect(errors).toEqual([]);
+});
+
 test('remote reviews offer only personal notes and refresh approved files in place', async ({ page }) => {
   const data = { ...fixture(), remote: { branch: 'feature', targetBranch: 'main' } };
   await mount(page, data);

@@ -275,7 +275,7 @@ export function listReviews(): ReviewRecord[] {
 
 /** View preferences and opening an empty editor do not count as review edits. */
 function reviewActivity(state: Record<string, any>) {
-  return { approvals: state.approvals || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
+  return { approvals: state.approvals || {}, insightReviews: state.insightReviews || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
     message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "",
     messageAttachments: state.editor?.compose?.attachments || [], replyAttachments: state.editor?.replyAttachments || [] };
 }
