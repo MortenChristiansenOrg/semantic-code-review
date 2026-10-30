@@ -40,6 +40,15 @@ read-only; removing that parent approval restores each descendant's explicit
 status. File approvals are fingerprinted from the stage patch, so a changed
 file becomes unapproved while remaining marked as previously approved.
 
+To keep track of which insights you have read, use the round check control on
+an insight pill. It marks the insight as reviewed and clicking it again removes
+the mark; clicking the rest of the pill still pins its tooltip. Reviewed pills
+have a tinted background and a check mark, and each stage shows how many of its
+insights are reviewed. If an insight's text changes after you marked it, the
+control shows **!** and **Changed since reviewed** until you mark it again. These
+marks are saved with the local review state, are never written to the artifact
+or stage branches, and neither affect approvals nor are affected by them.
+
 Press **T** or use **Find file** in the viewer toolbar to find a changed file
 across the whole review. The shortcut is inactive while typing in a text field
 or while another dialog is open. Search matches a contiguous substring of the

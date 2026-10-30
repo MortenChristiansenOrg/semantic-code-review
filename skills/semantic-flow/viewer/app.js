@@ -704,6 +704,7 @@
   function defaults() {
     return {
       approvals: {},
+      insightReviews: {},
       comments: [],
       openStages: {},
       openThreads: {},
@@ -1311,6 +1312,33 @@
   function fileCodeInsights(stage, filePath) {
     return stage.insights.filter(ins => ins.codeTarget && (ins.codeTarget.path === filePath || ins.codeTarget.original.path === filePath));
   }
+  // Reviewed marks are personal reading progress, kept apart from approvals. The
+  // stored fingerprint reveals an insight rewritten after it was marked.
+  function insightFingerprint(ins) {
+    const text = JSON.stringify([ins.type, ins.title, ins.body, ins.meta, ins.validationType]);
+    let a = 0xdeadbeef, b = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      a = Math.imul(a ^ code, 2654435761);
+      b = Math.imul(b ^ code, 1597334677);
+    }
+    return (b >>> 0).toString(16).padStart(8, "0") + (a >>> 0).toString(16).padStart(8, "0");
+  }
+  function insightReviewState(stage, ins) {
+    const record = state.insightReviews[insightKey(stage.id, ins.collection, ins.id)];
+    if (!record) return "none";
+    return record.fingerprint === insightFingerprint(ins) ? "reviewed" : "changed";
+  }
+  const INSIGHT_REVIEW = {
+    none: { mark: "", text: "Not reviewed", tooltip: "Not reviewed – click to mark as reviewed" },
+    reviewed: { mark: "✓", text: "Reviewed", tooltip: "Reviewed – click to mark as not reviewed" },
+    changed: { mark: "!", text: "Changed since reviewed", tooltip: "Changed since reviewed – click to mark as reviewed" }
+  };
+  function insightReviewToggle(stage, ins) {
+    const review = insightReviewState(stage, ins), info = INSIGHT_REVIEW[review];
+    return `<button class="insight-review" type="button" data-action="toggle-insight-review" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}"
+        aria-pressed="${review === "reviewed"}" aria-label="${esc(`${review === "changed" ? "Reviewed before it changed" : "Reviewed"}: ${ins.title}`)}" data-tooltip="${esc(info.tooltip)}"><span aria-hidden="true">${info.mark}</span></button>`;
+  }
   function reasoningChip(stage, ins) {
     const info = INSIGHT[ins.type] || INSIGHT.decision;
     const vs = vstatus(ins);
@@ -1322,10 +1350,11 @@
     const vtype = ins.type === "validation" ? validationTypeLabel(ins.validationType) : "";
     const meta = vs ? vtype : (ins.meta || "");
     const kindText = vtype ? `${info.label} · ${vtype}` : info.label;
-    return `<span class="tag ${ins.codeTarget ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
-      <button class="tag-face" type="button" data-tagpop="1"
+    const review = insightReviewState(stage, ins);
+    return `<span class="tag ${ins.codeTarget ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
+      ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"
         data-type="${ins.type}" data-vstat="${vs ? vs.key : ""}"
-        data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}"
+        data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}" data-review="${esc(INSIGHT_REVIEW[review].text)}"
         data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
         aria-haspopup="true">
         <b>${glyph}</b><span class="tag-kind">${esc(kindText)}</span><span class="tag-gist">${esc(ins.title)}</span>
@@ -2589,6 +2618,7 @@
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
             <span>${filesDone}/${fileApprovals.length} file reviews</span>
+            ${stage.insights.length ? `<span>${stage.insights.filter((ins) => insightReviewState(stage, ins) === "reviewed").length}/${stage.insights.length} insights reviewed</span>` : ""}
             ${depsMeta}
             ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
           </div>
@@ -2958,7 +2988,7 @@
       el.innerHTML = `<strong>${esc(d.tooltip)}</strong>`;
       return;
     }
-    const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}`;
+    const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
     const el = ensurePop();
     el.className = `tag-pop-float type-${d.type}${d.vstat ? ` vstat-${d.vstat}` : ""}`;
     el.innerHTML = `<span class="tag-pop-kind">${esc(kindLine)}</span>
@@ -3099,7 +3129,18 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "code-insight") {
+    if (a === "toggle-insight-review") {
+      const stage = stageById.get(btn.dataset.stage);
+      const ins = stage?.insights.find((item) => item.collection === btn.dataset.collection && item.id === btn.dataset.item);
+      if (!ins) return;
+      const key = insightKey(stage.id, ins.collection, ins.id);
+      if (insightReviewState(stage, ins) === "reviewed") delete state.insightReviews[key];
+      else state.insightReviews[key] = { fingerprint: insightFingerprint(ins), at: Date.now() };
+      // Rendering hides the tooltip, so reopen it with the new state.
+      const tooltipOpen = popOwner === btn;
+      persist(); render();
+      if (tooltipOpen) showPop(btn);
+    } else if (a === "code-insight") {
       const stage = stageById.get(btn.dataset.stage);
       openCodeInsight(stage, stage?.insights.find(ins => ins.collection === btn.dataset.collection && ins.id === btn.dataset.item));
     } else if (a === "file-insights") {

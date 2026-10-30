@@ -414,7 +414,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 
 .tag-row { display: flex; flex-wrap: wrap; gap: 7px; }
 .tag { position: relative; }
-.tag.has-code {
+.tag {
   display: inline-flex;
   align-items: stretch;
   max-width: 100%;
@@ -423,8 +423,32 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border-radius: 999px;
   background: var(--panel);
 }
-.tag.has-code > .tag-face { min-width: 0; border: 0; border-radius: 999px 0 0 999px; }
+.tag > .tag-face { min-width: 0; border: 0; border-radius: 0 999px 999px 0; }
+.tag.has-code > .tag-face { border-radius: 0; }
 .tag.has-code .tag-kind { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tag > .insight-review {
+  flex: none;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 7px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ok);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .2s var(--ease), background .2s var(--ease);
+}
+.tag > .insight-review:hover { border-color: var(--ok); background: var(--ok-soft); }
+.tag.review-reviewed { background: color-mix(in srgb, var(--ok-soft) 60%, var(--panel)); border-color: color-mix(in srgb, var(--ok) 35%, var(--line-soft)); }
+.tag.review-reviewed > .tag-face { background: transparent; }
+.tag.review-reviewed > .insight-review { border-color: var(--ok); background: var(--ok-soft); }
+.tag.review-changed > .insight-review { border-color: var(--t-assumption); color: var(--t-assumption); }
 .tag.has-code > .code-insight-link {
   flex: none;
   border: 0;
@@ -433,7 +457,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   padding: 5px 10px;
   white-space: nowrap;
 }
-.tag.has-code:focus-within { border-color: var(--signal); }
+.tag:focus-within { border-color: var(--signal); }
 .tag-face {
   display: inline-flex;
   align-items: center;
@@ -468,13 +492,13 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   border-color: var(--line);
   background: var(--panel-2);
 }
-.type-decision .tag-face:hover { border-color: var(--t-decision); }
-.type-assumption .tag-face:hover { border-color: var(--t-assumption); }
-.type-risk .tag-face:hover { border-color: var(--t-risk); }
-.type-validation .tag-face:hover { border-color: var(--t-validation); }
-.type-lesson .tag-face:hover { border-color: var(--t-lesson); }
-.type-alternative .tag-face:hover { border-color: var(--t-alternative); }
-.type-question .tag-face:hover { border-color: var(--t-question); }
+.tag.type-decision:hover { border-color: var(--t-decision); }
+.tag.type-assumption:hover { border-color: var(--t-assumption); }
+.tag.type-risk:hover { border-color: var(--t-risk); }
+.tag.type-validation:hover { border-color: var(--t-validation); }
+.tag.type-lesson:hover { border-color: var(--t-lesson); }
+.tag.type-alternative:hover { border-color: var(--t-alternative); }
+.tag.type-question:hover { border-color: var(--t-question); }
 
 .tag-pop {
   position: absolute;
@@ -547,10 +571,12 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .tag.vstat-failed .tag-kind { color: var(--t-risk); }
 .tag.vstat-notrun .tag-face b,
 .tag.vstat-notrun .tag-kind { color: var(--t-assumption); }
-.tag.vstat-failed .tag-face { border-color: rgba(255, 122, 114, .5); background: rgba(255, 122, 114, .06); }
-.tag.vstat-notrun .tag-face { border-color: rgba(224, 176, 84, .42); background: rgba(224, 176, 84, .05); }
-.tag.vstat-failed .tag-face:hover { border-color: var(--t-risk); }
-.tag.vstat-notrun .tag-face:hover { border-color: var(--t-assumption); }
+.tag.vstat-failed { border-color: rgba(255, 122, 114, .5); }
+.tag.vstat-notrun { border-color: rgba(224, 176, 84, .42); }
+.tag.vstat-failed .tag-face { background: rgba(255, 122, 114, .06); }
+.tag.vstat-notrun .tag-face { background: rgba(224, 176, 84, .05); }
+.tag.vstat-failed:hover { border-color: var(--t-risk); }
+.tag.vstat-notrun:hover { border-color: var(--t-assumption); }
 .rk-alert b { color: var(--t-risk); }
 .rk-alert { color: var(--t-risk); }
 
