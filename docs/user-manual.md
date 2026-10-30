@@ -630,7 +630,9 @@ Approving a file retains its complete head content under that review's local
 `snapshots/` directory. A stale file opens with **Since approval** enabled in
 the normal diff toolbar, beside **Hide removed**. Turn it off for the normal
 stage base-to-head diff. **Changes**, **Full file**, and **Hide removed** work in
-either comparison. Reapproving the file removes the comparison toggle until
+either comparison. Lines in the current file take line comments in either
+comparison; lines removed since approval do not, because they are no longer in
+the file. Reapproving the file removes the comparison toggle until
 the approval becomes stale again. The comparison reports changed ownership and
 stage bases. Binary content shows hashes instead of a line diff; unavailable
 content produces an explicit error. Approving or unapproving a file keeps its

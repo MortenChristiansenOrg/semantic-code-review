@@ -593,7 +593,7 @@ test('ownership changes stale only that membership; file content changes stale e
 });
 
 
-test('since-approval comparison is explicit and cannot create current line anchors', async ({ page }) => {
+test('since-approval comparison is explicit and shows current line anchors', async ({ page }) => {
   const data = fixture();
   data.feedback = [thread("current-line", "open", { kind: "line", stageId: "first", path: "shared.js", side: "new", line: 1, label: "Current line" })];
   await mount(page, data, { comments: [{ kind: "line", id: "l:first:new:1:shared.js", nodeId: "first-one", exported: true, threadId: "current-line", body: "Feedback current-line" }] });
@@ -609,7 +609,9 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await expect(comparison).toContainText('already approved'); await expect(comparison).toContainText('new content');
   await expect(comparison.locator('.comparison-info')).not.toContainText('Approved:');
   await expect(comparison).toContainText('stage base changed'); await expect(comparison).toContainText('ownership or classification changed');
-  await expect(comparison.locator('[data-line-id], .lact')).toHaveCount(0);
+  await expect(comparison.locator('.d-add .lact[data-id="l:first:new:1:shared.js"]')).toHaveClass(/has-note/);
+  await expect(comparison.locator('.d-del')).toHaveCount(1);
+  await expect(comparison.locator('.d-del [data-line-id], .d-del .lact')).toHaveCount(0);
   await page.getByRole('button', { name: 'Hide removed', exact: true }).click();
   await expect(comparison.locator('.d-del')).toBeHidden();
   const full = page.waitForRequest(r => r.url().includes('/api/approval-comparison') && r.postDataJSON()?.mode === 'full');
@@ -626,6 +628,30 @@ test('since-approval comparison is explicit and cannot create current line ancho
   await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toHaveCount(0);
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
+});
+
+test('line comments added in a since-approval comparison attach to the current file line', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await openFile(page);
+  await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+  const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
+  // The approved line numbers differ from the current ones, so a mix-up would attach to the wrong line.
+  await page.route('**/api/approval-comparison*', (route) => route.fulfill({ json: { ok: true, approved: endpoint, current: endpoint, baseChanged: false, ownershipChanged: false, lines: [{ t: 'del', o: 5, s: 'already approved' }, { t: 'ctx', o: 6, n: 1, s: 'unchanged' }, { t: 'add', n: 2, s: 'new content' }], offset: 0, nextOffset: null } }));
+  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await openFile(page);
+  const comparison = page.locator('.is-approved-comparison');
+  await expect(comparison).toContainText('new content');
+  await expect(comparison.locator('.d-del .lact')).toHaveCount(0);
+  await expect(comparison.locator('.d-ctx [data-action="line-note"]')).toHaveAttribute('data-id', 'l:first:new:1:shared.js');
+  await comparison.locator('.d-add .lact').click();
+  await page.locator('textarea[name="nc-body"]').fill('Comment since approval');
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').press('Control+Enter'), (state) =>
+    state.comments?.some((note) => note.kind === 'line' && note.id === 'l:first:new:2:shared.js' && note.nodeId === 'first-one' && note.body === 'Comment since approval'));
+  await expect(comparison.locator('.line-thread[data-thread="l:first:new:2:shared.js"]')).toContainText('Comment since approval');
+  await page.getByRole('button', { name: 'Since approval', exact: true }).click();
+  await expect(page.locator('.cinema-diff [data-line-id="l:first:new:2:shared.js"] .lact')).toHaveClass(/has-note/);
 });
 
 test('approving a file closes only that file and persists the collapse', async ({ page }) => {
