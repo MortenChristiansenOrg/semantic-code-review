@@ -24,22 +24,32 @@ export function evidenceAttachmentPath(stageId: string, sha256: string, extensio
   return `evidence/${stageId}/${sha256}.${extension}`;
 }
 
+/** Refuses symlinked storage directories, which would point reads, writes and pruning outside the artifact. */
+export function assertEvidenceDirectories(artifactRoot: string, stageId: string) {
+  for (const directory of [path.join(artifactRoot, "evidence"), path.join(artifactRoot, "evidence", stageId)]) {
+    const stat = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw new Error(`${path.relative(artifactRoot, directory)} must be a real directory.`);
+  }
+}
+
 /** Resolves an artifact-relative attachment, refusing anything but a regular file inside the artifact. */
 export function resolveEvidenceFile(artifactRoot: string, stageId: string, attachmentPath: string) {
-  const expected = new RegExp(`^evidence/${stageId}/[a-f0-9]{64}\\.[a-z0-9]+$`);
-  if (!expected.test(attachmentPath)) throw new Error(`Evidence attachment ${attachmentPath} is outside evidence/${stageId}/.`);
+  const prefix = `evidence/${stageId}/`;
+  if (!attachmentPath.startsWith(prefix) || !/^[a-f0-9]{64}\.[a-z0-9]+$/.test(attachmentPath.slice(prefix.length))) throw new Error(`Evidence attachment ${attachmentPath} is outside ${prefix}.`);
+  assertEvidenceDirectories(artifactRoot, stageId);
   const file = path.join(artifactRoot, ...attachmentPath.split("/"));
   const stat = fs.lstatSync(file, { throwIfNoEntry: false });
   if (!stat?.isFile()) throw new Error(`Evidence attachment ${attachmentPath} is missing.`);
   return { file, size: stat.size };
 }
 
+export const evidenceMediaTypeMatches = (attachment) => MEDIA_TYPES[path.extname(attachment.path).slice(1)] === attachment.mediaType;
+
 export const sha256Hex = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 /**
  * Reports every way the stored attachments of one stage differ from its evidence entries.
- * Full validation also hashes content and rejects files no entry references; the quick
- * validation between edits skips both, because an edit prunes files only once it has saved.
+ * Full validation also hashes content; the quick validation between edits skips that.
  */
 export function evidenceAttachmentErrors(artifactRoot: string, stage, verifyContent: boolean) {
   const errors: string[] = [];
@@ -55,15 +65,28 @@ export function evidenceAttachmentErrors(artifactRoot: string, stage, verifyCont
       if (resolved.size > MAX_EVIDENCE_ATTACHMENT_BYTES) errors.push(`${label} is larger than 25 MiB.`);
       total += resolved.size;
       if (path.basename(attachment.path, path.extname(attachment.path)) !== attachment.sha256) errors.push(`${label} is not named after its hash.`);
-      if (MEDIA_TYPES[path.extname(attachment.path).slice(1)] !== attachment.mediaType) errors.push(`${label} does not match media type ${attachment.mediaType}.`);
+      if (!evidenceMediaTypeMatches(attachment)) errors.push(`${label} does not match media type ${attachment.mediaType}.`);
       if (verifyContent && sha256Hex(fs.readFileSync(resolved.file)) !== attachment.sha256) errors.push(`${label} does not match its recorded hash.`);
     }
   }
   if (total > MAX_EVIDENCE_TOTAL_BYTES) errors.push(`Stage ${stage.id} evidence attachments exceed 100 MiB.`);
-  if (!verifyContent) return errors;
-  const directory = path.join(artifactRoot, "evidence", stage.id);
-  for (const name of fs.existsSync(directory) ? fs.readdirSync(directory) : []) {
-    if (!referenced.has(`evidence/${stage.id}/${name}`)) errors.push(`Stage ${stage.id} has unreferenced evidence file evidence/${stage.id}/${name}; remove it or record it.`);
+  return errors;
+}
+
+/** Everything under evidence/ gets published, so each entry must belong to a recorded attachment. */
+export function evidenceTreeErrors(artifactRoot: string, stages) {
+  const root = path.join(artifactRoot, "evidence");
+  const stat = fs.lstatSync(root, { throwIfNoEntry: false });
+  if (!stat) return [];
+  if (!stat.isDirectory()) return ["evidence must be a real directory."];
+  const referenced = new Set(stages.flatMap((stage) => (stage.evidence ?? []).flatMap((item) => (item.attachments ?? []).map((attachment) => attachment.path))));
+  const stray = (entry: string) => `Unreferenced evidence file ${entry}; remove it or record it.`;
+  const errors: string[] = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) { errors.push(stray(`evidence/${entry.name}`)); continue; }
+    for (const name of fs.readdirSync(path.join(root, entry.name))) {
+      if (!referenced.has(`evidence/${entry.name}/${name}`)) errors.push(stray(`evidence/${entry.name}/${name}`));
+    }
   }
   return errors;
 }

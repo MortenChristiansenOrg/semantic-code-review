@@ -41,7 +41,7 @@ import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pending
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
-import { resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
+import { evidenceMediaTypeMatches, resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
@@ -983,7 +983,7 @@ export function createViewerDataSource(
     evidenceFile(stageId, itemId, index) {
       const stage = readStage(stageId);
       const attachment = stage.evidence?.find((item) => item.id === itemId)?.attachments?.[Number(index)];
-      if (!attachment) throw new Error("Evidence attachment does not exist.");
+      if (!attachment || !evidenceMediaTypeMatches(attachment)) throw new Error("Evidence attachment does not exist.");
       const { file } = resolveEvidenceFile(path.join(repoRoot, ".semantic-review"), stageId, attachment.path);
       const bytes = fs.readFileSync(file);
       if (sha256Hex(bytes) !== attachment.sha256) throw new Error("Evidence attachment is damaged.");
@@ -1271,6 +1271,7 @@ export function buildFeedbackTargetData(repoRoot) {
           id: node.id,
           title: humanizeId(node.id),
         })),
+        insights: (stage.evidence || []).map((item) => ({ collection: "evidence", id: item.id, title: item.summary })),
       };
     }),
   };

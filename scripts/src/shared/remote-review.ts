@@ -11,6 +11,7 @@ import manifestSchema from "../../../standard/v0.1/schema/manifest.schema.json";
 import stageSchema from "../../../standard/v0.1/schema/stage.schema.json";
 import specificationSchema from "../../../standard/v0.1/schema/specification.schema.json";
 import { reviewEnvironment } from "./review-context.js";
+import { MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./evidence.js";
 
 function git(root: string, args: string[]) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
@@ -19,6 +20,12 @@ function git(root: string, args: string[]) {
   }).trimEnd();
 }
 function optional(root: string, args: string[]) { try { return git(root, args); } catch { return null; } }
+function gitBytes(root: string, args: string[]) {
+  return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
+    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
+  });
+}
 function branchName(root: string, name: string) {
   if (!name || name.startsWith("-") || !optional(root, ["check-ref-format", "--branch", name])) throw new Error("Invalid remote branch name.");
   return name;
@@ -69,8 +76,23 @@ function artifact(root: string, ref: string, head: string) {
     }
     const requirements = (manifest.requirements || []).map((id) => JSON.parse(git(root, ["show", `${ref}:.semantic-review/requirements/${id}.json`])));
     if (!requirements.every((r, index) => valid(specificationSchema, r) && r.id === manifest.requirements[index])) return null;
-    return { manifest, stages, requirements };
+    return { manifest, stages, requirements, ref };
   } catch { return null; }
+}
+// Unusable attachments stay listed but aren't extracted, so the viewer reports them as unavailable.
+function projectEvidence(root: string, ref: string, stageId: string, item, evidenceFiles: { path: string; bytes: Buffer }[]) {
+  if (!item.attachments) return item;
+  const prefix = `evidence/${stageId}/`;
+  const attachments = item.attachments.map((attachment) => {
+    if (!attachment.path.startsWith(prefix)) return attachment;
+    const projected = { ...attachment, path: `evidence/semantic-${stageId}/${attachment.path.slice(prefix.length)}` };
+    const size = Number(optional(root, ["cat-file", "-s", `${ref}:.semantic-review/${attachment.path}`]));
+    if (!size || size > MAX_EVIDENCE_ATTACHMENT_BYTES) return projected;
+    const bytes = gitBytes(root, ["show", `${ref}:.semantic-review/${attachment.path}`]);
+    if (sha256Hex(bytes) === attachment.sha256) evidenceFiles.push({ path: projected.path, bytes });
+    return projected;
+  });
+  return { ...item, attachments };
 }
 function projection(record: ReviewRecord, head: string) {
   const root = record.repositoryRoot, remote = record.remote!;
@@ -83,8 +105,10 @@ function projection(record: ReviewRecord, head: string) {
   }
   if (semantic) {
     // Keep authored and reconstructed stage identities separate across refreshes.
-    const stages = semantic.stages.map((s) => ({ ...s, id: `semantic-${s.id}`, dependsOn: s.dependsOn.map((id) => `semantic-${id}`) }));
-    return { ...semantic, stages, manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: stages.map((s) => s.id) } };
+    const evidenceFiles: { path: string; bytes: Buffer }[] = [];
+    const stages = semantic.stages.map((s) => ({ ...s, id: `semantic-${s.id}`, dependsOn: s.dependsOn.map((id) => `semantic-${id}`),
+      evidence: s.evidence.map((item) => projectEvidence(root, semantic.ref, s.id, item, evidenceFiles)) }));
+    return { ...semantic, stages, evidenceFiles, manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: stages.map((s) => s.id) } };
   }
   const target = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.targetBranch}^{commit}`]);
   const base = git(root, ["merge-base", head, target]);
@@ -96,7 +120,7 @@ function projection(record: ReviewRecord, head: string) {
     stages.push(stage(root, `commit-${commit}`, message.split("\n")[0], `${commit.slice(0, 12)} · ${git(root, ["show", "-s", "--format=%an · %aI", commit])}\n${message}`, parent, commit, remote.branch));
   }
   return { manifest: { formatVersion: "0.1", implementationId: record.implementationId, title: remote.branch,
-    summary: "Remote branch review. Personal notes and approvals stay on this computer.", targetBranch: remote.targetBranch, baseRevision: base, requirements: [], stages: stages.map((s) => s.id) }, stages, requirements: [] };
+    summary: "Remote branch review. Personal notes and approvals stay on this computer.", targetBranch: remote.targetBranch, baseRevision: base, requirements: [], stages: stages.map((s) => s.id) }, stages, requirements: [], evidenceFiles: [] };
 }
 function refresh(record: ReviewRecord) {
   const root = record.repositoryRoot, remote = record.remote!;
@@ -108,6 +132,10 @@ function refresh(record: ReviewRecord) {
   for (const child of ["stages", "requirements"]) fs.mkdirSync(path.join(next, child), { recursive: true });
   for (const s of projected.stages) atomicJson(path.join(next, "stages", `${s.id}.json`), s);
   for (const r of projected.requirements) atomicJson(path.join(next, "requirements", `${r.id}.json`), r);
+  for (const file of projected.evidenceFiles) {
+    fs.mkdirSync(path.dirname(path.join(next, file.path)), { recursive: true });
+    fs.writeFileSync(path.join(next, file.path), file.bytes);
+  }
   atomicJson(path.join(next, "manifest.json"), projected.manifest);
   const artifactPath = path.join(root, ".semantic-review"), backup = path.join(reviewDirectory(record.id), ".artifact-previous");
   const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);

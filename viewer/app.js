@@ -1368,7 +1368,7 @@
       const criterion = allAcceptance.find((item) => item.ref === ref);
       return `<li><code>${esc(ref)}</code>${criterion ? ` ${esc(criterion.text)}` : ""}</li>`;
     }).join("");
-    dialog.innerHTML = `<header><h2 id="evidence-title">Evidence</h2><div class="evidence-actions">${data.remote ? "" : '<button type="button" data-add-note>Add note</button>'}<button type="button" data-close aria-label="Close evidence">Close</button></div></header>
+    dialog.innerHTML = `<header><h2 id="evidence-title">Evidence</h2><div class="evidence-actions"><button type="button" data-add-note>Add note</button><button type="button" data-close aria-label="Close evidence">Close</button></div></header>
       <p class="insight-target-status ${evidence.stale ? "needs-review" : ""}">${evidence.stale
         ? `Stale: captured at ${esc(evidence.headRevision.slice(0, 12))}, but this stage is now at ${esc(stage.headRevision.slice(0, 12))}. It may not show the current behavior.`
         : `Captured from this stage revision (${esc(evidence.headRevision.slice(0, 12))}).`} ${esc(new Date(evidence.capturedAt).toLocaleString())}</p>
@@ -1380,7 +1380,7 @@
       ${criteria ? `<h4>Acceptance criteria</h4><ul class="evidence-links">${criteria}</ul>` : ""}
       ${nodes.length ? `<h4>Changes</h4><ul class="evidence-links">${nodes.map((title) => `<li>${esc(title)}</li>`).join("")}</ul>` : ""}`;
     dialog.querySelector("[data-close]").addEventListener("click", dismiss);
-    dialog.querySelector("[data-add-note]")?.addEventListener("click", () => {
+    dialog.querySelector("[data-add-note]").addEventListener("click", () => {
       dialog.addEventListener("close", () => openComment("insight", key), { once: true });
       dismiss();
     });

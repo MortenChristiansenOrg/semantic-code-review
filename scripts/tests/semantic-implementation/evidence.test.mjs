@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createViewerDataSource } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
-import { beginStage, createRepository, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
+import { buildFeedbackTargetData, createViewerDataSource, exportFeedback, readFeedbackThread } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
+import { beginStage, createRepository, feedbackCli, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
 
 const cli = (repo, ...args) => repo.result(process.execPath, [semanticCli, ...args]);
 
@@ -82,7 +82,34 @@ test("full validation detects damaged, missing and stray evidence files", t => {
   assert.throws(() => repo.semantic("validate"), /is missing/);
   fs.writeFileSync(file, PNG);
   fs.writeFileSync(artifactFile(repo, "evidence", id, "stray.png"), PNG);
-  assert.throws(() => repo.semantic("validate"), /unreferenced evidence file/);
+  assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file/);
+  fs.rmSync(artifactFile(repo, "evidence", id, "stray.png"));
+  repo.semantic("validate");
+
+  // Anything under evidence/ gets published, not only what sits beside a known stage.
+  fs.mkdirSync(artifactFile(repo, "evidence", "abandoned"));
+  fs.writeFileSync(artifactFile(repo, "evidence", "abandoned", "old.png"), PNG);
+  assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file evidence\/abandoned\/old\.png/);
+  fs.rmSync(artifactFile(repo, "evidence", "abandoned"), { recursive: true });
+  fs.writeFileSync(artifactFile(repo, "evidence", "loose.png"), PNG);
+  assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file evidence\/loose\.png/);
+});
+
+test("a symlinked evidence directory is refused and nothing outside the artifact is touched", { skip: process.platform === "win32" }, t => {
+  const repo = working(t);
+  record(repo, "--file", capture(t, "shot.png"));
+  const id = workStage(repo).id, directory = artifactFile(repo, "evidence", id);
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-outside-"));
+  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
+  for (const name of fs.readdirSync(directory)) fs.renameSync(path.join(directory, name), path.join(outside, name));
+  fs.writeFileSync(path.join(outside, "unrelated.txt"), "keep me");
+  fs.rmdirSync(directory);
+  fs.symlinkSync(outside, directory);
+  assert.throws(() => repo.semantic("validate"), /must be a real directory/);
+  assert.throws(() => repo.semantic("stage", "evidence-remove", "--item-id", "shot"), /real directory/);
+  assert.throws(() => record(repo, "--file", capture(t, "other.png", Buffer.from("x")), "--replace"), /real directory/);
+  assert.equal(fs.readFileSync(path.join(outside, "unrelated.txt"), "utf8"), "keep me");
+  assert.equal(fs.readdirSync(outside).length, 2);
 });
 
 test("the schema rejects attachment paths that leave the evidence directory", t => {
@@ -128,6 +155,10 @@ test("publication and the viewer carry the evidence", t => {
   const insight = data.stages[0].insights.find(item => item.collection === "evidence");
   assert.equal(insight.evidence.stale, false);
   assert.equal(insight.evidence.attachments[0].mediaType, "image/png");
+  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root), feedbackCli },
+    [{ kind: "insight", id: `i:${id}:evidence:shot`, body: "This shows the wrong page", mode: "feedback", clientId: "evidence-note" }]);
+  assert.deepEqual(sent.skipped, []);
+  assert.equal(readFeedbackThread(repo.root, sent.exported[0].threadId).target.collection, "evidence");
   const served = source.evidenceFile(id, "shot", "0");
   assert.deepEqual(Buffer.from(served.content, "base64"), PNG);
   assert.equal(served.mediaType, "image/png");

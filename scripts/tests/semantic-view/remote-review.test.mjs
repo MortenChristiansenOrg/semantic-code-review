@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -6,7 +7,7 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
 import { createRepository, feedbackCli, flowCli, initializeImplementation } from '../helpers/repository.mjs';
-import { startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
+import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 
 function setup(t) {
@@ -102,6 +103,27 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
   assert.equal(data.stages.length, 1); assert.equal(data.stages[0].title, 'Semantic title'); assert.equal(data.stages[0].nodes[0].id, 'semantic-node');
   assert.equal(data.stages[0].insights[0].title, 'Preserved reasoning'); assert.ok(data.requirements.length);
+});
+
+test('published evidence attachments are available in a remote review', (t) => {
+  const { author, source, head } = setup(t);
+  initializeImplementation(author);
+  const manifest = author.readJson('.semantic-review/manifest.json');
+  const bytes = 'published capture\n', sha256 = createHash('sha256').update(bytes).digest('hex');
+  const stored = `evidence/semantic-stage/${sha256}.txt`;
+  const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
+    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [{ path: stored, mediaType: 'text/plain', sha256 }], capturedAt: '2026-10-30T10:00:00Z', headRevision: head, nodeRefs: ['semantic-node'] }],
+    change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
+    nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
+  author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
+  author.write(`.semantic-review/${stored}`, bytes);
+  author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
+  author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
+  const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
+  const insight = data.stages[0].insights.find((item) => item.collection === 'evidence');
+  assert.equal(data.stages[0].id, 'semantic-semantic-stage');
+  const served = createViewerDataSource(review.repositoryRoot).evidenceFile(data.stages[0].id, insight.id, '0');
+  assert.equal(Buffer.from(served.content, 'base64').toString(), bytes);
 });
 
 test('review --branch enforces read-only mode and authoritative approval lineage over HTTP', async (t) => {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
-import { evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
+import { assertEvidenceDirectories, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -654,6 +654,8 @@ function validateSemantic(
 ) {
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
+  // Checked only in full validation: an edit prunes replaced files once it has saved.
+  if (validateGit) errors.push(...evidenceTreeErrors(paths.artifact, [...stages.values(), ...workStages.values()]));
 
   const specificationFiles = listJsonFiles(paths.requirements).map((file) =>
     path.basename(file, ".json"),
@@ -1547,6 +1549,7 @@ function evidenceStage(paths, options, command) {
 }
 
 function pruneEvidenceFiles(paths, stage) {
+  assertEvidenceDirectories(paths.artifact, stage.id);
   const directory = path.join(paths.artifact, "evidence", stage.id);
   if (!fs.existsSync(directory)) return;
   const referenced = new Set(stage.evidence.flatMap((item) => (item.attachments ?? []).map((attachment) => attachment.path)));
@@ -1576,8 +1579,18 @@ function evidenceInputs(options) {
   });
 }
 
+// Recording writes files before saving and prunes after, so concurrent evidence
+// edits must not interleave: one's rollback could delete the other's capture.
+function withEvidenceLock(paths, write) {
+  return withArtifactLock(paths, readJson(paths.manifest).implementationId, write);
+}
+
 function recordEvidence(paths, options) {
-  const { id, stage, finalized, branch } = evidenceStage(paths, options, "stage evidence");
+  withEvidenceLock(paths, () => writeEvidence(paths, options));
+}
+
+function writeEvidence(paths, options) {
+  const { id, finalized, branch } = evidenceStage(paths, options, "stage evidence");
   if (currentBranch(paths.root) !== branch) fail(`Recording evidence for ${id} requires checked-out stage branch ${branch}.`);
   assertCleanWorkingTree(paths.root, "Recording evidence");
   const replace = flag(options, "replace");
@@ -1599,6 +1612,7 @@ function recordEvidence(paths, options) {
     ...(reproduction !== undefined ? { reproduction } : {}),
     ...(nodeRefs.length ? { nodeRefs } : {}),
   };
+  assertEvidenceDirectories(paths.artifact, id);
   const written: string[] = [];
   let updated;
   try {
@@ -1629,6 +1643,10 @@ function recordEvidence(paths, options) {
 }
 
 function removeEvidence(paths, options) {
+  withEvidenceLock(paths, () => deleteEvidence(paths, options));
+}
+
+function deleteEvidence(paths, options) {
   const { id, finalized } = evidenceStage(paths, options, "stage evidence-remove");
   const itemId = option(options, "item-id", { required: true });
   let updated;
