@@ -93,6 +93,24 @@ Specification references identify criteria actually addressed by the stage.
 Dependencies list direct behavioral prerequisites, not chronology or Git
 ancestry.
 
+Evidence and validation evidence are different. Validation reports that a check
+ran and its result. Evidence is the capture itself. Capture tools by platform:
+
+- Web UI: a Playwright or headless browser screenshot or video of the running app.
+- Desktop UI: the operating system's screenshot tool (`screencapture` on macOS,
+  `gnome-screenshot` or `grim` on Linux, `Snipping Tool` or PowerShell on Windows).
+- Command line: the real output as text, through `inline` or a `.txt` file, never an
+  image of text.
+- APIs: the request and response from `curl -i` or similar.
+
+Before recording a capture, check it for secrets, tokens, personal data, and private
+paths, and crop or recapture rather than recording them; published evidence is
+visible to anyone with access to the metadata branch. Remove a bad capture with
+`stage evidence-remove`, and publish again. After feedback-driven changes touch
+evidenced nodes, recapture with `stage evidence --replace`, or remove entries that no
+longer apply. A restack alone also marks evidence stale; recapture only if the
+behavior could have changed.
+
 Do not record routine execution of existing test suites as validation evidence,
 including repeated runs while implementing or addressing feedback. Test
 execution is implied. Record only checks that give the reviewer information

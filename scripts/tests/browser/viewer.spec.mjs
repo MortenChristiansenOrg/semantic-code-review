@@ -1364,6 +1364,100 @@ test('insight reviewed marks toggle, persist, flag rewrites and stay independent
   expect(errors).toEqual([]);
 });
 
+function evidenceInsight(overrides = {}) {
+  return { id: 'shot', collection: 'evidence', type: 'evidence', title: 'New settings button appears', body: 'Reproduce: Open /settings', meta: 'screenshot', nodeRefs: ['first-one'],
+    evidence: { kind: 'screenshot', attachments: [
+      { mediaType: 'image/png', sha256: 'a'.repeat(64), role: 'before', caption: 'Without the button' },
+      { mediaType: 'image/png', sha256: 'b'.repeat(64), role: 'after' },
+      { mediaType: 'text/plain', sha256: 'c'.repeat(64), caption: 'Console' },
+    ], inline: '$ tool <run>\nok', reproduction: 'Open /settings', specificationRefs: ['story#works'], capturedAt: '2026-10-30T10:00:00Z', headRevision: 'b'.repeat(40), stale: false, ...overrides } };
+}
+const onePixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+async function routeEvidence(page) {
+  const requests = [];
+  await page.route('**/api/evidence**', (route) => {
+    const url = new URL(route.request().url()); requests.push(url);
+    if (url.searchParams.get('index') === '2') return route.fulfill({ contentType: 'text/plain', body: 'server <b>log</b>' });
+    return route.fulfill({ contentType: 'image/png', body: onePixel });
+  });
+  return requests;
+}
+
+test('evidence opens from its pill with previews, compare view, text and links', async ({ page }) => {
+  const data = fixture();
+  data.requirements = [{ id: 'story', title: 'Story', acceptance: [{ id: 'works', text: 'The button works' }] }];
+  data.stages[0].insights.push(evidenceInsight());
+  const errors = await mount(page, data);
+  const requests = await routeEvidence(page);
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  const pill = node.locator('.tag.type-evidence');
+  await expect(pill.locator('.tag-kind')).toHaveText('Evidence');
+  await expect(node.getByRole('button', { name: 'Evidence: 1', exact: true })).toBeVisible();
+  const open = pill.getByRole('button', { name: 'View evidence' });
+  await expect(open).toHaveText('View evidence');
+  await open.click();
+  const dialog = page.getByRole('dialog', { name: 'Evidence' });
+  await expect(dialog).toContainText('Captured from this stage revision');
+  await expect(dialog).toContainText('New settings button appears');
+  await expect(dialog.getByRole('region', { name: 'Before' })).toContainText('Without the button');
+  await expect(dialog.getByRole('region', { name: 'Before' }).locator('img')).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'After' }).locator('img')).toBeVisible();
+  await expect(dialog.locator('.evidence-text').first()).toHaveText('server <b>log</b>');
+  await expect(dialog.locator('.evidence-text').last()).toHaveText('$ tool <run>\nok');
+  await expect(dialog.locator('.evidence-text b')).toHaveCount(0);
+  await expect(dialog.locator('.evidence-links').first()).toContainText('The button works');
+  await expect(dialog.locator('.evidence-links').last()).toContainText('Step one');
+  expect(requests.map((url) => [url.searchParams.get('stage'), url.searchParams.get('item'), url.searchParams.get('index')])).toContainEqual(['first', 'shot', '0']);
+  expect(requests.every((url) => url.searchParams.get('review') === 'browser-review')).toBe(true);
+  const zoom = dialog.getByRole('button', { name: 'Zoom Without the button' });
+  await zoom.click();
+  await expect(zoom).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(open).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('stale evidence says so on the pill and in the dialog, and a recapture counts as a change', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push(evidenceInsight({ stale: true, attachments: [] }));
+  await mount(page, data);
+  await openFile(page);
+  const pill = page.locator('details[data-node="first-one"] .tag.type-evidence');
+  await pill.locator('.insight-review').click();
+  await expect(pill.locator('.insight-review')).toHaveAttribute('aria-pressed', 'true');
+  const open = pill.getByRole('button', { name: 'View evidence' });
+  await expect(open).toHaveText('View evidence · Stale');
+  await open.click();
+  await expect(page.getByRole('dialog', { name: 'Evidence' })).toContainText('Stale: captured at bbbbbbbbbbbb');
+  await page.getByRole('button', { name: 'Close evidence' }).click();
+  data.stages[0].insights[0] = evidenceInsight({ stale: false, inline: 'recaptured', attachments: [] });
+  await page.reload();
+  await openFile(page);
+  await expect(pill.locator('.insight-review')).toHaveText('!');
+});
+
+test('a note on evidence is composed beside its pill and sent as an insight target', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push(evidenceInsight({ attachments: [] }));
+  await mount(page, data);
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await node.getByRole('button', { name: 'View evidence' }).click();
+  await page.getByRole('dialog', { name: 'Evidence' }).getByRole('button', { name: 'Add note' }).click();
+  const editor = node.locator('.node-reasoning textarea[name="nc-body"]');
+  await expect(editor).toBeFocused();
+  await editor.fill('This shows the wrong page');
+  await saveAction(page, () => editor.press('Control+Enter'), (state) => state.comments?.[0]?.kind === 'insight' && state.comments[0].id === 'i:first:evidence:shot');
+  await expect(node.locator('.node-reasoning .thread')).toContainText('This shows the wrong page');
+  await page.reload();
+  await openFile(page);
+  await expect(node.locator('.tag.type-evidence .notes-toggle')).toBeVisible();
+  await showNotes(page);
+  await expect(page.locator('.side.notes')).toContainText('New settings button appears');
+});
+
 test('remote reviews offer only personal notes and refresh approved files in place', async ({ page }) => {
   const data = { ...fixture(), remote: { branch: 'feature', targetBranch: 'main' } };
   await mount(page, data);

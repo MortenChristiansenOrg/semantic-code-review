@@ -92,7 +92,7 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
   const { author, source, head } = setup(t);
   initializeImplementation(author);
   const manifest = author.readJson('.semantic-review/manifest.json');
-  const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
+  const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], evidence: [], openQuestions: [],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }],
     decisions: [{ id: 'why', category: 'engineering', rationale: 'Why', summary: 'Preserved reasoning', nodeRefs: ['semantic-node'] }] };

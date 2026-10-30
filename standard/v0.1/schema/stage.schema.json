@@ -20,6 +20,7 @@
     "failedAttempts",
     "risks",
     "validation",
+    "evidence",
     "openQuestions"
   ],
   "properties": {
@@ -187,6 +188,25 @@
           }
         ]
       }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/evidence"
+          },
+          {
+            "type": "object",
+            "required": [
+              "nodeRefs"
+            ]
+          }
+        ]
+      }
+    },
+    "noEvidenceReason": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/nonEmptyString"
     },
     "openQuestions": {
       "type": "array",

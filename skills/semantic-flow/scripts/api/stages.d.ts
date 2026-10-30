@@ -1,4 +1,4 @@
-import type { InsightKind, DecisionCategory, ValidationType, ValidationStatus } from "./shared.js";
+import type { InsightKind, DecisionCategory, ValidationType, ValidationStatus, EvidenceKind } from "./shared.js";
 export interface BeginStageOptions {
     /** Emits stage branch, immutable revisions, worktree, and next action as JSON. */
     json?: true;
@@ -139,6 +139,76 @@ export interface RecordValidationOptions {
  * @command stage validation
  */
 export declare function recordValidation(options: RecordValidationOptions): void;
+export interface RecordEvidenceOptions {
+    /** Optional code link, captured from the committed stage head; requires code-start. */
+    "code-path"?: string;
+    /** First line of the code target (one-based). */
+    "code-start"?: string;
+    /** Last line, inclusive; defaults to code-start. */
+    "code-end"?: string;
+    /** Stage receiving the evidence; omitted or `current` selects the only active stage. */
+    stage?: string;
+    /** Stable identifier for this evidence. */
+    "item-id": string;
+    /** What the evidence is. Prefer screenshot or recording when the change has visible output. */
+    kind: EvidenceKind;
+    /** What the evidence demonstrates. */
+    summary: string;
+    /** File to copy into the artifact, as `path` or `path=caption`. */
+    file?: readonly string[];
+    /** Capture of the earlier behavior for a before/after comparison, as `path` or `path=caption`. */
+    before?: readonly string[];
+    /** Capture of the new behavior for a before/after comparison, as `path` or `path=caption`. */
+    after?: readonly string[];
+    /** Small textual evidence stored in the stage document, such as terminal output. */
+    inline?: string;
+    /** How to reproduce the capture: a URL, command, or steps. */
+    reproduction?: string;
+    /** Acceptance criteria this evidence supports; each must be addressed by the stage. */
+    "specification-ref"?: readonly string[];
+    /** Change nodes relevant to this evidence. */
+    "node-ref"?: readonly string[];
+    /** Replaces evidence with the same identifier and removes its unused files. */
+    replace?: true;
+    /** Updates a finalized stage instead of the active working stage. */
+    finalized?: true;
+}
+/**
+ * Records a capture from exercising the committed stage head. Requires the stage branch checked out and a clean worktree.
+ * @cli semantic-implementation.mjs
+ * @command stage evidence
+ */
+export declare function recordEvidence(options: RecordEvidenceOptions): void;
+export interface RemoveEvidenceOptions {
+    /** Stage holding the evidence; omitted or `current` selects the only active stage. */
+    stage?: string;
+    /** Evidence identifier. */
+    "item-id": string;
+    /** Updates a finalized stage instead of the active working stage. */
+    finalized?: true;
+}
+/**
+ * Removes evidence and its unused files, for example a capture containing sensitive data.
+ * @cli semantic-implementation.mjs
+ * @command stage evidence-remove
+ */
+export declare function removeEvidence(options: RemoveEvidenceOptions): void;
+export interface RecordNoEvidenceOptions {
+    /** Stage to update; omitted or `current` selects the only active stage. */
+    stage?: string;
+    /** Why evidence is not feasible, such as a pure refactor. */
+    reason?: string;
+    /** Clears a recorded reason. */
+    remove?: true;
+    /** Updates a finalized stage instead of the active working stage. */
+    finalized?: true;
+}
+/**
+ * Records why a stage has no evidence, or clears that reason.
+ * @cli semantic-implementation.mjs
+ * @command stage no-evidence
+ */
+export declare function recordNoEvidence(options: RecordNoEvidenceOptions): void;
 export interface FinishStageOptions {
     /** Emits the finalized stage snapshot and next action as JSON. */
     json?: true;
@@ -192,8 +262,8 @@ export interface TargetInsightOptions {
     stage?: string;
     /** Target a finalized stage by explicit ID. */
     finalized?: true;
-    /** Insight collection, or validation. */
-    collection: "decisions" | "assumptions" | "alternatives" | "failedAttempts" | "risks" | "openQuestions" | "validation";
+    /** Insight collection, validation, or evidence. */
+    collection: "decisions" | "assumptions" | "alternatives" | "failedAttempts" | "risks" | "openQuestions" | "validation" | "evidence";
     /** Existing insight identifier. */
     "item-id": string;
     /** Remove the optional link while preserving the insight. */

@@ -140,9 +140,10 @@ Handle all change requests assigned to one stage together:
 3. Apply all requested code corrections for the
    stage as one coherent edit, then run relevant tests and commit.
 4. Update finalized insights only when the recorded reasoning changed. Do not
-   record normal test runs as validation evidence. When recording or revising
-   an item about specific committed lines a reviewer would question, link it to
-   the smallest relevant span; keep broader reasoning node-level. Code links
+   record normal test runs as validation evidence. Recapture or remove evidence
+   for changed nodes as `../docs/artifact-quality.md` describes. When recording
+   or revising an item about specific committed lines a reviewer would question,
+   link it to the smallest relevant span; keep broader reasoning node-level. Code links
    supplement node references. After stage snapshots are
    synchronized, review affected code-linked insights and use `stage target` to
    retarget or remove links that need review, following the “Code-linked insights”

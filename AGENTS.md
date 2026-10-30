@@ -74,9 +74,13 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   membership (such as behavior, refactor and test).
 - **Insight**: A recorded piece of reasoning or other observation attached to a
   stage and linked to the nodes it explains. Its kinds are decision, assumption,
-  alternative, failed attempt, risk, and open question.
+  alternative, failed attempt, risk, open question, and evidence.
 - **Validation evidence**: A recorded observation that a check was run or considered
   for a stage (automated, manual, or analysis), with its status and link to nodes.
+  It reports a result the reviewer has to trust.
+- **Evidence**: A captured artifact that shows a feature working, such as a
+  screenshot, recording, or terminal output, tied to the stage head it was captured
+  from. The reviewer inspects it directly instead of trusting a summary.
 - **Requirements**: The full set of specifications. When there is one specification,
   the requirements and the specification are one and the same.
 - **Specification**: The identification, description and scope for the

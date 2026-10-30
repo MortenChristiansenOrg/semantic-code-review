@@ -256,6 +256,37 @@ Review the revised code and reasoning before retargeting. Unchanged spans can
 follow line shifts and file renames automatically; that does not confirm that
 the insight's reasoning still holds after surrounding behavior changes.
 
+### Evidence
+
+Evidence lets a reviewer see a feature working without checking out the branch.
+Capture it by exercising the committed stage head, then record it from the stage
+branch with a clean worktree:
+
+```bash
+semantic-implementation stage evidence --item-id settings-button --kind screenshot \
+  --summary "Settings shows the new button" --after /tmp/settings.png \
+  --specification-ref story#button --reproduction "Open /settings"
+```
+
+Use `--file` for a single capture, `--before` and `--after` for a comparison, and
+`--inline` for short terminal output. Add a caption with `path=caption`. Prefer a
+screenshot or recording when the change has visible output. Supported files are
+PNG, JPEG, GIF, WebP, MP4, WebM, text, log, CSV, Markdown, JSON, and PDF, up to
+25 MiB each and 100 MiB per stage. Files are copied to `.semantic-review/evidence/`,
+which never appears in a stage diff; publishing and archiving include them, so
+check captures for secrets and personal data first.
+
+Use `stage evidence --replace` after recapturing and `stage evidence-remove` to
+delete a capture. If a stage can't have evidence, such as a pure refactor, record
+why with `stage no-evidence --reason <text>`. Finishing and validating a stage
+warn about behavior changes with neither; they do not block.
+
+In the viewer, choose **View evidence** on an evidence pill to see images,
+recordings, text, before/after comparisons, and the linked criteria and changes.
+Select an image to zoom it. **Stale** means the stage has moved since the capture,
+which includes a restack; recapture it if the behavior could have changed. Use
+**Add note** to leave a personal note or feedback on the evidence.
+
 Commit the implementation, then describe its causal change nodes in an
 organization document:
 

@@ -25,6 +25,7 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
   manifest.json
   requirements/<specification-id>.json
   stages/<stage-id>.json
+  evidence/<stage-id>/<sha256>.<extension>
 ```
 
 Readers load only IDs indexed by the manifest. Unlisted JSON files are invalid.
@@ -216,6 +217,28 @@ working stage. Stage specification references define the criteria included in
 the review. Other criteria in the indexed requirements do not block
 publication or preparation.
 
+## Evidence
+
+Each stage has a required `evidence` array of captures that show its behavior
+working. An entry has an `id`, a `kind` (`screenshot`, `recording`, `terminal`,
+`http`, `log`, `output-file`, `measurement`, or `report`), a `summary`, the
+`capturedAt` time, the `headRevision` of the stage it was captured from, `nodeRefs`,
+and at least one of `attachments` or `inline`. It may add `specificationRefs` for
+the criteria it supports (each must be addressed by the stage), `reproduction`,
+and `codeTarget`.
+
+An attachment has an artifact-relative `path`, a `mediaType`, a `sha256`, and an
+optional `caption` and `role` (`before` or `after`). Files live at
+`evidence/<stage-id>/<sha256>.<extension>`. They are part of the active metadata,
+so they stay out of stage diffs, and publication and archiving carry them with
+the rest of the artifact.
+
+Full validation requires each attachment to be a regular file with the recorded
+hash and an allowed media type, at most 25 MiB, with at most 100 MiB per stage,
+and rejects files in `evidence/` that no entry references. Evidence is stale when
+its `headRevision` differs from the stage head; this and a behavior stage with no
+evidence and no `noEvidenceReason` are warnings, not errors.
+
 ## Publication and archive
 
 The recommended publication branch is:
@@ -241,5 +264,6 @@ branches are later deleted.
 - Remote hosting and review APIs.
 - Non-linear or parallel stage graphs.
 - Automatic conflict resolution.
-- Embedded diffs, logs, or binary evidence.
+- Embedded diffs. Captured evidence is stored as separate files under
+  `evidence/`, never inside the JSON documents, apart from small inline text.
 - Automatic creation, push, or merge without an explicit user request.

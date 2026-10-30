@@ -243,6 +243,7 @@
     if (note.kind === "node") return stageById.get(note.stageId);
     if (note.kind === "file") return fileById.get(note.id)?.stage;
     if (note.kind === "line") return stageById.get(parseLineId(note.id)?.stageId);
+    if (note.kind === "insight") return stageById.get(parseInsightKey(note.id)?.stageId);
     return null;
   }
 
@@ -290,9 +291,10 @@
     validation:  { glyph: "✓", label: "Check" },
     lesson:      { glyph: "↺", label: "Lesson" },
     alternative: { glyph: "⇄", label: "Alternative" },
+    evidence:    { glyph: "▣", label: "Evidence" },
     question:    { glyph: "?", label: "Open question" }
   };
-  const INSIGHT_ORDER = ["decision", "assumption", "risk", "lesson", "alternative", "validation", "question"];
+  const INSIGHT_ORDER = ["decision", "assumption", "risk", "lesson", "alternative", "validation", "evidence", "question"];
 
   const CLASS_LABEL = {
     behavior: "behavior", test: "test", configuration: "config",
@@ -316,6 +318,14 @@
   }
   const insightKey = (stageId, collection, itemId) =>
     `i:${stageId}:${collection}:${itemId}`;
+  function parseInsightKey(id) {
+    const m = /^i:([^:]+):([^:]+):([^:]+)$/.exec(id || "");
+    return m ? { stageId: m[1], collection: m[2], itemId: m[3] } : null;
+  }
+  const insightByKey = (id) => {
+    const key = parseInsightKey(id);
+    return key && stageById.get(key.stageId)?.insights.find((item) => item.collection === key.collection && item.id === key.itemId);
+  };
   // A line thread's element id carries everything needed to resolve a feedback
   // target: the stage, which diff side the line lives on, its line number, and
   // the file path (kept last so paths with no colons parse unambiguously).
@@ -1038,6 +1048,7 @@
       if (kind === "stage") return tk === "stage" && t.target.stageId === id;
       if (kind === "node")
         return tk === "node" && t.target.nodeId === id && t.target.stageId === stageId;
+      if (kind === "insight") return tk === "insight" && insightKey(t.target.stageId, t.target.collection, t.target.itemId) === id;
       const entry = (tk === "file" || tk === "line") && currentFileEntry(t.target.stageId, t.target.path);
       const renamedLine = tk === "line" && entry && entry.file.path !== t.target.path;
       // A rename identifies the file, not the old line's new position. Keep
@@ -1260,22 +1271,12 @@
     if (!stage || !ins?.codeTarget) return;
     forceHidePop();
     clearInlineInsightHighlight();
-    const opener = document.activeElement;
-    const dialog = document.createElement("dialog");
-    dialog.className = "code-insight-dialog";
-    dialog.setAttribute("aria-labelledby", "code-insight-title");
-    let entering = null, closing = false;
-    const dismiss = () => {
-      if (closing) return;
-      closing = true;
-      if (motionReduced()) { dialog.close(); return; }
-      const current = getComputedStyle(dialog);
-      const from = { opacity: current.opacity, transform: current.transform };
-      entering?.cancel();
-      dialog.classList.add("is-closing");
-      const animation = dialog.animate([from, { opacity: 0, transform: "translateY(8px) scale(.985)" }], { duration: 140, easing: "ease-in", fill: "forwards" });
-      afterAnim(animation, 140, () => dialog.close());
-    };
+    const { dialog, dismiss, show } = insightDialog("code-insight-dialog", "code-insight-title", (opener) => {
+      // Restore keyboard position without treating restored focus as a new
+      // request to preview the range. A fresh hover/focus can highlight again.
+      clearInlineInsightHighlight();
+      suppressedCodeInsight = opener?.closest(".line-code-insights .code-insight-link") || null;
+    });
     const paint = () => {
       const target = ins.codeTarget, stale = target.status === "needs-review";
       const shown = stale ? target.original : target;
@@ -1289,33 +1290,115 @@
       dialog.querySelector("[data-close]").addEventListener("click", dismiss);
       dialog.querySelector("select")?.addEventListener("change", event => { ins = choices[Number(event.target.value)]; paint(); dialog.querySelector("select").focus(); });
     };
+    paint(); show();
+  }
+  function insightDialog(className, labelledBy, onClosed = () => {}) {
+    const opener = document.activeElement;
+    const dialog = document.createElement("dialog");
+    dialog.className = className;
+    dialog.setAttribute("aria-labelledby", labelledBy);
+    let entering = null, closing = false;
+    const dismiss = () => {
+      if (closing) return;
+      closing = true;
+      if (motionReduced()) { dialog.close(); return; }
+      const current = getComputedStyle(dialog);
+      const from = { opacity: current.opacity, transform: current.transform };
+      entering?.cancel();
+      dialog.classList.add("is-closing");
+      const animation = dialog.animate([from, { opacity: 0, transform: "translateY(8px) scale(.985)" }], { duration: 140, easing: "ease-in", fill: "forwards" });
+      afterAnim(animation, 140, () => dialog.close());
+    };
     dialog.addEventListener("cancel", event => { event.preventDefault(); dismiss(); });
     dialog.addEventListener("close", () => {
       dialog.remove();
       if (opener?.isConnected) opener.focus({ preventScroll: true });
-      // Restore keyboard position without treating restored focus as a new
-      // request to preview the range. A fresh hover/focus can highlight again.
-      clearInlineInsightHighlight();
-      suppressedCodeInsight = opener?.closest(".line-code-insights .code-insight-link") || null;
+      onClosed(opener);
     });
     dialog.addEventListener("click", event => {
       if (event.target !== dialog) return;
       const box = dialog.getBoundingClientRect();
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dismiss();
     });
-    document.body.append(dialog); paint(); dialog.showModal();
-    if (!motionReduced()) entering = dialog.animate([
-      { opacity: 0, transform: "translateY(10px) scale(.985)" },
-      { opacity: 1, transform: "translateY(0) scale(1)" },
-    ], { duration: 180, easing: "cubic-bezier(.22,.7,.2,1)" });
+    const show = () => {
+      document.body.append(dialog); dialog.showModal();
+      if (!motionReduced()) entering = dialog.animate([
+        { opacity: 0, transform: "translateY(10px) scale(.985)" },
+        { opacity: 1, transform: "translateY(0) scale(1)" },
+      ], { duration: 180, easing: "cubic-bezier(.22,.7,.2,1)" });
+    };
+    return { dialog, dismiss, show };
   }
+  function evidenceUrl(stageId, itemId, index) {
+    const url = new URL("/api/evidence", window.location.href);
+    url.searchParams.set("review", requestReviewId); url.searchParams.set("generation", requestGeneration);
+    url.searchParams.set("stage", stageId); url.searchParams.set("item", itemId); url.searchParams.set("index", String(index));
+    return url.href;
+  }
+  function evidenceAttachmentHtml(stage, ins, attachment) {
+    const index = ins.evidence.attachments.indexOf(attachment), url = evidenceUrl(stage.id, ins.id, index);
+    const type = attachment.mediaType, name = attachment.caption || `${EVIDENCE_KIND[ins.evidence.kind] || "Evidence"} ${index + 1}`;
+    const caption = attachment.caption ? `<figcaption>${esc(attachment.caption)}</figcaption>` : "";
+    const open = `<a class="evidence-open" href="${esc(url)}" download="${esc(`${ins.id}-${index + 1}`)}">Download</a>`;
+    if (type.startsWith("image/")) return `<figure><button type="button" class="evidence-zoom" data-evidence-zoom aria-pressed="false" aria-label="Zoom ${esc(name)}"><img src="${esc(url)}" alt="${esc(name)}"></button>${caption}${open}</figure>`;
+    if (type.startsWith("video/")) return `<figure><video src="${esc(url)}" controls preload="metadata" aria-label="${esc(name)}"></video>${caption}${open}</figure>`;
+    if (type.startsWith("text/") || type === "application/json") return `<figure><pre class="evidence-text" tabindex="0" aria-label="${esc(name)}" data-evidence-text="${esc(url)}">Loading…</pre>${caption}${open}</figure>`;
+    return `<figure><p class="evidence-file">${esc(name)}</p>${caption}${open}</figure>`;
+  }
+  const EVIDENCE_TEXT_LIMIT = 200000;
+  async function loadEvidenceText(element) {
+    try {
+      const response = await fetch(element.dataset.evidenceText);
+      if (!response.ok) throw new Error();
+      const text = await response.text();
+      element.textContent = text.length > EVIDENCE_TEXT_LIMIT ? `${text.slice(0, EVIDENCE_TEXT_LIMIT)}\n… Download the file for the rest.` : text;
+    } catch { element.textContent = "This evidence could not be loaded."; }
+  }
+  function openEvidence(stage, ins) {
+    if (!stage || !ins?.evidence) return;
+    forceHidePop();
+    const evidence = ins.evidence, key = insightKey(stage.id, ins.collection, ins.id);
+    const { dialog, dismiss, show } = insightDialog("code-insight-dialog evidence-dialog", "evidence-title");
+    const before = evidence.attachments.filter((item) => item.role === "before");
+    const after = evidence.attachments.filter((item) => item.role === "after");
+    const others = evidence.attachments.filter((item) => !item.role);
+    const column = (title, list) => `<section aria-label="${title}"><h4>${title}</h4>${list.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}</section>`;
+    const nodes = (ins.nodeRefs || []).map((id) => nodeTitleById.get(`${stage.id}:${id}`) || id);
+    const criteria = evidence.specificationRefs.map((ref) => {
+      const criterion = allAcceptance.find((item) => item.ref === ref);
+      return `<li><code>${esc(ref)}</code>${criterion ? ` ${esc(criterion.text)}` : ""}</li>`;
+    }).join("");
+    dialog.innerHTML = `<header><h2 id="evidence-title">Evidence</h2><div class="evidence-actions">${data.remote ? "" : '<button type="button" data-add-note>Add note</button>'}<button type="button" data-close aria-label="Close evidence">Close</button></div></header>
+      <p class="insight-target-status ${evidence.stale ? "needs-review" : ""}">${evidence.stale
+        ? `Stale: captured at ${esc(evidence.headRevision.slice(0, 12))}, but this stage is now at ${esc(stage.headRevision.slice(0, 12))}. It may not show the current behavior.`
+        : `Captured from this stage revision (${esc(evidence.headRevision.slice(0, 12))}).`} ${esc(new Date(evidence.capturedAt).toLocaleString())}</p>
+      <p class="eyebrow">${esc(EVIDENCE_KIND[evidence.kind] || evidence.kind)}</p><h3>${esc(ins.title)}</h3>
+      ${evidence.reproduction ? `<p class="evidence-reproduction"><b>Reproduce:</b> ${esc(evidence.reproduction)}</p>` : ""}
+      ${before.length || after.length ? `<div class="evidence-compare">${column("Before", before)}${column("After", after)}</div>` : ""}
+      ${others.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}
+      ${evidence.inline ? `<pre class="evidence-text" tabindex="0" aria-label="Captured output">${esc(evidence.inline)}</pre>` : ""}
+      ${criteria ? `<h4>Acceptance criteria</h4><ul class="evidence-links">${criteria}</ul>` : ""}
+      ${nodes.length ? `<h4>Changes</h4><ul class="evidence-links">${nodes.map((title) => `<li>${esc(title)}</li>`).join("")}</ul>` : ""}`;
+    dialog.querySelector("[data-close]").addEventListener("click", dismiss);
+    dialog.querySelector("[data-add-note]")?.addEventListener("click", () => {
+      dialog.addEventListener("close", () => openComment("insight", key), { once: true });
+      dismiss();
+    });
+    dialog.addEventListener("click", (event) => {
+      const zoom = event.target.closest("[data-evidence-zoom]");
+      if (zoom) zoom.setAttribute("aria-pressed", String(zoom.classList.toggle("is-zoomed")));
+    });
+    dialog.querySelectorAll("[data-evidence-text]").forEach(loadEvidenceText);
+    show();
+  }
+  const EVIDENCE_KIND = { screenshot: "Screenshot", recording: "Recording", terminal: "Terminal output", http: "HTTP exchange", log: "Log excerpt", "output-file": "Output file", measurement: "Measurement", report: "Report" };
   function fileCodeInsights(stage, filePath) {
     return stage.insights.filter(ins => ins.codeTarget && (ins.codeTarget.path === filePath || ins.codeTarget.original.path === filePath));
   }
   // Reviewed marks are personal reading progress, kept apart from approvals. The
   // stored fingerprint reveals an insight rewritten after it was marked.
   function insightFingerprint(ins) {
-    const text = JSON.stringify([ins.type, ins.title, ins.body, ins.meta, ins.validationType]);
+    const text = JSON.stringify([ins.type, ins.title, ins.body, ins.meta, ins.validationType, ins.evidence?.attachments.map((item) => item.sha256), ins.evidence?.inline]);
     let a = 0xdeadbeef, b = 0x41c6ce57;
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
@@ -1348,17 +1431,21 @@
     // meta slot instead surfaces the evidence type (automated/manual/analysis)
     // without displacing the pass/fail signal.
     const vtype = ins.type === "validation" ? validationTypeLabel(ins.validationType) : "";
-    const meta = vs ? vtype : (ins.meta || "");
+    const meta = vs ? vtype : ins.evidence ? (EVIDENCE_KIND[ins.meta] || ins.meta) : (ins.meta || "");
     const kindText = vtype ? `${info.label} · ${vtype}` : info.label;
     const review = insightReviewState(stage, ins);
-    return `<span class="tag ${ins.codeTarget ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
+    const key = insightKey(stage.id, ins.collection, ins.id);
+    const evidenceButton = ins.evidence
+      ? `<button type="button" class="code-insight-link ${ins.evidence.stale ? "needs-review" : ""}" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence${ins.evidence.stale ? " · Stale" : ""}</button>${notesToggle("insight", key)}`
+      : "";
+    return `<span class="tag ${ins.codeTarget || ins.evidence ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"
         data-type="${ins.type}" data-vstat="${vs ? vs.key : ""}"
         data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}" data-review="${esc(INSIGHT_REVIEW[review].text)}"
         data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
         aria-haspopup="true">
         <b>${glyph}</b><span class="tag-kind">${esc(kindText)}</span><span class="tag-gist">${esc(ins.title)}</span>
-      </button>${codeInsightButton(stage, ins)}
+      </button>${evidenceButton}${codeInsightButton(stage, ins)}
     </span>`;
   }
   function reasoningSummary(stage, node) {
@@ -1378,6 +1465,7 @@
     return `<div class="node-reasoning">
       <span class="eyebrow">Reasoning</span>
       <div class="tag-row">${list.map((ins) => reasoningChip(stage, ins)).join("")}</div>
+      ${list.filter((ins) => ins.evidence).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join("")}
     </div>`;
   }
 
@@ -2672,6 +2760,7 @@
   function localNoteRef(c) {
     if (c.kind === "stage") return stageById.has(c.id) ? c : null;
     if (c.kind === "node") return stageById.get(c.stageId)?.nodes.some((n) => n.id === c.id) ? c : null;
+    if (c.kind === "insight") return insightByKey(c.id) ? c : null;
     const entry = noteFileEntry(c.kind, c.id);
     const nodeId = noteNodeId(c);
     if (!entry || !nodeId) return null;
@@ -2682,7 +2771,7 @@
   }
   function noteGroupKey(c) {
     const entry = noteFileEntry(c.kind, c.id);
-    const stage = c.kind === "stage" ? stageById.get(c.id) : entry?.stage || stageById.get(c.stageId);
+    const stage = c.kind === "stage" ? stageById.get(c.id) : entry?.stage || stageById.get(c.kind === "insight" ? parseInsightKey(c.id)?.stageId : c.stageId);
     const si = stage ? data.stages.indexOf(stage) : 900;
     const nodeId = c.kind === "node" ? c.id : noteNodeId(c);
     const ni = nodeId ? stage?.nodes.findIndex((n) => n.id === nodeId) ?? -1 : -1;
@@ -2780,6 +2869,7 @@
   function labelFor(kind, id, stageId) {
     if (kind === "node" && stageId) return stageById.get(stageId)?.nodes.find((node) => node.id === id)?.title || id;
     if (kind === "file") return fileById.get(id)?.file.path || id;
+    if (kind === "insight") return insightByKey(id)?.title || id;
     if (kind === "line") {
       const p = parseLineId(id);
       return p ? `${p.path}:${p.line}` : id;
@@ -3129,7 +3219,10 @@
     if (!btn) return;
     const a = btn.dataset.action;
 
-    if (a === "toggle-insight-review") {
+    if (a === "view-evidence") {
+      const stage = stageById.get(btn.dataset.stage);
+      openEvidence(stage, stage?.insights.find((item) => item.collection === "evidence" && item.id === btn.dataset.item));
+    } else if (a === "toggle-insight-review") {
       const stage = stageById.get(btn.dataset.stage);
       const ins = stage?.insights.find((item) => item.collection === btn.dataset.collection && item.id === btn.dataset.item);
       if (!ins) return;
@@ -3370,10 +3463,8 @@
       if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
       state.specificationOpen[String(id).split("#")[0]] = true;
     } else if (kind === "insight") {
-      const ref = artifactThreads
-        .map(threadElementRef)
-        .find((item) => item?.kind === "insight" && item.id === id);
-      if (ref?.stageId) state.openStages[ref.stageId] = true;
+      const stageOfInsight = parseInsightKey(id)?.stageId;
+      if (stageOfInsight) state.openStages[stageOfInsight] = true;
     }
     persist();
     const waitForLazyLine =
