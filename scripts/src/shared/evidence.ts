@@ -43,22 +43,39 @@ export function resolveEvidenceFile(artifactRoot: string, stageId: string, attac
   return { file, size: stat.size };
 }
 
+/** Reads a single-range request; anything else is served as the whole file. */
+export function evidenceRange(header: string | undefined, length: number) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header || "");
+  if (!match || (!match[1] && !match[2])) return null;
+  const start = match[1] ? Number(match[1]) : Math.max(length - Number(match[2]), 0);
+  const end = match[1] && match[2] ? Math.min(Number(match[2]), length - 1) : length - 1;
+  return start > end || !length ? "unsatisfiable" as const : { start, end };
+}
+
 export const evidenceMediaTypeMatches = (attachment) => MEDIA_TYPES[path.extname(attachment.path).slice(1)] === attachment.mediaType;
+
+/**
+ * Keeps Git from rewriting captures, so a published or archived file still matches its hash
+ * under LFS filters or line-ending conversion. It travels with the artifact for that reason.
+ */
+export function ensureEvidenceAttributes(artifactRoot: string) {
+  const file = path.join(artifactRoot, "evidence", ".gitattributes");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (!fs.existsSync(file)) fs.writeFileSync(file, "* -text -filter -diff -merge\n");
+}
 
 export const sha256Hex = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
 /**
  * Reports every way the stored attachments of one stage differ from its evidence entries.
- * Full validation also hashes content; the quick validation between edits skips that.
+ * Only full validation runs this: a lost or leaked capture must not block the edits that repair it.
  */
-export function evidenceAttachmentErrors(artifactRoot: string, stage, verifyContent: boolean) {
+export function evidenceAttachmentErrors(artifactRoot: string, stage) {
   const errors: string[] = [];
-  const referenced = new Set<string>();
   let total = 0;
   for (const item of stage.evidence ?? []) {
     for (const attachment of item.attachments ?? []) {
       const label = `Stage ${stage.id} evidence ${item.id} attachment ${attachment.path}`;
-      referenced.add(attachment.path);
       let resolved;
       try { resolved = resolveEvidenceFile(artifactRoot, stage.id, attachment.path); }
       catch (error) { errors.push(`${label}: ${(error as Error).message}`); continue; }
@@ -66,7 +83,7 @@ export function evidenceAttachmentErrors(artifactRoot: string, stage, verifyCont
       total += resolved.size;
       if (path.basename(attachment.path, path.extname(attachment.path)) !== attachment.sha256) errors.push(`${label} is not named after its hash.`);
       if (!evidenceMediaTypeMatches(attachment)) errors.push(`${label} does not match media type ${attachment.mediaType}.`);
-      if (verifyContent && sha256Hex(fs.readFileSync(resolved.file)) !== attachment.sha256) errors.push(`${label} does not match its recorded hash.`);
+      if (sha256Hex(fs.readFileSync(resolved.file)) !== attachment.sha256) errors.push(`${label} does not match its recorded hash.`);
     }
   }
   if (total > MAX_EVIDENCE_TOTAL_BYTES) errors.push(`Stage ${stage.id} evidence attachments exceed 100 MiB.`);
@@ -83,6 +100,7 @@ export function evidenceTreeErrors(artifactRoot: string, stages) {
   const stray = (entry: string) => `Unreferenced evidence file ${entry}; remove it or record it.`;
   const errors: string[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (entry.name === ".gitattributes" && entry.isFile()) continue;
     if (!entry.isDirectory()) { errors.push(stray(`evidence/${entry.name}`)); continue; }
     for (const name of fs.readdirSync(path.join(root, entry.name))) {
       if (!referenced.has(`evidence/${entry.name}/${name}`)) errors.push(stray(`evidence/${entry.name}/${name}`));

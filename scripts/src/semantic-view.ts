@@ -40,8 +40,9 @@ export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "
 import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+export { evidenceRange } from "./shared/evidence.js";
 export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
-import { evidenceMediaTypeMatches, resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
+import { evidenceMediaTypeMatches, evidenceRange, resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
@@ -1920,8 +1921,22 @@ function serveViewer({
       try {
         const result = await dataSource.call("evidenceFile", [url.searchParams.get("stage"), url.searchParams.get("item"), url.searchParams.get("index")]);
         const bytes = Buffer.from(result.content, "base64");
-        response.writeHead(200, { "content-type": result.mediaType, "content-length": bytes.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
-        response.end(bytes);
+        const headers = { "content-type": result.mediaType, "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
+        // Safari refuses to play video from a server without range support.
+        const range = evidenceRange(request.headers.range, bytes.length);
+        if (!range) {
+          response.writeHead(200, { ...headers, "content-length": bytes.length });
+          response.end(bytes);
+          return;
+        }
+        if (range === "unsatisfiable") {
+          response.writeHead(416, { ...headers, "content-range": `bytes */${bytes.length}` });
+          response.end();
+          return;
+        }
+        const { start, end } = range;
+        response.writeHead(206, { ...headers, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${bytes.length}` });
+        response.end(bytes.subarray(start, end + 1));
       } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }

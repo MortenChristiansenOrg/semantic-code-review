@@ -126,6 +126,25 @@ test('published evidence attachments are available in a remote review', (t) => {
   assert.equal(Buffer.from(served.content, 'base64').toString(), bytes);
 });
 
+test('remote evidence extraction reads each file once and keeps empty captures', (t) => {
+  const { author, source, head } = setup(t);
+  initializeImplementation(author);
+  const manifest = author.readJson('.semantic-review/manifest.json');
+  const sha256 = createHash('sha256').update('').digest('hex'), stored = `evidence/semantic-stage/${sha256}.txt`;
+  const attachment = { path: stored, mediaType: 'text/plain', sha256 };
+  const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
+    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [attachment, attachment], capturedAt: '2026-10-30T10:00:00Z', headRevision: head, nodeRefs: ['semantic-node'] }],
+    change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
+    nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
+  author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
+  author.write(`.semantic-review/${stored}`, '');
+  author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
+  author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
+  const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
+  const served = createViewerDataSource(review.repositoryRoot).evidenceFile(data.stages[0].id, 'output', '1');
+  assert.equal(served.content, '');
+});
+
 test('review --branch enforces read-only mode and authoritative approval lineage over HTTP', async (t) => {
   const { source, author } = setup(t);
   author.git('switch', 'feature');

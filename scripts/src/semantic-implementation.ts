@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
-import { assertEvidenceDirectories, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
+import { assertEvidenceDirectories, ensureEvidenceAttributes, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -655,7 +655,10 @@ function validateSemantic(
   const errors = [];
   const { manifest, requirements, stages, workStages } = artifact;
   // Checked only in full validation: an edit prunes replaced files once it has saved.
-  if (validateGit) errors.push(...evidenceTreeErrors(paths.artifact, [...stages.values(), ...workStages.values()]));
+  if (validateGit) {
+    const allStages = [...stages.values(), ...workStages.values()];
+    errors.push(...evidenceTreeErrors(paths.artifact, allStages), ...allStages.flatMap((stage) => evidenceAttachmentErrors(paths.artifact, stage)));
+  }
 
   const specificationFiles = listJsonFiles(paths.requirements).map((file) =>
     path.basename(file, ".json"),
@@ -722,7 +725,7 @@ function validateSemantic(
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
     errors.push(...stageNodeErrors(stage, stage.change.files));
-    errors.push(...evidenceItemErrors(stage), ...evidenceAttachmentErrors(paths.artifact, stage, validateGit));
+    errors.push(...evidenceItemErrors(stage));
     const expectedBranch = stageBranchName(
       manifest,
       manifest.stages.indexOf(id),
@@ -782,7 +785,7 @@ function validateSemantic(
         }
       }
     }
-    errors.push(...evidenceItemErrors(stage), ...evidenceAttachmentErrors(paths.artifact, stage, validateGit));
+    errors.push(...evidenceItemErrors(stage));
     for (const reference of stage.specificationRefs) {
       const [specificationId, criterionId] = reference.split("#", 2);
       if (!criterionIds.get(specificationId)?.has(criterionId)) {
@@ -1545,6 +1548,7 @@ function evidenceStage(paths, options, command) {
   const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "stage");
   const stage = (finalized ? artifact.stages : artifact.workStages).get(id);
   if (!stage) fail(`Stage ${id} does not exist.`);
+  assertEvidenceDirectories(paths.artifact, id);
   return { id, stage, finalized, branch: finalized ? stage.change.branch : stage.branch };
 }
 
@@ -1612,15 +1616,21 @@ function writeEvidence(paths, options) {
     ...(reproduction !== undefined ? { reproduction } : {}),
     ...(nodeRefs.length ? { nodeRefs } : {}),
   };
-  assertEvidenceDirectories(paths.artifact, id);
   const written: string[] = [];
   let updated;
   try {
+    if (inputs.length) ensureEvidenceAttributes(paths.artifact);
     for (const input of inputs) {
       const file = path.join(paths.artifact, "evidence", id, `${input.attachment.sha256}.${input.extension}`);
-      if (fs.existsSync(file)) continue;
+      // A file left damaged by an earlier crash is rewritten, not trusted for its name.
+      const stored = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (stored?.isFile() && sha256Hex(fs.readFileSync(file)) === input.attachment.sha256) continue;
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, input.bytes);
+      const temporary = `${file}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(temporary, input.bytes);
+        fs.renameSync(temporary, file);
+      } finally { fs.rmSync(temporary, { force: true }); }
       written.push(file);
     }
     updateStageInsight(paths, id, finalized, (current) => {
@@ -1999,12 +2009,12 @@ function discardStage(paths, options) {
       git(["branch", "-D", branch], { cwd: paths.root });
       branchNote = ` Removed unchanged branch ${branch}.`;
     }
-    fs.rmSync(path.join(paths.artifact, "evidence", id), { recursive: true, force: true });
     validateArtifact(paths, { quiet: true, validateGit: false });
   } catch (error) {
     fs.writeFileSync(file, original);
     throw error;
   }
+  fs.rmSync(path.join(paths.artifact, "evidence", id), { recursive: true, force: true });
   console.log(`Discarded working stage ${id}.${branchNote}`);
 }
 

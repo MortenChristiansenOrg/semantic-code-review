@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { buildFeedbackTargetData, createViewerDataSource, exportFeedback, readFeedbackThread } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
+import { buildFeedbackTargetData, createViewerDataSource, evidenceRange, exportFeedback, readFeedbackThread } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
 import { beginStage, createRepository, feedbackCli, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
 
 const cli = (repo, ...args) => repo.result(process.execPath, [semanticCli, ...args]);
@@ -80,6 +81,8 @@ test("full validation detects damaged, missing and stray evidence files", t => {
   assert.throws(() => repo.semantic("validate"), /does not match its recorded hash/);
   fs.rmSync(file);
   assert.throws(() => repo.semantic("validate"), /is missing/);
+  // A lost capture must not block the edits that repair it, or unrelated ones.
+  repo.semantic("stage", "record", "--kind", "risk", "--item-id", "unrelated", "--summary", "Still recordable");
   fs.writeFileSync(file, PNG);
   fs.writeFileSync(artifactFile(repo, "evidence", id, "stray.png"), PNG);
   assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file/);
@@ -110,6 +113,59 @@ test("a symlinked evidence directory is refused and nothing outside the artifact
   assert.throws(() => record(repo, "--file", capture(t, "other.png", Buffer.from("x")), "--replace"), /real directory/);
   assert.equal(fs.readFileSync(path.join(outside, "unrelated.txt"), "utf8"), "keep me");
   assert.equal(fs.readdirSync(outside).length, 2);
+});
+
+test("a capture damaged by a crash is rewritten, and a lost one can be removed", t => {
+  const repo = working(t);
+  const source = capture(t, "shot.png");
+  record(repo, "--file", source);
+  const [{ attachments: [{ path: stored }] }] = workStage(repo).evidence;
+  const file = artifactFile(repo, ...stored.split("/"));
+  fs.writeFileSync(file, "truncated");
+  record(repo, "--file", source, "--replace");
+  assert.deepEqual(fs.readFileSync(file), PNG);
+  repo.semantic("validate");
+  fs.rmSync(file);
+  repo.semantic("stage", "evidence-remove", "--item-id", "shot");
+  repo.semantic("validate");
+});
+
+test("published captures keep their bytes under Git filters and line-ending conversion", t => {
+  const repo = working(t);
+  repo.git("config", "core.autocrlf", "true");
+  repo.commitFile(".gitattributes", "*.txt text\n", "Normalize text");
+  const id = workStage(repo).id, bytes = Buffer.from("line one\r\nline two\r\n");
+  record(repo, "--file", capture(t, "output.txt", bytes));
+  const [{ attachments: [{ path: stored }] }] = workStage(repo).evidence;
+  organizeStage(repo, { id });
+  repo.semantic("stage", "finish", "--id", id);
+  repo.semantic("publish");
+  const metadata = repo.git("for-each-ref", "--format=%(refname)", "refs/heads/").split("\n").find(ref => ref.endsWith("/metadata"));
+  const published = spawnSync("git", ["show", `${metadata}:.semantic-review/${stored}`], { cwd: repo.root });
+  assert.deepEqual(published.stdout, bytes);
+});
+
+test("removing evidence keeps feedback on it valid", t => {
+  const repo = working(t);
+  const id = workStage(repo).id;
+  record(repo, "--file", capture(t, "shot.png"));
+  organizeStage(repo, { id });
+  repo.semantic("stage", "finish", "--id", id);
+  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root), feedbackCli },
+    [{ kind: "insight", id: `i:${id}:evidence:shot`, body: "Contains a secret", mode: "feedback", clientId: "secret" }]);
+  assert.deepEqual(sent.skipped, []);
+  repo.semantic("stage", "evidence-remove", "--stage", id, "--finalized", "--item-id", "shot");
+  repo.feedback("validate");
+});
+
+test("range requests select the bytes a video player asks for", () => {
+  assert.deepEqual(evidenceRange("bytes=0-9", 100), { start: 0, end: 9 });
+  assert.deepEqual(evidenceRange("bytes=90-", 100), { start: 90, end: 99 });
+  assert.deepEqual(evidenceRange("bytes=-4", 100), { start: 96, end: 99 });
+  assert.deepEqual(evidenceRange("bytes=90-500", 100), { start: 90, end: 99 });
+  assert.equal(evidenceRange("bytes=100-", 100), "unsatisfiable");
+  assert.equal(evidenceRange("bytes=0-", 0), "unsatisfiable");
+  for (const header of [undefined, "bytes=-", "bytes=0-1,3-4", "items=0-1"]) assert.equal(evidenceRange(header, 100), null);
 });
 
 test("the schema rejects attachment paths that leave the evidence directory", t => {

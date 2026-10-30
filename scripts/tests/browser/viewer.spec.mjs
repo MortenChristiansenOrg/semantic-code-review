@@ -1419,6 +1419,24 @@ test('evidence opens from its pill with previews, compare view, text and links',
   expect(errors).toEqual([]);
 });
 
+test('evidence linked to two nodes has one thread and reports a capture that fails to load', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push({ ...evidenceInsight(), nodeRefs: ['first-one', 'first-two'] });
+  const errors = await mount(page, data);
+  await page.route('**/api/evidence**', (route) => route.fulfill({ status: 404, json: { ok: false } }));
+  await page.locator('.stage-title[data-id="first"]').click();
+  const second = page.locator('details[data-node="first-two"]');
+  await second.locator('> summary').click();
+  await second.getByRole('button', { name: 'View evidence' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Evidence' });
+  await expect(dialog.getByRole('region', { name: 'Before' })).toContainText('could not be loaded');
+  await expect(dialog.locator('img')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add note' }).click();
+  await expect(page.locator('textarea[name="nc-body"]')).toHaveCount(1);
+  await expect(page.locator('details[data-node="first-one"] .node-reasoning textarea[name="nc-body"]')).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 test('stale evidence says so on the pill and in the dialog, and a recapture counts as a change', async ({ page }) => {
   const data = fixture();
   data.stages[0].insights.push(evidenceInsight({ stale: true, attachments: [] }));

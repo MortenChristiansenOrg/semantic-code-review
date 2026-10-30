@@ -1381,13 +1381,22 @@
       ${nodes.length ? `<h4>Changes</h4><ul class="evidence-links">${nodes.map((title) => `<li>${esc(title)}</li>`).join("")}</ul>` : ""}`;
     dialog.querySelector("[data-close]").addEventListener("click", dismiss);
     dialog.querySelector("[data-add-note]").addEventListener("click", () => {
-      dialog.addEventListener("close", () => openComment("insight", key), { once: true });
+      dialog.addEventListener("close", () => {
+        const host = app.querySelector(`.stage[data-stage="${cssEsc(stage.id)}"] details.node[data-node="${cssEsc(ins.nodeRefs?.[0] || "")}"]`);
+        if (host) host.open = true;
+        openComment("insight", key);
+      }, { once: true });
       dismiss();
     });
     dialog.addEventListener("click", (event) => {
       const zoom = event.target.closest("[data-evidence-zoom]");
       if (zoom) zoom.setAttribute("aria-pressed", String(zoom.classList.toggle("is-zoomed")));
     });
+    // Load errors don't bubble, so listen while they pass through the dialog.
+    dialog.addEventListener("error", (event) => {
+      const figure = event.target.closest?.("figure");
+      if (figure && event.target.matches("img, video")) figure.innerHTML = `<p class="evidence-file" role="status">This evidence could not be loaded.</p>`;
+    }, true);
     dialog.querySelectorAll("[data-evidence-text]").forEach(loadEvidenceText);
     show();
   }
@@ -1398,7 +1407,7 @@
   // Reviewed marks are personal reading progress, kept apart from approvals. The
   // stored fingerprint reveals an insight rewritten after it was marked.
   function insightFingerprint(ins) {
-    const text = JSON.stringify([ins.type, ins.title, ins.body, ins.meta, ins.validationType, ins.evidence?.attachments.map((item) => item.sha256), ins.evidence?.inline]);
+    const text = JSON.stringify([ins.type, ins.title, ins.body, ins.meta, ins.validationType, ...(ins.evidence ? [ins.evidence.attachments.map((item) => item.sha256), ins.evidence.inline] : [])]);
     let a = 0xdeadbeef, b = 0x41c6ce57;
     for (let i = 0; i < text.length; i++) {
       const code = text.charCodeAt(i);
@@ -1422,7 +1431,9 @@
     return `<button class="insight-review" type="button" data-action="toggle-insight-review" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}"
         aria-pressed="${review === "reviewed"}" aria-label="${esc(`${review === "changed" ? "Reviewed before it changed" : "Reviewed"}: ${ins.title}`)}" data-tooltip="${esc(info.tooltip)}"><span aria-hidden="true">${info.mark}</span></button>`;
   }
-  function reasoningChip(stage, ins) {
+  // Evidence linked to several nodes hosts its one thread under the first of them.
+  const hostsEvidenceThread = (ins, node) => ins.evidence && ins.nodeRefs?.[0] === node.id;
+  function reasoningChip(stage, ins, node) {
     const info = INSIGHT[ins.type] || INSIGHT.decision;
     const vs = vstatus(ins);
     const glyph = vs ? vs.glyph : info.glyph;
@@ -1436,7 +1447,7 @@
     const review = insightReviewState(stage, ins);
     const key = insightKey(stage.id, ins.collection, ins.id);
     const evidenceButton = ins.evidence
-      ? `<button type="button" class="code-insight-link ${ins.evidence.stale ? "needs-review" : ""}" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence${ins.evidence.stale ? " · Stale" : ""}</button>${notesToggle("insight", key)}`
+      ? `<button type="button" class="code-insight-link ${ins.evidence.stale ? "needs-review" : ""}" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence${ins.evidence.stale ? " · Stale" : ""}</button>${hostsEvidenceThread(ins, node) ? notesToggle("insight", key) : ""}`
       : "";
     return `<span class="tag ${ins.codeTarget || ins.evidence ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"
@@ -1464,8 +1475,8 @@
     if (!list.length) return "";
     return `<div class="node-reasoning">
       <span class="eyebrow">Reasoning</span>
-      <div class="tag-row">${list.map((ins) => reasoningChip(stage, ins)).join("")}</div>
-      ${list.filter((ins) => ins.evidence).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join("")}
+      <div class="tag-row">${list.map((ins) => reasoningChip(stage, ins, node)).join("")}</div>
+      ${list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join("")}
     </div>`;
   }
 
