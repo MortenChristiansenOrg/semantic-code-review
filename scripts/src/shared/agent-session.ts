@@ -37,6 +37,8 @@ export interface AgentSession {
 }
 /** What a released or completed round answered, so its late replies stay fenced. */
 export interface RetiredClaim { id: string; threads: { id: string; through: string }[] }
+/** The latest automatic move of the implementation onto its advanced target branch. */
+export interface TargetRefresh { at: string; targetBranch: string; previousBaseRevision: string; baseRevision: string }
 export interface AgentState {
   session: AgentSession | null;
   claims: AgentClaim[];
@@ -45,6 +47,7 @@ export interface AgentState {
   /** Viewer sends in progress, by send token, with their expiry. */
   sends: Record<string, string>;
   lastRound?: { id: string; completedAt: string; threadIds: string[] };
+  targetRefresh?: TargetRefresh;
 }
 
 const iso = (now: number) => new Date(now).toISOString();
@@ -66,6 +69,7 @@ export function readAgentState(reviewId: string): AgentState {
     requests: Array.isArray(value?.requests) ? value.requests : [],
     sends: value?.sends && typeof value.sends === "object" && !Array.isArray(value.sends) ? value.sends : {},
     ...(value?.lastRound ? { lastRound: value.lastRound } : {}),
+    ...(value?.targetRefresh ? { targetRefresh: value.targetRefresh } : {}),
   };
 }
 
@@ -274,6 +278,7 @@ export function agentStatus(state: AgentState, now: number) {
     requests: state.requests.filter((request) => !request.response)
       .map(({ id, body, choices, createdAt }) => ({ id, body, choices, createdAt })),
     lastRound: state.lastRound ?? null,
+    targetRefresh: state.targetRefresh ?? null,
     serverTime: iso(now),
   };
 }

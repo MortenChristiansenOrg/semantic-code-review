@@ -44,6 +44,8 @@
   const uploadStatus = new WeakMap();
   const approvalOps = new Map();
   const approvalComparisons = new Map();
+  // Files whose comparison also shows base changes; each visit starts with the stage's changes alone.
+  const approvalBaseIncluded = new Set();
   const approvalErrors = new Map();
   const markdownPreviews = new Map();
 
@@ -2278,7 +2280,7 @@
     return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "") || approvalRecord(remotePreviousApprovalId(id) || "");
   }
   function comparisonKey(id, entry) {
-    return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id)]);
+    return JSON.stringify([id, retainedApproval(id)?.snapshotId, fileBaseRevision(entry), entry.stage.headRevision, revisionFor(id), fileViewMode(entry.id), approvalBaseIncluded.has(id)]);
   }
   function scrollDiffPage(id, navigation) {
     // A response may arrive after this shared file was opened in another node.
@@ -2296,7 +2298,7 @@
     try {
       await flushReviewState();
       const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode }) });
+        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode, scope: approvalBaseIncluded.has(id) ? "all" : "stage" }) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
       approvalComparisons.set(key, result);
@@ -2307,6 +2309,12 @@
     if (pageLoaded && pageScroll && comparisonKey(id, entry) === key && sinceApprovalEnabled(id))
       scrollDiffPage(entry.id, pageScroll);
   }
+  function baseChangeInfo(id, comparison) {
+    const toggle = (label) => `<button class="tb-btn" type="button" data-action="approval-base-scope" data-id="${esc(id)}">${label}</button>`;
+    if (comparison.baseChanges === "excluded") return `<p>The stage base changed since approval. Changes from the target branch or a lower stage are left out, so this shows only what changed in this stage. ${toggle("Include base changes")}</p>`;
+    if (comparison.baseChanges === "included") return `<p>The stage base changed since approval. This comparison includes changes from the target branch or a lower stage, which were not made in this stage. ${toggle("Leave out base changes")}</p>`;
+    return '<p>The stage base changed since approval. Changes from the target branch or a lower stage could not be separated here, so not every change below was made in this stage.</p>';
+  }
   function approvalComparisonBody(id, entry) {
     const approval = retainedApproval(id);
     if (!approval?.snapshotId) return '<div class="diff-empty">Approved content is unavailable. Re-approve the current file to retain a snapshot.</div>';
@@ -2315,9 +2323,9 @@
     if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
     if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
     const info = `<div class="comparison-info"><p>Comparison with the approved file. Lines removed since approval are no longer in the file, so they cannot take line comments.</p>
-      ${comparison.baseChanged ? '<p>The stage base changed since approval.</p>' : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
+      ${comparison.baseChanged ? baseChangeInfo(id, comparison) : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
     if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
-    if (!comparison.lines.length) return `${info}<div class="diff-empty">No file content changes since approval.</div>`;
+    if (!comparison.lines.length) return `${info}<div class="diff-empty">${comparison.baseChanges === "excluded" ? "This stage made no changes to the file since approval. Only its base changed." : "No file content changes since approval."}</div>`;
     // Only current lines have a feedback anchor. A removed row's number belongs to
     // the approved snapshot, not to the stage's old side, so it gets no affordance.
     const ctx = { stageId: entry.stage.id, path: entry.file.path };
@@ -2392,6 +2400,13 @@
     return `<button class="tb-btn agent-pill is-offline" data-action="copy-agent-command" type="button" title="No agent is listening. Copy ${AGENT_COMMAND} and run it in your agent."><span class="agent-dot" aria-hidden="true"></span>${agentCommandCopied ? "Command copied" : "No agent listening"}</button>`;
   }
   // Round progress, an offline prompt when feedback waits, and the agent's questions.
+  function targetRefreshBar() {
+    const refresh = agent?.targetRefresh;
+    if (!refresh || state.dismissedTargetRefresh === refresh.at) return "";
+    return `<div class="agent-bar is-refreshed" role="status"><strong>Moved onto the latest ${esc(refresh.targetBranch)}</strong>
+      <span>The implementation was restacked from ${esc(refresh.previousBaseRevision.slice(0, 12))} to ${esc(refresh.baseRevision.slice(0, 12))}. Files the target branch changed may show stale approvals, but those edits are not review corrections.</span>
+      <button class="tb-btn" data-action="dismiss-target-refresh" type="button">Dismiss</button></div>`;
+  }
   function agentBar() {
     if (data.remote || !agent) return "";
     const queued = artifactThreads.filter((thread) => awaitsAgent(thread) && !agentWorkingOn(thread.id)).length;
@@ -2408,7 +2423,7 @@
         <span>Run <code>${AGENT_COMMAND}</code> in your agent to have feedback handled as you send it.</span>
         <button class="tb-btn" data-action="copy-agent-command" type="button">${agentCommandCopied ? "Copied" : "Copy command"}</button></div>`;
     }
-    return status + agentQuestions();
+    return status + targetRefreshBar() + agentQuestions();
   }
   function agentQuestions() {
     const count = agent.requests.length;
@@ -3290,6 +3305,12 @@
       void changeApproval(btn.dataset.id, btn.dataset.kind);
     } else if (a === "approval-comparison") {
       state.approvalComparisons[btn.dataset.id] = !sinceApprovalEnabled(btn.dataset.id);
+      persist(); render();
+    } else if (a === "approval-base-scope") {
+      if (!approvalBaseIncluded.delete(btn.dataset.id)) approvalBaseIncluded.add(btn.dataset.id);
+      render();
+    } else if (a === "dismiss-target-refresh") {
+      state.dismissedTargetRefresh = agent?.targetRefresh?.at;
       persist(); render();
     } else if (a === "approval-page") {
       const entry = approvalEntry(btn.dataset.id);

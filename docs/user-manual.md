@@ -634,7 +634,12 @@ either comparison. Lines in the current file take line comments in either
 comparison; lines removed since approval do not, because they are no longer in
 the file. Reapproving the file removes the comparison toggle until
 the approval becomes stale again. The comparison reports changed ownership and
-stage bases. Binary content shows hashes instead of a line diff; unavailable
+stage bases. When the stage base changed, it leaves out changes from the target
+branch or a lower stage so that it shows only what changed in this stage;
+**Include base changes** adds them back. When those changes overlap the stage's
+own edits they cannot be separated, and the comparison says so. A restack that
+follows an advanced target branch also shows a notice at the top of the viewer
+until you dismiss it. Binary content shows hashes instead of a line diff; unavailable
 content produces an explicit error. Approving or unapproving a file keeps its
 diff open. The combined file-comment and personal-note counts toggle the notes
 without closing the diff. The **Add note** footer stays visible when existing

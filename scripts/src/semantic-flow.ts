@@ -762,6 +762,15 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
   if (!refreshed) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
   }
+  try {
+    // The reviewer learns of the refresh in the viewer even when no agent reports it.
+    updateAgentState(reviewId(candidate.worktree, candidate.implementationId), (state, now) => {
+      state.targetRefresh = { at: new Date(now).toISOString(), targetBranch: restackSummary.targetBranch, previousBaseRevision: candidate.baseRevision, baseRevision: restackSummary.baseRevision };
+    });
+  } catch (error) {
+    // The restack succeeded, so its summary must still reach the caller.
+    console.error(`Could not record the target refresh for the viewer: ${error.message}`);
+  }
   return {
     candidate: refreshed,
     targetRestack: {

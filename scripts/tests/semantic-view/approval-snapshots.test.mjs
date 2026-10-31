@@ -42,13 +42,13 @@ test('comparisons distinguish added, deleted, empty, and binary file states', (t
   const { repo, context } = setup(t);
   const absent = captureApprovalSnapshot(context, endpoint(repo));
   repo.commitFile('code.txt', '', 'Empty file');
-  const empty = compareApprovalSnapshot(context, absent.snapshotId, endpoint(repo));
+  const empty = compareApprovalSnapshot(context, absent.snapshotId, endpoint(repo), 0, 'changes', 'all');
   assert.equal(empty.approved.exists, false); assert.equal(empty.current.exists, true); assert.deepEqual(empty.lines, []);
   repo.commitFile('code.txt', 'added\n', 'Add content');
-  assert.deepEqual(compareApprovalSnapshot(context, absent.snapshotId, endpoint(repo)).lines.map((r) => r.t), ['add']);
+  assert.deepEqual(compareApprovalSnapshot(context, absent.snapshotId, endpoint(repo), 0, 'changes', 'all').lines.map((r) => r.t), ['add']);
   const added = captureApprovalSnapshot(context, endpoint(repo));
   repo.git('rm', 'code.txt'); repo.git('commit', '-m', 'Delete file');
-  const deleted = compareApprovalSnapshot(context, added.snapshotId, endpoint(repo));
+  const deleted = compareApprovalSnapshot(context, added.snapshotId, endpoint(repo), 0, 'changes', 'all');
   assert.equal(deleted.current.exists, false); assert.deepEqual(deleted.lines.map((r) => r.t), ['del']);
   repo.commitFile('code.txt', '\0before', 'Binary file');
   const binary = captureApprovalSnapshot(context, endpoint(repo));
@@ -63,7 +63,7 @@ test('comparison pages preserve all changed rows including source header-like te
   const saved = captureApprovalSnapshot(context, endpoint(repo));
   repo.commitFile('code.txt', Array.from({ length: 1805 }, (_, i) => i === 0 ? '++ header-like source' : `line ${i}`).join('\n') + '\n', 'Large change');
   const rows = []; let offset = 0;
-  do { const page = compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), offset); rows.push(...page.lines); offset = page.nextOffset; } while (offset !== null);
+  do { const page = compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), offset, 'changes', 'all'); rows.push(...page.lines); offset = page.nextOffset; } while (offset !== null);
   assert.equal(rows.length, 1806); assert.equal(rows[1].s, '++ header-like source'); assert.equal(rows.at(-1).n, 1805);
 });
 
@@ -137,4 +137,62 @@ test('base comparisons follow file content across restacks, including existing s
   const changedBase = repo.commitFile('code.txt', 'different base\n', 'Change base content');
   comparison = compareApprovalSnapshot(context, saved.snapshotId, { ...current, baseRevision: changedBase });
   assert.equal(comparison.baseChanged, true); assert.deepEqual(comparison.lines, []);
+});
+
+function restackedOntoNewBase(t, approvedStage, targetChange, currentStage) {
+  const { repo, context } = setup(t);
+  const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+  const text = (edit) => { const next = [...lines]; edit(next); return next.join('\n') + '\n'; };
+  const previousBase = repo.commitFile('code.txt', text(() => {}), 'Original base');
+  const approvedHead = repo.commitFile('code.txt', text(approvedStage), 'Stage');
+  const saved = captureApprovalSnapshot(context, { ...endpoint(repo, approvedHead), baseRevision: previousBase });
+  const nextBase = repo.commitFile('code.txt', text(targetChange), 'Target branch advanced');
+  const currentHead = repo.commitFile('code.txt', text(currentStage), 'Restacked stage');
+  return { context, saved, current: { ...endpoint(repo, currentHead), baseRevision: nextBase } };
+}
+const changed = (comparison) => comparison.lines.filter((row) => row.t !== 'ctx').map(({ t, s }) => [t, s]);
+const stageEdit = (next) => { next[1] = 'stage'; };
+const targetEdit = (next) => { next[17] = 'target'; };
+
+test('since-approval comparison attributes target branch edits to the base, not the stage', (t) => {
+  const correction = (next) => { stageEdit(next); targetEdit(next); next[9] = 'correction'; };
+  const { context, saved, current } = restackedOntoNewBase(t, stageEdit, targetEdit, correction);
+  const stage = compareApprovalSnapshot(context, saved.snapshotId, current);
+  assert.equal(stage.baseChanged, true); assert.equal(stage.baseChanges, 'excluded');
+  assert.deepEqual(changed(stage), [['del', 'line 10'], ['add', 'correction']]);
+  // Current line numbers keep feedback anchors valid.
+  assert.equal(stage.lines.find((row) => row.t === 'add').n, 10);
+  const all = compareApprovalSnapshot(context, saved.snapshotId, current, 0, 'changes', 'all');
+  assert.equal(all.baseChanges, 'included');
+  assert.deepEqual(changed(all), [['del', 'line 10'], ['add', 'correction'], ['del', 'line 18'], ['add', 'target']]);
+  assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, current, 0, 'changes', 'other'), /Invalid comparison scope/);
+});
+
+test('a file changed only by the target branch shows no stage changes in either view', (t) => {
+  const restacked = (next) => { stageEdit(next); targetEdit(next); };
+  const { context, saved, current } = restackedOntoNewBase(t, stageEdit, targetEdit, restacked);
+  const changes = compareApprovalSnapshot(context, saved.snapshotId, current);
+  assert.equal(changes.baseChanges, 'excluded'); assert.deepEqual(changes.lines, []);
+  const full = compareApprovalSnapshot(context, saved.snapshotId, current, 0, 'full');
+  assert.equal(full.baseChanges, 'excluded'); assert.equal(full.lines.length, 20);
+  assert.ok(full.lines.every((row) => row.t === 'ctx'));
+});
+
+test('overlapping base and stage edits stay whole and are reported as mixed', (t) => {
+  const overlap = (next) => { next[1] = 'target'; };
+  const resolved = (next) => { next[1] = 'resolved'; };
+  const { context, saved, current } = restackedOntoNewBase(t, stageEdit, overlap, resolved);
+  const comparison = compareApprovalSnapshot(context, saved.snapshotId, current);
+  assert.equal(comparison.baseChanged, true); assert.equal(comparison.baseChanges, 'mixed');
+  assert.deepEqual(changed(comparison), [['del', 'stage'], ['add', 'resolved']]);
+});
+
+test('an unchanged base reports no base changes', (t) => {
+  const { repo, context } = setup(t);
+  const base = repo.commitFile('code.txt', 'one\n', 'Base');
+  const saved = captureApprovalSnapshot(context, { ...endpoint(repo), baseRevision: base });
+  const head = repo.commitFile('code.txt', 'two\n', 'Correction');
+  const comparison = compareApprovalSnapshot(context, saved.snapshotId, { ...endpoint(repo, head), baseRevision: base });
+  assert.equal(comparison.baseChanged, false); assert.equal(comparison.baseChanges, 'none');
+  assert.deepEqual(changed(comparison), [['del', 'one'], ['add', 'two']]);
 });

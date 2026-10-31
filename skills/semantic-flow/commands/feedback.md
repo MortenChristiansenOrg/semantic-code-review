@@ -46,7 +46,10 @@ When the target branch has advanced by fast-forward, preflight automatically
 restacks a clean finalized stage stack onto its current head. It temporarily
 detaches a checked-out stage branch when needed and restores that checkout
 afterward. The returned `targetRestack` describes rewritten stage heads. This
-is routine synchronization. Never ask the user to approve it.
+is routine synchronization. Never ask the user to approve it, but do report it:
+the reviewer can otherwise mistake incoming target-branch changes for corrections.
+The viewer shows a notice, and your closing line must name the target branch when
+any feedback command in this run returned a `targetRestack`.
 
 Use the returned `worktree` as the working directory for every remaining Git,
 implementation, and feedback command.
@@ -228,5 +231,7 @@ In interactive review, continue with the next wait as
 Otherwise rerun `<semantic-flow> feedback --json --project
 <artifact-worktree-path>`. It validates the revised stack and feedback in one
 call. If it returns new feedback the reviewer sent meanwhile, handle that round
-the same way. Stop with the stack ready for human review. Do not approve,
+the same way. This call can also restack onto an advanced target branch, so check
+its `targetRestack` before writing the closing line. Stop with the stack ready for
+human review. Do not approve,
 publish, push, merge, or resolve threads.

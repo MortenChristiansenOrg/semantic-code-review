@@ -68,7 +68,8 @@ provide commit messages and authors, but cannot recover undocumented intent.
 Reopening a saved review retains the last reviewed snapshot. Choose **Refresh
 branch** in the viewer to fetch updates. Changed file approvals become stale and
 **Since approval** compares current content with the saved approved content,
-including after force-pushes. In commit-based reviews, the newest occurrence of
+including after force-pushes, and leaves out changes that came from the base when
+they can be separated. In commit-based reviews, the newest occurrence of
 a file can compare against its latest saved approval from an earlier commit.
 Unchanged file content retains its approval when
 the base and ownership are unchanged. Refresh failures keep the previous
