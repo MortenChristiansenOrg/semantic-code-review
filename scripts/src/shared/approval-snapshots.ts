@@ -44,13 +44,29 @@ function baseIdentity(context: ReviewContext, endpoint: FileEndpoint): string {
   const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === filePath);
   return record ? record.slice(0, record.indexOf("\t")) : "";
 }
-function baseChanged(context: ReviewContext, snapshot: Snapshot, current: FileEndpoint): boolean {
+function approvedBaseIdentity(context: ReviewContext, snapshot: Snapshot): string | null {
+  try { return snapshot.baseIdentity ?? baseIdentity(context, snapshot.endpoint); }
+  // Older snapshots may outlive their original Git objects.
+  catch { return null; }
+}
+/** Text of a base file identity: empty when the base lacks the file, null when it cannot take part in a merge. */
+function baseContent(context: ReviewContext, identity: string): Buffer | null {
+  if (!identity) return Buffer.alloc(0);
+  const [, type, objectId] = identity.split(" ");
+  if (type !== "blob") return null;
   try {
-    return (snapshot.baseIdentity ?? baseIdentity(context, snapshot.endpoint)) !== baseIdentity(context, current);
-  } catch {
-    // Older snapshots may outlive their original Git objects.
-    return snapshot.endpoint.baseRevision !== current.baseRevision;
-  }
+    if (Number(git(context, ["cat-file", "-s", objectId]).toString("utf8").trim()) > MAX_APPROVED_BYTES) return null;
+    const bytes = git(context, ["cat-file", "blob", objectId]);
+    return bytes.includes(0) ? null : bytes;
+  } catch { return null; }
+}
+/** The approved file with only the base's changes applied, or null when they overlap the stage's own edits. */
+function approvedOnCurrentBase(context: ReviewContext, approved: Buffer, previousBase: Buffer, currentBase: Buffer, directory: string): Buffer | null {
+  const approvedFile = path.join(directory, "rebased-approved"), previousFile = path.join(directory, "previous-base"), currentFile = path.join(directory, "current-base");
+  fs.writeFileSync(approvedFile, approved); fs.writeFileSync(previousFile, previousBase); fs.writeFileSync(currentFile, currentBase);
+  // merge-file exits nonzero for conflicts as well as for errors; either way the changes stay inseparable.
+  try { return git(context, ["merge-file", "-p", approvedFile, previousFile, currentFile]); }
+  catch { return null; }
 }
 export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint) {
   return withReviewLock(context.reviewId, () => {
@@ -60,8 +76,9 @@ export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEn
     return { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
   });
 }
-export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode = "changes") {
+export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode = "changes", scope = "stage") {
   if (!["changes", "full"].includes(mode)) throw new Error("Invalid comparison view.");
+  if (!["stage", "all"].includes(scope)) throw new Error("Invalid comparison scope.");
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid comparison page.");
   return withReviewLock(context.reviewId, () => {
     assertReviewContext(context);
@@ -80,41 +97,51 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     if (!remotePrevious && (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path)))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
     if (snapshot.id !== snapshotId || (before.sha256 === null ? !before.unsupported || before.bytes !== "" : digest(Buffer.from(before.bytes, "base64")) !== before.sha256)) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
+    const previousIdentity = approvedBaseIdentity(context, snapshot), currentIdentity = baseIdentity(context, current);
+    const baseChanged = previousIdentity === null ? snapshot.endpoint.baseRevision !== current.baseRevision : previousIdentity !== currentIdentity;
     const info = {
       approved: { ...snapshot.endpoint, at: snapshot.createdAt, size: before.size, sha256: before.sha256, exists: before.exists, mode: before.mode, objectId: before.objectId },
       current: { ...current, size: after.size, sha256: after.sha256, exists: after.exists, mode: after.mode, objectId: after.objectId },
-      baseChanged: baseChanged(context, snapshot, current),
+      baseChanged,
       ownershipChanged: !isDeepStrictEqual(snapshot.endpoint.ownership, current.ownership),
     };
     const unsupported = before.unsupported || after.unsupported || (before.binary || after.binary ? "Binary file comparison: content hashes and sizes are shown; a line diff is unavailable." : "");
-    if (unsupported) return { ...info, unsupported, lines: [], offset, nextOffset: null };
-    if (mode === "full" && before.sha256 === after.sha256) {
-      const text = Buffer.from(after.bytes, "base64").toString("utf8");
-      const content = text ? text.split("\n") : [];
-      if (text.endsWith("\n")) content.pop();
-      const lines = content.slice(offset, offset + 900).map((s, i) => ({ t: "ctx", o: offset + i + 1, n: offset + i + 1, s }));
-      return { ...info, unsupported: "", lines, offset, nextOffset: offset + lines.length < content.length ? offset + lines.length : null };
-    }
+    if (unsupported) return { ...info, baseChanges: baseChanged ? "mixed" : "none", unsupported, lines: [], offset, nextOffset: null };
     const temporary = fs.mkdtempSync(path.join(reviewDirectory(context.reviewId), "snapshots", ".compare-"));
-    let patch: string;
     try {
+      const approvedBytes = Buffer.from(before.bytes, "base64"), currentBytes = Buffer.from(after.bytes, "base64");
+      // An approval carried to a later commit stage has that stage's earlier commits in its base; they stay visible.
+      const previousBase = baseChanged && previousIdentity !== null && snapshot.endpoint.stageId === current.stageId ? baseContent(context, previousIdentity) : null;
+      const currentBase = previousBase && baseContent(context, currentIdentity);
+      const separated = previousBase && currentBase ? approvedOnCurrentBase(context, approvedBytes, previousBase, currentBase, temporary) : null;
+      // Comparing with the approved file moved onto the current base attributes base changes away from the stage.
+      const baseChanges = !baseChanged ? "none" : !separated ? "mixed" : scope === "all" ? "included" : "excluded";
+      const comparedBytes = baseChanges === "excluded" ? separated! : approvedBytes;
+      if (mode === "full" && comparedBytes.equals(currentBytes)) {
+        const text = currentBytes.toString("utf8");
+        const content = text ? text.split("\n") : [];
+        if (text.endsWith("\n")) content.pop();
+        const lines = content.slice(offset, offset + 900).map((s, i) => ({ t: "ctx", o: offset + i + 1, n: offset + i + 1, s }));
+        return { ...info, baseChanges, unsupported: "", lines, offset, nextOffset: offset + lines.length < content.length ? offset + lines.length : null };
+      }
       const oldFile = path.join(temporary, "approved"), newFile = path.join(temporary, "current");
-      fs.writeFileSync(oldFile, Buffer.from(before.bytes, "base64")); fs.writeFileSync(newFile, Buffer.from(after.bytes, "base64"));
+      fs.writeFileSync(oldFile, comparedBytes); fs.writeFileSync(newFile, currentBytes);
+      let patch: string;
       try { patch = git(context, ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile]).toString("utf8"); }
       catch (error) { if (error.status !== 1 || !error.stdout) throw error; patch = error.stdout.toString("utf8"); }
+      const lines: Array<{ t: string; o?: number; n?: number; s: string }> = [];
+      let oldNo = 0, newNo = 0, started = false, count = 0, more = false;
+      for (const line of patch.split("\n")) {
+        const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+        if (header) { oldNo = Number(header[1]); newNo = Number(header[2]); started = true; continue; }
+        if (!started || !["+", "-", " "].includes(line[0])) continue;
+        const item = line[0] === "+" ? { t: "add", n: newNo++, s: line.slice(1) }
+          : line[0] === "-" ? { t: "del", o: oldNo++, s: line.slice(1) } : { t: "ctx", o: oldNo++, n: newNo++, s: line.slice(1) };
+        if (count++ < offset) continue;
+        if (lines.length === 900) { more = true; break; }
+        lines.push(item);
+      }
+      return { ...info, baseChanges, unsupported: "", lines, offset, nextOffset: more ? offset + lines.length : null };
     } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
-    const lines: Array<{ t: string; o?: number; n?: number; s: string }> = [];
-    let oldNo = 0, newNo = 0, started = false, count = 0, more = false;
-    for (const line of patch.split("\n")) {
-      const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
-      if (header) { oldNo = Number(header[1]); newNo = Number(header[2]); started = true; continue; }
-      if (!started || !["+", "-", " "].includes(line[0])) continue;
-      const item = line[0] === "+" ? { t: "add", n: newNo++, s: line.slice(1) }
-        : line[0] === "-" ? { t: "del", o: oldNo++, s: line.slice(1) } : { t: "ctx", o: oldNo++, n: newNo++, s: line.slice(1) };
-      if (count++ < offset) continue;
-      if (lines.length === 900) { more = true; break; }
-      lines.push(item);
-    }
-    return { ...info, unsupported: "", lines, offset, nextOffset: more ? offset + lines.length : null };
   });
 }

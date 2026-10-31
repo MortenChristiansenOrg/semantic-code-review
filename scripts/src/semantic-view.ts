@@ -2167,7 +2167,7 @@ if (!isMainThread && workerData?.repoRoot) {
         if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
         else if (method === "resolveLineDraftSnapshots") result = resolveLineDraftSnapshots(root, args[1]);
         else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
-        else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes");
+        else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes", args[1].scope ?? "stage");
         else if (method === "sendFeedback") result = sendFeedback({ repoRoot: root, feedbackCli, context }, args[1], args[2]);
         else if (method === "controlAgent") result = controlAgent(context, args[1], args[2]);
         else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);

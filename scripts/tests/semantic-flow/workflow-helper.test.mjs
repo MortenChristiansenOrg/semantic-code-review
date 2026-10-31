@@ -227,6 +227,10 @@ test("feedback automatically restacks after the target branch advances", (t) => 
   assert.equal(result.targetRestack.previousBaseRevision, before.baseRevision);
   assert.equal(result.targetRestack.baseRevision, targetHead);
   assert.equal(result.targetRestack.rewrittenBranches, 2);
+  const agent = JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(repository.feedbackPath("manifest.json"))), "agent.json"), "utf8"));
+  assert.equal(agent.targetRefresh.targetBranch, "main");
+  assert.equal(agent.targetRefresh.previousBaseRevision, before.baseRevision);
+  assert.equal(agent.targetRefresh.baseRevision, targetHead);
   assert.equal(result.stages[0].stageId, "behavior");
   assert.equal(result.stages[0].threads[0].stale, false);
   assert.equal(result.stages[0].threads[0].reanchored, true);

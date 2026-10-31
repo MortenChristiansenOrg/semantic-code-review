@@ -2147,6 +2147,7 @@ html:has(.file-search[open]) { overflow: hidden; }
 .agent-bar strong { color: var(--text); font-weight: 600; }
 .agent-bar.is-working { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: color-mix(in srgb, var(--warn) 6%, var(--panel)); }
 .agent-bar.is-offline { border-color: color-mix(in srgb, var(--signal) 40%, var(--line)); }
+.agent-bar.is-refreshed { border-color: color-mix(in srgb, var(--signal) 40%, var(--line)); }
 .agent-bar code { font-family: var(--mono); font-size: .92em; color: var(--signal-2); }
 .agent-bar > span { flex: 1 1 280px; min-width: 0; }
 .agent-bar .tb-btn { flex: none; }

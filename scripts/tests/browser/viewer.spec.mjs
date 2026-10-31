@@ -630,6 +630,45 @@ test('since-approval comparison is explicit and shows current line anchors', asy
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
 });
 
+test('since-approval comparison leaves out base changes until the reviewer includes them', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await openFile(page);
+  await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+  const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
+  const scopes = [];
+  await page.route('**/api/approval-comparison*', (route) => {
+    const scope = route.request().postDataJSON().scope; scopes.push(scope);
+    route.fulfill({ json: { ok: true, approved: endpoint, current: endpoint, baseChanged: true, baseChanges: scope === 'all' ? 'included' : 'excluded', ownershipChanged: false, lines: scope === 'all' ? [{ t: 'add', n: 1, s: 'from target branch' }] : [], offset: 0, nextOffset: null } });
+  });
+  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await openFile(page);
+  const comparison = page.locator('.is-approved-comparison');
+  await expect(comparison).toContainText('shows only what changed in this stage');
+  await expect(comparison).toContainText('Only its base changed');
+  await comparison.getByRole('button', { name: 'Include base changes', exact: true }).click();
+  await expect(comparison).toContainText('from target branch');
+  await expect(comparison).toContainText('not made in this stage');
+  await comparison.getByRole('button', { name: 'Leave out base changes', exact: true }).click();
+  await expect(comparison).not.toContainText('from target branch');
+  expect(scopes.slice(0, 2)).toEqual(['stage', 'all']);
+});
+
+test('a target refresh shows a notice until the reviewer dismisses it', async ({ page }) => {
+  const now = new Date().toISOString();
+  const refresh = { at: now, targetBranch: 'main', previousBaseRevision: 'a'.repeat(40), baseRevision: 'b'.repeat(40) };
+  await mount(page, { ...fixture(), agent: { session: false, listening: false, stopRequested: false, working: null, requests: [], lastRound: null, targetRefresh: refresh, serverTime: now } });
+  const notice = page.locator('.agent-bar.is-refreshed');
+  await expect(notice).toContainText('Moved onto the latest main');
+  await expect(notice).toContainText('those edits are not review corrections');
+  await saveAction(page, () => notice.getByRole('button', { name: 'Dismiss', exact: true }).click(), (state) => state.dismissedTargetRefresh === now);
+  await expect(notice).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('.topbar, header').first()).toBeVisible();
+  await expect(notice).toHaveCount(0);
+});
+
 test('line comments added in a since-approval comparison attach to the current file line', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
