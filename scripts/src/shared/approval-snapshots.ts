@@ -110,7 +110,8 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     const temporary = fs.mkdtempSync(path.join(reviewDirectory(context.reviewId), "snapshots", ".compare-"));
     try {
       const approvedBytes = Buffer.from(before.bytes, "base64"), currentBytes = Buffer.from(after.bytes, "base64");
-      const previousBase = baseChanged && previousIdentity !== null ? baseContent(context, previousIdentity) : null;
+      // An approval carried to a later commit stage has that stage's earlier commits in its base; they stay visible.
+      const previousBase = baseChanged && previousIdentity !== null && snapshot.endpoint.stageId === current.stageId ? baseContent(context, previousIdentity) : null;
       const currentBase = previousBase && baseContent(context, currentIdentity);
       const separated = previousBase && currentBase ? approvedOnCurrentBase(context, approvedBytes, previousBase, currentBase, temporary) : null;
       // Comparing with the approved file moved onto the current base attributes base changes away from the stage.

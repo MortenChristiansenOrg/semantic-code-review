@@ -332,6 +332,21 @@ test('remote commit diffs show only incremental edits without a cumulative stage
   assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['original', 'updated']);
 });
 
+test('an approval carried to a later commit keeps every correction since it visible', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const context = captureReviewContext(review.id), initial = endpoint(dataFor(review));
+  const saved = captureApprovalSnapshot(context, initial);
+  patchReviewState(review.id, review.generation, [change(['approvals', `m:${JSON.stringify([initial.stageId, initial.nodeId, initial.path])}`], { ...initial, ...saved, at: 1, rev: 'initial' })]);
+  author.git('switch', 'feature');
+  author.commitFile('code.txt', 'original\ncorrection one\n', 'First correction');
+  author.commitFile('code.txt', 'original\ncorrection one\ncorrection two\n', 'Second correction');
+  author.git('switch', 'main');
+  refreshRemoteReview(review.id, review.generation);
+  const comparison = compareApprovalSnapshot(context, saved.snapshotId, endpoint(dataFor(review)));
+  assert.equal(comparison.baseChanged, true); assert.equal(comparison.baseChanges, 'mixed');
+  assert.deepEqual(comparison.lines.filter((line) => line.t === 'add').map((line) => line.s), ['correction one', 'correction two']);
+});
+
 test('remote approval comparisons follow a complete rename chain across commits and reloads', (t) => {
   const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
   const context = captureReviewContext(review.id), initial = endpoint(dataFor(review));
