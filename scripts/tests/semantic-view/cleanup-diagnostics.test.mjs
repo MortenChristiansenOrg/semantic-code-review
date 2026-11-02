@@ -75,9 +75,11 @@ test('native lookup identifies a process holding a real file', async (t) => {
     const ready = await Promise.race([once(child.stdout, 'data'), exited.then(() => { throw new Error('File holder exited before ready'); })]);
     assert.match(String(ready[0]), /ready/);
     const execute = childProcess.execFileSync, diagnostics = [];
-    t.mock.method(childProcess, 'execFileSync', (...args) => {
+    t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
       try {
-        const output = execute(...args); diagnostics.push({ output }); return output;
+        // This test checks what the lookup finds, not its 5-second production budget.
+        // A busy CI runner can take longer than that to start PowerShell and compile it.
+        const output = execute(command, args, { ...options, timeout: 60000 }); diagnostics.push({ output }); return output;
       } catch (error) {
         diagnostics.push({ status: error.status, signal: error.signal, stderr: String(error.stderr || ''), stdout: String(error.stdout || '') });
         throw error;
