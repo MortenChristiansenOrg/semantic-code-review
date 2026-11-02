@@ -1154,6 +1154,9 @@
   function noteGlyph() {
     return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5M9.5 12.5h6M9.5 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
+  function doubleCheck() {
+    return `<svg class="tico" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M2.5 12.5l4.5 4.5 9-10M11.5 16l1 1 9-10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
   function arrowRight() {
     return `<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
@@ -1941,6 +1944,17 @@
       : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${id}" type="button">＋ Add note</button>`;
     return `<div class="thread file-notes" data-thread="${id}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
   }
+  // A group's unapproved or stale file approvals that can be captured now.
+  function groupPendingApprovals(stage, node, files) {
+    return files.map((f) => fileApprovalKey(stage.id, node.id, f.path))
+      .filter((id) => !approved(id) && revisionFor(id) && !approvalOps.has(id));
+  }
+  function approveGroup(stageId, nodeId, group) {
+    const stage = stageById.get(stageId), node = stage?.nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    const files = nodeFileList(stage, node).filter((f) => (f.project || "Other") === group);
+    return Promise.all(groupPendingApprovals(stage, node, files).map((id) => changeApproval(id, "file")));
+  }
   function nodeFilesPanel(stage, node) {
     const files = nodeFileList(stage, node);
     const total = files.length;
@@ -1955,11 +1969,16 @@
     });
     const groupHtml = [...groups.entries()].map(([proj, gfiles]) => {
       const gd = gfiles.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
+      const allDone = gd === gfiles.length;
+      const pending = groupPendingApprovals(stage, node, gfiles);
+      const busy = gfiles.some((f) => approvalOps.has(fileApprovalKey(stage.id, node.id, f.path)));
+      const label = allDone ? `All files in ${proj} approved` : `Approve all files in ${proj}`;
       const rows = gfiles.map((f) => fileRow(stage, node, f)).join("");
-      return `<div class="fgroup ${gd === gfiles.length ? "all-done" : ""}">
+      return `<div class="fgroup ${allDone ? "all-done" : ""}">
         <div class="fgroup-h">
           <span class="fg-name">${esc(proj)}</span>
-          <span class="fg-done">${gd === gfiles.length ? "✓ all" : `${gd}/${gfiles.length}`}</span>
+          <span class="fg-done" aria-label="${gd} of ${gfiles.length} files approved">${allDone ? "✓ " : ""}${gd}/${gfiles.length}</span>
+          <button class="fg-approve ${allDone ? "is-on" : ""}" data-action="approve-group" data-stage="${esc(stage.id)}" data-node-id="${esc(node.id)}" data-group="${esc(proj)}" type="button" ${busy || !pending.length ? "disabled" : ""} title="${esc(label)}" aria-label="${esc(label)}">${doubleCheck()}</button>
         </div>
         <div class="flist">${rows}</div>
       </div>`;
@@ -3303,6 +3322,8 @@
       void changeReview(btn.dataset.reviewId, a === "complete-review");
     } else if (a === "approve") {
       void changeApproval(btn.dataset.id, btn.dataset.kind);
+    } else if (a === "approve-group") {
+      void approveGroup(btn.dataset.stage, btn.dataset.nodeId, btn.dataset.group);
     } else if (a === "approval-comparison") {
       state.approvalComparisons[btn.dataset.id] = !sinceApprovalEnabled(btn.dataset.id);
       persist(); render();

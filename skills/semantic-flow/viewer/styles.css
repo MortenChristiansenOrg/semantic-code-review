@@ -927,7 +927,7 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 7px 10px 5px 12px;
+  padding: 7px 14px 5px 12px;
   border-left: 2px solid var(--line);
   margin: 2px 0 0 4px;
   font-family: var(--mono);
@@ -946,6 +946,21 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .fg-done { margin-left: auto; color: var(--faint); font-size: 10px; white-space: nowrap; }
 .fgroup.all-done .fg-name { color: var(--ok); }
 .fgroup.all-done .fg-done { color: var(--ok); }
+.fg-approve {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  transition: all .18s var(--ease);
+}
+.fg-approve:hover:not(:disabled) { border-color: var(--ok); color: var(--ok); }
+.fg-approve:disabled { cursor: default; opacity: .5; }
+.fg-approve.is-on { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); opacity: 1; }
 
 .flist { display: grid; gap: 2px; padding: 2px 4px 5px; }
 

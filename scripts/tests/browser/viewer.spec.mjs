@@ -555,6 +555,31 @@ test('shared files have independent node approvals, counts, and revocation', asy
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
 });
 
+test('folder approval approves its pending and stale files only', async ({ page }) => {
+  const data = fixture(), file = (path, project) => ({ path, project, kind: 'modified', revision: `rev-${path}`, additions: 1, deletions: 0,
+    memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: 'x', h: 1 }] });
+  data.stages[0].files.push(file('web/a.js', 'web'), file('web/b.js', 'web'), file('web/c.js', 'web'), file('api/d.js', 'api'));
+  const staleKey = approvalKey('first', 'first-one', 'web/c.js');
+  await mount(page, data, { approvals: { [staleKey]: { rev: JSON.stringify(['old', 'behavior', null, null]), at: 1, path: 'web/c.js' } } });
+  await page.locator('.stage-title[data-id="first"]').click();
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('summary').click();
+  const web = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^web$/ }) });
+  const api = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^api$/ }) });
+  await expect(web.locator('.fg-done')).toHaveText('0/3');
+  await expect(web.locator('.frow.is-stale')).toHaveCount(1);
+  await saveAction(page, () => web.locator('.fg-approve').click(), (state) =>
+    ['web/a.js', 'web/b.js', 'web/c.js'].every((path) => state.approvals?.[approvalKey('first', 'first-one', path)]?.rev?.includes(`rev-${path}`)));
+  await expect(web.locator('.frow.is-approved')).toHaveCount(3);
+  await expect(web.locator('.fg-done')).toHaveText('✓ 3/3');
+  await expect(web.locator('.fg-approve')).toBeDisabled();
+  await expect(api.locator('.fg-done')).toHaveText('0/1');
+  await expect(api.locator('.fg-approve')).toBeEnabled();
+  await expect(node.locator('.frow.is-approved')).toHaveCount(3);
+  await page.reload();
+  await expect(web.locator('.fg-done')).toHaveText('✓ 3/3');
+});
+
 for (const legacy of [false, true]) test(`file approvals survive unchanged restacks (${legacy ? 'existing' : 'new'} record)`, async ({ page }) => {
   const data = fixture(), key = approvalKey('first', 'first-one');
   await mount(page, data, legacy ? { approvals: { [key]: { rev: firstMembershipRevision, at: 1, path: 'shared.js' } } } : {});
