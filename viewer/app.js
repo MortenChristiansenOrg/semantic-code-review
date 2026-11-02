@@ -1479,22 +1479,26 @@
   }
 
   /* ---- approvals / comments UI ----------------------------------------- */
-  function approveBtn(kind, id, size = "") {
+  // `subject` names the target in the button text, e.g. "stage 01".
+  function approveBtn(kind, id, size = "", subject = "") {
     const stage = kind === "stage" ? stageById.get(id) : null;
     const blocked = approvalOps.has(id) || (stage ? !stageNodesApproved(stage) : !revisionFor(id));
     const st = stage ? stageApprovalState(stage) : approvalState(id);
+    const of = subject ? ` ${esc(subject)}` : "";
+    const label = stage ? ` aria-label="${esc(`${st === "stale" && !blocked ? "Re-approve" : st === "approved" && !blocked ? "Approved" : "Approve"} stage ${stageNumber(stage)}: ${stage.title}`)}"` : "";
     if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
-        <span class="check"></span>Approve</button>`;
+      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
+        <span class="check"></span>Approve${of}</button>`;
     }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
-        <span class="check">!</span>Re-approve</button>`;
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} title="Changed since you approved it — click to re-approve">
+        <span class="check">!</span>Re-approve${of}</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="${on}">
-      <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="${on}"${label}>
+      <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}${of}</button>`;
   }
+  function stageNumber(stage) { return String(data.stages.indexOf(stage) + 1).padStart(2, "0"); }
   function commentBtn(kind, id, stageId) {
     return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
   }
@@ -2733,14 +2737,17 @@
     const depsMeta = deps.length
       ? `<span class="sm-deps" data-tooltip-focus title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
       : "";
-    return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}">
+    const number = String(i + 1).padStart(2, "0");
+    return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}" aria-labelledby="stage-title-${esc(stage.id)}">
+      <div class="stage-card">
       <div class="stage-bar">
         <button class="stop ${done ? "is-approved" : ""}" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
-          <span class="stop-num">${done ? "✓" : String(i + 1).padStart(2, "0")}</span>
+          <span class="stop-num">${done ? "✓" : number}</span>
         </button>
         <div class="stage-head">
-          <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button">
-            <h2>${esc(stage.title)}</h2>
+          <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
+            <span class="stage-kicker">Stage ${number}</span>
+            <h2 id="stage-title-${esc(stage.id)}">${esc(stage.title)}</h2>
           </button>
           <p class="stage-sum">${esc(stage.summary)}</p>
           <p class="rationale"><span class="rationale-label" data-tooltip-focus title="${esc(stage.rationale)}">Why this stage</span></p>
@@ -2755,8 +2762,17 @@
         <div class="stage-approve">${stageNoteCluster(stage.id)}${approveBtn("stage", stage.id, "sm")}</div>
       </div>
       ${threadInline(stage.id, "stage")}
-      <div class="stage-body">
+      <div class="stage-body" ${open ? "" : "inert"}>
+        <div class="stage-children-head">
+          <span class="eyebrow">Steps in stage ${number}</span>
+          <span class="stage-children-count">${nodesDone}/${stage.nodes.length} approved</span>
+        </div>
         <div class="nodes">${stage.nodes.map((n, ni) => stageNode(stage, n, ni, i)).join("")}</div>
+        <div class="stage-foot">
+          <span class="stage-foot-label">End of stage ${number}</span>
+          ${approveBtn("stage", stage.id, "", `stage ${number}`)}
+        </div>
+      </div>
       </div>
     </section>`;
   }

@@ -592,6 +592,60 @@ test('shared files have independent node approvals, counts, and revocation', asy
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
 });
 
+test('each stage contains its steps and ends with an approval naming the stage', async ({ page }) => {
+  await mount(page);
+  const first = page.locator('.stage[data-stage="first"]');
+  await expect(page.getByRole('region', { name: 'Stage first' })).toHaveAttribute('data-stage', 'first');
+  await expect(first.locator('.stage-kicker')).toHaveText('Stage 01');
+  await expect(first.locator('.stage-body')).toHaveAttribute('inert', '');
+  await page.locator('.stage-title[data-id="first"]').click();
+  await expect(first.locator('.stage-body')).not.toHaveAttribute('inert');
+  await expect(first.locator('.stage-children-head')).toContainText('Steps in stage 01');
+  await expect(first.locator('.stage-children-head')).toContainText('0/2 approved');
+  await expect(first.locator('.stage-card .nodes details.node')).toHaveCount(2);
+  // The footer approval comes after the stage's last step and before the next stage.
+  const footApproval = first.locator('.stage-foot .approve');
+  await expect(first.locator('.stage-foot')).toContainText('End of stage 01');
+  await expect(footApproval).toHaveText('Approve stage 01');
+  await expect(footApproval).toHaveAccessibleName('Approve stage 01: Stage first');
+  await expect(first.locator('.stage-approve .approve')).toHaveAccessibleName('Approve stage 01: Stage first');
+  await expect(footApproval).toBeDisabled();
+  const positions = await page.evaluate(() => {
+    const top = (sel) => document.querySelector(sel).getBoundingClientRect().top;
+    return { lastStep: top('details[data-node="first-two"]'), foot: top('.stage[data-stage="first"] .stage-foot'), next: top('.stage[data-stage="second"]') };
+  });
+  expect(positions.lastStep).toBeLessThan(positions.foot);
+  expect(positions.foot).toBeLessThan(positions.next);
+  for (const node of ['first-one', 'first-two']) {
+    const details = page.locator(`details[data-node="${node}"]`);
+    await details.locator('summary').click();
+    await saveAction(page, () => details.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', node)]);
+  }
+  await expect(first.locator('.stage-children-head')).toContainText('2/2 approved');
+  await saveAction(page, () => footApproval.click(), (state) => !!state.approvals?.first);
+  await expect(footApproval).toHaveText('✓Approved stage 01');
+  await expect(footApproval).toHaveAccessibleName('Approved stage 01: Stage first');
+  await expect(first.locator('.stage-approve .approve')).toHaveAttribute('aria-pressed', 'true');
+  await expect(first).toHaveClass(/is-approved/);
+});
+
+test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await mount(page);
+  const title = page.locator('.stage-title[data-id="first"]');
+  await expect(page.locator('.stage[data-stage="first"] .stop')).toBeHidden();
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await title.click();
+  await expect(title).toHaveAttribute('aria-expanded', 'true');
+  await title.click();
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await dialog.getByRole('combobox').press('Enter');
+  await expect(page.locator('.stage[data-stage="first"] .stage-body')).not.toHaveAttribute('inert');
+  await expect(title).toHaveAttribute('aria-expanded', 'true');
+});
+
 function folderFixture() {
   const data = fixture(), file = (path, project) => ({ path, project, kind: 'modified', revision: `rev-${path}`, additions: 1, deletions: 0,
     memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: 'x', h: 1 }] });
@@ -1887,6 +1941,8 @@ for (const kind of ['modified', 'added', 'deleted', 'renamed']) {
     const source = page.locator('.cinema-diff .source-view');
     const before = await source.locator('[data-line-id]').evaluateAll(rows => rows.map(row => row.dataset.lineId));
     const markdownToggle = page.getByRole('group', { name: 'Markdown view', exact: true });
+    // Keep focus from scrolling a partly visible toggle into view.
+    await markdownToggle.scrollIntoViewIfNeeded();
     const sourcePosition = await markdownToggle.boundingBox();
     const wrapPosition = await page.getByRole('button', { name: 'Wrap lines', exact: true }).boundingBox();
     expect(sourcePosition.x).toBeGreaterThan(wrapPosition.x + wrapPosition.width);
