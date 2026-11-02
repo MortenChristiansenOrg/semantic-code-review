@@ -2745,7 +2745,7 @@
           <span class="stop-num">${done ? "✓" : number}</span>
         </button>
         <div class="stage-head">
-          <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button">
+          <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
             <span class="stage-kicker">Stage ${number}</span>
             <h2 id="stage-title-${esc(stage.id)}">${esc(stage.title)}</h2>
           </button>

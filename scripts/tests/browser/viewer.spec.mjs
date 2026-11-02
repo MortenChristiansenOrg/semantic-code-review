@@ -629,6 +629,23 @@ test('each stage contains its steps and ends with an approval naming the stage',
   await expect(first).toHaveClass(/is-approved/);
 });
 
+test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await mount(page);
+  const title = page.locator('.stage-title[data-id="first"]');
+  await expect(page.locator('.stage[data-stage="first"] .stop')).toBeHidden();
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await title.click();
+  await expect(title).toHaveAttribute('aria-expanded', 'true');
+  await title.click();
+  await expect(title).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await dialog.getByRole('combobox').press('Enter');
+  await expect(page.locator('.stage[data-stage="first"] .stage-body')).not.toHaveAttribute('inert');
+  await expect(title).toHaveAttribute('aria-expanded', 'true');
+});
+
 function folderFixture() {
   const data = fixture(), file = (path, project) => ({ path, project, kind: 'modified', revision: `rev-${path}`, additions: 1, deletions: 0,
     memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: 'x', h: 1 }] });
