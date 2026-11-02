@@ -304,6 +304,22 @@ test('custom tooltips work on focus without native duplicates and dismiss with E
   await expect(page.locator('[role="tooltip"]')).not.toHaveClass(/is-shown/);
 });
 
+test('stage rationale shows only its label and reveals the text in a tooltip', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].rationale = 'Split out so the shared helper is reviewed before its callers.';
+  await mount(page, data);
+  const label = page.locator('.stage[data-stage="first"] .rationale-label');
+  await expect(label).toHaveText('Why this stage');
+  await expect(page.locator('.stage[data-stage="first"] .stage-head')).not.toContainText('shared helper');
+  await label.hover();
+  await expect(page.locator('[role="tooltip"]')).toHaveText(data.stages[0].rationale);
+  await page.mouse.move(0, 0);
+  await expect(page.locator('[role="tooltip"]')).not.toHaveClass(/is-shown/);
+  await label.focus();
+  await expect(page.locator('[role="tooltip"]')).toHaveText(data.stages[0].rationale);
+  await expect(label).toHaveAttribute('aria-describedby', 'review-tooltip');
+});
+
 test('editing a draft from the notes panel focuses its visible form and survives a refresh', async ({ page }) => {
   const data = fixture();
   await mount(page, data, { comments: [{ kind: 'file', id: fileId, nodeId: 'first-two', body: 'Edit this note', mode: 'feedback', createdAt: 1 }] });

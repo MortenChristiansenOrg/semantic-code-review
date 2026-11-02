@@ -372,17 +372,32 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   transform: none;
   margin-top: 20px;
 }
-.rationale {
-  color: var(--muted);
-  font-size: 13.5px;
-  margin: 12px 0 2px;
-  padding: 9px 12px;
-  border-left: 2px solid var(--line);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: var(--ink-2);
-  max-width: 74ch;
+.rationale { margin: 10px 0 0; }
+.rationale-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  border-bottom: 1px dotted var(--line);
+  cursor: help;
+  transition: color .16s var(--ease), border-color .16s var(--ease);
 }
-.rationale-label { display: block; margin-bottom: 4px; color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.rationale-label::before {
+  content: "?";
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 9px;
+  letter-spacing: 0;
+}
+.rationale-label:hover, .rationale-label:focus-visible { color: var(--muted); border-color: var(--muted); }
 
 .stage.is-approved .stop-num,
 .node.is-approved .node-ix { }

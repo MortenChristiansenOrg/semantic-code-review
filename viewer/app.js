@@ -2743,7 +2743,7 @@
             <h2>${esc(stage.title)}</h2>
           </button>
           <p class="stage-sum">${esc(stage.summary)}</p>
-          <p class="rationale"><span class="rationale-label">Why this stage</span>${esc(stage.rationale)}</p>
+          <p class="rationale"><span class="rationale-label" data-tooltip-focus title="${esc(stage.rationale)}">Why this stage</span></p>
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
             <span>${filesDone}/${fileApprovals.length} file reviews</span>
