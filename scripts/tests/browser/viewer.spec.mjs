@@ -555,29 +555,57 @@ test('shared files have independent node approvals, counts, and revocation', asy
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
 });
 
-test('folder approval approves its pending and stale files only', async ({ page }) => {
+function folderFixture() {
   const data = fixture(), file = (path, project) => ({ path, project, kind: 'modified', revision: `rev-${path}`, additions: 1, deletions: 0,
     memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: 'x', h: 1 }] });
-  data.stages[0].files.push(file('web/a.js', 'web'), file('web/b.js', 'web'), file('web/c.js', 'web'), file('api/d.js', 'api'));
-  const staleKey = approvalKey('first', 'first-one', 'web/c.js');
-  await mount(page, data, { approvals: { [staleKey]: { rev: JSON.stringify(['old', 'behavior', null, null]), at: 1, path: 'web/c.js' } } });
+  data.stages[0].files.push(file('web/a.js', 'web'), file('web/b.js', 'web'), file('web/c.js', 'web'), file('web/d.js', 'web'), file('api/e.js', 'api'));
+  return data;
+}
+async function openFolders(page) {
   await page.locator('.stage-title[data-id="first"]').click();
   const node = page.locator('details[data-node="first-one"]');
   await node.locator('summary').click();
-  const web = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^web$/ }) });
-  const api = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^api$/ }) });
-  await expect(web.locator('.fg-done')).toHaveText('0/3');
+  const group = (name) => node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: new RegExp(`^${name}$`) }) });
+  return { node, web: group('web'), api: group('api') };
+}
+
+test('folder approval approves its pending and stale files only', async ({ page }) => {
+  const staleKey = approvalKey('first', 'first-one', 'web/c.js'), doneKey = approvalKey('first', 'first-one', 'web/d.js');
+  const done = { rev: JSON.stringify(['rev-web/d.js', 'behavior', null, null]), at: 1, path: 'web/d.js', snapshotId: 'd'.repeat(32) };
+  await mount(page, folderFixture(), { approvals: { [staleKey]: { rev: JSON.stringify(['old', 'behavior', null, null]), at: 1, path: 'web/c.js' }, [doneKey]: done } });
+  const captured = [];
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/approval-snapshots') captured.push(request.postDataJSON().path); });
+  const { node, web, api } = await openFolders(page);
+  await expect(web.locator('.fg-done')).toHaveText('1/4');
   await expect(web.locator('.frow.is-stale')).toHaveCount(1);
   await saveAction(page, () => web.locator('.fg-approve').click(), (state) =>
     ['web/a.js', 'web/b.js', 'web/c.js'].every((path) => state.approvals?.[approvalKey('first', 'first-one', path)]?.rev?.includes(`rev-${path}`)));
-  await expect(web.locator('.frow.is-approved')).toHaveCount(3);
-  await expect(web.locator('.fg-done')).toHaveText('✓ 3/3');
+  expect(captured.sort()).toEqual(['web/a.js', 'web/b.js', 'web/c.js']);
+  await expect(web.locator('.frow.is-approved')).toHaveCount(4);
+  await expect(web.locator('.fg-done')).toHaveText('✓ 4/4');
   await expect(web.locator('.fg-approve')).toBeDisabled();
   await expect(api.locator('.fg-done')).toHaveText('0/1');
   await expect(api.locator('.fg-approve')).toBeEnabled();
-  await expect(node.locator('.frow.is-approved')).toHaveCount(3);
+  await expect(node.locator('.frow.is-approved')).toHaveCount(4);
   await page.reload();
-  await expect(web.locator('.fg-done')).toHaveText('✓ 3/3');
+  await expect(web.locator('.fg-done')).toHaveText('✓ 4/4');
+  expect(await page.evaluate(async (key) => (await (await fetch('/api/review-state')).json()).state.approvals[key], doneKey)).toEqual(done);
+});
+
+test('a failed snapshot in folder approval leaves the other files approved', async ({ page }) => {
+  await mount(page, folderFixture());
+  await page.route('**/api/approval-snapshots*', (route) => route.request().postDataJSON().path === 'web/b.js'
+    ? route.fulfill({ status: 409, json: { ok: false, error: 'The file changed. Refresh before approving.' } })
+    : route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  const { web } = await openFolders(page);
+  await web.locator('.fg-approve').click();
+  await expect(page.locator('[role="alert"]')).toContainText('web/b.js');
+  await expect(web.locator('.fg-done')).toHaveText('3/4');
+  await expect(web.locator('.frow-wrap', { hasText: 'b.js' }).locator('.frow')).not.toHaveClass(/is-approved/);
+  await page.unroute('**/api/approval-snapshots*');
+  await web.locator('.fg-approve').click();
+  await expect(web.locator('.fg-done')).toHaveText('✓ 4/4');
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
 });
 
 for (const legacy of [false, true]) test(`file approvals survive unchanged restacks (${legacy ? 'existing' : 'new'} record)`, async ({ page }) => {
