@@ -2743,7 +2743,7 @@
             <h2>${esc(stage.title)}</h2>
           </button>
           <p class="stage-sum">${esc(stage.summary)}</p>
-          <p class="rationale"><span class="rationale-label">Why this stage</span>${esc(stage.rationale)}</p>
+          <p class="rationale"><span class="rationale-label" data-tooltip-focus title="${esc(stage.rationale)}">Why this stage</span></p>
           <div class="stage-meta">
             <span>${nodesDone}/${stage.nodes.length} steps</span>
             <span>${filesDone}/${fileApprovals.length} file reviews</span>
@@ -3134,7 +3134,11 @@
     let top = r.bottom + gap;
     if (top + p.height > window.innerHeight - margin && r.top - gap - p.height > margin) {
       top = r.top - gap - p.height; popEl.classList.add("is-above");
-    } else popEl.classList.remove("is-above");
+    } else {
+      popEl.classList.remove("is-above");
+      // A popover too tall for either side stays on screen and scrolls.
+      top = Math.max(margin, Math.min(top, window.innerHeight - p.height - margin));
+    }
     popEl.style.left = `${left}px`;
     popEl.style.top = `${top}px`;
   }
