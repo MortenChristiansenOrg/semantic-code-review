@@ -311,13 +311,34 @@ test('stage rationale shows only its label and reveals the text in a tooltip', a
   const label = page.locator('.stage[data-stage="first"] .rationale-label');
   await expect(label).toHaveText('Why this stage');
   await expect(page.locator('.stage[data-stage="first"] .stage-head')).not.toContainText('shared helper');
+  const tooltip = page.locator('[role="tooltip"]');
   await label.hover();
-  await expect(page.locator('[role="tooltip"]')).toHaveText(data.stages[0].rationale);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveText(data.stages[0].rationale);
   await page.mouse.move(0, 0);
-  await expect(page.locator('[role="tooltip"]')).not.toHaveClass(/is-shown/);
+  await expect(tooltip).not.toHaveClass(/is-shown/);
   await label.focus();
-  await expect(page.locator('[role="tooltip"]')).toHaveText(data.stages[0].rationale);
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveText(data.stages[0].rationale);
   await expect(label).toHaveAttribute('aria-describedby', 'review-tooltip');
+});
+
+test('a long stage rationale tooltip stays within the viewport and scrolls', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].rationale = 'This stage exists because of a long chain of reasons. '.repeat(50).trim();
+  await page.setViewportSize({ width: 390, height: 600 });
+  await mount(page, data);
+  await page.locator('.stage[data-stage="first"] .rationale-label').hover();
+  const tooltip = page.locator('[role="tooltip"]');
+  await expect(tooltip).toBeVisible();
+  await expect.poll(() => tooltip.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= innerHeight && el.scrollHeight > el.clientHeight;
+  })).toBe(true);
+  await tooltip.hover();
+  await page.mouse.wheel(0, 200);
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect(tooltip).toBeVisible();
 });
 
 test('editing a draft from the notes panel focuses its visible form and survives a refresh', async ({ page }) => {

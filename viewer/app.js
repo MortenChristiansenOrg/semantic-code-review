@@ -3134,7 +3134,11 @@
     let top = r.bottom + gap;
     if (top + p.height > window.innerHeight - margin && r.top - gap - p.height > margin) {
       top = r.top - gap - p.height; popEl.classList.add("is-above");
-    } else popEl.classList.remove("is-above");
+    } else {
+      popEl.classList.remove("is-above");
+      // A popover too tall for either side stays on screen and scrolls.
+      top = Math.max(margin, Math.min(top, window.innerHeight - p.height - margin));
+    }
     popEl.style.left = `${left}px`;
     popEl.style.top = `${top}px`;
   }

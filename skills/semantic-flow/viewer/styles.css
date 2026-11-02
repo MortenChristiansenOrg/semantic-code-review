@@ -605,6 +605,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   z-index: 200;
   width: 350px;
   max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px 12px;
   border: 1px solid #46515f;
   border-radius: 5px;
