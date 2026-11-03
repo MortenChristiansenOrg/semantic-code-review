@@ -2698,6 +2698,7 @@ test('showing an answered round opens the active thread, not a resolved one with
     response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
   await mount(page, data);
   await baseline;
+  await expect(page.locator('.agent-pill.is-listening')).toBeVisible();
   await page.evaluate(() => {
     window.notices = [];
     window.Notification = class { static permission = 'granted'; constructor(title) { this.title = title; window.notices.push(this); } close() {} };
