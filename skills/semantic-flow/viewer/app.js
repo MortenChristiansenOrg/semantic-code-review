@@ -84,7 +84,7 @@
         body: `${count} feedback thread${count === 1 ? "" : "s"} answered in ${data.title || data.implementationId}.`,
         tag: `semantic-flow-${data.implementationId}`,
       });
-      notice.onclick = () => { window.focus(); showUnreadReplies(); notice.close(); };
+      notice.onclick = () => { window.focus(); showUnreadReplies(round.threadIds); notice.close(); };
     }
   }
   // Mirrors the CLI: a user comment after the latest answered comment awaits the agent.
@@ -141,10 +141,18 @@
       if (!observedReplies.has(element)) { observedReplies.add(element); replyObserver.observe(element); }
     });
   }
-  function showUnreadReplies() {
+  // Prefers an active thread from the announced round; resolved threads may hold
+  // replies that stay unread because their list is out of view.
+  function showUnreadReplies(threadIds = roundNotice?.threadIds || []) {
     roundNotice = null;
-    const thread = artifactThreads.find((item) => unreadReplies(item).length)
-      || artifactThreads.find((item) => item.status === "open" && (item.comments || []).at(-1)?.author === "agent");
+    const inRound = (item) => threadIds.includes(item.id);
+    const active = (item) => item.status !== "resolved";
+    const unread = (item) => unreadReplies(item).length > 0;
+    const thread = artifactThreads.find((item) => inRound(item) && active(item) && unread(item))
+      || artifactThreads.find((item) => inRound(item) && active(item))
+      || artifactThreads.find((item) => active(item) && unread(item))
+      || artifactThreads.find((item) => item.status === "open" && (item.comments || []).at(-1)?.author === "agent")
+      || artifactThreads.find((item) => inRound(item) || unread(item));
     if (!thread) { render(); return; }
     state.notesOpen = true; state.coverageOpen = false;
     state.notesFilter = thread.status === "resolved" ? "resolved" : "active";
