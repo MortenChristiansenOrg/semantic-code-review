@@ -384,7 +384,9 @@
     return splitPath(path).name.toLowerCase().includes(query);
   }
 
-  function openFileSearch(path = "") {
+  // `origin` names the stage and node of the occurrence the picker was opened
+  // from, so that occurrence starts selected.
+  function openFileSearch(path = "", origin = null) {
     if (reviewDeleted || document.querySelector("dialog[open]")) return;
     const opener = document.activeElement;
     const dialog = document.createElement("dialog");
@@ -408,6 +410,7 @@
     // Keep occurrence navigation scoped to the exact file until the user edits
     // its filename. Directory text never participates in the search query.
     let exactPath = path || null;
+    let originEntry = path && origin ? origin : null;
     input.value = splitPath(path).name;
     function updateCompletion() {
       const name = matches[selected] ? splitPath(matches[selected].file.path).name : "";
@@ -459,7 +462,9 @@
       if (matches.length) html += "</div></div>";
       results.innerHTML = html;
       status.textContent = matches.length ? `${matches.length} file occurrence${matches.length === 1 ? "" : "s"} · line counts are per stage` : "No matching files";
-      const previousIndex = previous ? matches.findIndex((entry) => entry.stage.id === previous.stage.id && entry.node.id === previous.node.id && entry.file.path === previous.file.path) : -1;
+      const wanted = previous ? { stageId: previous.stage.id, nodeId: previous.node.id, path: previous.file.path }
+        : originEntry ? { ...originEntry, path: exactPath } : null;
+      const previousIndex = wanted ? matches.findIndex((entry) => entry.stage.id === wanted.stageId && entry.node.id === wanted.nodeId && entry.file.path === wanted.path) : -1;
       select(previousIndex >= 0 ? previousIndex : 0, false);
     }
     function choose(index) {
@@ -473,7 +478,7 @@
       jumpToElement("file", id, entry.stage.id, entry.node.id);
       requestAnimationFrame(() => fileRowElement(id, entry.node.id)?.querySelector(".frow-open")?.focus({ preventScroll: true }));
     }
-    input.addEventListener("input", () => { exactPath = null; matches = []; paint(); });
+    input.addEventListener("input", () => { exactPath = null; originEntry = null; matches = []; paint(); });
     for (const event of ["focus", "blur", "select", "keyup", "click", "scroll"]) input.addEventListener(event, updateCompletion);
     input.addEventListener("compositionstart", () => { composing = true; updateCompletion(); });
     input.addEventListener("compositionend", () => { composing = false; updateCompletion(); });
@@ -506,6 +511,7 @@
     document.body.append(dialog); paint(); dialog.showModal(); input.focus(); input.select();
     // Set the initial viewport after opening and focusing, when layout exists.
     results.scrollTo({ top: 0, behavior: "instant" });
+    if (selected > 0) results.querySelector(`[data-index="${selected}"]`)?.scrollIntoView({ block: "center", behavior: "instant" });
   }
 
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
@@ -1935,7 +1941,7 @@
           ${fileMetrics(file)}
         </div>
         <div class="frow-act">
-          ${(fileOccurrenceCounts.get(file.path) || 0) > 1 ? `<button class="file-occurrences" data-action="file-search" data-path="${esc(file.path)}" type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${esc(file.path)}">↗ ${fileOccurrenceCounts.get(file.path)}</button>` : ""}
+          ${(fileOccurrenceCounts.get(file.path) || 0) > 1 ? `<button class="file-occurrences" data-action="file-search" data-path="${esc(file.path)}" data-stage-id="${esc(stage.id)}" data-node-id="${esc(node.id)}" type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${esc(file.path)}">↗ ${fileOccurrenceCounts.get(file.path)}</button>` : ""}
           ${fileCodeInsights(stage, file.path).length ? `<button class="code-insight-link" type="button" data-action="file-insights" data-stage="${esc(stage.id)}" data-path="${esc(file.path)}">Insights · ${fileCodeInsights(stage, file.path).length}</button>` : ""}
           ${threadBadge}${lineBadge}
           <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
@@ -3309,7 +3315,7 @@
       const stage = stageById.get(btn.dataset.stage), choices = stage ? fileCodeInsights(stage, btn.dataset.path) : [];
       openCodeInsight(stage, choices[0], choices);
     } else if (a === "file-search") {
-      openFileSearch(btn.dataset.path || "");
+      openFileSearch(btn.dataset.path || "", btn.dataset.stageId ? { stageId: btn.dataset.stageId, nodeId: btn.dataset.nodeId } : null);
     } else if (a === "focus-reasoning") {
       e.preventDefault();
       const node = btn.closest("details[data-node]");
