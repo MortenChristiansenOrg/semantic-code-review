@@ -2685,6 +2685,45 @@ test('interactive review shows agent presence, round progress, unread replies, a
   await expect(page.locator('.agent-pill.is-offline')).toHaveText('No agent listening');
 });
 
+test('showing an answered round opens the active thread, not a resolved one with an unread reply', async ({ page }) => {
+  const now = new Date().toISOString();
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const listening = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now };
+  const data = { ...fixture(), feedback: [
+    { id: 'done', status: 'open', target, comments: [comment('u1', 'user', 'Drop this?')] },
+    { id: 'pending', status: 'open', target, comments: [comment('u1', 'user', 'Rename this.')] },
+  ], agent: listening };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data);
+  await baseline;
+  await page.evaluate(() => {
+    window.notices = [];
+    window.Notification = class { static permission = 'granted'; constructor(title) { this.title = title; window.notices.push(this); } close() {} };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  });
+
+  data.feedback[0].status = 'resolved';
+  data.feedback[0].comments.push(comment('a1', 'agent', 'Dropped it.', '2026-10-08T10:05:00Z'));
+  data.feedback[1].comments.push(comment('a1', 'agent', 'Renamed it.', '2026-10-08T10:05:00Z'));
+  data.agent = { ...listening, lastRound: { id: 'r1', completedAt: now, threadIds: ['done', 'pending'] } };
+  data.viewerRevision = 'answered';
+  await expect.poll(() => page.evaluate(() => window.notices.length), { timeout: 8000 }).toBe(1);
+  await page.evaluate(() => { delete document.hidden; window.notices[0].onclick(); });
+  const active = page.locator('.side.notes [data-action="notes-filter"][data-filter="active"]');
+  await expect(active).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.side.notes .tthread[data-thread-id="pending"]')).toBeVisible();
+
+  await page.locator('.side.notes [data-action="notes-filter"][data-filter="resolved"]').click();
+  data.feedback[1].comments.push(comment('u2', 'user', 'And the test?', '2026-10-08T10:06:00Z'), comment('a2', 'agent', 'Added.', '2026-10-08T10:07:00Z'));
+  data.agent = { ...listening, lastRound: { id: 'r2', completedAt: now, threadIds: ['done', 'pending'] } };
+  data.viewerRevision = 'answered-again';
+  await page.locator('[data-action="show-unread"]').click();
+  await expect(active).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.side.notes .tthread[data-thread-id="pending"]')).toBeVisible();
+});
+
 test('a hidden tab keeps checking slowly while an agent listens', async ({ page }) => {
   const now = new Date().toISOString();
   const listening = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now };
