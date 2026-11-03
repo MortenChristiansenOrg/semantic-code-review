@@ -2127,6 +2127,34 @@ test('file occurrences stay scoped to their path; search uses current filenames'
   await expect(page.locator('.frow[data-file="f:first:src/renamed.js"] + .cinema-diff')).toBeVisible();
 });
 
+test('file occurrences open the picker on the occurrence they were clicked from', async ({ page }) => {
+  await mount(page);
+  await page.setViewportSize({ width: 1280, height: 300 });
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const selected = dialog.locator('[role="option"][aria-selected="true"]');
+  async function openFrom(stageId, nodeId) {
+    await page.locator(`.stage-title[data-id="${stageId}"]`).click();
+    const node = page.locator(`details[data-node="${nodeId}"]`);
+    if (await node.getAttribute('open') === null) await node.locator('> summary').click();
+    await node.getByRole('button', { name: 'Find occurrences of shared.js', exact: true }).click();
+    await expect(dialog.getByRole('option')).toHaveCount(4);
+  }
+
+  await openFrom('second', 'second-two');
+  await expect(selected).toHaveAttribute('data-index', '3');
+  await expect(selected).toBeInViewport();
+  await dialog.getByRole('combobox').press('Escape');
+
+  await openFrom('first', 'first-two');
+  await expect(selected).toHaveAttribute('data-index', '1');
+  await expect(selected).toBeInViewport();
+  await dialog.getByRole('combobox').press('Enter');
+  await expect(page.locator('details[data-node="first-two"] .frow-open')).toBeFocused();
+
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  await expect(selected).toHaveAttribute('data-index', '0');
+});
+
 test('file search updates from live snapshots without losing query or background drafts', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
