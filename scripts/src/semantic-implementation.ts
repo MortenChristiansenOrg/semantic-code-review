@@ -1221,7 +1221,7 @@ function updateWorkingStage(paths, id, update) {
   }
 }
 
-function updateStageInsight(paths, id, finalized, update, batch = undefined) {
+function updateStage(paths, id, finalized, update, batch = undefined) {
   if (batch) {
     if (id !== batch.stage.id || finalized !== batch.finalized) fail("Every batch item must target the selected stage.");
     update(batch.stage);
@@ -1261,7 +1261,9 @@ function setStage(paths, options) {
     quiet: true,
     validateGit: false,
   });
-  const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
+  const finalized = flag(options, "finalized"), requested = option(options, "id");
+  if (finalized && (!requested || requested === "current")) fail("--finalized requires an explicit --id <stage-id>.");
+  const id = finalized ? requested : selectedWorkingStageId(artifact, requested, "id");
   const title = option(options, "title");
   const summary = option(options, "summary");
   const rationale = option(options, "rationale");
@@ -1277,7 +1279,7 @@ function setStage(paths, options) {
     fail("stage set requires at least one field to update.");
   }
 
-  updateWorkingStage(paths, id, (stage) => {
+  updateStage(paths, id, finalized, (stage) => {
     if (title !== undefined) stage.title = title;
     if (summary !== undefined) stage.summary = summary;
     if (rationale !== undefined) stage.rationale = rationale;
@@ -1286,7 +1288,7 @@ function setStage(paths, options) {
       stage.specificationRefs = repeatedOption(options, "specification-ref");
     }
   });
-  console.log(`Updated working stage ${id}.`);
+  console.log(`Updated ${finalized ? "finalized" : "working"} stage ${id}.`);
 }
 
 function itemForKind(kind, options) {
@@ -1400,7 +1402,7 @@ function targetInsight(paths, options) {
   const remove = flag(options, "remove");
   const hasCode = ["code-path", "code-start", "code-end"].some(key => options.has(key));
   if (remove ? hasCode : !hasCode) fail("Use --remove or --code-path with --code-start to set a target.");
-  updateStageInsight(paths, id, finalized, stage => {
+  updateStage(paths, id, finalized, stage => {
     const item = stage[collection].find(value => value.id === itemId);
     if (!item) fail(`Stage ${id} has no ${collection} item ${itemId}.`);
     if (remove) delete item.codeTarget;
@@ -1445,7 +1447,7 @@ function recordStageItem(paths, options, batch = undefined) {
     ]),
   );
 
-  updateStageInsight(paths, stageId, finalized, (stage) => {
+  updateStage(paths, stageId, finalized, (stage) => {
     const index = stage[item.collection].findIndex(
       (existing) => existing.id === item.value.id,
     );
@@ -1507,7 +1509,7 @@ function recordValidation(paths, options, batch = undefined) {
     value.nodeRefs = nodeRefs;
   }
 
-  updateStageInsight(paths, stageId, finalized, (stage) => {
+  updateStage(paths, stageId, finalized, (stage) => {
     const index = stage.validation.findIndex(
       (existing) => existing.id === value.id,
     );
@@ -1633,7 +1635,7 @@ function writeEvidence(paths, options) {
       } finally { fs.rmSync(temporary, { force: true }); }
       written.push(file);
     }
-    updateStageInsight(paths, id, finalized, (current) => {
+    updateStage(paths, id, finalized, (current) => {
       const index = current.evidence.findIndex((existing) => existing.id === value.id);
       if (index >= 0 && !replace) fail(`Stage ${id} already has evidence ${value.id}.`);
       if (index < 0 && replace) fail(`Stage ${id} has no evidence ${value.id} to replace.`);
@@ -1660,7 +1662,7 @@ function deleteEvidence(paths, options) {
   const { id, finalized } = evidenceStage(paths, options, "stage evidence-remove");
   const itemId = option(options, "item-id", { required: true });
   let updated;
-  updateStageInsight(paths, id, finalized, (current) => {
+  updateStage(paths, id, finalized, (current) => {
     const index = current.evidence.findIndex((existing) => existing.id === itemId);
     if (index < 0) fail(`Stage ${id} has no evidence ${itemId}.`);
     current.evidence.splice(index, 1);
@@ -1675,7 +1677,7 @@ function recordNoEvidence(paths, options) {
   const remove = flag(options, "remove");
   const reason = option(options, "reason");
   if (remove === (reason !== undefined)) fail("Use either --reason or --remove.");
-  updateStageInsight(paths, id, finalized, (current) => {
+  updateStage(paths, id, finalized, (current) => {
     if (remove) delete current.noEvidenceReason;
     else current.noEvidenceReason = reason;
   });

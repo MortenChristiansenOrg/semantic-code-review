@@ -25,8 +25,10 @@ export interface BeginStageOptions {
 export declare function beginStage(options: BeginStageOptions): void;
 
 export interface SetStageOptions {
-  /** Working stage to update; omitted or `current` selects the only active stage. */
+  /** Stage to update; omitted or `current` selects the only active stage. Required with `finalized`. */
   id?: string;
+  /** Updates a finalized stage instead of the active working stage. */
+  finalized?: true;
   /** Replacement stage title. */
   title?: string;
   /** Replacement implementation intent. */
@@ -40,8 +42,8 @@ export interface SetStageOptions {
 }
 
 /**
- * Updates mutable metadata on the active working stage.
- * At least one optional field must be supplied.
+ * Updates stage metadata on the active working stage or, with `finalized`, on a finalized stage.
+ * At least one field to update must be supplied.
  * @cli semantic-implementation.mjs
  * @command stage set
  */
