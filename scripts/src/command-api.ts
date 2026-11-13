@@ -72,6 +72,7 @@ export const semanticImplementationApi: CliSignature = {
       command: "stage set",
       options: [
         option("id", "<stage-id|current>"),
+        option("finalized"),
         option("title", "<title>"),
         option("summary", "<summary>"),
         option("rationale", "<text>"),

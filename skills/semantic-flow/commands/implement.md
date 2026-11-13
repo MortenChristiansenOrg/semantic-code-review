@@ -222,6 +222,14 @@ or earlier when diagnosing changed feedback. Repeat for each planned stage.
 After all stages:
 
 1. Confirm every criterion included in the review is referenced by a stage.
+   When a finalized stage implements a criterion it does not reference, add
+   the reference. The command replaces the whole list, so repeat the stage's
+   existing references:
+
+   ```text
+   <semantic-implementation> stage set --finalized --id <stage-id> --specification-ref <specification-id>#<criterion-id> ...
+   ```
+
 2. Exercise the complete acceptance path.
 3. Put any discovered omission into the earliest responsible stage, then
    restack later stages. Load `../scripts/api/history.d.ts` when restacking.

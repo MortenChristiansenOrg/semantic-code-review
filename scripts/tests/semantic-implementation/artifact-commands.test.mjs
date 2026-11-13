@@ -838,3 +838,44 @@ test("specification sources accept arbitrary providers while retaining reference
     repository.expectSemanticFailure(/validation|must|source/i, "validate", "--schema-only");
   }
 });
+
+test("stage set --finalized updates metadata on a finalized stage", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, {
+    criteria: [
+      ["works", "The implementation works."],
+      ["persists", "The result is persisted."],
+    ],
+  });
+  beginStage(repository);
+  finalizeStage(repository);
+  const file = ".semantic-review/stages/implementation.json";
+  const before = repository.readJson(file);
+
+  repository.expectSemanticFailure(
+    "Working stage implementation does not exist",
+    "stage", "set", "--id", "implementation", "--specification-ref", "story#persists",
+  );
+  repository.expectSemanticFailure(
+    "--finalized requires an explicit --id <stage-id>",
+    "stage", "set", "--finalized", "--specification-ref", "story#persists",
+  );
+  repository.expectSemanticFailure(
+    "unresolved specification ref story#missing",
+    "stage", "set", "--finalized", "--id", "implementation", "--specification-ref", "story#missing",
+  );
+  assert.deepEqual(repository.readJson(file), before);
+
+  const output = repository.semantic(
+    "stage", "set", "--finalized", "--id", "implementation",
+    "--title", "Implement and persist behavior",
+    "--specification-ref", "story#works",
+    "--specification-ref", "story#persists",
+  );
+  assert.match(output, /Updated finalized stage implementation\./);
+  const stage = repository.readJson(file);
+  assert.deepEqual(stage.specificationRefs, ["story#works", "story#persists"]);
+  assert.equal(stage.title, "Implement and persist behavior");
+  assert.deepEqual(stage.change, before.change);
+  repository.semantic("validate", "--publish");
+});
