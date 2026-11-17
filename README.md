@@ -106,8 +106,9 @@ story using semantic flow") or with explicit commands:
 
 Use `/semantic-flow report <problem>` (or `$semantic-flow report <problem>`),
 or ask your agent to report a Semantic Flow bug. The [report command](skills/semantic-flow/commands/report.md)
-guides diagnosis, version checks, duplicate research, and a sanitized draft.
-Submission requires approval of the exact report and verified GitHub account.
+guides diagnosis, version checks, duplicate research, and a sanitized report.
+When you ask for an issue, the agent creates it; your instructions and harness
+decide whether you review it first.
 Implementation review comments still use `/semantic-flow feedback`.
 
 Reporting is included in the main skill installation and `/semantic-flow update`.

@@ -52,8 +52,7 @@ root. Those paths were expanded to `skills/semantic-flow/commands/` and
   probe issues; disclose unverifiable permissions and handle submission errors.
 - A connector may expose a bot, omit the account identity, lack posting tools, or
   search an incomplete index. Manual browser submission remains supported.
-- CLI, connector, and browser identities may differ. Approval binds to the exact
-  payload and publishing identity, and account changes require reconciliation.
+- CLI, connector, and browser identities may differ. Do not claim one is another.
 - A browser-only host may be unable to inspect local versions or create a local
   draft file. Preserve a copyable draft and mark unavailable evidence honestly.
 - Search can lag creation; even an empty recent-item listing cannot prove that
@@ -90,3 +89,12 @@ No missing resources or substantive contradictions were found. The evaluator
 noted that verified absence after an ambiguous submission is necessarily dependent
 on the tool's evidence; the existing rule stops when the outcome remains uncertain.
 These simulations do not establish live host or publication behavior.
+
+## Submission without a prescribed confirmation (#156)
+
+The command no longer saves a draft file or asks the user to confirm the exact
+payload and publishing account before submitting. When the user asks for an issue,
+the agent creates it; whether to review a draft first is left to the user's
+request, instructions and the harness's permissions. The scenarios above that
+stop for approval or account reconciliation describe the earlier procedure.
+Content quality, sanitization and the no-blind-retry rule are unchanged.

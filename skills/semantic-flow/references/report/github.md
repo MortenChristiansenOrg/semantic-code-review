@@ -57,17 +57,17 @@ Follow the current repository templates (including `.github/ISSUE_TEMPLATE/` and
 an applicable default community template), labels and security policy through
 the API or browser. Their absence is not a blocker for a normal bug report.
 
-Only after approval, use the exact saved UTF-8 body with `--body-file` or stdin:
+Pass the UTF-8 body with `--body-file` or stdin:
 
 ```text
-gh issue create --repo github.com/MortenChristiansenOrg/semantic-code-review --title '<approved title>' --body-file '<absolute draft path>'
-gh issue comment <issue-number> --repo github.com/MortenChristiansenOrg/semantic-code-review --body-file '<absolute draft path>'
+gh issue create --repo github.com/MortenChristiansenOrg/semantic-code-review --title '<title>' --body-file '<absolute body path>'
+gh issue comment <issue-number> --repo github.com/MortenChristiansenOrg/semantic-code-review --body-file '<absolute body path>'
 ```
 
 These are alternatives, not a sequence. Substitute placeholders with arguments
 escaped for the actual shell; do not concatenate untrusted report text into shell
 code. Preserve backticks, dollar signs and line breaks literally. Never use an
-interactive editor for an already approved body or regenerate it while sending.
+interactive editor for the body or regenerate it while sending.
 Apply an existing `bug`/other applicable label only when allowed. A normal
 external reporter does not need label-management, project, or push permissions;
 if labeling is unavailable, submit without labels and report that limitation.
@@ -75,28 +75,26 @@ if labeling is unavailable, submit without labels and report that limitation.
 Limit: successful profile/repository reads do not prove that the credential can
 write issues. Check exposed token/app capabilities without revealing credentials;
 fine-grained credentials need Issues write permission. Do not test access by
-posting. If capability remains uncertain, disclose that before the approved
-attempt and handle a permission rejection without elevating access automatically.
+posting. If capability remains uncertain, handle a permission rejection without
+elevating access automatically.
 
 ## Browser/manual fallback
 
 Use the [upstream issue chooser](https://github.com/MortenChristiansenOrg/semantic-code-review/issues/new/choose)
-and provide the sanitized draft separately. Confirm the signed-in account through
-the browser profile if browser tools can observe it; otherwise ask the user to
-verify the displayed account before they submit manually. Do not claim that
-the CLI/connector identity is also the browser identity. The user can sign in
+and provide the sanitized report separately. Do not claim that the CLI/connector
+identity is also the browser identity. The user can sign in
 through GitHub normally; never request their password or token.
 
 Search the repository's Issues page with both open and closed results. Do not put
 private diagnostics into search queries or prefilled URL parameters. Offer a
-copyable draft when neither a connector nor a CLI is available. The user performs
-the final submission if the host cannot safely verify the account and submit.
-Ask for the resulting link to confirm completion; until then report “draft ready”
-rather than claiming an issue exists.
+copyable report when neither a connector nor a CLI is available. The user performs
+the final submission when the host cannot submit. Ask for the resulting link to
+confirm completion; until then report “report ready” rather than claiming an
+issue exists.
 
 ## Submission result and ambiguous failures (all routes)
 
-Keep the approved payload, account, destination and attempt time until the result
+Keep the payload, account, destination and attempt time until the result
 is known. On success, verify the returned URL belongs to the intended repository
 and inspect the created item when accessible. Retain any useful local reproduction
 instructions and report the URL. Do not edit others' issues or manage their state.
@@ -114,10 +112,10 @@ An empty listing also cannot prove an in-flight create has failed. If its outcom
 is still uncertain, stop and verify later rather than retrying.
 
 If the item exists, return its link rather than reposting. If absence is verified
-and a transient cause has cleared, allow at most one retry of the unchanged,
-approved payload under the same reverified identity. If the result remains
-ambiguous, or a rate limit/offline condition prevents verification, stop posting,
-retain the draft and explain how to verify manually. Report permission failures,
+and a transient cause has cleared, allow at most one retry of the unchanged
+payload under the same account. If the result remains ambiguous, or a rate
+limit/offline condition prevents verification, stop posting, give the user the
+report and explain how to verify manually. Report permission failures,
 disabled/archived repositories and rate limits accurately; do not loop or request
 broader credentials than the operation needs. A label/attachment failure can
 happen after creation: check for an existing item before any alternative send.
