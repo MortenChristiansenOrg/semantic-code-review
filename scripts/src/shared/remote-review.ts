@@ -11,12 +11,13 @@ import manifestSchema from "../../../standard/v0.1/schema/manifest.schema.json";
 import stageSchema from "../../../standard/v0.1/schema/stage.schema.json";
 import specificationSchema from "../../../standard/v0.1/schema/specification.schema.json";
 import { reviewEnvironment } from "./review-context.js";
+import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { MAX_EVIDENCE_ATTACHMENT_BYTES, MAX_EVIDENCE_TOTAL_BYTES, sha256Hex } from "./evidence.js";
 
 function git(root: string, args: string[]) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
     cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, encoding: "utf8", windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd();
 }
 function optional(root: string, args: string[]) { try { return git(root, args); } catch { return null; } }
@@ -25,7 +26,7 @@ type EvidenceFile = { source: string; sha256: string; size: number };
 function gitBytes(root: string, args: string[]) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
     cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   });
 }
 function branchName(root: string, name: string) {

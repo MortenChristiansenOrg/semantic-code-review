@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn, type SpawnOptions } from "node:child_process";
 import { readReview, reviewId, reviewHome, type ReviewRecord } from "./review-store.js";
+import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 
 export type ReviewContext = Readonly<{
   reviewId: string; generation: string; repositoryRoot: string; implementationId: string;
@@ -50,7 +51,7 @@ export function runReviewCommand(context: ReviewContext, executable: string, arg
     const common = (root: string) => fs.realpathSync(path.resolve(root, execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd: root, env, encoding: "utf8", windowsHide: true }).trim()));
     if (common(cwd) !== common(context.repositoryRoot)) throw new Error("The command's working worktree belongs to another repository.");
   }
-  return execFileSync(executable, args, { cwd, env, input: options.input, encoding: options.encoding === null ? null : options.encoding || "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync(executable, args, { cwd, env, input: options.input, encoding: options.encoding === null ? null : options.encoding || "utf8", windowsHide: true, maxBuffer: SUBPROCESS_MAX_BUFFER });
 }
 
 /** Asynchronous counterpart for launching another registered review service. */

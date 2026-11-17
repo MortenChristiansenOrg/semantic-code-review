@@ -22,6 +22,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import {
   probeViewer,
   stopViewerAndWait,
@@ -103,7 +104,7 @@ function gitCapture(cwd, args) {
     env: reviewEnvironment(),
     encoding: "utf8",
     windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer: SUBPROCESS_MAX_BUFFER,
   });
 }
 

@@ -25,6 +25,7 @@ import {
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
+import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { readJson } from "./shared/json.js";
 import { withValidationContext } from "./shared/validation-context.js";
 import {
@@ -276,6 +277,7 @@ function execute(
     cwd,
     encoding: "utf8",
     windowsHide: true,
+    maxBuffer: SUBPROCESS_MAX_BUFFER,
     stdio: inherit ? "inherit" : ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
@@ -307,10 +309,11 @@ function executeCaptureStreams(
     cwd,
     encoding: "utf8",
     windowsHide: true,
+    maxBuffer: SUBPROCESS_MAX_BUFFER,
     stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
-    return { passed: false, stdout: "", stderr: result.error.message };
+    return { passed: false, stdout: "", stderr: processFailureDetail(result) };
   }
   return {
     passed: result.status === 0,

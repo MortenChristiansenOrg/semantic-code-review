@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import test from "node:test";
 import {
@@ -79,6 +81,32 @@ test("sync fetches the target upstream, restacks all stages, and refreshes feedb
   const repeated = JSON.parse(repository.flow("sync", "--json"));
   assert.equal(repeated.targetRestack, null);
   assert.deepEqual(snapshot(repository), after);
+});
+
+test("sync --local restacks a stage whose patch exceeds the default 1 MiB subprocess buffer", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "large" });
+  // Random base64 lines do not compress, so the stage patch is about 2.7 MB.
+  const contents = `${randomBytes(2 * 1024 * 1024).toString("base64").match(/.{1,76}/g).join("\n")}\n`;
+  finalizeStage(repository, { id: "large", file: "large.txt", contents });
+  const stage = repository.readJson(".semantic-review/stages/large.json");
+  const patch = spawnSync("git", ["diff", "--binary", "--full-index", stage.change.baseRevision, stage.change.headRevision], {
+    cwd: repository.root, maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(patch.status, 0);
+  assert.ok(patch.stdout.length > 2 * 1024 * 1024, "The fixture patch must exceed the default buffer");
+
+  const branch = repository.git("branch", "--show-current");
+  repository.git("switch", "main");
+  const target = repository.commitFile("trunk.txt", "local\n", "Advance local target");
+  repository.git("switch", branch);
+  const result = JSON.parse(repository.flow("sync", "--local", "--json"));
+  assert.equal(result.targetRevision, target);
+  assert.equal(result.targetRestack.rewrittenBranches, 1);
+  assert.equal(repository.read("large.txt"), contents);
+  assert.equal(repository.read("trunk.txt"), "local\n");
+  repository.semantic("validate");
 });
 
 test("sync fast-forwards a target checked out in the operational worktree", (t) => {
