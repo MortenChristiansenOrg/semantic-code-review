@@ -112,7 +112,7 @@ test('published evidence attachments are available in a remote review', (t) => {
   const bytes = 'published capture\n', sha256 = createHash('sha256').update(bytes).digest('hex');
   const stored = `evidence/semantic-stage/${sha256}.txt`;
   const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
-    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [{ path: stored, mediaType: 'text/plain', sha256 }], capturedAt: '2026-10-30T10:00:00Z', headRevision: head, nodeRefs: ['semantic-node'] }],
+    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [{ path: stored, mediaType: 'text/plain', sha256 }], capturedAt: '2026-10-30T10:00:00Z', nodeRefs: ['semantic-node'] }],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
   author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
@@ -133,7 +133,7 @@ test('remote evidence extraction reads each file once and keeps empty captures',
   const sha256 = createHash('sha256').update('').digest('hex'), stored = `evidence/semantic-stage/${sha256}.txt`;
   const attachment = { path: stored, mediaType: 'text/plain', sha256 };
   const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
-    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [attachment, attachment], capturedAt: '2026-10-30T10:00:00Z', headRevision: head, nodeRefs: ['semantic-node'] }],
+    evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [attachment, attachment], capturedAt: '2026-10-30T10:00:00Z', nodeRefs: ['semantic-node'] }],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
   author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));

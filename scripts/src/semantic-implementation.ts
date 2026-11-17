@@ -943,7 +943,7 @@ function validateArtifact(
 function reportEvidenceWarnings(artifact, stageIds = [...artifact.stages.keys()]) {
   for (const id of stageIds) {
     const stage = artifact.stages.get(id);
-    for (const warning of evidenceWarnings(stage, stage.change.headRevision)) console.error(`Warning: ${warning}`);
+    for (const warning of evidenceWarnings(stage)) console.error(`Warning: ${warning}`);
   }
 }
 
@@ -1614,7 +1614,6 @@ function writeEvidence(paths, options) {
     ...(inputs.length ? { attachments: inputs.map(({ attachment, extension }) => ({ path: evidenceAttachmentPath(id, attachment.sha256, extension), ...attachment })) } : {}),
     ...(inline !== undefined ? { inline } : {}),
     capturedAt: new Date().toISOString(),
-    headRevision: branchCommit(paths.root, branch),
     ...(reproduction !== undefined ? { reproduction } : {}),
     ...(nodeRefs.length ? { nodeRefs } : {}),
   };
@@ -1739,7 +1738,7 @@ function organizationPlan(paths, options) {
   const unlinkedItems = STAGE_ITEM_COLLECTIONS.flatMap((collection) => stage[collection]
     .filter((item) => !item.nodeRefs?.length)
     .map((item) => ({ collection, itemId: item.id })));
-  console.log(JSON.stringify({ stageId: id, branch, baseRevision: base, headRevision: head, files, unlinkedItems, evidenceWarnings: evidenceWarnings(stage, head) }));
+  console.log(JSON.stringify({ stageId: id, branch, baseRevision: base, headRevision: head, files, unlinkedItems, evidenceWarnings: evidenceWarnings(stage) }));
 }
 
 function applyOrganization(stage, organization) {
