@@ -28,6 +28,7 @@ import {
 import { fail } from "./shared/errors.js";
 import { immutableFact, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
+import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { listJsonFiles, readJson, writeJson } from "./shared/json.js";
 import { reviewId, withReviewLock } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
@@ -325,13 +326,12 @@ function readChangedFiles(root, parent, commit) {
       cwd: root,
       encoding: "buffer",
       windowsHide: true,
+      maxBuffer: SUBPROCESS_MAX_BUFFER,
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  if (result.status !== 0) {
-    fail(
-      `Cannot derive changed files: ${result.stderr.toString("utf8").trim()}`,
-    );
+  if (result.error || result.status !== 0) {
+    fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
   }
 
   const fields = result.stdout
