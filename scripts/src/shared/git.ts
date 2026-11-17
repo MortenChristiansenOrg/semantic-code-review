@@ -62,7 +62,9 @@ export function gitRaw(
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  if (result.status !== 0) {
+  // A child that exits before Node kills it on overflow reports status 0
+  // together with ENOBUFS and truncated output.
+  if (result.error || result.status !== 0) {
     if (allowFailure) {
       return null;
     }

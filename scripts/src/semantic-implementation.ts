@@ -330,7 +330,7 @@ function readChangedFiles(root, parent, commit) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  if (result.status !== 0) {
+  if (result.error || result.status !== 0) {
     fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
   }
 

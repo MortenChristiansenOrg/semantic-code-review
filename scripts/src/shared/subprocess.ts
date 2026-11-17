@@ -1,3 +1,5 @@
+import { constants as bufferConstants } from "node:buffer";
+
 /**
  * Shared limits and failure reporting for synchronous subprocesses.
  *
@@ -5,10 +7,10 @@
  * `maxBuffer` (1 MiB by default) and kills the child once it is exceeded.
  * Stage patches and other Git output can be far larger, so helpers whose
  * output scales with repository content use this generous ceiling instead.
- * 512 MiB stays below the largest string V8 can create, so text output that
- * fits the buffer can also be decoded.
+ * It is capped at the longest string the runtime can create, so text output
+ * that fits the buffer can also be decoded.
  */
-export const SUBPROCESS_MAX_BUFFER = 512 * 1024 * 1024;
+export const SUBPROCESS_MAX_BUFFER = Math.min(512 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 
 interface FailedProcess {
   error?: Error & { code?: string };
