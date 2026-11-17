@@ -788,8 +788,6 @@ function buildInsights(stage, repoRoot) {
         reproduction: e.reproduction,
         specificationRefs: e.specificationRefs || [],
         capturedAt: e.capturedAt,
-        headRevision: e.headRevision,
-        stale: e.headRevision !== stage.change.headRevision,
       },
     }),
   );

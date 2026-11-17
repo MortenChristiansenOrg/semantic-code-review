@@ -1581,7 +1581,7 @@ function evidenceInsight(overrides = {}) {
       { mediaType: 'image/png', sha256: 'a'.repeat(64), role: 'before', caption: 'Without the button' },
       { mediaType: 'image/png', sha256: 'b'.repeat(64), role: 'after' },
       { mediaType: 'text/plain', sha256: 'c'.repeat(64), caption: 'Console' },
-    ], inline: '$ tool <run>\nok', reproduction: 'Open /settings', specificationRefs: ['story#works'], capturedAt: '2026-10-30T10:00:00Z', headRevision: 'b'.repeat(40), stale: false, ...overrides } };
+    ], inline: '$ tool <run>\nok', reproduction: 'Open /settings', specificationRefs: ['story#works'], capturedAt: '2026-10-30T10:00:00Z', ...overrides } };
 }
 const onePixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 async function routeEvidence(page) {
@@ -1609,7 +1609,7 @@ test('evidence opens from its pill with previews, compare view, text and links',
   await expect(open).toHaveText('View evidence');
   await open.click();
   const dialog = page.getByRole('dialog', { name: 'Evidence' });
-  await expect(dialog).toContainText('Captured from this stage revision');
+  await expect(dialog.locator('.insight-target-status')).toHaveText(`Captured ${new Date('2026-10-30T10:00:00Z').toLocaleString()}`);
   await expect(dialog).toContainText('New settings button appears');
   await expect(dialog.getByRole('region', { name: 'Before' })).toContainText('Without the button');
   await expect(dialog.getByRole('region', { name: 'Before' }).locator('img')).toBeVisible();
@@ -1665,20 +1665,15 @@ test('sent feedback on evidence is grouped under its stage in the notes panel', 
   await expect(page.locator('.side.notes')).not.toContainText('Other targets');
 });
 
-test('stale evidence says so on the pill and in the dialog, and a recapture counts as a change', async ({ page }) => {
+test('a recapture of reviewed evidence counts as a change', async ({ page }) => {
   const data = fixture();
-  data.stages[0].insights.push(evidenceInsight({ stale: true, attachments: [] }));
+  data.stages[0].insights.push(evidenceInsight({ attachments: [] }));
   await mount(page, data);
   await openFile(page);
   const pill = page.locator('details[data-node="first-one"] .tag.type-evidence');
-  await pill.locator('.insight-review').click();
+  await saveAction(page, () => pill.locator('.insight-review').click(), (state) => !!state.insightReviews?.['i:first:evidence:shot']);
   await expect(pill.locator('.insight-review')).toHaveAttribute('aria-pressed', 'true');
-  const open = pill.getByRole('button', { name: 'View evidence' });
-  await expect(open).toHaveText('View evidence · Stale');
-  await open.click();
-  await expect(page.getByRole('dialog', { name: 'Evidence' })).toContainText('Stale: captured at bbbbbbbbbbbb');
-  await page.getByRole('button', { name: 'Close evidence' }).click();
-  data.stages[0].insights[0] = evidenceInsight({ stale: false, inline: 'recaptured', attachments: [] });
+  data.stages[0].insights[0] = evidenceInsight({ inline: 'recaptured', attachments: [] });
   await page.reload();
   await openFile(page);
   await expect(pill.locator('.insight-review')).toHaveText('!');

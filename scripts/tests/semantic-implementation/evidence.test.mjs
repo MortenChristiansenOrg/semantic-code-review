@@ -31,10 +31,9 @@ const record = (repo, ...args) => repo.semantic("stage", "evidence", "--item-id"
 test("evidence copies attachments into the artifact, outside the stage diff", t => {
   const repo = working(t);
   const file = capture(t, "after.PNG"), sha256 = createHash("sha256").update(PNG).digest("hex");
-  const head = repo.git("rev-parse", "HEAD");
   record(repo, "--after", `${file}=The new button`, "--reproduction", "Open /settings");
   const [item] = workStage(repo).evidence;
-  assert.equal(item.headRevision, head);
+  assert.equal("headRevision" in item, false);
   assert.deepEqual(item.attachments, [{ path: `evidence/${workStage(repo).id}/${sha256}.png`, mediaType: "image/png", sha256, caption: "The new button", role: "after" }]);
   assert.deepEqual(fs.readFileSync(artifactFile(repo, ...item.attachments[0].path.split("/"))), PNG);
   assert.equal(repo.git("status", "--porcelain"), "");
@@ -177,7 +176,7 @@ test("the schema rejects attachment paths that leave the evidence directory", t 
   assert.throws(() => repo.semantic("validate"), /schema|pattern|must match/i);
 });
 
-test("finishing warns about missing and stale evidence without blocking", t => {
+test("finishing warns about missing evidence without blocking", t => {
   const repo = working(t);
   const id = workStage(repo).id;
   organizeStage(repo, { id });
@@ -209,7 +208,7 @@ test("publication and the viewer carry the evidence", t => {
   const script = source.implementationDataScript();
   const data = JSON.parse(script.slice(script.indexOf("{"), script.lastIndexOf("}") + 1));
   const insight = data.stages[0].insights.find(item => item.collection === "evidence");
-  assert.equal(insight.evidence.stale, false);
+  assert.equal("stale" in insight.evidence, false);
   assert.equal(insight.evidence.attachments[0].mediaType, "image/png");
   const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root), feedbackCli },
     [{ kind: "insight", id: `i:${id}:evidence:shot`, body: "This shows the wrong page", mode: "feedback", clientId: "evidence-note" }]);

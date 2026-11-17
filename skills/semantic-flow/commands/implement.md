@@ -186,8 +186,8 @@ criterion the stage addresses:
 <semantic-implementation> stage evidence --input -
 ```
 
-- Commit first: the command requires the stage branch and a clean worktree, and
-  records the head revision. Keep captures outside the repository, such as in a
+- Commit first: the command requires the stage branch and a clean worktree.
+  Keep captures outside the repository, such as in a
   temporary directory; the command copies them into the artifact.
 - Prefer `screenshot` or `recording` whenever the change has visible output, using
   `before` and `after` when the difference is the point. Otherwise use the most

@@ -455,8 +455,7 @@
         "id",
         "kind",
         "summary",
-        "capturedAt",
-        "headRevision"
+        "capturedAt"
       ],
       "properties": {
         "id": {
@@ -499,9 +498,6 @@
         "capturedAt": {
           "type": "string",
           "format": "date-time"
-        },
-        "headRevision": {
-          "$ref": "#/$defs/sha1"
         },
         "reproduction": {
           "$ref": "#/$defs/nonEmptyString"

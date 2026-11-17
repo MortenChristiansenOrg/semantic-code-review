@@ -79,8 +79,7 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   for a stage (automated, manual, or analysis), with its status and link to nodes.
   It reports a result the reviewer has to trust.
 - **Evidence**: A captured artifact that shows a feature working, such as a
-  screenshot, recording, or terminal output, tied to the stage head it was captured
-  from. The reviewer inspects it directly instead of trusting a summary.
+  screenshot, recording, or terminal output, captured from a stage. The reviewer inspects it directly instead of trusting a summary.
 - **Requirements**: The full set of specifications. When there is one specification,
   the requirements and the specification are one and the same.
 - **Specification**: The identification, description and scope for the

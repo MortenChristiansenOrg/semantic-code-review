@@ -110,14 +110,9 @@ export function evidenceTreeErrors(artifactRoot: string, stages) {
 }
 
 /** Warnings never block: a stage may legitimately still be gathering evidence. */
-export function evidenceWarnings(stage, headRevision: string) {
-  const warnings: string[] = [];
+export function evidenceWarnings(stage) {
   const hasBehavior = (stage.nodes ?? []).some((node) => (node.changes ?? []).some((file) => file.classification === "behavior"));
-  if (hasBehavior && !stage.evidence?.length && !stage.noEvidenceReason) {
-    warnings.push(`Stage ${stage.id} changes behavior but has no evidence. Run stage evidence, or stage no-evidence with the reason.`);
-  }
-  for (const item of stage.evidence ?? []) {
-    if (item.headRevision !== headRevision) warnings.push(`Stage ${stage.id} evidence ${item.id} was captured at ${item.headRevision.slice(0, 12)}, not the stage head. Recapture it if the behavior changed.`);
-  }
-  return warnings;
+  return hasBehavior && !stage.evidence?.length && !stage.noEvidenceReason
+    ? [`Stage ${stage.id} changes behavior but has no evidence. Run stage evidence, or stage no-evidence with the reason.`]
+    : [];
 }

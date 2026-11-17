@@ -1389,9 +1389,7 @@
       return `<li><code>${esc(ref)}</code>${criterion ? ` ${esc(criterion.text)}` : ""}</li>`;
     }).join("");
     dialog.innerHTML = `<header><h2 id="evidence-title">Evidence</h2><button type="button" class="evidence-close" data-close aria-label="Close evidence">×</button></header>
-      <p class="insight-target-status ${evidence.stale ? "needs-review" : ""}">${evidence.stale
-        ? `Stale: captured at ${esc(evidence.headRevision.slice(0, 12))}, but this stage is now at ${esc(stage.headRevision.slice(0, 12))}. It may not show the current behavior.`
-        : `Captured from this stage revision (${esc(evidence.headRevision.slice(0, 12))}).`} ${esc(new Date(evidence.capturedAt).toLocaleString())}</p>
+      <p class="insight-target-status">Captured ${esc(new Date(evidence.capturedAt).toLocaleString())}</p>
       <p class="eyebrow">${esc(EVIDENCE_KIND[evidence.kind] || evidence.kind)}</p><h3>${esc(ins.title)}</h3>
       ${evidence.reproduction ? `<p class="evidence-reproduction"><b>Reproduce:</b> ${esc(evidence.reproduction)}</p>` : ""}
       ${before.length || after.length ? `<div class="evidence-compare">${column("Before", before)}${column("After", after)}</div>` : ""}
@@ -1459,7 +1457,7 @@
     const review = insightReviewState(stage, ins);
     const key = insightKey(stage.id, ins.collection, ins.id);
     const evidenceButton = ins.evidence
-      ? `<button type="button" class="code-insight-link ${ins.evidence.stale ? "needs-review" : ""}" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence${ins.evidence.stale ? " · Stale" : ""}</button>${hostsEvidenceThread(ins, node) ? notesToggle("insight", key) : ""}`
+      ? `<button type="button" class="code-insight-link" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence</button>${hostsEvidenceThread(ins, node) ? notesToggle("insight", key) : ""}`
       : "";
     return `<span class="tag ${ins.codeTarget || ins.evidence ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"

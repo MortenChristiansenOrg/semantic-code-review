@@ -108,8 +108,7 @@ paths, and crop or recapture rather than recording them; published evidence is
 visible to anyone with access to the metadata branch. Remove a bad capture with
 `stage evidence-remove`, and publish again. After feedback-driven changes touch
 evidenced nodes, recapture with `stage evidence --replace`, or remove entries that no
-longer apply. A restack alone also marks evidence stale; recapture only if the
-behavior could have changed.
+longer apply.
 
 Do not record routine execution of existing test suites as validation evidence,
 including repeated runs while implementing or addressing feedback. Test

@@ -222,8 +222,7 @@ publication or preparation.
 Each stage has a required `evidence` array of captures that show its behavior
 working. An entry has an `id`, a `kind` (`screenshot`, `recording`, `terminal`,
 `http`, `log`, `output-file`, `measurement`, or `report`), a `summary`, the
-`capturedAt` time, the `headRevision` of the stage it was captured from, `nodeRefs`,
-and at least one of `attachments` or `inline`. It may add `specificationRefs` for
+`capturedAt` time, `nodeRefs`, and at least one of `attachments` or `inline`. It may add `specificationRefs` for
 the criteria it supports (each must be addressed by the stage), `reproduction`,
 and `codeTarget`.
 
@@ -235,9 +234,8 @@ the rest of the artifact.
 
 Full validation requires each attachment to be a regular file with the recorded
 hash and an allowed media type, at most 25 MiB, with at most 100 MiB per stage,
-and rejects files in `evidence/` that no entry references. Evidence is stale when
-its `headRevision` differs from the stage head; this and a behavior stage with no
-evidence and no `noEvidenceReason` are warnings, not errors.
+and rejects files in `evidence/` that no entry references. A behavior stage with
+no evidence and no `noEvidenceReason` is a warning, not an error.
 
 ## Publication and archive
 
