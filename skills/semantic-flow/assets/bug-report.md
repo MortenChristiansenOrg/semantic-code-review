@@ -25,7 +25,7 @@ blocking/data-loss impact, attempts and outcomes, and available workarounds.]
 
 ## Evidence and related reports
 
-[Minimal sanitized excerpts or approved attachments, related issues/fixes and
+[Minimal sanitized excerpts or attachments, related issues/fixes and
 why this is distinct if applicable. Separate facts from suspected causes.]
 
 ## Remaining unknowns
