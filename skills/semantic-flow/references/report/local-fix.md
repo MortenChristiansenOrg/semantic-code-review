@@ -47,6 +47,6 @@ For authorized repair:
    then reinstall the whole upstream skill with authorization. Keep the temporary
    source until the user is satisfied; do not automatically delete branches/forks.
 
-Offer an upstream issue update or PR if useful, with the user's approval and a
-sanitized reproduction. Reporting authorization alone does not authorize a push,
-PR, install change, or a comment on an existing report.
+Offer an upstream issue comment or PR if useful, with a sanitized reproduction.
+Reporting alone does not authorize a push, PR or installation change. Post a
+comment on an existing report only when the user's request asks for one.

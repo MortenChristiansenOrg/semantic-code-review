@@ -70,8 +70,8 @@ replace an installation without authorization.
 
 Search open and closed upstream issues using sanitized symptoms, exact errors, and
 affected command. Read plausible matches and relevant resolution/PR details.
-Explain a likely duplicate and its workaround; comment on it to add new
-evidence when useful. A shared symptom alone does not prove duplication.
+Explain a likely duplicate and its workaround. Offer to add new evidence to it
+as a comment; post one when the user's request asks for it. A shared symptom alone does not prove duplication.
 If search is incomplete or unavailable, say so; avoid claiming no duplicates.
 
 Offer the next useful action. For a blocker without a suitable update or
