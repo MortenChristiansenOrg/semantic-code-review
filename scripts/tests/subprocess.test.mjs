@@ -8,7 +8,7 @@ const noisy = ["-e", "process.stdout.write('x'.repeat(4096))"];
 
 test("a spawn that overflows its output buffer reports ENOBUFS", () => {
   const result = spawnSync(process.execPath, noisy, { maxBuffer: 16 });
-  assert.equal(result.status, null);
+  assert.equal(result.error?.code, "ENOBUFS");
   assert.match(processFailureDetail(result), /maximum buffer size \(ENOBUFS\)/);
 });
 
