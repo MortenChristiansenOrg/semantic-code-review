@@ -814,14 +814,19 @@ import { renderPage } from "./views/page";
   function load() {
     return { ...defaults(), ...savedReview.state };
   }
+  // Artifact IDs name state keys, and the review store refuses these as
+  // paths (one refused change fails the whole save), so they stay unsaved.
+  const unsavedKeys = new Set(["__proto__", "constructor", "prototype"]);
   function stateChanges(before, after, prefix = []) {
     const changes = [];
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-      const a = before[key], b = after[key];
+      if (unsavedKeys.has(key)) continue;
+      const had = Object.hasOwn(before, key), has = Object.hasOwn(after, key);
+      const a = had ? before[key] : undefined, b = has ? after[key] : undefined;
       if (JSON.stringify(a) === JSON.stringify(b)) continue;
       const object = (value) => value && typeof value === "object" && !Array.isArray(value);
       if ((a === undefined || object(a)) && object(b)) changes.push(...stateChanges(a || {}, b, [...prefix, key]));
-      else changes.push({ path: [...prefix, key], before: key in before ? { present: true, value: a } : { present: false }, after: key in after ? { present: true, value: b } : { present: false } });
+      else changes.push({ path: [...prefix, key], before: had ? { present: true, value: a } : { present: false }, after: has ? { present: true, value: b } : { present: false } });
     }
     return changes;
   }
@@ -2846,15 +2851,14 @@ import { renderPage } from "./views/page";
   function syncReqState(det) {
     if (det.matches(".specification") && setSpecificationOpen(det.dataset.reqId, det.open)) persist();
   }
-  // Specification IDs come from the artifact, so only own keys count, and the
-  // names the review store refuses as state paths are never saved.
+  // Specification IDs come from the artifact, so only own keys count.
   function specificationIsOpen(id) {
     const open = state.specificationOpen;
     return Boolean(open && typeof open === "object" && Object.hasOwn(open, id) && open[id]);
   }
   /** Records whether a specification is open; returns whether that changed. */
   function setSpecificationOpen(id, open) {
-    if (typeof id !== "string" || ["__proto__", "constructor", "prototype"].includes(id)) return false;
+    if (typeof id !== "string" || id === "__proto__") return false;
     if (specificationIsOpen(id) === open) return false;
     if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
     state.specificationOpen[id] = open;

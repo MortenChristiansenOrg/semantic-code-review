@@ -3247,24 +3247,36 @@ test('a specification toggled without animation keeps its state across reloads',
   expect(errors).toEqual([]);
 });
 
-test('a specification named like an object property starts closed and never sends a state path the store refuses', async ({ page }) => {
-  const data = fixture();
-  data.requirements = [{ id: 'constructor', title: 'Spec', summary: 'Spec summary', acceptance: [{ id: 'ac-1', text: 'Criterion' }] }];
-  const paths = [];
-  page.on('request', (request) => {
-    if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') paths.push(...request.postDataJSON().changes.map((change) => change.path));
+for (const name of ['constructor', 'toString']) {
+  test(`a specification named ${name} starts closed, opens from a link and never breaks saving`, async ({ page }) => {
+    const data = fixture();
+    data.requirements = [{ id: name, title: 'Spec', summary: 'Spec summary', acceptance: [{ id: 'ac-1', text: 'Criterion' }] }];
+    data.feedback = [thread('about-spec', 'open', { kind: 'specification', specificationId: name, label: 'Spec' })];
+    const changes = [];
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') changes.push(...request.postDataJSON().changes);
+    });
+    const errors = await mount(page, data, { openStages: { first: true } });
+    const spec = page.locator('details.specification');
+    await expect(spec).toHaveJSProperty('open', false);
+    await spec.locator('summary h2').click();
+    await expect(spec).toHaveJSProperty('open', true);
+    await spec.locator('summary h2').click();
+    await expect(spec).toHaveJSProperty('open', false);
+    // Jumping from a thread to its specification opens it.
+    await showNotes(page);
+    await page.locator('.side.notes [data-thread-id="about-spec"] .tthread-jump').click();
+    await expect(spec).toHaveJSProperty('open', true);
+    const one = page.locator('details[data-node="first-one"]');
+    await one.locator('summary').click();
+    await saveAction(page, () => one.locator('.frow .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'shared.js')]);
+    // Nothing is sent as a path the store refuses, and a key is never claimed to exist before it was saved.
+    expect(changes.flatMap((change) => change.path).filter((key) => ['__proto__', 'constructor', 'prototype'].includes(key))).toEqual([]);
+    const specChanges = changes.filter((change) => change.path[0] === 'specificationOpen' && change.path[1] === name);
+    if (specChanges.length) expect(specChanges[0].before).toEqual({ present: false });
+    expect(errors).toEqual([]);
   });
-  const errors = await mount(page, data, { openStages: { first: true } });
-  const spec = page.locator('details.specification');
-  await expect(spec).toHaveJSProperty('open', false);
-  await spec.locator('summary h2').click();
-  await expect(spec).toHaveJSProperty('open', true);
-  const one = page.locator('details[data-node="first-one"]');
-  await one.locator('summary').click();
-  await saveAction(page, () => one.locator('.frow .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'shared.js')]);
-  expect(paths.flat().filter((key) => ['__proto__', 'constructor', 'prototype'].includes(key))).toEqual([]);
-  expect(errors).toEqual([]);
-});
+}
 
 test('a kept file row drops the tooltip of a hint that is no longer rendered', async ({ page }) => {
   const data = fixture();
