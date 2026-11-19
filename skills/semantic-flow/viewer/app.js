@@ -62,19 +62,29 @@
   const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
   let autoSendPreferred = false;
   try { autoSendPreferred = localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { /* storage unavailable */ }
-  let autoSendQueued = false;
+  // Saved notes (objects) and reply draft IDs waiting for an automatic send.
+  const autoSendQueue = { notes: new Set(), replies: new Set() };
+  // Drafts in the request being sent; they cannot be edited or deleted until it answers.
+  const sendingDrafts = new Set();
   function setAutoSendPreferred(on) {
     autoSendPreferred = on;
     try { localStorage.setItem(AUTO_SEND_KEY, String(on)); } catch { /* storage unavailable */ }
   }
+  window.addEventListener("storage", (e) => {
+    if (e.key !== AUTO_SEND_KEY) return;
+    autoSendPreferred = e.newValue === "true";
+    render();
+  });
   // Offered only while an interactive session can take feedback as it arrives.
   const agentTakesFeedback = () => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
   const autoSendActive = () => autoSendPreferred && agentTakesFeedback();
-  // Send saved feedback at once; a save during a send goes out when that send finishes.
-  function autoSendFeedback() {
-    if (!autoSendActive() || !pendingFeedbackCount()) return;
-    if (exportState.phase === "working") { autoSendQueued = true; return; }
-    void exportFeedback();
+  // Send just the saved note or reply at once; a save during a send goes out when that send finishes.
+  function autoSendFeedback(saved) {
+    if (saved && autoSendActive()) autoSendQueue[saved.note ? "notes" : "replies"].add(saved.note || saved.reply);
+    if (exportState.phase === "working" || !autoSendActive()) return;
+    const only = { notes: new Set(autoSendQueue.notes), replies: new Set(autoSendQueue.replies) };
+    autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
+    if (only.notes.size || only.replies.size) void exportFeedback(only);
   }
   const baseTitle = document.title;
 
@@ -1708,11 +1718,11 @@
     const draftReplies = repliesForThread(t.id)
       .filter((r) => r.id !== replyEditId)
       .map((r) => `<div class="tmsg tmsg-user tmsg-draft" data-reply-id="${esc(r.id)}">
-          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">Draft</span>
-            <span class="tmsg-act">
+          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">${sendingDrafts.has(r.id) ? "Sending…" : "Draft"}</span>
+            ${sendingDrafts.has(r.id) ? "" : `<span class="tmsg-act">
               <button data-action="reply-edit" data-id="${esc(t.id)}" data-reply-id="${esc(r.id)}" type="button">Edit</button>
               <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
-            </span>
+            </span>`}
           </div>
           <p class="comment-body">${formatCommentBody(r.body)}</p>${attachmentList(r.attachments)}
         </div>`)
@@ -1765,7 +1775,7 @@
       : ref && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
     const sent = Boolean(c.exported);
     const mode = c.mode || "personal";
-    const acts = sent
+    const acts = sent || sendingDrafts.has(c)
       ? ""
       : `<div class="tnote-act">
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
@@ -1774,7 +1784,7 @@
     return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
+          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : sendingDrafts.has(c) ? "Sending…" : "Draft"}</span>` : ""}
           ${withLabel || renamedLineNote(c) ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
         </div>
         ${missing}
@@ -2941,9 +2951,10 @@
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
     const autoSend = agentTakesFeedback()
       ? `<label class="notes-auto-send" title="Send each feedback note and reply to the listening agent when you save it. Personal notes stay local."><input type="checkbox" name="auto-send" ${autoSendPreferred ? "checked" : ""}><span>Send automatically</span></label>` : "";
-    const idleHint = autoSendActive()
-      ? "Feedback notes and replies go to the listening agent when you save them. Personal notes stay local."
-      : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically.";
+    const hint = autoSendActive()
+      ? `Feedback notes and replies go to the listening agent when you save them. ${pending ? "Prepare feedback sends earlier drafts." : "Personal notes stay local."}`
+      : pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to."
+        : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically.";
     const foot = data.remote ? `<div class="notes-foot"><p>Personal notes stay on this computer.</p></div>` : `<div class="notes-foot">
         <div class="notes-export-row">
           <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
@@ -2952,7 +2963,7 @@
           ${autoSend}
         </div>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : idleHint}</p>`}
+          : `<p class="notes-export-hint">${hint}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -3438,6 +3449,7 @@
       if (opening) { render(); }
       else { collapseThenRender((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
+      if (sendingDrafts.has(state.comments[Number(btn.dataset.index)])) return;
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "markdown-mode") {
       const entry = fileById.get(btn.dataset.id);
@@ -3468,7 +3480,7 @@
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
-      if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
+      if (c && !c.exported && !sendingDrafts.has(c)) { state.comments.splice(idx, 1); persist(); render(); }
     } else if (a === "open-file") {
       // Let the reviewer select the filename text without toggling the diff:
       // a click that completes a selection over the name is not a toggle.
@@ -3500,6 +3512,7 @@
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
       render(); focusComposer();
     } else if (a === "reply-edit") {
+      if (sendingDrafts.has(btn.dataset.replyId)) return;
       compose = null;
       const draft = pendingReplies().find((r) => r.id === btn.dataset.replyId);
       if (!draft) return;
@@ -3510,6 +3523,7 @@
       replyDirty = false;
       render(); focusComposer();
     } else if (a === "reply-del") {
+      if (sendingDrafts.has(btn.dataset.replyId)) return;
       state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
       if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyAttachments = []; replyDirty = false; }
       persist(); render();
@@ -3635,12 +3649,14 @@
   function saveReplyDraft(threadId, body) {
     if (!artifactThreadById(threadId)) return;
     if (!Array.isArray(state.replyDrafts)) state.replyDrafts = [];
+    let savedId = replyEditId;
     if (replyEditId != null) {
       const draft = state.replyDrafts.find((r) => r.id === replyEditId);
       if (draft) { draft.body = body; draft.attachments = structuredClone(replyAttachments); }
     } else {
+      savedId = `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       state.replyDrafts.push({
-        id: `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        id: savedId,
         threadId,
         body,
         attachments: structuredClone(replyAttachments),
@@ -3653,7 +3669,7 @@
     replyDirty = false;
     persist();
     render();
-    autoSendFeedback();
+    autoSendFeedback({ reply: savedId });
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
@@ -3735,11 +3751,16 @@
     }
   }
   // Notes and replies go in one request, so a listening agent picks them up as one round.
-  async function exportFeedback() {
+  // `only` limits an automatic send to the drafts just saved.
+  async function exportFeedback(only = null) {
     if (exportState.phase === "working") return;
-    const pending = pendingFeedback();
-    const replies = pendingReplies().slice();
+    // A draft open in an editor waits until its edit is saved.
+    const editingNote = compose?.editIndex != null ? state.comments[compose.editIndex] : null;
+    const pending = pendingFeedback().filter(({ c }) => c !== editingNote && (!only || only.notes.has(c)));
+    const replies = pendingReplies().filter((draft) => draft.id !== replyEditId && (!only || only.replies.has(draft.id)));
     if (!pending.length && !replies.length) return;
+    pending.forEach(({ c }) => sendingDrafts.add(c));
+    replies.forEach((draft) => sendingDrafts.add(draft.id));
     requestReplyNotifications();
     exportState = { phase: "working", message: "" };
     render();
@@ -3791,11 +3812,13 @@
       } catch (err) {
         persist();
         exportState = { phase: "error", message: err.message || "Export failed.", skips };
-        autoSendQueued = false;
+        sendingDrafts.clear();
+        autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
         render();
         return;
       }
     }
+    sendingDrafts.clear();
     persist();
     const parts = [];
     if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
@@ -3809,7 +3832,7 @@
       skips
     };
     render();
-    if (autoSendQueued) { autoSendQueued = false; autoSendFeedback(); }
+    autoSendFeedback();
   }
 
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
@@ -4020,10 +4043,11 @@
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nc-mode"]:checked')?.value || "personal";
       if (uploadOps.size || !compose || (!body && !compose.attachments?.length)) return;
+      let saved = null;
       if (compose) {
         if (compose.editIndex != null) {
           const c = state.comments[compose.editIndex];
-          if (c && !c.exported) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); }
+          if (c && !c.exported && !sendingDrafts.has(c)) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); saved = c; }
         } else {
           const note = { kind: compose.kind, id: compose.id, body, mode, attachments: structuredClone(compose.attachments || []), createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
@@ -4031,13 +4055,14 @@
           const snapshot = draftSnapshots.get(compose);
           if (snapshot) draftSnapshots.set(note, snapshot); else rememberDraftSnapshot(note);
           state.comments.push(note);
+          saved = note;
         }
         state.lastNoteMode = mode;
       }
       compose = null;
       persist();
       render();
-      if (mode === "feedback") autoSendFeedback();
+      if (saved && mode === "feedback") autoSendFeedback({ note: saved });
       return;
     }
     if (e.target.matches("[data-agent-answer]")) {

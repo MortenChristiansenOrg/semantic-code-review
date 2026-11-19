@@ -2712,10 +2712,13 @@ test('interactive reviews can send feedback notes and replies automatically when
   const now = new Date().toISOString();
   const data = { ...fixture(), feedback: [thread('existing')],
     agent: { session: false, listening: false, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now } };
-  await mount(page, data);
+  const olderDraft = { kind: 'stage', id: 'first', stageId: 'first', body: 'Older draft', mode: 'feedback', createdAt: 1 };
+  await mount(page, data, { comments: [olderDraft] });
   const exports = [];
-  await page.route('**/api/feedback/export*', (route) => {
+  let hold = null;
+  await page.route('**/api/feedback/export*', async (route) => {
     const input = route.request().postDataJSON(); exports.push(input);
+    if (hold) await hold;
     return route.fulfill({ json: { ok: true, skipped: [],
       exported: input.notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })),
       replied: input.replies.map((reply) => ({ ref: reply.ref, threadId: reply.threadId, comment: { id: `c-${reply.ref}`, author: 'user', body: reply.body, createdAt: now } })) } });
@@ -2730,12 +2733,19 @@ test('interactive reviews can send feedback notes and replies automatically when
   await autoSend.check();
   await expect(page.locator('.notes-export-hint')).toContainText('go to the listening agent when you save them');
 
+  let release; hold = new Promise((resolve) => { release = resolve; });
   await page.locator('.side.notes [data-action="thread-reply"]').click();
   await page.locator('textarea[name="reply-body"]').fill('Please also cover the edge case.');
   await page.getByRole('button', { name: 'Save reply', exact: true }).click();
   await expect.poll(() => exports.length).toBe(1);
+  const sending = page.locator('.side.notes .tmsg-draft[data-reply-id]');
+  await expect(sending.locator('.tmsg-draft-tag')).toHaveText('Sending…');
+  await expect(sending.locator('[data-action="reply-edit"]')).toHaveCount(0);
+  release(); hold = null;
+  await expect(sending).toHaveCount(0);
   expect(exports[0].replies.map((reply) => reply.body)).toEqual(['Please also cover the edge case.']);
-  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveText('Prepare feedback');
+  expect(exports[0].notes).toEqual([]);
+  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveText('Prepare feedback (1)');
 
   await page.locator('.side.notes [data-action="toggle-notes"]').click();
   await openFile(page); await page.locator('.file-notes .thread-add').click();
@@ -2751,6 +2761,11 @@ test('interactive reviews can send feedback notes and replies automatically when
 
   await page.reload(); await showNotes(page);
   await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toBeChecked();
+  const other = await page.context().newPage();
+  await mount(other, data); await showNotes(other);
+  await other.getByRole('checkbox', { name: 'Send automatically' }).uncheck();
+  await expect(page.getByRole('checkbox', { name: 'Send automatically' })).not.toBeChecked();
+  await other.close();
   data.agent = { ...data.agent, session: false, listening: false }; data.viewerRevision = 'offline';
   await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toHaveCount(0);
   expect(exports).toHaveLength(2);
