@@ -2011,6 +2011,36 @@ for (const kind of ['modified', 'added', 'deleted', 'renamed']) {
   });
 }
 
+test('an open Markdown preview keeps its element, scroll and focused link when its group is renamed or stages reorder', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) Object.assign(stage.files[0], { path: 'README.md', project: 'web' });
+  const content = Array.from({ length: 80 }, (_, i) => i === 60 ? '[Read more](https://example.com/more)' : `Paragraph ${i}`).join('\n\n');
+  await mount(page, data);
+  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.cinema-diff .markdown-preview');
+  const link = preview.getByRole('link', { name: 'Read more' });
+  await link.scrollIntoViewIfNeeded();
+  await link.focus();
+  await preview.evaluate((el) => { el.dataset.marker = 'kept'; });
+  const scrolled = await preview.evaluate((el) => el.scrollTop);
+  expect(scrolled).toBeGreaterThan(0);
+  const check = async () => {
+    await expect(preview).toHaveAttribute('data-marker', 'kept');
+    await expect(link).toBeFocused();
+    expect(await preview.evaluate((el) => el.scrollTop)).toBe(scrolled);
+  };
+
+  data.stages[0].files[0].project = 'docs'; data.viewerRevision = 'regrouped';
+  await expect(page.locator('.stage[data-stage="first"] details[data-node="first-one"] .fg-name')).toHaveText('docs');
+  await check();
+
+  data.stages.reverse(); data.viewerRevision = 'reordered';
+  await expect(page.locator('.stage').first()).toHaveAttribute('data-stage', 'second');
+  await check();
+});
+
 test('Markdown preview failures retain source controls and non-Markdown files have no toggle', async ({ page }) => {
   await mount(page);
   await openFile(page);

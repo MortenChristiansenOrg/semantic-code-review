@@ -119,9 +119,10 @@ function fileGroup(view: NodeFilesView, group: FileGroupView): TemplateResult {
 }
 
 /** Every file of a step. Files are always visible: a step is rarely worth
- * opening without also inspecting its files. */
+ * opening without also inspecting its files. Groups render by position, so a
+ * renamed group keeps its rows, and with them any open diff and its focus. */
 export function nodeFiles(view: NodeFilesView): TemplateResult {
   return html`<div class="payload ${view.allApproved ? "all-done" : ""}" data-node-files=${view.nodeId}>
-      <div class="fgroups">${repeat(view.groups, (group) => group.name, (group) => fileGroup(view, group))}</div>
+      <div class="fgroups">${view.groups.map((group) => fileGroup(view, group))}</div>
     </div>`;
 }

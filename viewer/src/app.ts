@@ -3932,15 +3932,19 @@ import { renderPage } from "./views/page";
     // Each open file's diff has its own inner scroll; capture it per file so
     // adding a line note (or any re-render) never resets where the reviewer is
     // looking within the diff.
+    // Moving an element, as a keyed list does when stages or steps reorder,
+    // also resets the scroll of the diff or Markdown preview inside it.
+    const scrollers = [".diff-scroll", ".markdown-preview"];
     const diffScrolls = {};
     const pendingDiffs = [];
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!activeFileNodeId(fid)) return;
       const holder = fileRowElement(fid)?.nextElementSibling;
-      const scroller = holder && holder.classList.contains("cinema-diff")
-        ? holder.querySelector(".diff-scroll")
-        : null;
-      if (scroller) diffScrolls[fid] = { top: scroller.scrollTop, left: scroller.scrollLeft };
+      if (!holder?.classList.contains("cinema-diff")) return;
+      diffScrolls[fid] = scrollers.map((selector) => {
+        const scroller = holder.querySelector(selector);
+        return scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
+      });
     });
     _render();
     restoreOpen(open);
@@ -3952,11 +3956,10 @@ import { renderPage } from "./views/page";
         const holder = cinemaHolder(fid);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
           pendingDiffs.push(entry);
-        const saved = diffScrolls[fid];
-        if (saved) {
-          const scroller = holder?.querySelector(".diff-scroll");
+        diffScrolls[fid]?.forEach((saved, index) => {
+          const scroller = saved && holder?.querySelector(scrollers[index]);
           if (scroller) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
-        }
+        });
       }
     });
     const newNotes = app.querySelector(".notes-list");
