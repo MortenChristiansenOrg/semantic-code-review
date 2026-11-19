@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
-const source = fs.readFileSync(new URL('app.js', viewer), 'utf8');
+const source = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/app.js', import.meta.url), 'utf8');
 const markdownSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/markdown.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';

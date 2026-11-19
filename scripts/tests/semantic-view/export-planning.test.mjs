@@ -641,16 +641,18 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
 });
 
 test("viewer client refreshes data without reloading the page", () => {
-  const app = fs.readFileSync(
-    path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
-    "utf8",
-  );
+  // The shipped viewer is minified; read the repository sources.
+  const viewerSources = new URL("../../../viewer/src/", import.meta.url);
+  const app = fs.readFileSync(new URL("app.ts", viewerSources), "utf8");
+  const api = fs.readFileSync(new URL("api.ts", viewerSources), "utf8");
   const styles = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "styles.css"),
     "utf8",
   );
-  assert.match(app, /fetch\("\/api\/revision"/);
-  assert.match(app, /fetch\(`\/api\/diff\?\$\{query\}`/);
+  assert.match(app, /api\.getRevision\(\)/);
+  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision"\)/);
+  assert.match(app, /api\.getDiff\(query\)/);
+  assert.match(api, /getJson<DiffResponse>\(`\/api\/diff\?\$\{params\}`\)/);
   assert.match(app, /Loading diff…/);
   assert.match(app, /pendingDiffs\.forEach/);
   assert.match(app, /replies: sendable\.map/);
@@ -658,7 +660,12 @@ test("viewer client refreshes data without reloading the page", () => {
 
 
 
-  assert.match(app, /fetch\("\/api\/implementation"/);
+  assert.match(app, /api\.getImplementation\(\)/);
+  // One module issues every server request.
+  for (const file of fs.readdirSync(viewerSources).filter((name) => name.endsWith(".ts") && name !== "api.ts")) {
+    assert.doesNotMatch(fs.readFileSync(new URL(file, viewerSources), "utf8"), /\bfetch\(|XMLHttpRequest|sendBeacon|EventSource/, file);
+  }
+  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);

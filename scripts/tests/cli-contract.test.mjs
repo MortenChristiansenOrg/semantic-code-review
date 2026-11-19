@@ -372,7 +372,7 @@ test("finalized reorganization guidance supplies the complete CLI input", () => 
   assert.match(feedback, /missing argument is not evidence of an artifact migration problem/);
 });
 
-test("repository metadata and maintainer guidance preserve portability", () => {
+test("repository metadata and maintainer guidance preserve portability", async () => {
   const skillRoot = path.resolve(scriptsDirectory, "..");
   const repositoryRoot = path.resolve(skillRoot, "..", "..");
   const attributes = fs.readFileSync(
@@ -406,9 +406,12 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     "utf8",
   );
   const viewerApp = fs.readFileSync(
-    path.join(repositoryRoot, "viewer", "app.js"),
+    path.join(repositoryRoot, "viewer", "src", "app.ts"),
     "utf8",
   );
+  const { selectedNodeForFile } = await import("../../viewer/src/files.ts");
+  const { aggregateApprovalState } = await import("../../viewer/src/approvals.ts");
+  const { formatCommentBody } = await import("../../viewer/src/html.ts");
 
   assert.match(attributes, /^\* text=auto eol=lf$/m);
   assert.match(editorConfig, /^end_of_line = lf$/m);
@@ -419,13 +422,6 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
   assert.match(viewerApp, /data-node-id="\$\{esc\(node\.id\)\}"/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);
-  const selectedNodeStart = viewerApp.indexOf("function selectedNodeForFile(activeValue, file)");
-  const selectedNodeEnd = viewerApp.indexOf("\n  function activeFileNodeId", selectedNodeStart);
-  assert.notEqual(selectedNodeStart, -1);
-  assert.notEqual(selectedNodeEnd, -1);
-  const selectedNodeForFile = new Function(
-    `${viewerApp.slice(selectedNodeStart, selectedNodeEnd)}; return selectedNodeForFile;`,
-  )();
   const sharedFile = {
     memberships: [{ nodeId: "first-node" }, { nodeId: "clicked-node" }],
   };
@@ -433,25 +429,11 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.equal(selectedNodeForFile(true, sharedFile), null);
   assert.equal(selectedNodeForFile("removed-node", sharedFile), null);
   assert.equal(selectedNodeForFile(false, sharedFile), null);
-  const aggregateStart = viewerApp.indexOf("function aggregateApprovalState(states)");
-  const aggregateEnd = viewerApp.indexOf("\n  function nodeApprovalState", aggregateStart);
-  assert.notEqual(aggregateStart, -1);
-  assert.notEqual(aggregateEnd, -1);
-  const aggregateApprovalState = new Function(
-    `${viewerApp.slice(aggregateStart, aggregateEnd)}; return aggregateApprovalState;`,
-  )();
   assert.equal(aggregateApprovalState([]), "none");
   assert.equal(aggregateApprovalState(["none", "approved"]), "none");
   assert.equal(aggregateApprovalState(["approved", "approved"]), "approved");
   assert.equal(aggregateApprovalState(["stale", "stale"]), "stale");
   assert.equal(aggregateApprovalState(["approved", "stale"]), "stale");
-  const formatterStart = viewerApp.indexOf("function esc(v)");
-  const formatterEnd = viewerApp.indexOf("\n  /* File approvals", formatterStart);
-  assert.notEqual(formatterStart, -1);
-  assert.notEqual(formatterEnd, -1);
-  const formatCommentBody = new Function(
-    `${viewerApp.slice(formatterStart, formatterEnd)}; return formatCommentBody;`,
-  )();
   assert.equal(
     formatCommentBody("First line\n\nUse `my code`."),
     "First line\n\nUse <code>my code</code>.",
