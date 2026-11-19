@@ -2776,6 +2776,7 @@ test('interactive reviews can send feedback notes and replies automatically when
 
   await reload(page); await showNotes(page);
   await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toBeChecked();
+  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveText('Prepare feedback (1)');
   const other = await page.context().newPage();
   await mount(other, data); await showNotes(other);
   await other.getByRole('checkbox', { name: 'Send automatically' }).uncheck();
