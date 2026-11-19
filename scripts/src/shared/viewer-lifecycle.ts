@@ -1,6 +1,8 @@
 import http from "node:http";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
+import { parseJson } from "./json.js";
+import { booleanField, errorCode, isRecord, numberField, stringField } from "./narrow.js";
 
 export const VIEWER_HOST = "127.0.0.1";
 export const VIEWER_APP_ID = "semantic-flow-review-viewer";
@@ -17,6 +19,27 @@ export interface ViewerIdentity {
   reviewId?: string;
   generation?: string;
   reviewHome?: string;
+}
+
+const OPTIONAL_IDENTITY_FIELDS = {
+  repositoryRoot: "string", skillDirectory: "string", processId: "number", viewerVersion: "string",
+  healthy: "boolean", reviewId: "string", generation: "string", reviewHome: "string",
+} as const;
+
+/** A /api/whoami response, or null when it is not a viewer identity. A field
+ * of the wrong type makes the whole identity unrecognized. */
+function parseViewerIdentity(value: unknown, port: number): ViewerIdentity | null {
+  if (!isRecord(value) || value.app !== VIEWER_APP_ID || typeof value.implementationId !== "string") return null;
+  for (const [key, type] of Object.entries(OPTIONAL_IDENTITY_FIELDS)) {
+    if (value[key] !== undefined && typeof value[key] !== type) return null;
+  }
+  return {
+    app: VIEWER_APP_ID, implementationId: value.implementationId, port,
+    repositoryRoot: stringField(value, "repositoryRoot"), skillDirectory: stringField(value, "skillDirectory"),
+    processId: numberField(value, "processId"), viewerVersion: stringField(value, "viewerVersion"),
+    healthy: booleanField(value, "healthy"), reviewId: stringField(value, "reviewId"),
+    generation: stringField(value, "generation"), reviewHome: stringField(value, "reviewHome"),
+  };
 }
 
 export function viewerPort(): number {
@@ -49,14 +72,7 @@ export function probeViewer(
         response.on("data", (chunk) => (data += chunk));
         response.on("end", () => {
           try {
-            const parsed = JSON.parse(data);
-            resolve(
-              parsed &&
-                parsed.app === VIEWER_APP_ID &&
-                typeof parsed.implementationId === "string"
-                ? { ...parsed, port }
-                : null,
-            );
+            resolve(parseViewerIdentity(parseJson(data), port));
           } catch {
             resolve(null);
           }
@@ -143,7 +159,7 @@ export async function stopViewerAndWait(
     try {
       process.kill(pid, 0);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      if (errorCode(error) === "ESRCH") return;
       throw error;
     }
     await delay(50);

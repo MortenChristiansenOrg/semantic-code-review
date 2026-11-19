@@ -1,16 +1,9 @@
+import type { CodeTarget } from "./documents.js";
 import { git } from "./git.js";
 import { immutableFact } from "./validation-context.js";
 
 /** Immutable authoring anchor. Context survives publication and pruning of old commits. */
-export interface CodeTarget {
-  path: string;
-  revision: string;
-  blobId: string;
-  startLine: number;
-  endLine: number;
-  contextStartLine: number;
-  context: string[];
-}
+export type { CodeTarget };
 
 const hash = /^[0-9a-f]{40}$/;
 function assertPath(value: string) {
