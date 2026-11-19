@@ -257,6 +257,9 @@ import { renderPage } from "./views/page";
   const draftSnapshots = new WeakMap();
 
   let lastHiddenPoll = 0;
+  // The server revision whose feedback a code selection last adopted on its own (see below).
+  let selectionRevision = null;
+  const codeSelected = () => Boolean(window.getSelection()?.toString()) && !document.activeElement?.matches("input, textarea");
   async function pollViewerRevision() {
     if (reviewDeleted || polling) return;
     // Hidden tabs keep checking slowly while an agent listens or works, so a finished round can notify.
@@ -272,7 +275,7 @@ import { renderPage } from "./views/page";
       }
       const snapshot = await response.json();
       if (!snapshot.ok) return;
-      if (snapshot.revision === data.viewerRevision) { adoptAgentStatus(snapshot.agent); return; }
+      if (snapshot.revision === data.viewerRevision || snapshot.revision === selectionRevision && codeSelected()) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await api.getImplementation();
@@ -280,17 +283,27 @@ import { renderPage } from "./views/page";
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
-      const selection = window.getSelection();
-      const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
-      if (!roundNotice) refreshNotice = "Review updated";
       // A code selection must not prevent an open conversation from refreshing.
       // Keep metadata aligned with the visible diff until the selection clears:
       // adopt only the threads, so rendering leaves the selected code rows alone.
-      // Leave viewerRevision unchanged so the next poll still adopts the full snapshot.
+      // Leave viewerRevision unchanged so the first poll after it still adopts the
+      // full snapshot; until then this revision is not fetched again, and only
+      // changed feedback renders, as each render closes an open tooltip.
       // Thread lists the selection runs through keep what they show (see heldThreads).
-      if (selected) artifactThreads.splice(0, artifactThreads.length, ...(payload.implementation.feedback || []));
-      else adoptImplementation(payload.implementation);
-      render();
+      const feedback = payload.implementation.feedback || [];
+      if (codeSelected()) {
+        selectionRevision = snapshot.revision;
+        if (JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
+          artifactThreads.splice(0, artifactThreads.length, ...feedback);
+          if (!roundNotice) refreshNotice = "Review updated";
+          render();
+        }
+      } else {
+        selectionRevision = null;
+        adoptImplementation(payload.implementation);
+        if (!roundNotice) refreshNotice = "Review updated";
+        render();
+      }
       adoptAgentStatus(snapshot.agent);
     } catch {
       // External artifact writes can be transient; retry without replacing good data.
@@ -1129,10 +1142,15 @@ import { renderPage } from "./views/page";
   }
   // Local notes still worth showing: drafts, plus exported notes whose artifact
   // thread has not been reloaded yet. Once the artifact thread is present the
-  // local marker is hidden so a sent note is never rendered twice.
-  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId) {
+  // local marker is hidden so a sent note is never rendered twice. A list the
+  // selection holds (`list`) keeps a sent note until it shows the note's thread.
+  function sentNoteWaiting(c, list) {
+    if (!c.exported) return true;
+    return list && selectedThreadLists.has(list.key) ? !list.threads.some((t) => t.id === c.threadId) : !artifactThreadById(c.threadId);
+  }
+  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId, list = null) {
     return elementNotes(id).filter(
-      ({ c }) => (!c.exported || !artifactThreadById(c.threadId)) && matchesNodeContext(c, nodeId) &&
+      ({ c }) => sentNoteWaiting(c, list) && matchesNodeContext(c, nodeId) &&
         (!kind || c.kind === kind) && (kind !== "node" || c.stageId === stageId),
     );
   }
@@ -1162,10 +1180,10 @@ import { renderPage } from "./views/page";
     });
     return counts;
   }
-  function visibleLocalNotes() {
+  function visibleLocalNotes(list = null) {
     return state.comments
       .map((c, i) => ({ c, i }))
-      .filter(({ c }) => !c.exported || !artifactThreadById(c.threadId));
+      .filter(({ c }) => sentNoteWaiting(c, list));
   }
   function activeNoteCount() {
     return artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
@@ -1839,7 +1857,8 @@ import { renderPage } from "./views/page";
       matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
     if (!state.openThreads[threadStateKey(kind, id, stageId)] && !composingNew) return null;
     const listKey = threadListKey(kind, stageId || "", id);
-    const entries = threadListEntries(heldThreads(listKey, artifactThreadsForElement(kind, id, stageId)), localVisibleForElement(id, elementNodeId(kind, id), kind, stageId));
+    const threads = heldThreads(listKey, artifactThreadsForElement(kind, id, stageId));
+    const entries = threadListEntries(threads, localVisibleForElement(id, elementNodeId(kind, id), kind, stageId, { key: listKey, threads }));
     if (!entries.length && !composingNew) return null;
     return { id, kind, stageId: stageId || "", listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
@@ -1877,7 +1896,8 @@ import { renderPage } from "./views/page";
   function fileNotesModel(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
     const listKey = threadListKey("file", elementNodeId("file", id), id);
-    const entries = state.openThreads[id] === false ? [] : threadListEntries(heldThreads(listKey, artifactThreadsForElement("file", id)), localVisibleForElement(id));
+    const threads = state.openThreads[id] === false ? [] : heldThreads(listKey, artifactThreadsForElement("file", id));
+    const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads }));
     return { id, kind: "file", stageId: null, listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
   // A group's unapproved or stale file approvals that can be captured now.
@@ -2005,8 +2025,9 @@ import { renderPage } from "./views/page";
     const composingNew =
       compose && compose.kind === "line" && compose.id === lineId && matchesNodeContext(compose, elementNodeId("line", lineId)) && compose.editIndex == null;
     if (!state.openLineThreads[lineId] && !composingNew) return null;
-    const arts = heldThreads(lineListKey(lineId), artifactThreadsForElement("line", lineId));
-    const locals = localVisibleForElement(lineId);
+    const key = lineListKey(lineId);
+    const arts = heldThreads(key, artifactThreadsForElement("line", lineId));
+    const locals = localVisibleForElement(lineId, undefined, null, undefined, { key, threads: arts });
     if (!arts.length && !locals.length && !composingNew) return null;
     return { arts, locals, composingNew };
   }
@@ -2671,7 +2692,7 @@ import { renderPage } from "./views/page";
       open: Boolean(state.notesOpen), remote: Boolean(data.remote),
       filter: state.notesFilter === "resolved" ? "resolved" : "active",
       activeCount, resolvedCount: resolvedThreads.length,
-      active: groups(activeThreads, visibleLocalNotes()), resolved: groups(resolvedThreads, []),
+      active: groups(activeThreads, visibleLocalNotes({ key: "notes:active", threads: activeThreads })), resolved: groups(resolvedThreads, []),
       export: data.remote ? null : {
         pending, working: exportState.phase === "working",
         outcome: exportState.phase === "error" ? "error" : exportState.phase === "done" ? "done" : "",
@@ -3466,9 +3487,12 @@ import { renderPage } from "./views/page";
           (out.replied || []).forEach((entry) => {
             const thread = artifactThreadById(entry.threadId);
             if (!thread) return;
-            if (entry.comment) thread.comments.push(entry.comment);
-            if (entry.status) thread.status = entry.status;
-            if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+            // Held copies show the sent reply in place of its draft; a copy shared by several lists gets it once.
+            for (const copy of new Set([thread, ...heldThreadCopies(entry.threadId)])) {
+              if (entry.comment) copy.comments.push(entry.comment);
+              if (entry.status) copy.status = entry.status;
+              if ("resolvedAt" in entry) copy.resolvedAt = entry.resolvedAt;
+            }
           });
           const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
           repliesSent = sentIds.size;
