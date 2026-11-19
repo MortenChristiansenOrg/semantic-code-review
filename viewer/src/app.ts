@@ -98,9 +98,10 @@ import { renderPage } from "./views/page";
   const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
-    // A local feedback write changes what the page shows, so the revision a
-    // selection deferred is no longer fully shown; the next poll fetches again.
-    selectionRevision = null;
+    // A local feedback write changes what the page shows, so no server
+    // revision is fully shown any more; the next poll fetches again, even if
+    // another session has since returned the server to the revision loaded.
+    selectionRevision = notShown;
     if (!snapshot || typeof snapshot.revision !== "string") return;
     adoptAgentStatus(snapshot.agent);
   }
@@ -261,8 +262,10 @@ import { renderPage } from "./views/page";
 
   let lastHiddenPoll = 0;
   // The latest server revision a poll handled while a code selection deferred the
-  // full implementation (see below); null once the page shows data.viewerRevision
-  // or a local feedback write changes what it shows.
+  // full implementation (see below), notShown after a local feedback write
+  // (the page then matches no server revision), and null once the page shows
+  // data.viewerRevision.
+  const notShown = Symbol("not shown");
   let selectionRevision = null;
   const codeSelected = () => Boolean(window.getSelection()?.toString()) && !document.activeElement?.matches("input, textarea");
   // Feedback anchors to stage revisions, so it may only join a diff from the same revisions.
@@ -284,7 +287,8 @@ import { renderPage } from "./views/page";
       const snapshot = await response.json();
       if (!snapshot.ok) return;
       // Once the selection clears, a deferred implementation is adopted whatever the revision now is.
-      const handled = selectionRevision === null ? snapshot.revision === data.viewerRevision : snapshot.revision === selectionRevision && codeSelected();
+      const handled = selectionRevision === null ? snapshot.revision === data.viewerRevision
+        : selectionRevision !== notShown && snapshot.revision === selectionRevision && codeSelected();
       if (handled) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;

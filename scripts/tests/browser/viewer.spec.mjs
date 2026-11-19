@@ -323,6 +323,44 @@ test('a local resolve during a selection does not mark a reopened server revisio
   expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
 });
 
+test('a local resolve undone elsewhere shows the server\'s thread again', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('undone')];
+  await mount(page, data, { openThreads: { first: true } });
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect(badge).toHaveText('Notes 1');
+  // The resolve is accepted, but another session reopens the thread before the
+  // next poll, so the server is back at the revision the page loaded.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(badge).toHaveText('Notes 0');
+  await expect(badge).toHaveText('Notes 1');
+});
+
+test('a local resolve after feedback adopted during a selection still converges on the server', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('elsewhere'), thread('local')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect(badge).toHaveText('Notes 2');
+  // Another session resolves one thread, which the selection picks up.
+  data.feedback[0].status = 'resolved';
+  const initial = data.viewerRevision;
+  data.viewerRevision = 'one-resolved';
+  await expect(badge).toHaveText('Notes 1');
+  // The reviewer resolves the other; the other session then reopens both, returning the server to the first revision.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-thread-id="local"] [data-action="thread-resolve"]').dispatchEvent('click');
+  await expect(badge).toHaveText('Notes 0');
+  data.feedback[0].status = 'open';
+  data.viewerRevision = initial;
+  await expect(badge).toHaveText('Notes 2');
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(badge).toHaveText('Notes 2');
+});
+
 test('a selection records the revision of the adopted data, not the one the probe reported', async ({ page }) => {
   const data = fixture();
   data.feedback = [thread('raced')];
