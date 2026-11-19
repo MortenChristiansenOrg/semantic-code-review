@@ -37,14 +37,7 @@ fs.mkdirSync(outputDirectory, { recursive: true });
 
 const compilation = await build({
   entryPoints: {
-    "semantic-implementation": path.join(
-      scriptsRoot,
-      "src",
-      "semantic-implementation-cli.ts",
-    ),
-    "review-feedback": path.join(scriptsRoot, "src", "review-feedback-cli.ts"),
-    "semantic-view": path.join(scriptsRoot, "src", "semantic-view.ts"),
-    "semantic-flow": path.join(scriptsRoot, "src", "semantic-flow.ts"),
+    "semantic-flow": path.join(scriptsRoot, "src", "cli.ts"),
   },
   outdir: outputDirectory,
   outExtension: { ".js": ".mjs" },
@@ -98,14 +91,7 @@ fs.writeFileSync(path.join(skillRoot, "THIRD-PARTY-NOTICES.txt"), [...dependenci
   .map(([name, license]) => `${name}\n${"=".repeat(name.length)}\n${license}`).join("\n\n"));
 if (fs.existsSync(path.join(repositoryRoot, "LICENSE"))) fs.copyFileSync(path.join(repositoryRoot, "LICENSE"), path.join(skillRoot, "LICENSE"));
 
-for (const file of [
-  "semantic-implementation.mjs",
-  "review-feedback.mjs",
-  "semantic-view.mjs",
-  "semantic-flow.mjs",
-]) {
-  fs.chmodSync(path.join(outputDirectory, file), 0o644);
-}
+fs.chmodSync(path.join(outputDirectory, "semantic-flow.mjs"), 0o644);
 
 for (const [file, declaration] of compileApiModules(path.join(scriptsRoot, "src", "api.ts"), cliApis)) {
   const destination = path.join(outputDirectory, file);

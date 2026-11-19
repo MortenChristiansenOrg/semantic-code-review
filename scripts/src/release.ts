@@ -2,8 +2,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { execFileSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
 import { assetName, compareVersions, nextVersion, parseVersion, RELEASE_REPOSITORY } from "./shared/release-version.js";
@@ -83,17 +83,17 @@ export async function packageRelease(output: string): Promise<{ archive: string;
   try {
     const extracted = path.join(temporary, "semantic-flow");
     await unpackDistribution(fs.readFileSync(archive), extracted, version);
-    const run = (name: string, ...args: string[]) => execFileSync(process.execPath, [path.join(extracted, "scripts", `${name}.mjs`), ...args], { cwd: temporary, windowsHide: true, encoding: "utf8" });
+    const cli = path.join(extracted, "scripts", "semantic-flow.mjs");
+    const run = (...args: string[]) => execFileSync(process.execPath, [cli, ...args], { cwd: temporary, windowsHide: true, encoding: "utf8" });
     // Runtime commands operate in a user's Git repository, never the build checkout.
     execFileSync("git", ["init", "-b", "main"], { cwd: temporary, windowsHide: true, stdio: "ignore" });
-    const installed = parseJson(run("semantic-flow", "version", "--json"));
+    const installed = parseJson(run("version", "--json"));
     if (stringField(installed, "skillVersion") !== version || stringField(installed, "sourceCommit") !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
-    for (const name of ["semantic-flow", "semantic-implementation", "review-feedback"]) run(name, "--help");
-    // The viewer is a server entrypoint, not a help-style CLI. Load its module
-    // without starting a background process; release tests cover serving it.
-    execFileSync(process.execPath, ["--input-type=module", "--eval",
-      `import(${JSON.stringify(pathToFileURL(path.join(extracted, "scripts/semantic-view.mjs")).href)})`],
-      { cwd: temporary, windowsHide: true, stdio: "pipe" });
+    for (const group of [[], ["implementation"], ["feedback"]]) run(...group, "--help");
+    // The viewer group is a server, not a help-style command. Loading it in a
+    // repository without an artifact must stop at the missing manifest.
+    const viewer = spawnSync(process.execPath, [cli, "viewer", "serve"], { cwd: temporary, windowsHide: true, encoding: "utf8" });
+    if (viewer.status === 0 || !viewer.stderr.includes("no .semantic-review/manifest.json found")) throw new Error(`The viewer group did not load: ${viewer.stderr}`);
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   return { archive, checksum, version, sourceCommit };
 }

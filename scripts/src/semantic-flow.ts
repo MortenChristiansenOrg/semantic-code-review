@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -53,20 +51,13 @@ import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } 
 import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { withCheckedFeedback } from "./review-feedback.js";
-import { implementationWorkflow, validateSyncStack } from "./semantic-implementation.js";
+import { nextFeedbackAt, validateFeedbackAt, withCheckedFeedback, type CompactThread, type FeedbackGroup, type PendingFeedback } from "./review-feedback.js";
+import { implementationWorkflow, restackOntoTarget, validateImplementation, validateSyncStack, type RestackSummary } from "./semantic-implementation.js";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
-const semanticImplementationScript = path.join(
-  scriptDirectory,
-  "semantic-implementation.mjs",
-);
-const reviewFeedbackScript = path.join(
-  scriptDirectory,
-  "review-feedback.mjs",
-);
-const semanticViewScript = path.join(scriptDirectory, "semantic-view.mjs");
+/** This executable; the viewer server runs as a detached copy of it. */
+const cliScript = fileURLToPath(import.meta.url);
 const HELP = renderCliHelp(semanticFlowApi);
 
 /** An artifact found in a worktree. Inspection tolerates an incomplete
@@ -97,9 +88,10 @@ interface Inspection {
   selected: ArtifactCandidate | null;
 }
 
-/** A stage group of `review-feedback next --json --compact`. It is passed
- * through to callers unchanged; the fields used here are narrowed where read. */
-type PendingFeedbackStage = JsonRecord & { threads: JsonRecord[] };
+/** A stage group of pending feedback; threads replayed by a target restack say so. */
+type PendingFeedbackStage = Omit<FeedbackGroup<CompactThread>, "threads"> & {
+  threads: Array<CompactThread & { restacked?: true }>;
+};
 
 interface TargetRestack {
   previousBaseRevision: string;
@@ -326,44 +318,23 @@ function execute(
   return result.status ?? 1;
 }
 
-function executeCapture(
-  executable: string,
-  args: string[],
-  cwd: string,
-): { passed: boolean; output: string } {
-  const result = executeCaptureStreams(executable, args, cwd);
-  return {
-    passed: result.passed,
-    output: [result.stdout, result.stderr].filter(Boolean).join("\n").trim(),
-  };
-}
-
-interface CapturedStreams {
+/** The outcome of a validation, reported the way the command would print it. */
+interface CapturedValidation {
   passed: boolean;
-  stdout: string;
-  stderr: string;
+  output: string;
 }
 
-function executeCaptureStreams(
-  executable: string,
-  args: string[],
-  cwd: string,
-): CapturedStreams {
-  const result = spawnSync(executable, args, {
-    cwd,
-    encoding: "utf8",
-    windowsHide: true,
-    maxBuffer: SUBPROCESS_MAX_BUFFER,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error) {
-    return { passed: false, stdout: "", stderr: processFailureDetail(result) };
+function captureValidation(validate: () => string): CapturedValidation {
+  try {
+    return { passed: true, output: validate() };
+  } catch (error) {
+    return { passed: false, output: `Error: ${errorMessage(error)}` };
   }
-  return {
-    passed: result.status === 0,
-    stdout: result.stdout.trim(),
-    stderr: result.stderr.trim(),
-  };
+}
+
+function implementationValidationOutput(root: string): string {
+  const { message, warnings } = validateImplementation(root);
+  return [message, ...warnings.map((warning) => `Warning: ${warning}`)].join("\n");
 }
 
 function validate(options: Options): void {
@@ -457,17 +428,9 @@ function status(options: Options): void {
     };
   }
 
-  const artifactValidation = executeCapture(
-    process.execPath,
-    [semanticImplementationScript, "validate"],
-    candidate.worktree,
-  );
+  const artifactValidation = captureValidation(() => implementationValidationOutput(candidate.worktree));
   const feedbackValidation = candidate.feedbackExists
-    ? executeCapture(
-        process.execPath,
-        [reviewFeedbackScript, "validate"],
-        candidate.worktree,
-      )
+    ? captureValidation(() => validateFeedbackAt(candidate.worktree))
     : null;
   const metadataBranch = `${stringField(manifest, "branchPrefix")}/metadata`;
   const metadataPublished = Boolean(
@@ -553,7 +516,6 @@ interface ViewerLaunchMessage {
     stageCount: number;
     fileCount: number;
   };
-  feedbackEnabled?: boolean;
 }
 
 /** The viewer's startup message, or undefined for any other IPC message. */
@@ -577,7 +539,6 @@ function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
           fileCount,
         }
       : undefined,
-    feedbackEnabled: booleanField(value, "feedbackEnabled"),
   };
 }
 
@@ -599,7 +560,7 @@ async function launchViewer(
 ): Promise<void> {
   const child = spawn(
     process.execPath,
-    [semanticViewScript, "review", worktree],
+    [cliScript, "viewer", "serve", worktree],
     {
       cwd: worktree,
       detached: true,
@@ -667,45 +628,7 @@ async function launchViewer(
   console.log(
     `Implementation: ${launch.implementation.title ?? launch.implementation.implementationId ?? "(untitled)"} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
   );
-  if (!launch.feedbackEnabled) {
-    console.log(
-      "Note: review-feedback CLI not found; exporting reviewer feedback is disabled.",
-    );
-  }
   console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
-}
-
-/** The fields of `semantic-implementation restack --json` that a target refresh reports. */
-interface RestackSummary {
-  targetBranch: string;
-  baseRevision: string;
-  refreshedStages: number;
-  rewrittenBranches: number;
-  stages: JsonRecord[];
-}
-
-function parseRestackSummary(stdout: string): RestackSummary {
-  let value: unknown;
-  try {
-    value = parseJson(stdout);
-  } catch {
-    fail("Automatic target restack returned invalid JSON.");
-  }
-  const targetBranch = stringField(value, "targetBranch");
-  const baseRevision = stringField(value, "baseRevision");
-  const refreshedStages = numberField(value, "refreshedStages");
-  const rewrittenBranches = numberField(value, "rewrittenBranches");
-  const stages = isRecord(value) ? value.stages : undefined;
-  if (
-    targetBranch === undefined ||
-    baseRevision === undefined ||
-    refreshedStages === undefined ||
-    rewrittenBranches === undefined ||
-    !Array.isArray(stages)
-  ) {
-    fail("Automatic target restack returned invalid JSON.");
-  }
-  return { targetBranch, baseRevision, refreshedStages, rewrittenBranches, stages: records(stages) };
 }
 
 function refreshAdvancedTarget(candidate: ActiveCandidate): {
@@ -825,30 +748,18 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
     git(["switch", "--detach"], { cwd: candidate.worktree });
   }
 
-  let restack: CapturedStreams;
+  let restackSummary: RestackSummary;
   try {
-    restack = executeCaptureStreams(
-      process.execPath,
-      [
-        semanticImplementationScript,
-        "restack",
-        "--base",
-        candidate.targetBranch,
-        "--json",
-      ],
-      candidate.worktree,
+    restackSummary = restackOntoTarget(candidate.worktree, candidate.targetBranch);
+  } catch (error) {
+    console.error(`Error: ${errorMessage(error)}`);
+    fail(
+      `Could not automatically restack onto advanced target branch ${candidate.targetBranch}.`,
     );
   } finally {
     if (detachedBranch !== null) {
       git(["switch", detachedBranch], { cwd: candidate.worktree });
     }
-  }
-  if (!restack.passed) {
-    const output = [restack.stdout, restack.stderr].filter(Boolean).join("\n");
-    if (output) console.error(output);
-    fail(
-      `Could not automatically restack onto advanced target branch ${candidate.targetBranch}.`,
-    );
   }
 
   if (detachedStageId) {
@@ -868,7 +779,6 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
     git(["switch", "--detach", targetHead], { cwd: candidate.worktree });
   }
 
-  const restackSummary = parseRestackSummary(restack.stdout);
   const found = artifactCandidate(candidate.worktree);
   if (!found) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
@@ -898,27 +808,11 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
 }
 
 function validateArtifactForFeedback(candidate: ArtifactCandidate) {
-  const artifactValidation = executeCapture(
-    process.execPath,
-    [semanticImplementationScript, "validate"],
-    candidate.worktree,
-  );
+  const artifactValidation = captureValidation(() => implementationValidationOutput(candidate.worktree));
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
-}
-
-/** Stage groups printed by `review-feedback next --json --compact`, or undefined when malformed. */
-function pendingStages(value: unknown): PendingFeedbackStage[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const items: unknown[] = value;
-  const stages: PendingFeedbackStage[] = [];
-  for (const stage of items) {
-    if (!isRecord(stage) || !Array.isArray(stage.threads) || !stage.threads.every(isRecord)) return undefined;
-    stages.push({ ...stage, threads: records(stage.threads) });
-  }
-  return stages;
 }
 
 /** Claiming marks the returned threads as one round so no other run answers them. */
@@ -944,35 +838,17 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
   let claimId: string | null = null;
   let claimedElsewhere = 0;
   if (candidate.feedbackExists) {
-    const pending = executeCaptureStreams(
-      process.execPath,
-      [reviewFeedbackScript, "next", "--json", "--compact",
-        ...(claim ? ["--claim", ...(claim.session ? ["--session", claim.session] : [])] : [])],
-      candidate.worktree,
-    );
-    if (!pending.passed) {
-      const output = [pending.stdout, pending.stderr]
-        .filter(Boolean)
-        .join("\n");
-      if (output) console.error(output);
+    let pending: PendingFeedback<CompactThread>;
+    try {
+      pending = nextFeedbackAt(candidate.worktree, claim);
+    } catch (error) {
+      console.error(`Error: ${errorMessage(error)}`);
       fail("Feedback validation failed.");
     }
-    if (pending.stderr) console.error(pending.stderr);
-    try {
-      const parsed = parseJson(pending.stdout);
-      const groups = pendingStages(claim && isRecord(parsed) ? parsed.stages : parsed);
-      const claimValue = isRecord(parsed) ? parsed.claim : undefined;
-      const claimed = typeof claimValue === "string" ? claimValue : claimValue === null ? null : undefined;
-      const elsewhere = numberField(parsed, "claimedElsewhere");
-      if (!groups) throw new Error("Invalid stage groups.");
-      stages = groups;
-      if (claim) {
-        if (claimed === undefined || elsewhere === undefined) throw new Error("Invalid claim.");
-        claimId = claimed;
-        claimedElsewhere = elsewhere;
-      }
-    } catch {
-      fail("Feedback command returned invalid JSON.");
+    stages = pending.stages;
+    if (pending.claim) {
+      claimId = pending.claim.id;
+      claimedElsewhere = pending.claim.claimedElsewhere;
     }
   }
   const responses = claim && candidate.feedbackExists
@@ -984,7 +860,7 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
       ...stage,
       threads: stage.threads.map((thread) => ({
         ...thread,
-        ...(typeof thread.id === "string" && replayed.has(thread.id) ? { restacked: true } : {}),
+        ...(replayed.has(thread.id) ? { restacked: true as const } : {}),
       })),
     }));
   }
@@ -1029,7 +905,7 @@ async function waitForFeedback(options: Options): Promise<void> {
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
     validateArtifactForFeedback(candidate);
     if (candidate.feedbackExists) {
-      const feedbackValidation = executeCapture(process.execPath, [reviewFeedbackScript, "validate"], candidate.worktree);
+      const feedbackValidation = captureValidation(() => validateFeedbackAt(candidate.worktree));
       if (!feedbackValidation.passed) {
         if (feedbackValidation.output) console.error(feedbackValidation.output);
         fail("Feedback validation failed.");
@@ -1390,7 +1266,7 @@ function sync(options: Options): void {
     }
   } catch (error) {
     console.error(`Synchronization stopped in ${root}. Target ${candidate.targetBranch} is at ${revision(targetRef)}; the target update is retained.`);
-    console.error(`For a reported patch conflict, follow docs/restack-conflicts.md and resume semantic-implementation.mjs restack --base ${candidate.targetBranch} directly. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
+    console.error(`For a reported patch conflict, follow docs/restack-conflicts.md and resume semantic-flow.mjs implementation restack --base ${candidate.targetBranch} directly. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
     throw error;
   }
 }
@@ -1490,9 +1366,6 @@ function requiredSkillFiles(root: string): string[] {
     path.join("scripts", "API.d.ts"),
     path.join("scripts", "API.full.d.ts"),
     ...["shared", "implementation", "stages", "history", "feedback", "workflow"].map((name) => path.join("scripts", "api", `${name}.d.ts`)),
-    path.join("scripts", "semantic-implementation.mjs"),
-    path.join("scripts", "review-feedback.mjs"),
-    path.join("scripts", "semantic-view.mjs"),
     path.join("scripts", "semantic-flow.mjs"),
     ...commands,
   ];
@@ -1841,19 +1714,17 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
 }
 
-try {
-  const parsed = parseArguments(process.argv.slice(2));
+/** Runs one workflow command line, such as `semantic-flow status`. */
+export async function runWorkflowCommand(argv: string[]): Promise<void> {
+  const parsed = parseArguments(argv);
   if (parsed.options.has("help") && parsed.positionals.length === 0) {
     assertKnownOptions(parsed.options, new Set(["help"]));
     flag(parsed.options, "help");
     console.log(HELP);
-    process.exit(0);
+    return;
   }
   await dispatch(
     parsed.positionals,
     expandInputOptions(parsed.options, process.cwd()),
   );
-} catch (error) {
-  console.error(`Error: ${errorMessage(error)}`);
-  process.exit(1);
 }

@@ -31,8 +31,8 @@ export interface InitializeImplementationOptions {
 
 /**
  * Initializes a semantic implementation and its first specification.
- * @cli semantic-implementation.mjs
- * @command init
+ * @cli semantic-flow.mjs
+ * @command implementation init
  */
 export declare function initializeImplementation(
   options: InitializeImplementationOptions,
@@ -57,7 +57,7 @@ export interface AddSpecificationOptions {
 
 /**
  * Adds another specification to the active implementation.
- * @cli semantic-implementation.mjs
- * @command specification add
+ * @cli semantic-flow.mjs
+ * @command implementation specification add
  */
 export declare function addSpecification(options: AddSpecificationOptions): void;

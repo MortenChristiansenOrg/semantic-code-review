@@ -6,6 +6,7 @@ import type {
   CommandSignature,
   OptionSignature,
 } from "./command-api.js";
+import { fullCommand } from "./command-api.js";
 
 interface DeclaredOption {
   name: string;
@@ -207,7 +208,7 @@ function compareCommand(
   declared: DeclaredCommand,
 ): void {
   compareOptions(
-    `${api.executable} ${runtime.command}`,
+    `${api.executable} ${fullCommand(api, runtime.command)}`,
     declared.options,
     runtime.options ?? [],
   );
@@ -235,7 +236,7 @@ function validateGlobalOptions(
   const declared = declaredOptions(globalInterface);
   for (const api of apis) {
     compareOptions(
-      `${api.executable} global options`,
+      `${api.executable} ${api.group ?? "workflow"} global options`,
       declared,
       api.globalOptions ?? [],
     );
@@ -275,11 +276,12 @@ export function compileApiDefinition(
   validateGlobalOptions(sourceText, apis);
   for (const api of apis) {
     for (const runtimeCommand of api.commands) {
-      const key = commandKey(api.executable, runtimeCommand.command);
+      const command = fullCommand(api, runtimeCommand.command);
+      const key = commandKey(api.executable, command);
       const declaredCommand = declared.get(key);
       if (!declaredCommand) {
         fail(
-          `${api.executable} ${runtimeCommand.command} is missing from the TypeScript API source`,
+          `${api.executable} ${command} is missing from the TypeScript API source`,
         );
       }
       compareCommand(api, runtimeCommand, declaredCommand);

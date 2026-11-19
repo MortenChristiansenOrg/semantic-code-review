@@ -2,8 +2,8 @@ import type { FeedbackTargetKind, DiffSide } from "./shared.js";
 
 /**
  * Initializes mutable feedback state for the active semantic implementation.
- * @cli review-feedback.mjs
- * @command init
+ * @cli semantic-flow.mjs
+ * @command feedback init
  */
 export declare function initializeFeedback(): void;
 
@@ -45,8 +45,8 @@ export interface AddFeedbackThreadOptions {
 /**
  * Adds an open feedback thread with an opening user comment.
  * Target-specific parameters are required by `target-kind`.
- * @cli review-feedback.mjs
- * @command thread add
+ * @cli semantic-flow.mjs
+ * @command feedback thread add
  */
 export declare function addFeedbackThread(
   options: AddFeedbackThreadOptions,
@@ -63,8 +63,8 @@ export interface AddFeedbackThreadsOptions {
  * Adds several feedback threads as one locked and validated mutation.
  * Without `partial`, no thread is kept when any input is invalid.
  * With `partial`, valid inputs commit together and rejected indexes are returned.
- * @cli review-feedback.mjs
- * @command thread add-batch
+ * @cli semantic-flow.mjs
+ * @command feedback thread add-batch
  */
 export declare function addFeedbackThreads(
   options: AddFeedbackThreadsOptions,
@@ -85,8 +85,8 @@ export interface NextFeedbackOptions {
  * Lists open feedback threads awaiting an agent reply, grouped by stage.
  * A thread awaits a reply while a user comment follows the comment its latest
  * agent reply answered.
- * @cli review-feedback.mjs
- * @command next
+ * @cli semantic-flow.mjs
+ * @command feedback next
  */
 export declare function nextFeedback(options?: NextFeedbackOptions): void;
 
@@ -109,8 +109,8 @@ export interface ReplyFeedbackThreadOptions {
  * Appends a comment to an open thread. Replying to a resolved thread reopens
  * it — closing a conversation is always the reviewer's decision. An agent reply
  * records the user comment it answers; comments added while its round ran stay queued.
- * @cli review-feedback.mjs
- * @command thread reply
+ * @cli semantic-flow.mjs
+ * @command feedback thread reply
  */
 export declare function replyFeedbackThread(
   options: ReplyFeedbackThreadOptions,
@@ -129,8 +129,8 @@ export interface ReplyFeedbackThreadsOptions {
  * Appends several replies as one locked and validated mutation.
  * Without `partial`, no reply is kept when any input is invalid.
  * With `partial`, valid replies commit together and rejected indexes are returned.
- * @cli review-feedback.mjs
- * @command thread reply-batch
+ * @cli semantic-flow.mjs
+ * @command feedback thread reply-batch
  */
 export declare function replyFeedbackThreads(
   options: ReplyFeedbackThreadsOptions,
@@ -148,8 +148,8 @@ export interface ResolveFeedbackThreadOptions {
 /**
  * Marks an open thread resolved. Resolution is a reviewer decision; the agent
  * never closes a thread. A closing note is optional.
- * @cli review-feedback.mjs
- * @command thread resolve
+ * @cli semantic-flow.mjs
+ * @command feedback thread resolve
  */
 export declare function resolveFeedbackThread(
   options: ResolveFeedbackThreadOptions,
@@ -162,8 +162,8 @@ export interface ReopenFeedbackThreadOptions {
 
 /**
  * Reopens a resolved thread so the conversation can continue.
- * @cli review-feedback.mjs
- * @command thread reopen
+ * @cli semantic-flow.mjs
+ * @command feedback thread reopen
  */
 export declare function reopenFeedbackThread(
   options: ReopenFeedbackThreadOptions,
@@ -176,8 +176,8 @@ export interface ValidateFeedbackOptions {
 
 /**
  * Validates feedback schemas, targets, stage snapshots, and thread states.
- * @cli review-feedback.mjs
- * @command validate
+ * @cli semantic-flow.mjs
+ * @command feedback validate
  */
 export declare function validateFeedback(
   options?: ValidateFeedbackOptions,
@@ -190,8 +190,8 @@ export interface AddAttachmentOptions {
   "media-type"?: string;
 }
 /** Stores a local context file and emits its metadata and resolvable localPath as JSON.
- * @cli review-feedback.mjs
- * @command attachment add
+ * @cli semantic-flow.mjs
+ * @command feedback attachment add
  */
 export declare function addAttachment(options: AddAttachmentOptions): void;
 export interface ShowAttachmentOptions {
@@ -199,8 +199,8 @@ export interface ShowAttachmentOptions {
   id: string;
 }
 /** Resolves a managed attachment to metadata and a localPath for agent access.
- * @cli review-feedback.mjs
- * @command attachment show
+ * @cli semantic-flow.mjs
+ * @command feedback attachment show
  */
 export declare function showAttachment(options: ShowAttachmentOptions): void;
 
@@ -213,8 +213,8 @@ export interface AskReviewerOptions {
   choice?: string[];
 }
 /** Shows a question in the viewer. The answer is returned in `responses` by the next `semantic-flow feedback` call.
- * @cli review-feedback.mjs
- * @command agent ask
+ * @cli semantic-flow.mjs
+ * @command feedback agent ask
  */
 export declare function askReviewer(options: AskReviewerOptions): void;
 export interface ReportAgentProgressOptions {
@@ -222,7 +222,7 @@ export interface ReportAgentProgressOptions {
   body: string;
 }
 /** Updates the progress note of the feedback round in progress.
- * @cli review-feedback.mjs
- * @command agent progress
+ * @cli semantic-flow.mjs
+ * @command feedback agent progress
  */
 export declare function reportAgentProgress(options: ReportAgentProgressOptions): void;

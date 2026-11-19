@@ -9,15 +9,15 @@ export interface RestackOptions {
 
 /**
  * Refreshes an edited stage branch and rebases every branch above it.
- * @cli semantic-implementation.mjs
- * @command restack
+ * @cli semantic-flow.mjs
+ * @command implementation restack
  */
 export declare function restack(options: RestackOptions): void;
 
 /**
  * Repairs unambiguous interrupted artifact mutations.
- * @cli semantic-implementation.mjs
- * @command repair
+ * @cli semantic-flow.mjs
+ * @command implementation repair
  */
 export declare function repairArtifact(): void;
 
@@ -28,8 +28,8 @@ export interface PublishArtifactOptions {
 
 /**
  * Commits validated semantic metadata to the metadata branch.
- * @cli semantic-implementation.mjs
- * @command publish
+ * @cli semantic-flow.mjs
+ * @command implementation publish
  */
 export declare function publishArtifact(
   options?: PublishArtifactOptions,
@@ -42,8 +42,8 @@ export interface ValidateStackOptions {
 
 /**
  * Verifies stage branches and prints their local base chain.
- * @cli semantic-implementation.mjs
- * @command validate-stack
+ * @cli semantic-flow.mjs
+ * @command implementation validate-stack
  */
 export declare function validateStack(options?: ValidateStackOptions): void;
 
@@ -59,8 +59,8 @@ export interface PrepareBranchOptions {
 /**
  * Creates or updates the bound cumulative implementation branch and publishes
  * matching metadata without changing the worktree.
- * @cli semantic-implementation.mjs
- * @command prepare-branch
+ * @cli semantic-flow.mjs
+ * @command implementation prepare-branch
  */
 export declare function prepareBranch(options: PrepareBranchOptions): void;
 
@@ -75,8 +75,8 @@ export interface ArchiveImplementationOptions {
  * Moves a merged and published implementation into repository history.
  * The target branch must be checked out, contain the final stage head, and have
  * a metadata branch that exactly matches the current artifact.
- * @cli semantic-implementation.mjs
- * @command archive
+ * @cli semantic-flow.mjs
+ * @command implementation archive
  */
 export declare function archiveImplementation(options?: ArchiveImplementationOptions): void;
 
@@ -90,8 +90,8 @@ export interface ValidateArtifactOptions {
 /**
  * Validates schemas, references, dependencies, artifact state, and Git state.
  * `schema-only` and `publish` are mutually exclusive.
- * @cli semantic-implementation.mjs
- * @command validate
+ * @cli semantic-flow.mjs
+ * @command implementation validate
  */
 export declare function validateArtifact(
   options?: ValidateArtifactOptions,
