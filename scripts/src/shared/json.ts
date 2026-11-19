@@ -1,12 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  parse,
-  parseTree,
-  printParseErrorCode,
-  type Node as JsonNode,
-  type ParseError,
-} from "jsonc-parser/lib/esm/main.js";
+// Bundles use the package's ESM build (see the alias in build-skill.ts). The
+// build and release tools run this file through tsx and load the CommonJS entry:
+// the package does not mark its ESM build as ESM, so Node.js 20 cannot load it.
+import * as jsonc from "jsonc-parser";
+import type { Node as JsonNode, ParseError } from "jsonc-parser";
 import { fail } from "./errors.js";
 import { errorMessage } from "./narrow.js";
 
@@ -48,7 +46,7 @@ export function readJson(file: string): unknown {
   }
 
   const parseErrors: ParseError[] = [];
-  const value = parse(text, parseErrors, {
+  const value: unknown = jsonc.parse(text, parseErrors, {
     allowTrailingComma: false,
     disallowComments: true,
   });
@@ -56,7 +54,7 @@ export function readJson(file: string): unknown {
     const details = parseErrors
       .map(
         (error) =>
-          `${printParseErrorCode(error.error)} at character ${error.offset}`,
+          `${jsonc.printParseErrorCode(error.error)} at character ${error.offset}`,
       )
       .join(", ");
     fail(`${file}: invalid JSON: ${details}.`);
@@ -64,7 +62,7 @@ export function readJson(file: string): unknown {
 
   const duplicateErrors: string[] = [];
   findDuplicateKeys(
-    parseTree(text, [], {
+    jsonc.parseTree(text, [], {
       allowTrailingComma: false,
       disallowComments: true,
     }),

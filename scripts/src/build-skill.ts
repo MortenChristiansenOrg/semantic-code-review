@@ -50,6 +50,8 @@ const compilation = await build({
   outExtension: { ".js": ".mjs" },
   entryNames: "[name]",
   bundle: true,
+  // The package's CommonJS entry is a UMD wrapper whose requires esbuild cannot follow.
+  alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
   format: "esm",
   platform: "node",
   target: "node20",
