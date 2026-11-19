@@ -3,6 +3,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { fromBufferPromise } from "yauzl";
 import { parseVersion, RELEASE_REPOSITORY } from "./release-version.js";
+import { parseJson } from "./json.js";
+import { isRecord, stringField, type JsonRecord } from "./narrow.js";
 
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
@@ -45,24 +47,34 @@ function requiredFiles(files: Map<string, Buffer>): void {
   for (const name of required) if (!files.has(name)) throw new Error(`Release is missing ${name}.`);
 }
 
+function requiredFile(files: Map<string, Buffer>, name: string): Buffer {
+  const bytes = files.get(name);
+  if (!bytes) throw new Error(`Release is missing ${name}.`);
+  return bytes;
+}
+
 export function validateDistribution(files: Map<string, Buffer>, expectedVersion: string, runtimeMajor = Number(process.versions.node.split(".")[0])): ReleaseMetadata {
   requiredFiles(files);
-  const metadata = JSON.parse(files.get("RELEASE.json")!.toString()) as ReleaseMetadata;
-  parseVersion(metadata.version);
-  if (metadata.version !== expectedVersion || files.get("VERSION")!.toString().trim() !== expectedVersion ||
-      metadata.repository !== RELEASE_REPOSITORY || !/^[a-f0-9]{40}$/.test(metadata.sourceCommit)) {
+  const parsed = parseJson(requiredFile(files, "RELEASE.json").toString());
+  const metadata: JsonRecord = isRecord(parsed) ? parsed : {};
+  const { version, repository, minimumNodeMajor, files: checksums } = metadata;
+  parseVersion(typeof version === "string" ? version : String(version));
+  const sourceCommit = stringField(metadata, "sourceCommit");
+  if (version !== expectedVersion || requiredFile(files, "VERSION").toString().trim() !== expectedVersion ||
+      repository !== RELEASE_REPOSITORY || sourceCommit === undefined || !/^[a-f0-9]{40}$/.test(sourceCommit)) {
     throw new Error("Release version, repository, or source commit does not match its metadata.");
   }
-  if (!Number.isSafeInteger(metadata.minimumNodeMajor) || metadata.minimumNodeMajor < 20 || runtimeMajor < metadata.minimumNodeMajor) {
-    throw new Error(`This release requires Node.js ${metadata.minimumNodeMajor} or newer.`);
+  if (typeof minimumNodeMajor !== "number" || !Number.isSafeInteger(minimumNodeMajor) || minimumNodeMajor < 20 || runtimeMajor < minimumNodeMajor) {
+    throw new Error(`This release requires Node.js ${String(minimumNodeMajor)} or newer.`);
   }
-  if (!metadata.files || typeof metadata.files !== "object" || Array.isArray(metadata.files) ||
-      Object.keys(metadata.files).length !== files.size - 1) throw new Error("Invalid release file manifest.");
-  for (const [name, bytes] of files) {
-    if (name === "RELEASE.json") continue;
-    if (!Object.hasOwn(metadata.files, name) || metadata.files[name] !== sha256(bytes)) throw new Error(`Release file checksum mismatch: ${name}.`);
-  }
-  return metadata;
+  if (!isRecord(checksums) || Object.keys(checksums).length !== files.size - 1) throw new Error("Invalid release file manifest.");
+  // Entries become own properties even for names such as __proto__.
+  const verified = Object.fromEntries([...files].filter(([name]) => name !== "RELEASE.json").map(([name, bytes]): [string, string] => {
+    const digest = sha256(bytes);
+    if (!Object.hasOwn(checksums, name) || checksums[name] !== digest) throw new Error(`Release file checksum mismatch: ${name}.`);
+    return [name, digest];
+  }));
+  return { version: expectedVersion, sourceCommit, repository, minimumNodeMajor, files: verified };
 }
 
 /** Validate the complete ZIP before creating any files. Only regular files are accepted. */

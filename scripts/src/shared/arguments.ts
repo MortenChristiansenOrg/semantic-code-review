@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fail } from "./errors.js";
+import { parseJson } from "./json.js";
+import { errorMessage, isRecord } from "./narrow.js";
 
 export type OptionValue = string | true;
 export type Options = Map<string, OptionValue[]>;
@@ -105,13 +107,13 @@ export function expandInputOptions(options: Options, cwd: string): Options {
   const file = input === "-" ? "standard input" : path.resolve(cwd, input);
   let value: unknown;
   try {
-    value = JSON.parse(
+    value = parseJson(
       input === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(file, "utf8"),
     );
   } catch (error) {
-    fail(`Could not read JSON input ${file}: ${error.message}`);
+    fail(`Could not read JSON input ${file}: ${errorMessage(error)}`);
   }
-  if (!value || Array.isArray(value) || typeof value !== "object") {
+  if (!isRecord(value)) {
     fail(`JSON input ${file} must contain one object.`);
   }
 
@@ -132,6 +134,9 @@ export function expandInputOptions(options: Options, cwd: string): Options {
   return expanded;
 }
 
+export function option(options: Options, name: string, settings: OptionSettings & { required: true }): string;
+export function option(options: Options, name: string, settings: OptionSettings & { defaultValue: string }): string;
+export function option(options: Options, name: string, settings?: OptionSettings): string | undefined;
 export function option(
   options: Options,
   name: string,

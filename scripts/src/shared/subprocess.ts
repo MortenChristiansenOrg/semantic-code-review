@@ -1,4 +1,5 @@
 import { constants as bufferConstants } from "node:buffer";
+import { capturedOutput, errorCode, isRecord, stringField } from "./narrow.js";
 
 /**
  * Shared limits and failure reporting for synchronous subprocesses.
@@ -12,23 +13,19 @@ import { constants as bufferConstants } from "node:buffer";
  */
 export const SUBPROCESS_MAX_BUFFER = Math.min(512 * 1024 * 1024, bufferConstants.MAX_STRING_LENGTH);
 
-interface FailedProcess {
-  error?: Error & { code?: string };
-  signal?: NodeJS.Signals | null;
-  status?: number | null;
-  stderr?: string | Buffer | null;
-}
-
 /**
  * Describes why a synchronous subprocess failed: the spawn error (such as
  * ENOBUFS or ETIMEDOUT), the terminating signal and the captured stderr.
  * Accepts both a `spawnSync` result and an error thrown by `execFileSync`.
  */
-export function processFailureDetail(failure: FailedProcess | Error): string {
+export function processFailureDetail(failure: unknown): string {
   const thrown = failure instanceof Error;
-  const result = failure as FailedProcess & { code?: string };
-  const error = thrown ? (failure as Error & { code?: string }) : result.error;
-  const code = typeof error?.code === "string" ? error.code : undefined;
+  const error = thrown
+    ? failure
+    : isRecord(failure) && failure.error instanceof Error
+      ? failure.error
+      : undefined;
+  const code = errorCode(error);
   const reasons: string[] = [];
   if (code === "ENOBUFS") {
     reasons.push("output exceeded the maximum buffer size (ENOBUFS)");
@@ -36,10 +33,11 @@ export function processFailureDetail(failure: FailedProcess | Error): string {
     // A thrown non-zero exit only says "Command failed"; stderr explains it.
     reasons.push(error.message);
   }
-  if (result.signal && code !== "ENOBUFS") {
-    reasons.push(`terminated by signal ${result.signal}`);
+  const signal = stringField(failure, "signal");
+  if (signal && code !== "ENOBUFS") {
+    reasons.push(`terminated by signal ${signal}`);
   }
-  const stderr = result.stderr?.toString().trim();
+  const stderr = capturedOutput(failure, "stderr")?.toString().trim();
   if (stderr) {
     reasons.push(stderr);
   }

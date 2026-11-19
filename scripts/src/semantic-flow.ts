@@ -26,7 +26,22 @@ import {
 import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
-import { readJson } from "./shared/json.js";
+import { parseJson, readJson } from "./shared/json.js";
+import { readDocument } from "./shared/schema-validation.js";
+import {
+  FEEDBACK_MANIFEST_SCHEMA_ID,
+  MANIFEST_SCHEMA_ID,
+  STAGE_SCHEMA_ID,
+  THREAD_SCHEMA_ID,
+} from "./shared/documents.js";
+import {
+  booleanField,
+  errorMessage,
+  isRecord,
+  numberField,
+  stringField,
+  type JsonRecord,
+} from "./shared/narrow.js";
 import { withValidationContext } from "./shared/validation-context.js";
 import {
   probeViewer,
@@ -54,12 +69,14 @@ const reviewFeedbackScript = path.join(
 const semanticViewScript = path.join(scriptDirectory, "semantic-view.mjs");
 const HELP = renderCliHelp(semanticFlowApi);
 
+/** An artifact found in a worktree. Inspection tolerates an incomplete
+ * manifest, so the fields other than the implementation ID may be missing. */
 interface ArtifactCandidate {
   worktree: string;
   implementationId: string;
-  title: string;
-  targetBranch: string;
-  baseRevision: string;
+  title?: string;
+  targetBranch?: string;
+  baseRevision?: string;
   currentBranch: string | null;
   finalizedStageIds: string[];
   workingStageIds: string[];
@@ -67,24 +84,22 @@ interface ArtifactCandidate {
   feedbackDirectory: string;
 }
 
+/** A candidate whose manifest has every field that acting on it requires. */
+type ActiveCandidate = ArtifactCandidate & {
+  title: string;
+  targetBranch: string;
+  baseRevision: string;
+};
+
 interface Inspection {
   repositoryRoot: string;
   candidates: ArtifactCandidate[];
   selected: ArtifactCandidate | null;
 }
 
-interface PendingFeedbackStage {
-  stageId: string;
-  stageBranch: string;
-  threads: Array<{
-    id: string;
-    stale: boolean;
-    reanchored?: boolean;
-    restacked?: boolean;
-    comments: Array<{ author: string; body: string; attachments?: Array<import("./shared/review-attachments.js").Attachment & { localPath: string }> }>;
-    target: { label: string };
-  }>;
-}
+/** A stage group of `review-feedback next --json --compact`. It is passed
+ * through to callers unchanged; the fields used here are narrowed where read. */
+type PendingFeedbackStage = JsonRecord & { threads: JsonRecord[] };
 
 interface TargetRestack {
   previousBaseRevision: string;
@@ -92,14 +107,21 @@ interface TargetRestack {
   baseRevision: string;
   refreshedStages: number;
   rewrittenBranches: number;
-  stages: Array<{
-    id: string;
-    branch: string;
-    previousHead: string;
-    nextHead: string;
-    rewritten: boolean;
-  }>;
+  /** The restack command's per-stage entries, passed through unchanged. */
+  stages: JsonRecord[];
   replayedThreadIds: string[];
+}
+
+/** The record items of a JSON array; anything else has none. */
+function records(value: unknown): JsonRecord[] {
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+/** The string items of a JSON array; anything else has none. */
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 function normalizedPath(value: string): string {
@@ -166,25 +188,41 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
   if (!fs.existsSync(manifestPath)) {
     return null;
   }
+  // Inspection reports on possibly invalid artifacts, so read only what is present.
   const manifest = readJson(manifestPath);
+  const implementationId = stringField(manifest, "implementationId");
+  if (implementationId === undefined) {
+    throw new Error("The active .semantic-review manifest has no implementation ID.");
+  }
   return {
     worktree: root,
-    implementationId: manifest.implementationId,
-    title: manifest.title,
-    targetBranch: manifest.targetBranch,
-    baseRevision: manifest.baseRevision,
+    implementationId,
+    title: stringField(manifest, "title"),
+    targetBranch: stringField(manifest, "targetBranch"),
+    baseRevision: stringField(manifest, "baseRevision"),
     currentBranch:
       git(["symbolic-ref", "--short", "HEAD"], {
         cwd: root,
         allowFailure: true,
       }) ?? null,
-    finalizedStageIds: [...(manifest.stages ?? [])],
+    finalizedStageIds: strings(isRecord(manifest) ? manifest.stages : undefined),
     workingStageIds: workingStageIds(root),
-    feedbackDirectory: feedbackDirectory(root, manifest.implementationId),
+    feedbackDirectory: feedbackDirectory(root, implementationId),
     feedbackExists: fs.existsSync(
-      path.join(feedbackDirectory(root, manifest.implementationId), "manifest.json"),
+      path.join(feedbackDirectory(root, implementationId), "manifest.json"),
     ),
   };
+}
+
+/** Narrows a candidate for commands that act on the implementation. A manifest
+ * without these fields is invalid, so report it as the validation failure. */
+function activeCandidate(candidate: ArtifactCandidate): ActiveCandidate {
+  const { title, targetBranch, baseRevision } = candidate;
+  if (title === undefined || targetBranch === undefined || baseRevision === undefined) {
+    validateArtifactForFeedback(candidate);
+    fail(`The semantic implementation manifest in ${candidate.worktree} is incomplete.`);
+  }
+  return { ...candidate, title, targetBranch, baseRevision };
 }
 
 function inspect(options: Options): Inspection {
@@ -300,11 +338,17 @@ function executeCapture(
   };
 }
 
+interface CapturedStreams {
+  passed: boolean;
+  stdout: string;
+  stderr: string;
+}
+
 function executeCaptureStreams(
   executable: string,
   args: string[],
   cwd: string,
-): { passed: boolean; stdout: string; stderr: string } {
+): CapturedStreams {
   const result = spawnSync(executable, args, {
     cwd,
     encoding: "utf8",
@@ -335,56 +379,68 @@ function runWorkflow(options: Options, mode: "validate" | "prepare" | "archive")
   ));
   if (flag(options, "json")) console.log(JSON.stringify(result));
   else {
+    const summary: unknown = result;
+    const stages = records(isRecord(summary) ? summary.stages : undefined);
+    const workingStages = isRecord(summary) && Array.isArray(summary.workingStages) ? summary.workingStages.length : 0;
     console.log(`Artifact: ${candidate.worktree}`);
-    console.log(`Semantic flow ${mode} passed: ${result.stages.length} finalized stage(s), ${result.workingStages.length} working stage(s).`);
+    console.log(`Semantic flow ${mode} passed: ${stages.length} finalized stage(s), ${workingStages} working stage(s).`);
     if (mode === "prepare" || flag(options, "stack")) {
-      for (const stage of result.stages) console.log(`  ${stage.branch} -> ${stage.baseBranch} (${stage.headRevision})`);
-      console.log(`Final cumulative head: ${result.finalHeadRevision}`);
+      for (const stage of stages) console.log(`  ${stringField(stage, "branch")} -> ${stringField(stage, "baseBranch")} (${stringField(stage, "headRevision")})`);
+      console.log(`Final cumulative head: ${stringField(summary, "finalHeadRevision")}`);
     }
   }
 }
 
-function countStatuses(
-  values: Array<{ status?: string }>,
-): Record<string, number> {
+/** Counts items by their status; items without a string status count as missing. */
+function countStatuses(values: unknown[]): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const value of values) {
-    const status = value.status ?? "missing";
+    const status = stringField(value, "status") ?? "missing";
     counts[status] = (counts[status] ?? 0) + 1;
   }
   return counts;
 }
 
+/** A JSON array field of a possibly invalid document. */
+function arrayField(value: unknown, key: string): unknown[] {
+  const field = isRecord(value) ? value[key] : undefined;
+  return Array.isArray(field) ? field : [];
+}
+
 function status(options: Options): void {
   const candidate = resolveSingle(options, "status");
   const artifact = path.join(candidate.worktree, ".semantic-review");
+  // Status reports on possibly invalid artifacts; the validation below reports their errors.
   const manifest = readJson(path.join(artifact, "manifest.json"));
-  const requirements = (manifest.requirements ?? []).map((id) =>
+  const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
     readJson(path.join(artifact, "requirements", `${id}.json`)),
   );
-  const finalizedStages = (manifest.stages ?? []).map((id) =>
+  const finalizedStages = strings(arrayField(manifest, "stages")).map((id) =>
     readJson(path.join(artifact, "stages", `${id}.json`)),
   );
   const workingStages = candidate.workingStageIds.map((id) =>
     readJson(path.join(artifact, ".work", "stages", `${id}.json`)),
   );
-  const allCriteria = requirements.flatMap((specification) =>
-    (specification.acceptanceCriteria ?? []).map(
-      (criterion) => `${specification.id}#${criterion.id}`,
-    ),
-  );
+  // Criteria without string IDs are left out here; validation reports them.
+  const allCriteria = requirements.flatMap((specification) => {
+    const specificationId = stringField(specification, "id");
+    if (specificationId === undefined) return [];
+    return strings(
+      arrayField(specification, "acceptanceCriteria").map((criterion) => stringField(criterion, "id")),
+    ).map((criterionId) => `${specificationId}#${criterionId}`);
+  });
   const finalizedCoverage = new Set(
-    finalizedStages.flatMap((stage) => stage.specificationRefs ?? []),
+    finalizedStages.flatMap((stage) => strings(arrayField(stage, "specificationRefs"))),
   );
   const workingCoverage = new Set(
-    workingStages.flatMap((stage) => stage.specificationRefs ?? []),
+    workingStages.flatMap((stage) => strings(arrayField(stage, "specificationRefs"))),
   );
   const validations = [...finalizedStages, ...workingStages].flatMap(
-    (stage) => stage.validation ?? [],
+    (stage) => arrayField(stage, "validation"),
   );
 
   const feedbackRoot = candidate.feedbackDirectory;
-  let feedback = {
+  let feedback: { exists: boolean; threads: Record<string, number> } = {
     exists: false,
     threads: {},
   };
@@ -392,7 +448,7 @@ function status(options: Options): void {
     const feedbackManifest = readJson(
       path.join(feedbackRoot, "manifest.json"),
     );
-    const threads = (feedbackManifest.threads ?? []).map((id) =>
+    const threads = strings(arrayField(feedbackManifest, "threads")).map((id) =>
       readJson(path.join(feedbackRoot, "threads", `${id}.json`)),
     );
     feedback = {
@@ -413,7 +469,7 @@ function status(options: Options): void {
         candidate.worktree,
       )
     : null;
-  const metadataBranch = `${manifest.branchPrefix}/metadata`;
+  const metadataBranch = `${stringField(manifest, "branchPrefix")}/metadata`;
   const metadataPublished = Boolean(
     git(["show-ref", "--verify", `refs/heads/${metadataBranch}`], {
       cwd: candidate.worktree,
@@ -492,20 +548,37 @@ interface ViewerLaunchMessage {
   repositoryRoot?: string;
   processId?: number;
   implementation?: {
-    title: string;
+    implementationId?: string;
+    title?: string;
     stageCount: number;
     fileCount: number;
   };
   feedbackEnabled?: boolean;
 }
 
-function isViewerLaunchMessage(value: unknown): value is ViewerLaunchMessage {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    (value.type === "ready" || value.type === "error")
-  );
+/** The viewer's startup message, or undefined for any other IPC message. */
+function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
+  if (!isRecord(value) || (value.type !== "ready" && value.type !== "error")) return undefined;
+  const implementation = value.implementation;
+  const stageCount = numberField(implementation, "stageCount");
+  const fileCount = numberField(implementation, "fileCount");
+  return {
+    type: value.type,
+    message: stringField(value, "message"),
+    url: stringField(value, "url"),
+    repositoryRoot: stringField(value, "repositoryRoot"),
+    processId: numberField(value, "processId"),
+    // The viewer starts on artifacts that miss optional fields such as the title.
+    implementation: stageCount !== undefined && fileCount !== undefined
+      ? {
+          implementationId: stringField(implementation, "implementationId"),
+          title: stringField(implementation, "title"),
+          stageCount,
+          fileCount,
+        }
+      : undefined,
+    feedbackEnabled: booleanField(value, "feedbackEnabled"),
+  };
 }
 
 async function review(options: Options): Promise<void> {
@@ -567,8 +640,9 @@ async function launchViewer(
         ),
       );
     });
-    child.on("message", (message) => {
-      if (settled || !isViewerLaunchMessage(message)) return;
+    child.on("message", (value) => {
+      const message = viewerLaunchMessage(value);
+      if (settled || !message) return;
       settled = true;
       clearTimeout(timeout);
       resolve(message);
@@ -591,7 +665,7 @@ async function launchViewer(
   console.log(`Semantic review viewer: ${launch.url}`);
   console.log(`Project: ${launch.repositoryRoot}`);
   console.log(
-    `Implementation: ${launch.implementation.title} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
+    `Implementation: ${launch.implementation.title ?? launch.implementation.implementationId ?? "(untitled)"} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
   );
   if (!launch.feedbackEnabled) {
     console.log(
@@ -601,8 +675,41 @@ async function launchViewer(
   console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
 }
 
-function refreshAdvancedTarget(candidate: ArtifactCandidate): {
-  candidate: ArtifactCandidate;
+/** The fields of `semantic-implementation restack --json` that a target refresh reports. */
+interface RestackSummary {
+  targetBranch: string;
+  baseRevision: string;
+  refreshedStages: number;
+  rewrittenBranches: number;
+  stages: JsonRecord[];
+}
+
+function parseRestackSummary(stdout: string): RestackSummary {
+  let value: unknown;
+  try {
+    value = parseJson(stdout);
+  } catch {
+    fail("Automatic target restack returned invalid JSON.");
+  }
+  const targetBranch = stringField(value, "targetBranch");
+  const baseRevision = stringField(value, "baseRevision");
+  const refreshedStages = numberField(value, "refreshedStages");
+  const rewrittenBranches = numberField(value, "rewrittenBranches");
+  const stages = isRecord(value) ? value.stages : undefined;
+  if (
+    targetBranch === undefined ||
+    baseRevision === undefined ||
+    refreshedStages === undefined ||
+    rewrittenBranches === undefined ||
+    !Array.isArray(stages)
+  ) {
+    fail("Automatic target restack returned invalid JSON.");
+  }
+  return { targetBranch, baseRevision, refreshedStages, rewrittenBranches, stages: records(stages) };
+}
+
+function refreshAdvancedTarget(candidate: ActiveCandidate): {
+  candidate: ActiveCandidate;
   targetRestack: TargetRestack | null;
 } {
   const targetHead = git(
@@ -626,13 +733,15 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
     );
   }
 
-  const manifest = readJson(
+  const manifest = readDocument(
+    MANIFEST_SCHEMA_ID,
     path.join(candidate.worktree, ".semantic-review", "manifest.json"),
   );
   const stageBranches = new Set<string>();
   const stageHeads = new Map<string, string>();
-  for (const id of manifest.stages ?? []) {
-    const stage = readJson(
+  for (const id of manifest.stages) {
+    const stage = readDocument(
+      STAGE_SCHEMA_ID,
       path.join(candidate.worktree, ".semantic-review", "stages", `${id}.json`),
     );
     stageBranches.add(stage.change.branch);
@@ -647,7 +756,8 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
       );
     }
   }
-  const finalStageHead = stageHeads.get((manifest.stages ?? []).at(-1));
+  const finalStageId = manifest.stages.at(-1);
+  const finalStageHead = finalStageId === undefined ? undefined : stageHeads.get(finalStageId);
   if (
     finalStageHead &&
     git(["merge-base", finalStageHead, targetHead], {
@@ -674,11 +784,11 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
   const replayedThreadIds: string[] = [];
   if (candidate.feedbackExists) {
     const feedbackRoot = candidate.feedbackDirectory;
-    const feedbackManifest = readJson(path.join(feedbackRoot, "manifest.json"));
-    for (const id of feedbackManifest.threads ?? []) {
-      const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
+    const feedbackManifest = readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, path.join(feedbackRoot, "manifest.json"));
+    for (const id of feedbackManifest.threads) {
+      const thread = readDocument(THREAD_SCHEMA_ID, path.join(feedbackRoot, "threads", `${id}.json`));
       const assignedHead = stageHeads.get(thread.assignedStageId);
-      const targetStageId = thread.target?.stageId;
+      const targetStageId = thread.target.stageId;
       const targetHeadBefore = targetStageId
         ? stageHeads.get(targetStageId)
         : null;
@@ -708,12 +818,14 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
       `Target branch ${candidate.targetBranch} advanced, but automatic restacking cannot preserve detached HEAD ${originalHead}. Check out a semantic stage or the target branch first.`,
     );
   }
-  const detachedStage = originalBranch !== null && stageBranches.has(originalBranch);
-  if (detachedStage) {
+  // A checked-out stage branch is detached while the restack rewrites it.
+  const detachedBranch =
+    originalBranch !== null && stageBranches.has(originalBranch) ? originalBranch : null;
+  if (detachedBranch !== null) {
     git(["switch", "--detach"], { cwd: candidate.worktree });
   }
 
-  let restack;
+  let restack: CapturedStreams;
   try {
     restack = executeCaptureStreams(
       process.execPath,
@@ -727,8 +839,8 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
       candidate.worktree,
     );
   } finally {
-    if (detachedStage) {
-      git(["switch", originalBranch], { cwd: candidate.worktree });
+    if (detachedBranch !== null) {
+      git(["switch", detachedBranch], { cwd: candidate.worktree });
     }
   }
   if (!restack.passed) {
@@ -740,7 +852,8 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
   }
 
   if (detachedStageId) {
-    const refreshedStage = readJson(
+    const refreshedStage = readDocument(
+      STAGE_SCHEMA_ID,
       path.join(
         candidate.worktree,
         ".semantic-review",
@@ -755,16 +868,12 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
     git(["switch", "--detach", targetHead], { cwd: candidate.worktree });
   }
 
-  let restackSummary;
-  try {
-    restackSummary = JSON.parse(restack.stdout);
-  } catch {
-    fail("Automatic target restack returned invalid JSON.");
-  }
-  const refreshed = artifactCandidate(candidate.worktree);
-  if (!refreshed) {
+  const restackSummary = parseRestackSummary(restack.stdout);
+  const found = artifactCandidate(candidate.worktree);
+  if (!found) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
   }
+  const refreshed = activeCandidate(found);
   try {
     // The reviewer learns of the refresh in the viewer even when no agent reports it.
     updateAgentState(reviewId(candidate.worktree, candidate.implementationId), (state, now) => {
@@ -772,7 +881,7 @@ function refreshAdvancedTarget(candidate: ArtifactCandidate): {
     });
   } catch (error) {
     // The restack succeeded, so its summary must still reach the caller.
-    console.error(`Could not record the target refresh for the viewer: ${error.message}`);
+    console.error(`Could not record the target refresh for the viewer: ${errorMessage(error)}`);
   }
   return {
     candidate: refreshed,
@@ -798,6 +907,18 @@ function validateArtifactForFeedback(candidate: ArtifactCandidate) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
+}
+
+/** Stage groups printed by `review-feedback next --json --compact`, or undefined when malformed. */
+function pendingStages(value: unknown): PendingFeedbackStage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items: unknown[] = value;
+  const stages: PendingFeedbackStage[] = [];
+  for (const stage of items) {
+    if (!isRecord(stage) || !Array.isArray(stage.threads) || !stage.threads.every(isRecord)) return undefined;
+    stages.push({ ...stage, threads: records(stage.threads) });
+  }
+  return stages;
 }
 
 /** Claiming marks the returned threads as one round so no other run answers them. */
@@ -838,9 +959,18 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
     }
     if (pending.stderr) console.error(pending.stderr);
     try {
-      const parsed = JSON.parse(pending.stdout);
-      if (claim) ({ stages, claim: claimId, claimedElsewhere } = parsed);
-      else stages = parsed;
+      const parsed = parseJson(pending.stdout);
+      const groups = pendingStages(claim && isRecord(parsed) ? parsed.stages : parsed);
+      const claimValue = isRecord(parsed) ? parsed.claim : undefined;
+      const claimed = typeof claimValue === "string" ? claimValue : claimValue === null ? null : undefined;
+      const elsewhere = numberField(parsed, "claimedElsewhere");
+      if (!groups) throw new Error("Invalid stage groups.");
+      stages = groups;
+      if (claim) {
+        if (claimed === undefined || elsewhere === undefined) throw new Error("Invalid claim.");
+        claimId = claimed;
+        claimedElsewhere = elsewhere;
+      }
     } catch {
       fail("Feedback command returned invalid JSON.");
     }
@@ -854,7 +984,7 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
       ...stage,
       threads: stage.threads.map((thread) => ({
         ...thread,
-        ...(replayed.has(thread.id) ? { restacked: true } : {}),
+        ...(typeof thread.id === "string" && replayed.has(thread.id) ? { restacked: true } : {}),
       })),
     }));
   }
@@ -879,8 +1009,8 @@ function unclaimedFeedbackWaiting(candidate: ArtifactCandidate, claimed: Set<str
   const directory = feedbackDirectory(candidate.worktree, candidate.implementationId);
   const manifest = path.join(directory, "manifest.json");
   if (!fs.existsSync(manifest)) return false;
-  return (readJson(manifest).threads ?? []).some((id: string) =>
-    !claimed.has(id) && awaitsAgentReply(readJson(path.join(directory, "threads", `${id}.json`))));
+  return readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest).threads.some((id) =>
+    !claimed.has(id) && awaitsAgentReply(readDocument(THREAD_SCHEMA_ID, path.join(directory, "threads", `${id}.json`))));
 }
 
 /** Listens as the review's agent until a round, an answer, a stop, or the timeout. */
@@ -890,7 +1020,7 @@ async function waitForFeedback(options: Options): Promise<void> {
   const seconds = timeout === undefined ? DEFAULT_WAIT_SECONDS : Number(timeout);
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 86_400) fail("--timeout must be a whole number of seconds from 1 to 86400.");
   const requested = option(options, "session");
-  const candidate = resolveSingle(options, "feedback");
+  const candidate = activeCandidate(resolveSingle(options, "feedback"));
   const review = reviewId(candidate.worktree, candidate.implementationId);
   registerReview(candidate.worktree, candidate.implementationId, candidate.title);
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
@@ -919,58 +1049,73 @@ async function waitForFeedback(options: Options): Promise<void> {
   const session = start.session;
   const deadline = Date.now() + seconds * 1000;
   let heartbeat = Date.now();
-  while (true) {
-    const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean; released?: string[] } => {
-      const live = liveSession(state);
-      if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
-      if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
-      const end = (reason: string) => { endSession(state, now, reason); return { stop: reason }; };
-      const idle = now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS;
-      // Answers come first: stopping must never discard a decision the reviewer already made.
-      const responses = takeResponses(state, session);
-      if (responses.length) {
-        live.feedbackAt = new Date(now).toISOString();
-        renewSessionClaims(state, now, session);
-        return { responses };
+  try {
+    while (true) {
+      const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean; released?: string[] } => {
+        const live = liveSession(state);
+        if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
+        if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
+        const end = (reason: string) => { endSession(state, now, reason); return { stop: reason }; };
+        const idle = now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS;
+        // Answers come first: stopping must never discard a decision the reviewer already made.
+        const responses = takeResponses(state, session);
+        if (responses.length) {
+          live.feedbackAt = new Date(now).toISOString();
+          renewSessionClaims(state, now, session);
+          return { responses };
+        }
+        if (roundAwaitingAnswer(state, now, session)) {
+          // The round keeps its threads while the reviewer decides; Stop applies once it finishes.
+          if (readReview(review).completedAt) return end("completed");
+          if (idle) return end("idle");
+          renewSessionClaims(state, now, session);
+          return {};
+        }
+        // Threads a finished round left unanswered return to the queue after a short
+        // grace, so a reply posted alongside this wait is not reissued as a new round.
+        // Stop and idle apply once the round settles, like after any other round.
+        const { settling, released } = settleSessionClaims(state, now, session);
+        const step = (() => {
+          if (live.stopRequestedAt) return settling ? {} : end("stopped");
+          if (readReview(review).completedAt) return end("completed");
+          if (sendInProgress(state, now)) return {};
+          if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
+          return idle && !settling ? end("idle") : {};
+        })();
+        return released.length ? { ...step, released } : step;
+      });
+      if (step.released) console.error(`The previous round ended without replies to ${step.released.join(", ")}; returned to the queue. Post every reply before waiting again.`);
+      if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
+      if (step.responses) { print({ session, responses: step.responses }); return; }
+      if (step.pending) {
+        const { candidate: current, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
+        const result = feedbackSnapshot(current, targetRestack, { session });
+        if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
+        // Another run claimed the threads first; keep listening.
       }
-      if (roundAwaitingAnswer(state, now, session)) {
-        // The round keeps its threads while the reviewer decides; Stop applies once it finishes.
-        if (readReview(review).completedAt) return end("completed");
-        if (idle) return end("idle");
-        renewSessionClaims(state, now, session);
-        return {};
-      }
-      // Threads a finished round left unanswered return to the queue after a short
-      // grace, so a reply posted alongside this wait is not reissued as a new round.
-      // Stop and idle apply once the round settles, like after any other round.
-      const { settling, released } = settleSessionClaims(state, now, session);
-      const step = (() => {
-        if (live.stopRequestedAt) return settling ? {} : end("stopped");
-        if (readReview(review).completedAt) return end("completed");
-        if (sendInProgress(state, now)) return {};
-        if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
-        return idle && !settling ? end("idle") : {};
-      })();
-      return released.length ? { ...step, released } : step;
-    });
-    if (step.released) console.error(`The previous round ended without replies to ${step.released.join(", ")}; returned to the queue. Post every reply before waiting again.`);
-    if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
-    if (step.responses) { print({ session, responses: step.responses }); return; }
-    if (step.pending) {
-      const { candidate: current, targetRestack } = refreshAdvancedTarget(resolveSingle(options, "feedback"));
-      const result = feedbackSnapshot(current, targetRestack, { session });
-      if (result.stages.length || (result.responses as unknown[]).length) { print({ ...result, session }); return; }
-      // Another run claimed the threads first; keep listening.
+      if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
+      await delay(WAIT_POLL_MS);
     }
-    if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
-    await delay(WAIT_POLL_MS);
+  } catch (error) {
+    // A first wait that fails has not reported its session, so no later wait can
+    // resume it. End it so the viewer does not show an agent that is listening.
+    if (!requested) {
+      try {
+        updateAgentState(review, (state, now) => {
+          if (liveSession(state)?.id === session) endSession(state, now, "failed");
+        });
+      } catch {
+        // Report the original failure.
+      }
+    }
+    throw error;
   }
 }
 
 async function feedback(options: Options): Promise<void> {
   if (flag(options, "wait")) return waitForFeedback(options);
   if (options.has("session") || options.has("timeout")) fail("--session and --timeout require --wait.");
-  const { candidate, targetRestack } = refreshAdvancedTarget(resolveSingle(options, "feedback"));
+  const { candidate, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
   const result = feedbackSnapshot(candidate, targetRestack, { session: null });
   const { worktreeChanges, stages } = result;
   if (flag(options, "json")) {
@@ -991,7 +1136,7 @@ async function feedback(options: Options): Promise<void> {
     console.log("No feedback has been sent.");
     return;
   }
-  for (const response of result.responses as Array<{ id: string; question: string; answer: string }>) {
+  for (const response of result.responses ?? []) {
     console.log(`Reviewer answered ${response.id}: ${response.answer}`);
   }
   if (result.claimedElsewhere) console.log(`${result.claimedElsewhere} thread(s) are being answered by another agent run.`);
@@ -1000,14 +1145,14 @@ async function feedback(options: Options): Promise<void> {
     return;
   }
   for (const stage of stages) {
-    console.log(`${stage.stageId} (${stage.stageBranch}):`);
+    console.log(`${stringField(stage, "stageId")} (${stringField(stage, "stageBranch")}):`);
     for (const thread of stage.threads) {
       console.log(
-        `  ${thread.id} [${thread.target.label}]${thread.stale ? " (stale)" : ""}:`,
+        `  ${stringField(thread, "id")} [${stringField(thread.target, "label")}]${thread.stale ? " (stale)" : ""}:`,
       );
-      for (const comment of thread.comments) {
-        console.log(`    ${comment.author}: ${comment.body}`);
-        for (const attachment of comment.attachments || []) console.log(`      ${attachment.filename}: ${attachment.localPath}`);
+      for (const comment of records(thread.comments)) {
+        console.log(`    ${stringField(comment, "author")}: ${stringField(comment, "body")}`);
+        for (const attachment of records(comment.attachments)) console.log(`      ${stringField(attachment, "filename")}: ${stringField(attachment, "localPath")}`);
       }
     }
   }
@@ -1085,7 +1230,7 @@ function fastForwardBranch(root: string, ref: string, checkout: string | undefin
 function refreshTarget(options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticFlowApi, "refresh-target"));
   const root = repositoryRoot(path.resolve(option(options, "project") ?? process.cwd()));
-  const targetBranch = option(options, "target-branch", { required: true })!;
+  const targetBranch = option(options, "target-branch", { required: true });
   const json = flag(options, "json");
   git(["check-ref-format", "--branch", targetBranch], { cwd: root });
   const targetRef = `refs/heads/${targetBranch}`;
@@ -1127,23 +1272,24 @@ function refreshTarget(options: Options): void {
 }
 
 function sync(options: Options): void {
-  const candidate = resolveSingle(options, "sync");
+  const found = resolveSingle(options, "sync");
   const local = flag(options, "local");
   const json = flag(options, "json");
-  const root = candidate.worktree;
-  const targetRef = `refs/heads/${candidate.targetBranch}`;
+  const root = found.worktree;
   const revision = (ref: string): string => git(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: root });
   const isAncestor = (base: string, head: string): boolean =>
     git(["merge-base", "--is-ancestor", base, head], { cwd: root, allowFailure: true }) !== null;
 
   requireCleanSyncWorktree(root);
   withCheckedFeedback(root, false, () => validateSyncStack(root));
+  const candidate = activeCandidate(found);
+  const targetRef = `refs/heads/${candidate.targetBranch}`;
   if (candidate.workingStageIds.length || !candidate.finalizedStageIds.length) {
     fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
   }
   const stageHeads = new Map<string, string>();
   for (const id of candidate.finalizedStageIds) {
-    const stage = readJson(path.join(root, ".semantic-review", "stages", `${id}.json`));
+    const stage = readDocument(STAGE_SCHEMA_ID, path.join(root, ".semantic-review", "stages", `${id}.json`));
     if (revision(`refs/heads/${stage.change.branch}`) !== stage.change.headRevision) {
       fail(`Stage ${id} moved from its recorded head. Reconcile or restack the edited stages before synchronizing the target.`);
     }
@@ -1195,7 +1341,10 @@ function sync(options: Options): void {
       fail(`Target branch ${candidate.targetBranch} and its upstream ${remote} ${remoteBranch} diverged. No target or stage refs were changed; resolve the divergence before retrying.`);
     }
   }
-  const finalStageHead = [...stageHeads.values()].at(-1)!;
+  const finalStageHead = [...stageHeads.values()].at(-1);
+  if (finalStageHead === undefined) {
+    fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
+  }
   if (isAncestor(finalStageHead, targetRevision)) {
     fail(`Target branch ${candidate.targetBranch} already contains the final semantic stage. Archive the landed implementation instead of synchronizing it.`);
   }
@@ -1248,7 +1397,8 @@ function sync(options: Options): void {
 
 function schemaFormatVersion(relativePath: string): string {
   const schema = readJson(path.join(skillDirectory, relativePath));
-  const version = schema?.properties?.formatVersion?.const;
+  const properties = isRecord(schema) ? schema.properties : undefined;
+  const version = stringField(isRecord(properties) ? properties.formatVersion : undefined, "const");
   if (typeof version !== "string") {
     fail(`${relativePath} does not declare a formatVersion constant.`);
   }
@@ -1257,7 +1407,7 @@ function schemaFormatVersion(relativePath: string): string {
 
 function installedCommit(): string | null {
   const metadata = path.join(skillDirectory, "RELEASE.json");
-  if (fs.existsSync(metadata)) return readJson(metadata).sourceCommit ?? null;
+  if (fs.existsSync(metadata)) return stringField(readJson(metadata), "sourceCommit") ?? null;
   const root = git(["rev-parse", "--show-toplevel"], {
     cwd: skillDirectory,
     allowFailure: true,
@@ -1479,7 +1629,7 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
          !samePath(viewer.skillDirectory, skillDirectory))) continue;
     const manifest = path.join(viewerRoot, ".semantic-review", "manifest.json");
     if (!fs.existsSync(manifest) ||
-        readJson(manifest).implementationId !== viewer.implementationId) continue;
+        stringField(readJson(manifest), "implementationId") !== viewer.implementationId) continue;
     found.push({ ...viewer, repositoryRoot: viewerRoot });
   }
   return found;
@@ -1704,6 +1854,6 @@ try {
     expandInputOptions(parsed.options, process.cwd()),
   );
 } catch (error) {
-  console.error(`Error: ${error.message}`);
+  console.error(`Error: ${errorMessage(error)}`);
   process.exit(1);
 }

@@ -327,3 +327,35 @@ test("agent activity renews only its own round, so an abandoned round still expi
   repository.feedback("thread", "reply", "--id", "active", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Done.");
   assert.equal(abandonedActivity(), old);
 });
+
+test("a malformed optional field in agent state keeps the claim it belongs to", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "kept");
+  const round = flowJson(repository);
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].note = null;
+  fs.writeFileSync(file, JSON.stringify(state));
+
+  repository.feedback("agent", "progress", "--body", "Still working");
+  const claim = agentState(repository).claims[0];
+  assert.equal(claim.id, round.claim);
+  assert.deepEqual(claim.threads.map((thread) => thread.id), ["kept"]);
+  assert.equal(claim.note, "Still working");
+});
+
+test("a first wait that fails on invalid feedback does not stay listening", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "invalid");
+  const file = repository.feedbackPath("threads", "invalid.json");
+  const thread = repository.readAbsoluteJson(file);
+  thread.status = "resolved";
+  repository.writeAbsolute(file, JSON.stringify(thread));
+
+  await assert.rejects(waitAsync(repository, "--timeout", "5"), /invalid\.json/);
+  const { session } = agentState(repository);
+  assert.ok(session.endedAt);
+  assert.equal(session.endReason, "failed");
+});

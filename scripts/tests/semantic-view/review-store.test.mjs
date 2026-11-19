@@ -258,3 +258,32 @@ test('a dead owner reaped at the deadline does not block acquiring the freed loc
   assert.equal(readReview(review.id).state.draft, 'Saved after reaping');
   assert.equal(fs.existsSync(lock), false);
 });
+
+test('records saved without a title or lifecycle fields stay readable and listed', (t) => {
+  const root = setup(t);
+  const review = registerReview(path.join(root, 'a'), 'legacy-id', 'Review');
+  const file = path.join(reviewDirectory(review.id), 'review.json');
+  const { title, completedAt, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.equal(readReview(review.id).title, '');
+  assert.equal(readReview(review.id).completedAt, null);
+  assert.deepEqual(listReviews().map((record) => record.id), [review.id]);
+});
+
+test('damaged viewer metadata counts as absent and keeps the review listed', (t) => {
+  const root = setup(t);
+  const review = registerReview(path.join(root, 'a'), 'viewer-id', 'Review');
+  registerReview(path.join(root, 'b'), 'other-id', 'Other');
+  const file = path.join(reviewDirectory(review.id), 'review.json');
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { port: 1, processId: 2, viewerVersion: 'v' } }));
+  assert.equal(readReview(review.id).viewer, undefined);
+  assert.equal(listReviews().length, 2);
+  const viewer = { port: 29180, processId: 2, viewerVersion: 'v', skillDirectory: root };
+  fs.writeFileSync(file, JSON.stringify({ ...record, viewer }));
+  assert.deepEqual(readReview(review.id).viewer, viewer);
+  for (const port of [0, 70000, 1.5]) {
+    fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { ...viewer, port } }));
+    assert.equal(readReview(review.id).viewer, undefined, `port ${port}`);
+  }
+});

@@ -1,9 +1,14 @@
 /** Reply watermarks. An agent comment answers the conversation through the user
  * comment named by `respondsTo`; replies without one answer every earlier comment.
  * User comments after the latest watermark still await the agent. */
-interface WatermarkedComment { id: string; author: string; respondsTo?: string }
+import type { Comment, Thread } from "./documents.js";
 
-export function answeredThrough(comments: WatermarkedComment[]): number {
+/** The parts of a comment that reply tracking reads. Validated comments
+ * qualify, and so do comments narrowed from a thread that may be mid-write. */
+export type TrackedComment = Pick<Comment, "id" | "respondsTo"> & { author: string };
+export type TrackedThread = { status?: string; comments: readonly TrackedComment[] };
+
+export function answeredThrough(comments: readonly TrackedComment[]): number {
   let through = -1;
   comments.forEach((comment, index) => {
     if (comment.author !== "agent") return;
@@ -13,13 +18,12 @@ export function answeredThrough(comments: WatermarkedComment[]): number {
   return through;
 }
 
-export function awaitsAgentReply(thread: { status?: string; comments?: WatermarkedComment[] }): boolean {
-  if (thread?.status !== "open") return false;
-  const comments = thread.comments || [];
-  const through = answeredThrough(comments);
-  return comments.some((comment, index) => index > through && comment.author === "user");
+export function awaitsAgentReply(thread: TrackedThread): boolean {
+  if (thread.status !== "open") return false;
+  const through = answeredThrough(thread.comments);
+  return thread.comments.some((comment, index) => index > through && comment.author === "user");
 }
 
-export function latestUserCommentId(thread: { comments?: WatermarkedComment[] }): string | undefined {
-  return [...(thread.comments || [])].reverse().find((comment) => comment.author === "user")?.id;
+export function latestUserCommentId(thread: Pick<Thread, "comments">): string | undefined {
+  return thread.comments.findLast((comment) => comment.author === "user")?.id;
 }

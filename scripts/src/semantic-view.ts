@@ -13,7 +13,7 @@ export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.j
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+import { Worker, isMainThread, parentPort, workerData, type MessagePort } from "node:worker_threads";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import fs from "node:fs";
@@ -21,7 +21,7 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import {
   probeViewer,
@@ -29,6 +29,7 @@ import {
   VIEWER_APP_ID,
   VIEWER_HOST,
   viewerPort,
+  type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
@@ -50,6 +51,15 @@ export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.j
 import { refreshRemoteReview } from "./shared/remote-review.js";
 import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
+import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
+import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
+import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
+import { isDocument, parseDocument } from "./shared/schema-validation.js";
+import type { StateChange } from "./shared/review-store.js";
+
+const pathExistsFacts = factCache<boolean>();
+const renameFacts = factCache<string>();
+const stageStatsFacts = factCache<Map<string, FileStats>>();
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -59,7 +69,7 @@ const viewerReleaseVersion = fs.existsSync(versionFile)
   ? fs.readFileSync(versionFile, "utf8").trim() || "unversioned"
   : "unversioned";
 
-function fail(message) {
+function fail(message: string): never {
   console.error(`semantic-view: ${message}`);
   process.exitCode = 1;
   throw new Error(message);
@@ -77,7 +87,7 @@ function locateViewerDir() {
   return "";
 }
 
-function resolveRepositoryRoot(args) {
+function resolveRepositoryRoot(args: string[]) {
   const positional = args.filter((a) => a !== "review");
   if (positional.length > 1) {
     fail("usage: semantic-view [review] [project-path]");
@@ -98,7 +108,7 @@ function resolveRepositoryRoot(args) {
   return "";
 }
 
-function gitCapture(cwd, args) {
+function gitCapture(cwd: string, args: string[]): string {
   return execFileSync("git", args, {
     cwd,
     env: reviewEnvironment(),
@@ -108,11 +118,13 @@ function gitCapture(cwd, args) {
   });
 }
 
-function gitPathExists(repoRoot, revision, filePath) {
-  return immutableFact(JSON.stringify(["viewer-path", repoRoot, revision, filePath]), () => checkGitPathExists(repoRoot, revision, filePath));
+type GitCapture = typeof gitCapture;
+
+function gitPathExists(repoRoot: string, revision: string, filePath: string): boolean {
+  return pathExistsFacts(JSON.stringify([repoRoot, revision, filePath]), () => checkGitPathExists(repoRoot, revision, filePath));
 }
 
-function checkGitPathExists(repoRoot, revision, filePath) {
+function checkGitPathExists(repoRoot: string, revision: string, filePath: string) {
   try {
     gitCapture(repoRoot, ["cat-file", "-e", `${revision}:${filePath}`]);
     return true;
@@ -121,10 +133,10 @@ function checkGitPathExists(repoRoot, revision, filePath) {
   }
 }
 
-function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
-  let raw;
+function renamedPathBetween(repoRoot: string, fromRevision: string, toRevision: string, filePath: string): string | null {
+  let raw: string;
   try {
-    raw = immutableFact(JSON.stringify(["viewer-renames", repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
+    raw = renameFacts(JSON.stringify([repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
       "--no-pager",
       "diff",
       "--name-status",
@@ -151,20 +163,218 @@ function renamedPathBetween(repoRoot, fromRevision, toRevision, filePath) {
   return null;
 }
 
-function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, "utf8"));
+const isList = (value: unknown): value is unknown[] => Array.isArray(value);
+
+/** The fields of a JSON object, or an empty record for any other value. */
+const fieldsOf = (value: unknown): JsonRecord => isRecord(value) ? value : {};
+
+// --- Artifact documents as the viewer reads them ---
+//
+// Local artifacts are validated by the CLI, but remote reviews reconstructed
+// from Git history (shared/remote-review.ts) are not schema documents: they
+// have no $schema, base branch or insight collections. The viewer therefore
+// narrows artifact documents field by field. It fails only where it cannot
+// render at all and passes display-only values through to the browser.
+
+/** The implementation manifest fields the viewer reads. */
+interface ViewerManifest {
+  implementationId: string;
+  title?: string;
+  summary?: string;
+  skillVersion?: string;
+  targetBranch?: string;
+  baseRevision?: string;
+  requirements: string[];
+  stages: string[];
 }
 
-function listJsonDocuments(directory) {
-  if (!fs.existsSync(directory)) return [];
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.join(directory, entry.name))
-    .sort();
+interface ViewerSpecification {
+  id?: string;
+  title?: string;
+  summary?: string;
+  source?: { kind?: string; reference?: string; url?: string };
+  acceptanceCriteria: unknown[];
 }
 
-export function viewerSnapshot(repoRoot) {
+interface ViewerNodeChange {
+  path?: string;
+  classification?: unknown;
+  hunks?: unknown;
+  lineRanges?: unknown;
+}
+
+interface ViewerNode {
+  id: string;
+  description?: unknown;
+  changes: ViewerNodeChange[];
+}
+
+interface StageDocumentFile {
+  path: string;
+  kind?: unknown;
+  previousPath?: string;
+  /** Set once readViewerStages has compared the file with its previous occurrence. */
+  baseRevision?: string;
+}
+
+/** A stage's insight collections; items are narrowed where they are read. */
+type InsightLists = Partial<Record<InsightCollection, unknown[]>>;
+
+interface StageDocument<File extends StageDocumentFile = StageDocumentFile> extends InsightLists {
+  id: string;
+  title?: string;
+  summary?: string;
+  rationale?: string;
+  dependsOn: unknown[];
+  specificationRefs: unknown[];
+  nodes: ViewerNode[];
+  change: { branch?: string; baseRevision: string; headRevision: string; files: File[] };
+}
+
+/** A changed file compared with its last occurrence in the ordered review. */
+interface ViewerFile extends StageDocumentFile {
+  baseRevision: string;
+  previousPaths: string[];
+  previousStageId?: string;
+}
+
+type ViewerStage = StageDocument<ViewerFile>;
+
+function requiredString(value: JsonRecord, key: string, file: string): string {
+  const field = value[key];
+  if (typeof field !== "string") throw new Error(`${file}: missing string ${key}.`);
+  return field;
+}
+
+function readManifest(file: string): ViewerManifest {
+  const value = fieldsOf(readJson(file));
+  const { stages, requirements } = value;
+  if (!isStringArray(stages)) throw new Error(`${file}: missing stage list.`);
+  return {
+    implementationId: requiredString(value, "implementationId", file),
+    title: stringField(value, "title"), summary: stringField(value, "summary"), skillVersion: stringField(value, "skillVersion"),
+    targetBranch: stringField(value, "targetBranch"), baseRevision: stringField(value, "baseRevision"),
+    requirements: isStringArray(requirements) ? requirements : [],
+    stages,
+  };
+}
+
+function readSpecification(file: string): ViewerSpecification {
+  const value = fieldsOf(readJson(file));
+  return {
+    id: stringField(value, "id"), title: stringField(value, "title"), summary: stringField(value, "summary"),
+    source: isRecord(value.source) ? { kind: stringField(value.source, "kind"), reference: stringField(value.source, "reference"), url: stringField(value.source, "url") } : undefined,
+    acceptanceCriteria: isList(value.acceptanceCriteria) ? value.acceptanceCriteria : [],
+  };
+}
+
+function readStageDocument(file: string): StageDocument {
+  const value = fieldsOf(readJson(file));
+  const change = fieldsOf(value.change);
+  if (!isList(change.files)) throw new Error(`${file}: missing change file list.`);
+  const files = change.files.map((item): StageDocumentFile => {
+    const entry = fieldsOf(item);
+    return { path: requiredString(entry, "path", file), kind: entry.kind, previousPath: stringField(entry, "previousPath") };
+  });
+  const nodes = (isList(value.nodes) ? value.nodes : []).map((item): ViewerNode => {
+    const node = fieldsOf(item);
+    return {
+      id: requiredString(node, "id", file), description: node.description,
+      changes: (isList(node.changes) ? node.changes : []).map((entry) => {
+        const { classification, hunks, lineRanges } = fieldsOf(entry);
+        return { path: stringField(entry, "path"), classification, hunks, lineRanges };
+      }),
+    };
+  });
+  const stage: StageDocument = {
+    id: requiredString(value, "id", file),
+    title: stringField(value, "title"), summary: stringField(value, "summary"), rationale: stringField(value, "rationale"),
+    dependsOn: isList(value.dependsOn) ? value.dependsOn : [],
+    specificationRefs: isList(value.specificationRefs) ? value.specificationRefs : [],
+    nodes,
+    change: {
+      branch: stringField(change, "branch"),
+      baseRevision: requiredString(change, "baseRevision", file),
+      headRevision: requiredString(change, "headRevision", file),
+      files,
+    },
+  };
+  for (const collection of INSIGHT_COLLECTIONS) {
+    const items = value[collection];
+    if (isList(items)) stage[collection] = items;
+  }
+  return stage;
+}
+
+function manifestPath(repoRoot: string) {
+  return path.join(repoRoot, ".semantic-review", "manifest.json");
+}
+
+function stagePath(repoRoot: string, stageId: string) {
+  return path.join(repoRoot, ".semantic-review", "stages", `${stageId}.json`);
+}
+
+/** The implementation ID of the active manifest, failing when it has none. */
+function manifestImplementationId(value: unknown): string {
+  const implementationId = stringField(value, "implementationId");
+  if (implementationId === undefined) throw new Error("The active .semantic-review manifest has no implementation ID.");
+  return implementationId;
+}
+
+/** A file's bytes, or undefined when it does not exist. */
+function readOptionalFile(file: string): Buffer | undefined {
+  try {
+    return fs.readFileSync(file);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** Stored thread text parsed like the revision snapshot parses it, or
+ * undefined when it is not JSON (for example while it is being repaired). */
+function parseStoredThread(text: string): unknown {
+  try {
+    return parseJson(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A stored thread file, or undefined when it is missing or not JSON. The
+ * viewer skips such a thread like one that fails its schema. */
+function readStoredThread(file: string): unknown {
+  const bytes = readOptionalFile(file);
+  return bytes === undefined ? undefined : parseStoredThread(bytes.toString("utf8"));
+}
+
+/** The viewer lists and counts a stored thread only when it passes its schema,
+ * so one broken thread does not hide the others. Feedback commands and
+ * validation still report it. */
+function viewerThread(value: unknown): Thread | undefined {
+  return isDocument(THREAD_SCHEMA_ID, value) ? value : undefined;
+}
+
+/** Whether a stored thread that the viewer lists waits for the agent. */
+function threadAwaitsAgent(value: unknown): boolean {
+  const thread = viewerThread(value);
+  return thread !== undefined && awaitsAgentReply(thread);
+}
+
+/** Thread IDs listed by a feedback manifest that may be mid-write. IDs name
+ * thread files, so an ID that breaks the feedback ID rules is skipped. */
+function listedThreadIds(manifest: unknown): string[] {
+  const threads = fieldsOf(manifest).threads;
+  return isStringArray(threads) ? threads.filter(isFeedbackId) : [];
+}
+
+/** What the browser polls to notice artifact or feedback changes. */
+interface ViewerRevision {
+  revision: string;
+  awaitingAgentReplies: number;
+}
+
+export function viewerSnapshot(repoRoot: string): ViewerRevision {
   const implementationId = activeImplementationId(repoRoot);
   return withReviewLock(reviewId(repoRoot, implementationId), () => {
     requireImplementation(repoRoot, implementationId);
@@ -174,30 +384,35 @@ export function viewerSnapshot(repoRoot) {
   });
 }
 
-function readViewerSnapshot(repoRoot, implementationId) {
+function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerRevision {
   const semanticRoot = path.join(repoRoot, ".semantic-review");
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const files = [
     path.join(semanticRoot, "manifest.json"),
-    ...listJsonDocuments(path.join(semanticRoot, "requirements")),
-    ...listJsonDocuments(path.join(semanticRoot, "stages")),
+    ...listJsonFiles(path.join(semanticRoot, "requirements")),
+    ...listJsonFiles(path.join(semanticRoot, "stages")),
   ];
   const feedbackManifestPath = path.join(feedbackRoot, "manifest.json");
+  // Threads are hashed from the bytes they were counted from, so one removed meanwhile cannot fail the poll.
+  const threadBytes = new Map<string, Buffer>();
   let awaitingAgentReplies = 0;
   if (fs.existsSync(feedbackManifestPath)) {
     files.push(feedbackManifestPath);
-    const manifest = readJson(feedbackManifestPath);
-    for (const threadId of manifest.threads || []) {
+    for (const threadId of listedThreadIds(readJson(feedbackManifestPath))) {
       const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
+      const bytes = readOptionalFile(file);
+      // A missing thread leaves the hashed files, so restoring it changes the revision.
+      if (bytes === undefined) continue;
       files.push(file);
-      if (awaitsAgentReply(readJson(file))) awaitingAgentReplies += 1;
+      threadBytes.set(file, bytes);
+      if (threadAwaitsAgent(parseStoredThread(bytes.toString("utf8")))) awaitingAgentReplies += 1;
     }
   }
   const hash = createHash("sha256");
   for (const file of files.sort()) {
     hash.update(path.relative(repoRoot, file));
     hash.update("\0");
-    hash.update(fs.readFileSync(file));
+    hash.update(threadBytes.get(file) ?? fs.readFileSync(file));
     hash.update("\0");
   }
   return {
@@ -206,47 +421,76 @@ function readViewerSnapshot(repoRoot, implementationId) {
   };
 }
 
+interface SnapshotReaderOptions {
+  now?: () => number;
+  readFile?: (file: string) => string;
+}
+
+interface CachedDocument {
+  stamp: string;
+  text: string;
+  value: unknown;
+}
+
 /** Stat-based invalidation plus a periodic content scan for missed/coarse timestamp changes. */
-export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (file) => fs.readFileSync(file, "utf8") } = {}) {
-  let documents = new Map();
-  let previous = null;
+export function createSnapshotReader(repoRoot: string, { now = Date.now, readFile = (file: string) => fs.readFileSync(file, "utf8") }: SnapshotReaderOptions = {}) {
+  let documents = new Map<string, CachedDocument>();
+  let previous: ViewerRevision | null = null;
   let lastScan = -Infinity;
-  return (force = false) => {
+  return (force = false): ViewerRevision => {
     const nextDocuments = new Map(documents);
     const scan = force || now() - lastScan >= 10_000;
     const seen = new Set<string>();
-    let changed = !previous;
-    const read = (file) => {
-      const stat = fs.statSync(file, { bigint: true });
+    let changed = false;
+    // A thread may be missing or not JSON; it reads as undefined. A missing file
+    // leaves the hashed files and unparsable text is still hashed, so restoring
+    // or repairing either changes the revision.
+    const read = (file: string, thread = false): unknown => {
+      let stat: fs.BigIntStats;
+      try {
+        stat = fs.statSync(file, { bigint: true });
+      } catch (error) {
+        if (thread && errorCode(error) === "ENOENT") return undefined;
+        throw error;
+      }
       const stamp = `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
       const cached = documents.get(file);
-      seen.add(file);
-      if (scan || !cached || cached.stamp !== stamp) {
-        const text = readFile(file);
-        if (!cached || cached.text !== text) changed = true;
-        nextDocuments.set(file, { stamp, text, value: JSON.parse(text) });
+      if (!scan && cached && cached.stamp === stamp) {
+        seen.add(file);
+        return cached.value;
       }
-      return nextDocuments.get(file).value;
+      let text: string;
+      try {
+        text = readFile(file);
+      } catch (error) {
+        // Removed after the stat: it leaves the hashed files like one missing before it.
+        if (thread && errorCode(error) === "ENOENT") return undefined;
+        throw error;
+      }
+      seen.add(file);
+      if (!cached || cached.text !== text) changed = true;
+      const document = { stamp, text, value: thread ? parseStoredThread(text) : parseJson(text) };
+      nextDocuments.set(file, document);
+      return document.value;
     };
     const semantic = path.join(repoRoot, ".semantic-review");
-    const { implementationId } = read(path.join(semantic, "manifest.json"));
+    const implementationId = manifestImplementationId(read(path.join(semantic, "manifest.json")));
     const feedback = feedbackDirectory(repoRoot, implementationId);
     let awaitingAgentReplies = 0;
     // Artifact writers that change several documents hold this lock, so one snapshot is never mixed.
     withReviewLock(reviewId(repoRoot, implementationId), () => {
       read(path.join(semantic, "manifest.json"));
-      for (const file of [...listJsonDocuments(path.join(semantic, "requirements")), ...listJsonDocuments(path.join(semantic, "stages"))]) read(file);
+      for (const file of [...listJsonFiles(path.join(semantic, "requirements")), ...listJsonFiles(path.join(semantic, "stages"))]) read(file);
       if (fs.existsSync(path.join(feedback, "manifest.json"))) {
-        const manifest = read(path.join(feedback, "manifest.json"));
-        for (const id of manifest.threads || []) {
-          if (awaitsAgentReply(read(path.join(feedback, "threads", `${id}.json`)))) awaitingAgentReplies++;
+        for (const id of listedThreadIds(read(path.join(feedback, "manifest.json")))) {
+          if (threadAwaitsAgent(read(path.join(feedback, "threads", `${id}.json`), true))) awaitingAgentReplies++;
         }
       }
     });
     for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
-    if (changed) {
+    if (changed || !previous) {
       const hash = createHash("sha256");
-      for (const file of [...seen].sort()) hash.update(path.relative(repoRoot, file)).update("\0").update(nextDocuments.get(file).text).update("\0");
+      for (const file of [...seen].sort()) hash.update(path.relative(repoRoot, file)).update("\0").update(nextDocuments.get(file)?.text ?? "").update("\0");
       previous = { revision: hash.digest("hex"), awaitingAgentReplies };
     }
     documents = nextDocuments;
@@ -255,17 +499,15 @@ export function createSnapshotReader(repoRoot, { now = Date.now, readFile = (fil
   };
 }
 
-function requireImplementation(repoRoot, implementationId) {
+function requireImplementation(repoRoot: string, implementationId: string) {
   if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
 }
 
-function activeImplementationId(repoRoot) {
-  return readJson(
-    path.join(repoRoot, ".semantic-review", "manifest.json"),
-  ).implementationId;
+function activeImplementationId(repoRoot: string): string {
+  return manifestImplementationId(readJson(manifestPath(repoRoot)));
 }
 
-function humanizeId(id) {
+function humanizeId(id: string) {
   return id
     .split("-")
     .map((word) => (word.length ? word[0].toUpperCase() + word.slice(1) : word))
@@ -287,7 +529,12 @@ const PROJECT_GLOBS = [
   "build.gradle.kts",
 ];
 
-function buildProjectIndex(repoRoot, captureGit = gitCapture) {
+interface Project {
+  dir: string;
+  name: string;
+}
+
+function buildProjectIndex(repoRoot: string, captureGit: GitCapture = gitCapture): Project[] {
   let listed = "";
   try {
     listed = captureGit(repoRoot, ["--no-pager", "ls-files", "--", ...PROJECT_GLOBS]);
@@ -306,14 +553,14 @@ function buildProjectIndex(repoRoot, captureGit = gitCapture) {
       const name = isDotNet
         ? file.replace(/\.(cs|vb|fs)proj$/i, "")
         : dir
-          ? dir.replace(/\/$/, "").split("/").pop()
+          ? dir.replace(/\/$/, "").split("/").at(-1) ?? ""
           : "Repository root";
       return { dir, name };
     });
 }
 
-function projectFor(projects, p) {
-  let best = null;
+function projectFor(projects: Project[], p: string): string {
+  let best: Project | null = null;
   for (const c of projects) {
     if (p.startsWith(c.dir) && (!best || c.dir.length > best.dir.length)) best = c;
   }
@@ -322,7 +569,40 @@ function projectFor(projects, p) {
   return seg.length > 1 ? `${seg[0]}/` : "Repository root";
 }
 
-function parseDiffPatch(raw, selectorRaw, stats) {
+/** One diff row: an added (new line n), deleted (old line o) or context line,
+ * with the 1-based hunk an added or deleted line belongs to. */
+type DiffLine =
+  | { t: "add"; n: number; s: string; h?: number }
+  | { t: "del"; o: number; s: string; h?: number }
+  | { t: "ctx"; o: number; n: number; s: string };
+
+/** Git's view of one changed file in a diff range. */
+interface FileStats {
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  kind?: "added" | "modified" | "deleted" | "renamed";
+  oldMode?: string;
+  newMode?: string;
+  previousPath?: string;
+  oldBlob?: string;
+  newBlob?: string;
+}
+
+interface ParsedDiff {
+  lines: DiffLine[];
+  additions: number;
+  deletions: number;
+  binary: boolean;
+  truncated: boolean;
+}
+
+type DiffMode = "changes" | "full";
+
+/** One page of a file diff as served to the browser. */
+type DiffPage = ParsedDiff & { nextOffset: number | null; mode: DiffMode; offset?: number };
+
+function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | undefined): ParsedDiff {
   if (!raw.trim()) {
     return {
       lines: [],
@@ -333,14 +613,14 @@ function parseDiffPatch(raw, selectorRaw, stats) {
     };
   }
   const src = raw.split("\n");
-  const lines = [];
+  const lines: DiffLine[] = [];
   let oldNo = 0;
   let newNo = 0;
   let binary = false;
   let truncated = false;
   let started = false;
   let rowCount = 0;
-  const hunkByLine = new Map();
+  const hunkByLine = new Map<string, number>();
   let selectorHunk = 0;
   let selectorOldNo = 0;
   let selectorNewNo = 0;
@@ -439,15 +719,15 @@ function parseDiffPatch(raw, selectorRaw, stats) {
 
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
-function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".semantic-review", "manifest.json"))) {
+function readViewerStages(repoRoot: string, manifest: ViewerManifest = readManifest(manifestPath(repoRoot))): ViewerStage[] {
   const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
   return manifest.stages.map((id) => {
-    const stage = readJson(path.join(repoRoot, ".semantic-review", "stages", `${id}.json`));
-    const files = stage.change.files.map((file) => {
+    const stage = readStageDocument(stagePath(repoRoot, id));
+    const files = stage.change.files.map((file): ViewerFile => {
       const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
       const { previousPath: ignored, ...current } = file;
       const oldPath = last ? last.path : file.previousPath;
-      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item) => item && item !== file.path))];
+      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item): item is string => Boolean(item) && item !== file.path))];
       return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
         previousPaths, baseRevision: last ? last.headRevision : stage.change.baseRevision,
         ...(last ? { previousStageId: last.stageId } : {}) };
@@ -459,34 +739,49 @@ function readViewerStages(repoRoot, manifest = readJson(path.join(repoRoot, ".se
     return { ...stage, change: { ...stage.change, files } };
   });
 }
-function fileDiffGroups(stage) {
-  const groups = new Map<string, any[]>();
+
+/** The revision range a diff is computed over. */
+interface DiffRange {
+  change: { baseRevision: string; headRevision: string };
+}
+
+/** Files diffed over one range; a file's own base overrides the range's. */
+interface DiffGroup extends DiffRange {
+  change: { baseRevision: string; headRevision: string; files: { path: string; baseRevision?: string }[] };
+}
+
+function fileDiffGroups(stage: DiffGroup): DiffGroup[] {
+  const groups = new Map<string, DiffGroup["change"]["files"]>();
   for (const file of stage.change.files) {
     const base = file.baseRevision || stage.change.baseRevision;
-    if (!groups.has(base)) groups.set(base, []);
-    groups.get(base).push(file);
+    let group = groups.get(base);
+    if (!group) groups.set(base, group = []);
+    group.push(file);
   }
-  return [...groups].map(([baseRevision, files]) => ({ ...stage, change: { ...stage.change, baseRevision, files } }));
+  return [...groups].map(([baseRevision, files]) => ({ change: { ...stage.change, baseRevision, files } }));
 }
-function stageFileStats(repoRoot, stage, captureGit) {
-  const stats = new Map();
+function stageFileStats(repoRoot: string, stage: DiffGroup, captureGit: GitCapture): Map<string, FileStats> {
+  const stats = new Map<string, FileStats>();
   for (const group of fileDiffGroups(stage)) {
     const grouped = buildStageStats(repoRoot, group, captureGit);
-    for (const file of group.change.files) if (grouped.has(file.path)) stats.set(file.path, grouped.get(file.path));
+    for (const file of group.change.files) {
+      const fileStats = grouped.get(file.path);
+      if (fileStats) stats.set(file.path, fileStats);
+    }
   }
   return stats;
 }
-function stageFileDiffs(repoRoot, stage, stats, captureGit) {
-  const diffs = new Map();
+function stageFileDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, FileStats>, captureGit: GitCapture): Map<string, ParsedDiff> {
+  const diffs = new Map<string, ParsedDiff>();
   for (const group of fileDiffGroups(stage)) for (const [file, diff] of buildStageDiffs(repoRoot, group, stats, captureGit)) diffs.set(file, diff);
   return diffs;
 }
 
-function stageDiffKey(stage) {
+function stageDiffKey(stage: ViewerStage) {
   return JSON.stringify([stage.id, stage.change.baseRevision, stage.change.headRevision, stage.change.files.map((file) => [file.path, file.previousPath, file.baseRevision])]);
 }
 
-function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
+function buildStageStats(repoRoot: string, stage: DiffRange, captureGit: GitCapture = gitCapture): Map<string, FileStats> {
   const raw = captureGit(repoRoot, [
     "--no-pager",
     "diff",
@@ -499,9 +794,9 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
     stage.change.baseRevision,
     stage.change.headRevision,
   ]);
-  const stats = new Map();
+  const stats = new Map<string, FileStats>();
   const fields = raw.split("\0");
-  const blobs = new Map();
+  const blobs = new Map<string, Omit<FileStats, "additions" | "deletions" | "binary">>();
   let index = 0;
   while (index < fields.length && fields[index].startsWith(":")) {
     const metadata = fields[index++].slice(1).split(" ");
@@ -544,13 +839,15 @@ function buildStageStats(repoRoot, stage, captureGit = gitCapture) {
   return stats;
 }
 
-function decodePatchPath(value) {
+function decodePatchPath(value: string): string {
   const withoutTimestamp = value.replace(/\r$/, "").split("\t", 1)[0];
   if (withoutTimestamp === "/dev/null") return "";
   let decoded = withoutTimestamp;
   if (decoded.startsWith('"') && decoded.endsWith('"')) {
     try {
-      decoded = JSON.parse(decoded);
+      const unquoted = parseJson(decoded);
+      if (typeof unquoted !== "string") return "";
+      decoded = unquoted;
     } catch {
       return "";
     }
@@ -558,7 +855,7 @@ function decodePatchPath(value) {
   return decoded.replace(/^[ab]\//, "");
 }
 
-function patchSectionPath(section) {
+function patchSectionPath(section: string): string {
   const current = /^\+\+\+ (.*)$/m.exec(section);
   if (current) {
     const currentPath = decodePatchPath(current[1]);
@@ -570,10 +867,10 @@ function patchSectionPath(section) {
   return previous ? decodePatchPath(previous[1]) : "";
 }
 
-function indexPatchSections(raw, expectedPaths) {
+function indexPatchSections(raw: string, expectedPaths: string[]): Map<string, string> {
   const expected = new Set(expectedPaths);
-  const indexed = new Map();
-  const unresolved = [];
+  const indexed = new Map<string, string>();
+  const unresolved: string[] = [];
   const sections = raw
     .split(/(?=^diff --git )/m)
     .filter((section) => section.startsWith("diff --git "));
@@ -592,8 +889,8 @@ function indexPatchSections(raw, expectedPaths) {
   return indexed;
 }
 
-function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
-  const args = (unified) => [
+function buildStageDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, FileStats>, captureGit: GitCapture = gitCapture): Map<string, ParsedDiff> {
+  const args = (unified: number) => [
     "-c",
     "core.quotePath=false",
     "--no-pager",
@@ -622,7 +919,7 @@ function buildStageDiffs(repoRoot, stage, stats, captureGit = gitCapture) {
   );
 }
 
-async function* gitLines(repoRoot, args) {
+async function* gitLines(repoRoot: string, args: string[]): AsyncGenerator<string> {
   const child = spawn("git", args, {
     cwd: repoRoot,
     env: reviewEnvironment(),
@@ -630,7 +927,7 @@ async function* gitLines(repoRoot, args) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
-  child.stderr.on("data", (chunk) => { stderr = (stderr + chunk).slice(-8192); });
+  child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8192); });
   const completion = new Promise<number | null>((resolve, reject) => {
     child.once("error", reject);
     child.once("close", resolve);
@@ -652,14 +949,15 @@ async function* gitLines(repoRoot, args) {
 }
 
 // Stream one page rather than buffering unrelated files or a full large patch.
-async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetSide = null, targetLine = null) {
-  const paths = [...new Set([file.previousPath, file.path].filter(Boolean))];
-  const args = (context) => ["-c", "core.quotePath=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames=50%", `-U${context}`,
+async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
+  targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
+  const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
+  const args = (context: number) => ["-c", "core.quotePath=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames=50%", `-U${context}`,
     stage.change.baseRevision, stage.change.headRevision, "--", ...paths];
-  const shapes = [];
+  const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
   let selected = false, previousPath = "";
-  const selectSection = (line) => {
+  const selectSection = (line: string) => {
     if (line.startsWith("diff --git ")) { selected = false; previousPath = ""; }
     else if (line.startsWith("--- ")) previousPath = decodePatchPath(line.slice(4));
     else if (line.startsWith("+++ ")) selected = (decodePatchPath(line.slice(4)) || previousPath) === file.path;
@@ -673,7 +971,7 @@ async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetS
     const match = header.exec(line);
     if (match) shapes.push({ old: +match[1], oldCount: +(match[2] ?? 1), new: +match[3], newCount: +(match[4] ?? 1) });
   }
-  const lines = [];
+  const lines: DiffLine[] = [];
   let foundTarget = !targetSide;
   let oldNo = 0, newNo = 0, row = 0, started = false, more = false;
   let binary = Boolean(stats?.binary);
@@ -700,7 +998,10 @@ async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetS
     if (line[0] === "+" || line[0] === "-") {
       const side = line[0] === "+" ? "new" : "old";
       const number = side === "new" ? newNo++ : oldNo++;
-      const hunk = shapes.findIndex((shape) => number >= shape[side] && number < shape[side] + shape[`${side}Count`]);
+      const hunk = shapes.findIndex((shape) => {
+        const [start, count] = side === "new" ? [shape.new, shape.newCount] : [shape.old, shape.oldCount];
+        return number >= start && number < start + count;
+      });
       lines.push(side === "new" ? { t: "add", n: number, s: text, h: hunk + 1 } : { t: "del", o: number, s: text, h: hunk + 1 });
     } else lines.push({ t: "ctx", o: oldNo++, n: newNo++, s: text });
   }
@@ -708,107 +1009,144 @@ async function pagedFileDiff(repoRoot, stage, file, stats, mode, offset, targetS
     truncated: false, nextOffset: more ? offset + lines.length : null, offset, mode };
 }
 
-function buildInsights(stage, repoRoot) {
-  const insights = [];
-  (stage.decisions || []).forEach((d) =>
+const listOf = (value: unknown): unknown[] => isList(value) ? value : [];
+
+function isCodeTarget(value: unknown): value is CodeTarget {
+  return isRecord(value) && typeof value.path === "string" && typeof value.revision === "string" && typeof value.blobId === "string" &&
+    typeof value.startLine === "number" && typeof value.endLine === "number" && typeof value.contextStartLine === "number" &&
+    isStringArray(value.context);
+}
+
+interface ViewerInsight {
+  type: string;
+  collection: InsightCollection;
+  id?: string;
+  title?: string;
+  body?: string;
+  meta?: string;
+  validationType?: string;
+  nodeRefs: unknown;
+  evidence?: {
+    kind?: string;
+    attachments: { mediaType?: string; sha256?: string; caption?: string; role?: string }[];
+    inline?: string;
+    reproduction?: string;
+    specificationRefs: unknown;
+    capturedAt?: string;
+  };
+  codeTarget?: ReturnType<typeof resolveCodeTarget>;
+}
+
+/** Insights are display-only, so each item is read leniently, including older
+ * shapes (alternatives with summary/rationale, plain-text open questions). */
+function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): ViewerInsight[] {
+  const insights: ViewerInsight[] = [];
+  const text = stringField;
+  for (const d of listOf(stage.decisions)) {
     insights.push({
       type: "decision",
       collection: "decisions",
-      id: d.id,
-      title: d.summary,
-      body: d.rationale,
-      meta: d.category,
-      nodeRefs: d.nodeRefs || [],
-    }),
-  );
-  (stage.assumptions || []).forEach((a) =>
+      id: text(d, "id"),
+      title: text(d, "summary"),
+      body: text(d, "rationale"),
+      meta: text(d, "category"),
+      nodeRefs: fieldsOf(d).nodeRefs || [],
+    });
+  }
+  for (const a of listOf(stage.assumptions)) {
+    const riskIfWrong = text(a, "riskIfWrong");
     insights.push({
       type: "assumption",
       collection: "assumptions",
-      id: a.id,
-      title: a.statement,
-      body: a.riskIfWrong ? `If wrong: ${a.riskIfWrong}` : "",
-      nodeRefs: a.nodeRefs || [],
-    }),
-  );
-  (stage.alternatives || []).forEach((a) =>
+      id: text(a, "id"),
+      title: text(a, "statement"),
+      body: riskIfWrong ? `If wrong: ${riskIfWrong}` : "",
+      nodeRefs: fieldsOf(a).nodeRefs || [],
+    });
+  }
+  for (const a of listOf(stage.alternatives)) {
     insights.push({
       type: "alternative",
       collection: "alternatives",
-      id: a.id,
-      title: a.approach || a.summary || a.id,
-      body: a.reasonRejected || a.rationale || "",
-      nodeRefs: a.nodeRefs || [],
-    }),
-  );
-  (stage.failedAttempts || []).forEach((f) =>
+      id: text(a, "id"),
+      title: text(a, "approach") || text(a, "summary") || text(a, "id"),
+      body: text(a, "reasonRejected") || text(a, "rationale") || "",
+      nodeRefs: fieldsOf(a).nodeRefs || [],
+    });
+  }
+  for (const f of listOf(stage.failedAttempts)) {
     insights.push({
       type: "lesson",
       collection: "failedAttempts",
-      id: f.id,
-      title: f.approach,
-      body: `Outcome: ${f.outcome} — Lesson: ${f.lesson}`,
-      nodeRefs: f.nodeRefs || [],
-    }),
-  );
-  (stage.risks || []).forEach((r) =>
+      id: text(f, "id"),
+      title: text(f, "approach"),
+      body: `Outcome: ${text(f, "outcome")} — Lesson: ${text(f, "lesson")}`,
+      nodeRefs: fieldsOf(f).nodeRefs || [],
+    });
+  }
+  for (const r of listOf(stage.risks)) {
+    const mitigation = text(r, "mitigation");
     insights.push({
       type: "risk",
       collection: "risks",
-      id: r.id,
-      title: r.summary,
-      body: r.mitigation ? `Mitigation: ${r.mitigation}` : "",
-      nodeRefs: r.nodeRefs || [],
-    }),
-  );
-  (stage.validation || []).forEach((v) =>
+      id: text(r, "id"),
+      title: text(r, "summary"),
+      body: mitigation ? `Mitigation: ${mitigation}` : "",
+      nodeRefs: fieldsOf(r).nodeRefs || [],
+    });
+  }
+  for (const v of listOf(stage.validation)) {
     insights.push({
       type: "validation",
       collection: "validation",
-      id: v.id,
-      title: v.summary,
-      body: v.command || "",
-      meta: v.status,
-      validationType: v.type,
-      nodeRefs: v.nodeRefs || [],
-    }),
-  );
-  (stage.evidence || []).forEach((e) =>
+      id: text(v, "id"),
+      title: text(v, "summary"),
+      body: text(v, "command") || "",
+      meta: text(v, "status"),
+      validationType: text(v, "type"),
+      nodeRefs: fieldsOf(v).nodeRefs || [],
+    });
+  }
+  for (const e of listOf(stage.evidence)) {
+    const reproduction = text(e, "reproduction");
     insights.push({
       type: "evidence",
       collection: "evidence",
-      id: e.id,
-      title: e.summary,
-      body: e.reproduction ? `Reproduce: ${e.reproduction}` : "",
-      meta: e.kind,
-      nodeRefs: e.nodeRefs || [],
+      id: text(e, "id"),
+      title: text(e, "summary"),
+      body: reproduction ? `Reproduce: ${reproduction}` : "",
+      meta: text(e, "kind"),
+      nodeRefs: fieldsOf(e).nodeRefs || [],
       evidence: {
-        kind: e.kind,
-        attachments: (e.attachments || []).map(({ mediaType, sha256, caption, role }) => ({ mediaType, sha256, caption, role })),
-        inline: e.inline,
-        reproduction: e.reproduction,
-        specificationRefs: e.specificationRefs || [],
-        capturedAt: e.capturedAt,
+        kind: text(e, "kind"),
+        attachments: listOf(fieldsOf(e).attachments).map((attachment) => ({
+          mediaType: text(attachment, "mediaType"), sha256: text(attachment, "sha256"), caption: text(attachment, "caption"), role: text(attachment, "role"),
+        })),
+        inline: text(e, "inline"),
+        reproduction,
+        specificationRefs: fieldsOf(e).specificationRefs || [],
+        capturedAt: text(e, "capturedAt"),
       },
-    }),
-  );
-  (stage.openQuestions || []).forEach((q) =>
+    });
+  }
+  for (const q of listOf(stage.openQuestions)) {
     insights.push({
       type: "question",
       collection: "openQuestions",
-      id: q.id || "q",
-      title: q.question || q.summary || String(q),
-      body: q.context || "",
-      nodeRefs: q.nodeRefs || [],
-    }),
-  );
+      id: text(q, "id") || "q",
+      title: text(q, "question") || text(q, "summary") || String(q),
+      body: text(q, "context") || "",
+      nodeRefs: fieldsOf(q).nodeRefs || [],
+    });
+  }
   return insights.map(insight => {
-    const target = stage[insight.collection]?.find(item => item.id === insight.id)?.codeTarget;
-    return target ? { ...insight, codeTarget: resolveCodeTarget(repoRoot, target, stage.change.headRevision) } : insight;
+    const item = listOf(stage[insight.collection]).find((candidate) => isRecord(candidate) && candidate.id === insight.id);
+    const target = fieldsOf(item).codeTarget;
+    return isCodeTarget(target) ? { ...insight, codeTarget: resolveCodeTarget(repoRoot, target, stage.change.headRevision) } : insight;
   });
 }
 
-function fileRevision(stage, file, stats) {
+function fileRevision(stage: DiffRange, file: { path: string; previousPath?: string; baseRevision?: string }, stats: FileStats | undefined): string {
   const hash = createHash("sha256")
     .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
     .update("\0")
@@ -819,18 +1157,36 @@ function fileRevision(stage, file, stats) {
     .update(file.previousPath || "");
   // Preserve existing fingerprints for ordinary files. Missing sides are already
   // represented by zero blob IDs; non-default modes need additional identity.
-  for (const side of ["oldMode", "newMode"]) {
+  for (const side of ["oldMode", "newMode"] as const) {
     const mode = stats?.[side];
     if (mode && mode !== "100644" && mode !== "000000") hash.update(`\0${side}=${mode}`);
   }
   return hash.digest("hex");
 }
 
-function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) {
+/** A node's claim on a file; the browser echoes it back when approving the file. */
+interface ViewerMembership {
+  nodeId: string;
+  classification?: unknown;
+  hunks?: unknown;
+  lineRanges?: unknown;
+}
+
+/** Copies a node change without absent keys, so a value echoed back through
+ * JSON compares equal to the original. */
+function nodeChangeFields(change: ViewerNodeChange) {
+  return {
+    ...(change.classification !== undefined ? { classification: change.classification } : {}),
+    ...(change.hunks ? { hunks: change.hunks } : {}),
+    ...(change.lineRanges ? { lineRanges: change.lineRanges } : {}),
+  };
+}
+
+function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture) {
   const implementationRoot = path.join(repoRoot, ".semantic-review");
-  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
-  const specificationDocs = (manifest.requirements || []).map((specificationId) =>
-    readJson(path.join(implementationRoot, "requirements", `${specificationId}.json`)),
+  const manifest = readManifest(path.join(implementationRoot, "manifest.json"));
+  const specificationDocs = manifest.requirements.map((specificationId) =>
+    readSpecification(path.join(implementationRoot, "requirements", `${specificationId}.json`)),
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
@@ -840,47 +1196,36 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     const stats = statsForStage(s);
     const previousPathByPath = new Map(
       s.change.files
-        .filter((f) => f.previousPath)
-        .map((f) => [f.path, f.previousPath]),
+        .flatMap((f) => f.previousPath ? [[f.path, f.previousPath] as const] : []),
     );
 
     const nodes = s.nodes.map((node) => ({
       id: node.id,
       title: humanizeId(node.id),
       description: node.description,
-      changes: node.changes.map((c) => ({
-        path: c.path,
-        classification: c.classification,
-        ...(c.hunks ? { hunks: c.hunks } : {}),
-        ...(c.lineRanges ? { lineRanges: c.lineRanges } : {}),
-      })),
+      changes: node.changes.map((c) => ({ path: c.path, ...nodeChangeFields(c) })),
     }));
 
-    const membershipByPath = new Map();
-    nodes.forEach((node) => {
+    const membershipByPath = new Map<string | undefined, ViewerMembership[]>();
+    s.nodes.forEach((node) => {
       node.changes.forEach((c) => {
-        if (!membershipByPath.has(c.path)) membershipByPath.set(c.path, []);
-        membershipByPath.get(c.path).push({
-          nodeId: node.id,
-          classification: c.classification,
-          ...(c.hunks ? { hunks: c.hunks } : {}),
-          ...(c.lineRanges ? { lineRanges: c.lineRanges } : {}),
-        });
+        let memberships = membershipByPath.get(c.path);
+        if (!memberships) membershipByPath.set(c.path, memberships = []);
+        memberships.push({ nodeId: node.id, ...nodeChangeFields(c) });
       });
     });
 
     const files = s.change.files.map((file) => {
       const p = file.path;
       const fileStats = stats.get(p);
+      const previousPath = previousPathByPath.get(p);
       return {
         path: p,
         kind: fileStats?.kind || "modified",
         baseRevision: file.baseRevision,
         previousPaths: file.previousPaths,
         ...(file.previousStageId ? { previousStageId: file.previousStageId } : {}),
-        ...(previousPathByPath.has(p)
-          ? { previousPath: previousPathByPath.get(p) }
-          : {}),
+        ...(previousPath !== undefined ? { previousPath } : {}),
         project: projectFor(projects, p),
         memberships: membershipByPath.get(p) || [],
         additions: fileStats?.additions ?? 0,
@@ -895,8 +1240,8 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
       title: s.title,
       summary: s.summary,
       rationale: s.rationale,
-      dependsOn: s.dependsOn || [],
-      specificationRefs: s.specificationRefs || [],
+      dependsOn: s.dependsOn,
+      specificationRefs: s.specificationRefs,
       branch: s.change.branch,
       baseRevision: base,
       headRevision: head,
@@ -911,9 +1256,9 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
     title: specification.title,
     summary: specification.summary,
     source: specification.source,
-    acceptance: (specification.acceptanceCriteria || []).map((c) => ({
-      id: c.id,
-      text: c.text,
+    acceptance: specification.acceptanceCriteria.map((c) => ({
+      id: stringField(c, "id"),
+      text: stringField(c, "text"),
     })),
   }));
 
@@ -936,17 +1281,28 @@ function buildImplementationData(repoRoot, statsForStage, snapshot, captureGit) 
   };
 }
 
+type ImplementationData = ReturnType<typeof buildImplementationData>;
+
+/** Cached Git results for one stage's immutable diff range. */
+interface StageRecord {
+  stats: Map<string, FileStats>;
+  diffs: Map<string, ParsedDiff> | null;
+  stage: ViewerStage;
+  pages: Map<string, Promise<DiffPage>>;
+}
+
 export function createViewerDataSource(
-  repoRoot,
-  options: { gitCapture?: typeof gitCapture } = {},
+  repoRoot: string,
+  options: { gitCapture?: GitCapture } = {},
 ) {
   const captureGit = options.gitCapture || gitCapture;
-  const stageCache = new Map();
+  const stageCache = new Map<string, StageRecord>();
   let cachedRevision = "";
   let cachedScript = "";
+  let cachedData: ImplementationData | null = null;
   const snapshotReader = createSnapshotReader(repoRoot);
 
-  const stageRecord = (stage) => {
+  const stageRecord = (stage: ViewerStage): StageRecord => {
     const key = stageDiffKey(stage);
     let record = stageCache.get(key);
     if (!record) {
@@ -957,7 +1313,10 @@ export function createViewerDataSource(
         pages: new Map(),
       };
       stageCache.set(key, record);
-      while (stageCache.size > 24) stageCache.delete(stageCache.keys().next().value);
+      for (const oldest of stageCache.keys()) {
+        if (stageCache.size <= 24) break;
+        stageCache.delete(oldest);
+      }
     } else {
       // Inventory repairs can change metadata without changing immutable Git
       // snapshots. Keep Git statistics, but rebuild inventory-dependent patches.
@@ -970,52 +1329,63 @@ export function createViewerDataSource(
     return record;
   };
 
-  const readStage = (stageId) => {
-    const implementationRoot = path.join(repoRoot, ".semantic-review");
-    const manifest = readJson(path.join(implementationRoot, "manifest.json"));
-    if (!manifest.stages.includes(stageId)) {
-      throw new Error(`unknown stage "${stageId}"`);
+  const readStage = (stageId: string | null): ViewerStage => {
+    const manifest = readManifest(manifestPath(repoRoot));
+    const stage = stageId === null || !manifest.stages.includes(stageId)
+      ? undefined
+      : readViewerStages(repoRoot, manifest).find((candidate) => candidate.id === stageId);
+    if (!stage) throw new Error(`unknown stage "${stageId}"`);
+    return stage;
+  };
+
+  /** The data behind the latest implementation script. */
+  const implementationData = (): ImplementationData => {
+    let snapshot = snapshotReader();
+    // Building reads documents individually; rebuild if a write landed meanwhile.
+    for (let attempt = 0; (snapshot.revision !== cachedRevision || !cachedData) && attempt < 3; attempt++) {
+      const data = withValidationContext(() => buildImplementationData(
+        repoRoot,
+        (stage) => stageRecord(stage).stats,
+        snapshot,
+        captureGit,
+      ));
+      cachedData = data;
+      cachedScript = implementationScript(data);
+      cachedRevision = snapshot.revision;
+      snapshot = snapshotReader(true);
     }
-    return readViewerStages(repoRoot, manifest).find((stage) => stage.id === stageId);
+    if (!cachedData) throw new Error("The implementation data could not be built.");
+    return cachedData;
   };
 
   return {
-    evidenceFile(stageId, itemId, index) {
+    evidenceFile(stageId: string | null, itemId: string | null, index: string | null) {
       const stage = readStage(stageId);
-      const attachment = stage.evidence?.find((item) => item.id === itemId)?.attachments?.[Number(index)];
-      if (!attachment || !evidenceMediaTypeMatches(attachment)) throw new Error("Evidence attachment does not exist.");
-      const { file } = resolveEvidenceFile(path.join(repoRoot, ".semantic-review"), stageId, attachment.path);
+      const item = listOf(stage.evidence).find((candidate) => isRecord(candidate) && candidate.id === itemId);
+      const attachment = listOf(fieldsOf(item).attachments)[Number(index)];
+      const attachmentPath = stringField(attachment, "path"), mediaType = stringField(attachment, "mediaType"), sha256 = stringField(attachment, "sha256");
+      if (attachmentPath === undefined || mediaType === undefined || !evidenceMediaTypeMatches({ path: attachmentPath, mediaType })) throw new Error("Evidence attachment does not exist.");
+      const { file } = resolveEvidenceFile(path.join(repoRoot, ".semantic-review"), stage.id, attachmentPath);
       const bytes = fs.readFileSync(file);
-      if (sha256Hex(bytes) !== attachment.sha256) throw new Error("Evidence attachment is damaged.");
-      return { mediaType: attachment.mediaType, content: bytes.toString("base64") };
+      if (sha256Hex(bytes) !== sha256) throw new Error("Evidence attachment is damaged.");
+      return { mediaType, content: bytes.toString("base64") };
     },
+    implementationData,
     implementationDataScript() {
-      let snapshot = snapshotReader();
-      // Building reads documents individually; rebuild if a write landed meanwhile.
-      for (let attempt = 0; snapshot.revision !== cachedRevision && attempt < 3; attempt++) {
-        const data = withValidationContext(() => buildImplementationData(
-          repoRoot,
-          (stage) => stageRecord(stage).stats,
-          snapshot,
-          captureGit,
-        ));
-        cachedScript = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(data)};\n`;
-        cachedRevision = snapshot.revision;
-        snapshot = snapshotReader(true);
-      }
+      implementationData();
       return cachedScript;
     },
     snapshot: snapshotReader,
-    fileContent(stageId, filePath, baseRevision, headRevision, targetPath = null) {
+    fileContent(stageId: string | null, filePath: string | null, baseRevision: string | null, headRevision: string | null, targetPath: string | null = null) {
       const stage = readStage(stageId);
       const file = stage.change.files.find((item) => item.path === filePath);
       if (!file || file.baseRevision !== baseRevision || stage.change.headRevision !== headRevision) throw new Error("File revision changed; reload the viewer.");
-      if (!/\.(md|markdown)$/i.test(filePath)) throw new Error("Preview requires a Markdown file.");
-      const deleted = stageRecord(stage).stats.get(filePath)?.kind === "deleted";
-      const revision = deleted ? baseRevision : headRevision;
-      const displayedPath = deleted ? file.previousPath || filePath : filePath;
+      if (!/\.(md|markdown)$/i.test(file.path)) throw new Error("Preview requires a Markdown file.");
+      const deleted = stageRecord(stage).stats.get(file.path)?.kind === "deleted";
+      const revision = deleted ? file.baseRevision : stage.change.headRevision;
+      const displayedPath = deleted ? file.previousPath || file.path : file.path;
       const resourcePath = targetPath ?? displayedPath;
-      if (typeof resourcePath !== "string" || !resourcePath || resourcePath.includes("\\") || resourcePath.includes("\0") || resourcePath.startsWith("/") || resourcePath.split("/").some((part) => part === ".." || part === "." || !part)) throw new Error("Invalid repository path.");
+      if (!resourcePath || resourcePath.includes("\\") || resourcePath.includes("\0") || resourcePath.startsWith("/") || resourcePath.split("/").some((part) => part === ".." || part === "." || !part)) throw new Error("Invalid repository path.");
       const tree = captureGit(repoRoot, ["--literal-pathspecs", "ls-tree", "-z", revision, "--", resourcePath]);
       const match = /^(100644|100755) blob ([a-f0-9]+)\t([^\0]+)\0$/.exec(tree);
       if (!match || match[3] !== resourcePath) throw new Error("Target unavailable at this revision.");
@@ -1027,14 +1397,15 @@ export function createViewerDataSource(
       if (!mediaType && bytes.includes(0)) throw new Error("Preview unavailable for binary files.");
       return { revision, path: resourcePath, side: deleted ? "base" : "head", content: bytes.toString("base64"), mediaType: mediaType || "text/plain; charset=utf-8" };
     },
-    async fileDiff(stageId, filePath, baseRevision, headRevision, mode = "changes", offset = 0, targetSide = null, targetLine = null) {
-      if (!["changes", "full"].includes(mode) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
-      if (targetSide && (!["old", "new"].includes(targetSide) || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
+    async fileDiff(stageId: string, filePath: string, baseRevision: string, headRevision: string, mode: string = "changes", offset = 0,
+      targetSide: string | null = null, targetLine: number | null = null): Promise<DiffPage> {
+      if ((mode !== "changes" && mode !== "full") || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid diff page.");
+      const side = targetSide === "old" || targetSide === "new" ? targetSide : null;
+      if (targetSide && (!side || targetLine === null || !Number.isSafeInteger(targetLine) || targetLine < 1)) throw new Error("Invalid target line.");
       let record = [...stageCache.values()].reverse().find((record) => record.stage.id === stageId &&
         record.stage.change.headRevision === headRevision && record.stage.change.files.some((file) => file.path === filePath && file.baseRevision === baseRevision));
-      let stage = record?.stage;
-      if (!stage) {
-        stage = readStage(stageId);
+      if (!record) {
+        const stage = readStage(stageId);
         if (!stage.change.files.some((file) => file.path === filePath)) throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
         if (
           stage.change.files.find((file) => file.path === filePath)?.baseRevision !== baseRevision ||
@@ -1044,72 +1415,91 @@ export function createViewerDataSource(
         }
         record = stageRecord(stage);
       }
-      if (!stage.change.files.some((file) => file.path === filePath)) {
+      const current = record;
+      const stage = current.stage;
+      const file = stage.change.files.find((file) => file.path === filePath);
+      if (!file) {
         throw new Error(`file "${filePath}" is not changed in stage "${stageId}"`);
       }
-      const file = stage.change.files.find((file) => file.path === filePath);
-      const small = stage.change.files.length <= 40 && [...record.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
-      if (small && mode === "changes" && offset === 0 && !targetSide) {
+      const small = stage.change.files.length <= 40 && [...current.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
+      if (small && mode === "changes" && offset === 0 && !side) {
         try {
-          if (!record.diffs) record.diffs = stageFileDiffs(repoRoot, stage, record.stats, captureGit);
-          const diff = record.diffs.get(filePath);
+          if (!current.diffs) current.diffs = stageFileDiffs(repoRoot, stage, current.stats, captureGit);
+          const diff = current.diffs.get(filePath);
           if (diff) return { ...diff, truncated: false, nextOffset: diff.truncated ? diff.lines.length : null, mode };
         } catch { /* An unusually wide patch uses the bounded streaming path. */ }
       }
-      record.pages ??= new Map();
-      const key = JSON.stringify([filePath, mode, offset, targetSide, targetLine]);
-      if (!record.pages.has(key)) {
-        record.pages.set(key, pagedFileDiff(repoRoot, { ...stage, change: { ...stage.change, baseRevision: file.baseRevision } }, file, record.stats.get(filePath), mode, offset, targetSide, targetLine)
-          .catch((error) => { record.pages.delete(key); throw error; }));
+      const key = JSON.stringify([filePath, mode, offset, side, targetLine]);
+      let page = current.pages.get(key);
+      if (!page) {
+        page = pagedFileDiff(repoRoot, { ...stage, change: { ...stage.change, baseRevision: file.baseRevision } }, file, current.stats.get(filePath), mode, offset, side, targetLine)
+          .catch((error: unknown) => { current.pages.delete(key); throw error; });
+        current.pages.set(key, page);
         // Bound retained pages; in-flight consumers retain their own Promise.
-        while (record.pages.size > 32) record.pages.delete(record.pages.keys().next().value);
+        for (const oldest of current.pages.keys()) {
+          if (current.pages.size <= 32) break;
+          current.pages.delete(oldest);
+        }
       }
-      return record.pages.get(key);
+      return page;
     },
   };
 }
 
-export function createImplementationDataScript(repoRoot) {
+const IMPLEMENTATION_SCRIPT_PREFIX = "window.SEMANTIC_IMPLEMENTATION = JSON.parse(";
+
+/** The page parses the data as JSON, because in an object literal a stored
+ * "__proto__" key would set the prototype instead of staying an ordinary key.
+ * Escaping "<" keeps the script inert even inside an HTML script element. */
+function implementationScript(data: unknown): string {
+  return `${IMPLEMENTATION_SCRIPT_PREFIX}${JSON.stringify(JSON.stringify(data)).replaceAll("<", "\\u003c")});\n`;
+}
+
+/** The data an implementation script carries. */
+function implementationFromScript(script: string): unknown {
+  const text = script.startsWith(IMPLEMENTATION_SCRIPT_PREFIX) ? parseJson(script.slice(IMPLEMENTATION_SCRIPT_PREFIX.length).replace(/\);\n$/, "")) : undefined;
+  if (typeof text !== "string") throw new Error("The implementation data script is invalid.");
+  return parseJson(text);
+}
+
+export function createImplementationDataScript(repoRoot: string) {
   return createViewerDataSource(repoRoot).implementationDataScript();
 }
 
+/** Where a file or line thread's path now is, relative to its original stage head. */
+type TargetState = { state: "present" } | { state: "renamed"; path: string } | { state: "deleted" } | { state: "not-in-stage" };
+
 // Load open and resolved feedback threads from the local feedback store. A
 // thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot, stages, implementationId) {
+function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevision: string }[], implementationId: string) {
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
-  const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), () => {
+  const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), (): Thread[] => {
     requireImplementation(repoRoot, implementationId);
-    const manifestPath = path.join(feedbackRoot, "manifest.json");
-    if (!fs.existsSync(manifestPath)) return [];
-    const manifest = readJson(manifestPath);
-    if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) throw new Error("Invalid feedback manifest.");
-    return manifest.threads.map((id) => readJson(path.join(feedbackRoot, "threads", `${id}.json`)));
+    const manifestFile = path.join(feedbackRoot, "manifest.json");
+    if (!fs.existsSync(manifestFile)) return [];
+    const manifest = readJson(manifestFile);
+    if (!isDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest)) throw new Error("Invalid feedback manifest.");
+    return manifest.threads.flatMap((id) => viewerThread(readStoredThread(path.join(feedbackRoot, "threads", `${id}.json`))) ?? []);
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
-  const threads: Array<Record<string, any>> = [];
-  for (const thread of storedThreads) {
-    const currentHead = currentHeads.get(thread.target?.stageId);
-    const targetHead = thread.target?.stageHead;
-    let targetState = null;
-    if (
-      ["file", "line"].includes(thread.target?.kind) &&
-      thread.target?.path &&
-      currentHead &&
-      targetHead
-    ) {
-      if (gitPathExists(repoRoot, currentHead, thread.target.path)) {
+  return storedThreads.map((thread) => {
+    const target = thread.target;
+    const currentHead = target.stageId === undefined ? undefined : currentHeads.get(target.stageId);
+    let targetState: TargetState | null = null;
+    if ((target.kind === "file" || target.kind === "line") && target.path && currentHead && target.stageHead) {
+      if (gitPathExists(repoRoot, currentHead, target.path)) {
         targetState = { state: "present" };
       } else {
         const renamedPath = renamedPathBetween(
           repoRoot,
-          targetHead,
+          target.stageHead,
           currentHead,
-          thread.target.path,
+          target.path,
         );
         if (renamedPath && gitPathExists(repoRoot, currentHead, renamedPath)) {
           targetState = { state: "renamed", path: renamedPath };
         } else if (
-          gitPathExists(repoRoot, targetHead, thread.target.path)
+          gitPathExists(repoRoot, target.stageHead, target.path)
         ) {
           targetState = { state: "deleted" };
         } else {
@@ -1117,12 +1507,12 @@ function buildFeedbackThreads(repoRoot, stages, implementationId) {
         }
       }
     }
-    threads.push({
+    return {
       id: thread.id,
       status: thread.status,
-      target: thread.target,
+      target,
       ...(targetState ? { targetState } : {}),
-      comments: (thread.comments || []).map((c) => ({
+      comments: thread.comments.map((c) => ({
         id: c.id,
         author: c.author,
         body: c.body,
@@ -1137,15 +1527,14 @@ function buildFeedbackThreads(repoRoot, stages, implementationId) {
       anchorStale:
         currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
         Boolean(
-          thread.target?.stageId &&
-            currentHeads.get(thread.target.stageId) !== thread.target.stageHead,
+          target.stageId &&
+            currentHeads.get(target.stageId) !== target.stageHead,
         ),
-    });
-  }
-  return threads;
+    };
+  });
 }
 
-const CONTENT_TYPES = {
+const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -1158,11 +1547,11 @@ function locateFeedbackCli() {
   return fs.existsSync(candidate) ? candidate : "";
 }
 
-function readRequestBody(request, limit = 8 * 1024 * 1024): Promise<string> {
+function readRequestBody(request: http.IncomingMessage, limit = 8 * 1024 * 1024): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const chunks = [];
+    const chunks: Buffer[] = [];
     let size = 0;
-    request.on("data", (chunk) => {
+    request.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > limit) {
         reject(new Error("Request body too large."));
@@ -1176,7 +1565,14 @@ function readRequestBody(request, limit = 8 * 1024 * 1024): Promise<string> {
   });
 }
 
-function sendJson(response, status, payload) {
+/** A request body's fields. Bodies are untrusted: handlers narrow each field they use. */
+async function readRequestFields(request: http.IncomingMessage, limit?: number): Promise<JsonRecord> {
+  const payload = parseJson(await readRequestBody(request, limit));
+  if (!isRecord(payload)) throw new Error("Request body must be a JSON object.");
+  return payload;
+}
+
+function sendJson(response: http.ServerResponse, status: number, payload: unknown) {
   const body = Buffer.from(JSON.stringify(payload), "utf8");
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -1186,10 +1582,40 @@ function sendJson(response, status, payload) {
   response.end(body);
 }
 
+/** The implementation stages that browser notes are resolved against. */
+interface FeedbackTargetStage {
+  id: string;
+  title?: string;
+  baseRevision: string;
+  headRevision: string;
+  files: { path: string; revision: string }[];
+  nodes: { id: string; title: string }[];
+  insights: { collection: string; id?: string; title?: string }[];
+}
+
+interface FeedbackTargets {
+  implementationId: string;
+  stages: FeedbackTargetStage[];
+}
+
+/** review-feedback target options for one note. */
+interface NoteTarget {
+  "target-kind": "stage" | "node" | "file" | "line" | "insight";
+  stage: string;
+  label?: string;
+  node?: string;
+  path?: string;
+  side?: string;
+  line?: number;
+  collection?: string;
+  item?: string;
+}
+
 // Map a browser-local note (kind: stage | node | file | line) onto
 // review-feedback target options. Line notes encode the diff side and line
 // number in their id.
-export function mapNoteTarget(note, implementation) {
+export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets): NoteTarget {
+  const noteId = stringField(note, "id") ?? "";
   if (note.kind === "stage") {
     const stage = implementation.stages.find((s) => s.id === note.id);
     if (!stage) throw new Error(`unknown stage "${note.id}"`);
@@ -1218,7 +1644,7 @@ export function mapNoteTarget(note, implementation) {
     );
   }
   if (note.kind === "file") {
-    const match = /^f:([^:]+):(.+)$/.exec(note.id || "");
+    const match = /^f:([^:]+):(.+)$/.exec(noteId);
     if (!match) throw new Error(`unrecognized file id "${note.id}"`);
     const [, stageId, filePath] = match;
     const stage = implementation.stages.find((s) => s.id === stageId);
@@ -1226,7 +1652,7 @@ export function mapNoteTarget(note, implementation) {
     return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
   }
   if (note.kind === "line") {
-    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(note.id || "");
+    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(noteId);
     if (!match) throw new Error(`unrecognized line id "${note.id}"`);
     const [, stageId, side, line, filePath] = match;
     const stage = implementation.stages.find((s) => s.id === stageId);
@@ -1241,7 +1667,7 @@ export function mapNoteTarget(note, implementation) {
     };
   }
   if (note.kind === "insight") {
-    const match = /^i:([^:]+):([^:]+):([^:]+)$/.exec(note.id || "");
+    const match = /^i:([^:]+):([^:]+):([^:]+)$/.exec(noteId);
     if (!match) throw new Error(`unrecognized insight id "${note.id}"`);
     const [, stageId, collection, item] = match;
     const insight = implementation.stages.find((s) => s.id === stageId)?.insights.find((i) => i.collection === collection && i.id === item);
@@ -1251,15 +1677,12 @@ export function mapNoteTarget(note, implementation) {
   throw new Error(`unsupported note kind "${note.kind}"`);
 }
 
-export function buildFeedbackTargetData(repoRoot) {
-  const implementationRoot = path.join(repoRoot, ".semantic-review");
-  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
+  const manifest = readManifest(manifestPath(repoRoot));
   return {
     implementationId: manifest.implementationId,
     stages: manifest.stages.map((stageId) => {
-      const stage = readJson(
-        path.join(implementationRoot, "stages", `${stageId}.json`),
-      );
+      const stage = readStageDocument(stagePath(repoRoot, stageId));
       const stats = stageFileStats(repoRoot, stage, gitCapture);
       return {
         id: stage.id,
@@ -1267,22 +1690,22 @@ export function buildFeedbackTargetData(repoRoot) {
         baseRevision: stage.change.baseRevision,
         headRevision: stage.change.headRevision,
         files: stage.change.files.map(file => ({ path: file.path, revision: fileRevision(stage, file, stats.get(file.path)) })),
-        nodes: (stage.nodes || []).map((node) => ({
+        nodes: stage.nodes.map((node) => ({
           id: node.id,
           title: humanizeId(node.id),
         })),
-        insights: (stage.evidence || []).map((item) => ({ collection: "evidence", id: item.id, title: item.summary })),
+        insights: listOf(stage.evidence).map((item) => ({ collection: "evidence", id: stringField(item, "id"), title: stringField(item, "summary") })),
       };
     }),
   };
 }
 
-function runFeedbackCli(feedbackCli, context: ReviewContext, args, input?: string) {
+function runFeedbackCli(feedbackCli: string, context: ReviewContext, args: string[], input?: string): string {
   if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
   return runReviewCommand(context, process.execPath, [feedbackCli, ...args], { input });
 }
 
-function feedbackContext(repoRoot, context: ReviewContext | null, initialize = false): ReviewContext {
+function feedbackContext(repoRoot: string, context: ReviewContext | null | undefined, initialize = false): ReviewContext {
   const implementation = implementationSummary(repoRoot);
   const id = reviewId(repoRoot, implementation.implementationId);
   if (context) {
@@ -1290,34 +1713,55 @@ function feedbackContext(repoRoot, context: ReviewContext | null, initialize = f
     if (context.reviewId !== id) throw new Error("The feedback command belongs to another review.");
     return context;
   }
-  if (initialize) registerReview(repoRoot, implementation.implementationId, implementation.title);
+  if (initialize) registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
   return captureReviewContext(id);
 }
 
-function cliErrorMessage(error) {
-  const text = (error.stderr || error.stdout || error.message || "").toString().trim();
+function cliErrorMessage(error: unknown): string {
+  const text = (capturedOutput(error, "stderr") || capturedOutput(error, "stdout") || stringField(error, "message") || "").toString().trim();
   const line = text.split(/\r?\n/).find((l) => l.startsWith("Error:")) || text.split(/\r?\n/)[0];
   return (line || "feedback command failed").replace(/^Error:\s*/, "");
 }
 
 // Upgrade commit-only line snapshots without moving their original anchors.
 // Unavailable history stays unresolved and is conservatively rejected on export.
-export function resolveLineDraftSnapshots(repoRoot, notes) {
-  if (!Array.isArray(notes)) return notes;
+export function resolveLineDraftSnapshots(repoRoot: string, notes: unknown): unknown {
+  if (!isList(notes)) return notes;
   return notes.map(note => {
-    if (note?.kind !== "line" || !note.snapshot || note.snapshot.fileRevision) return note;
-    const { base, head } = note.snapshot;
-    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(note.id);
-    if (!match || ![base, head].every(rev => typeof rev === "string" && /^[a-f0-9]{40,64}$/.test(rev))) return note;
+    if (!isRecord(note) || note.kind !== "line") return note;
+    const snapshot = note.snapshot;
+    if (!isRecord(snapshot) || snapshot.fileRevision) return note;
+    const { base, head } = snapshot;
+    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(stringField(note, "id") ?? "");
+    if (!match || typeof base !== "string" || typeof head !== "string" || ![base, head].every(rev => /^[a-f0-9]{40,64}$/.test(rev))) return note;
     try {
       const stage = { change: { baseRevision: base, headRevision: head } };
-      const stats = immutableFact(JSON.stringify(["draft-stats", repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
+      const stats = stageStatsFacts(JSON.stringify([repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
       const fileStats = stats.get(match[4]);
       if (!fileStats) return note;
       const revision = fileRevision(stage, { path: match[4], previousPath: fileStats.previousPath }, fileStats);
-      return { ...note, snapshot: { ...note.snapshot, fileRevision: revision } };
+      return { ...note, snapshot: { ...snapshot, fileRevision: revision } };
     } catch { return note; }
   });
+}
+
+interface SkippedNote<Ref> {
+  ref: Ref;
+  reason: string;
+}
+
+interface PlannedThread {
+  ref: number;
+  body: string;
+  /** Attachment IDs as the browser sent them; review-feedback validates them. */
+  attachments: unknown[];
+  target: NoteTarget;
+  clientId?: string;
+}
+
+/** Attachment IDs of a note or reply, as the browser sent them. */
+function attachmentIdsOf(fields: JsonRecord): unknown[] {
+  return isList(fields.attachments) ? fields.attachments.map((item) => fieldsOf(item).id) : [];
 }
 
 // Validate every note and resolve its target into review-feedback options.
@@ -1325,52 +1769,81 @@ export function resolveLineDraftSnapshots(repoRoot, notes) {
 // and the reasons any note was skipped, without mutating any state. Kept
 // separate from the CLI mutations so a malformed payload can never leave a
 // partial or orphaned draft batch behind.
-export function planFeedbackThreads(notes, implementation) {
-  const skipped: Array<{ ref: number; reason: string }> = [];
-  const planned: Array<{ ref: number; body: string; attachments: string[]; target: Record<string, any>; clientId?: string }> =
-    [];
-  if (!Array.isArray(notes)) return { planned, skipped };
+export function planFeedbackThreads(notes: unknown, implementation: FeedbackTargets) {
+  const skipped: SkippedNote<number>[] = [];
+  const planned: PlannedThread[] = [];
+  if (!isList(notes)) return { planned, skipped };
   notes.forEach((note, index) => {
-    const ref = note && Number.isInteger(note.ref) ? note.ref : index;
+    const noteRef = fieldsOf(note).ref;
+    const ref = typeof noteRef === "number" && Number.isInteger(noteRef) ? noteRef : index;
     if (!note || typeof note !== "object") {
       skipped.push({ ref, reason: "not an object" });
       return;
     }
-    const body = typeof note.body === "string" ? note.body.trim() : "";
-    const attachments = Array.isArray(note.attachments) ? note.attachments.map((item) => item?.id) : [];
+    const fields = fieldsOf(note);
+    const body = typeof fields.body === "string" ? fields.body.trim() : "";
+    const attachments = attachmentIdsOf(fields);
     if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
     }
-    let target;
+    let target: NoteTarget;
     try {
-      target = mapNoteTarget(note, implementation);
-      if (note.kind === "line" && note.snapshot) {
+      target = mapNoteTarget(fields, implementation);
+      if (fields.kind === "line" && fields.snapshot) {
+        const snapshot = fieldsOf(fields.snapshot);
         const stage = implementation.stages.find((stage) => stage.id === target.stage);
         const file = stage?.files?.find(file => file.path === target.path);
-        const unchanged = note.snapshot.fileRevision
-          ? file?.revision === note.snapshot.fileRevision
-          : stage && stage.baseRevision === note.snapshot.base && stage.headRevision === note.snapshot.head;
+        const unchanged = snapshot.fileRevision
+          ? file?.revision === snapshot.fileRevision
+          : stage && stage.baseRevision === snapshot.base && stage.headRevision === snapshot.head;
         if (!unchanged) {
           throw new Error("The file changed since this line draft was written. Copy its text into a new note on the current diff before sending.");
         }
       }
     } catch (error) {
-      skipped.push({ ref, reason: error.message });
+      skipped.push({ ref, reason: errorMessage(error) });
       return;
     }
-    planned.push({ ref, body, attachments, target, ...(typeof note.clientId === "string" ? { clientId: note.clientId } : {}) });
+    planned.push({ ref, body, attachments, target, ...(typeof fields.clientId === "string" ? { clientId: fields.clientId } : {}) });
   });
   return { planned, skipped };
 }
 
-export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }, notes) {
-  context = feedbackContext(repoRoot, context, true);
-  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
+/** Output of a review-feedback `--partial` batch command over `size` inputs. */
+function parseBatchOutcome(output: string, size: number) {
+  const value = fieldsOf(parseJson(output));
+  const index = (item: unknown) => {
+    const position = numberField(item, "index");
+    if (position === undefined || !Number.isInteger(position) || position < 0 || position >= size) throw new Error("The feedback command returned an invalid batch result.");
+    return position;
+  };
+  return {
+    accepted: listOf(value.accepted).map(index),
+    rejected: listOf(value.rejected).map((item) => ({ index: index(item), error: stringField(item, "error") ?? "" })),
+  };
+}
+
+interface FeedbackCommandOptions {
+  repoRoot: string;
+  feedbackCli: string;
+  context?: ReviewContext | null;
+}
+
+interface ExportResult {
+  ok: boolean;
+  error?: string;
+  exported?: { ref: number; threadId: string }[];
+  skipped?: SkippedNote<number>[];
+}
+
+export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }: FeedbackCommandOptions & { implementation: FeedbackTargets }, notes: unknown): ExportResult {
+  const review = feedbackContext(repoRoot, context, true);
+  if (assertReviewContext(review).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
-  if (!Array.isArray(notes) || notes.length === 0) {
+  if (!isList(notes) || notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
   const { planned, skipped } = planFeedbackThreads(resolveLineDraftSnapshots(repoRoot, notes), implementation);
@@ -1380,7 +1853,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
 
   const manifest = path.join(feedbackDirectory(repoRoot), "manifest.json");
   if (!fs.existsSync(manifest)) {
-    try { runFeedbackCli(feedbackCli, context, ["init"]); }
+    try { runFeedbackCli(feedbackCli, review, ["init"]); }
     catch (error) { if (!fs.existsSync(manifest)) throw error; } // Another viewer may have initialized it first.
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
@@ -1401,38 +1874,52 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
       },
     };
   });
-  const result = JSON.parse(runFeedbackCli(
-    feedbackCli, context, ["thread", "add-batch", "--partial", "--input", "-"],
+  const result = parseBatchOutcome(runFeedbackCli(
+    feedbackCli, review, ["thread", "add-batch", "--partial", "--input", "-"],
     JSON.stringify({ threads: batch.map((entry) => entry.input) }),
-  ));
-  const exported = result.accepted.map(({ index }) => ({ ref: batch[index].ref, threadId: batch[index].threadId }));
+  ), batch.length);
+  const exported = result.accepted.map((index) => ({ ref: batch[index].ref, threadId: batch[index].threadId }));
   for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
   return { ok: exported.length > 0, exported, skipped, ...(exported.length ? {} : { error: "No notes could be exported." }) };
 
 }
 
-export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }, drafts) {
-  context = feedbackContext(repoRoot, context);
-  if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
+interface ReplyOutcome {
+  ref: string;
+  threadId: string;
+  comment?: Thread["comments"][number];
+  status?: Thread["status"];
+  resolvedAt: string | null;
+}
+
+interface ReplyResult {
+  ok: boolean;
+  error?: string;
+  replied?: ReplyOutcome[];
+  skipped?: SkippedNote<string>[];
+}
+
+export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }: FeedbackCommandOptions, drafts: unknown): ReplyResult {
+  const review = feedbackContext(repoRoot, context);
+  if (assertReviewContext(review).remote) throw new Error("Remote reviews support personal notes only.");
   if (!feedbackCli) {
     return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
   }
-  if (!Array.isArray(drafts) || drafts.length === 0) {
+  if (!isList(drafts) || drafts.length === 0) {
     return { ok: false, error: "No feedback replies to export." };
   }
-  const skipped: Array<{ ref: string; reason: string }> = [];
-  const batch = [];
+  const skipped: SkippedNote<string>[] = [];
+  const batch: { ref: string; threadId: string; commentId: string; input: JsonRecord }[] = [];
   drafts.forEach((draft, index) => {
-    const ref =
-      draft && typeof draft.ref === "string" ? draft.ref : String(index);
-    const threadId =
-      draft && typeof draft.threadId === "string" ? draft.threadId : "";
-    const body = draft && typeof draft.body === "string" ? draft.body.trim() : "";
+    const fields = fieldsOf(draft);
+    const ref = typeof fields.ref === "string" ? fields.ref : String(index);
+    const threadId = typeof fields.threadId === "string" ? fields.threadId : "";
+    const body = typeof fields.body === "string" ? fields.body.trim() : "";
     if (!threadId) {
       skipped.push({ ref, reason: "thread no longer exists" });
       return;
     }
-    const attachments = Array.isArray(draft.attachments) ? draft.attachments.map((item) => item?.id) : [];
+    const attachments = attachmentIdsOf(fields);
     if (!body && !attachments.length) {
       skipped.push({ ref, reason: "empty body" });
       return;
@@ -1455,7 +1942,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null },
     return { ok: false, error: "No feedback replies could be exported.", skipped };
   }
 
-  const resultFor = (entry) => {
+  const resultFor = (entry: (typeof batch)[number]): ReplyOutcome => {
     const thread = readFeedbackThread(repoRoot, entry.threadId);
     return {
       ref: entry.ref,
@@ -1466,27 +1953,27 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null },
     };
   };
 
-  const result = JSON.parse(runFeedbackCli(
-    feedbackCli, context, ["thread", "reply-batch", "--partial", "--input", "-"],
+  const result = parseBatchOutcome(runFeedbackCli(
+    feedbackCli, review, ["thread", "reply-batch", "--partial", "--input", "-"],
     JSON.stringify({ replies: batch.map((entry) => entry.input) }),
-  ));
-  const replied = result.accepted.map(({ index }) => resultFor(batch[index]));
+  ), batch.length);
+  const replied = result.accepted.map((index) => resultFor(batch[index]));
   for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
   return { ok: replied.length > 0, replied, skipped, ...(replied.length ? {} : { error: "No replies could be exported." }) };
 
 }
 
 /** One viewer send. Listening agents wait until its notes and replies are both written. */
-export function sendFeedback({ repoRoot, implementation = null, feedbackCli, context = null }, notes, replies) {
-  const hasNotes = Array.isArray(notes) && notes.length > 0;
-  const hasReplies = Array.isArray(replies) && replies.length > 0;
+export function sendFeedback({ repoRoot, implementation = null, feedbackCli, context = null }: FeedbackCommandOptions & { implementation?: FeedbackTargets | null }, notes: unknown, replies: unknown) {
+  const hasNotes = isList(notes) && notes.length > 0;
+  const hasReplies = isList(replies) && replies.length > 0;
   if (!hasNotes && !hasReplies) return { ok: false, error: "No feedback to send." };
-  context = feedbackContext(repoRoot, context, hasNotes);
+  const review = feedbackContext(repoRoot, context, hasNotes);
   const token = randomUUID();
-  updateAgentState(context.reviewId, (state, now) => markSending(state, now, token, true));
+  updateAgentState(review.reviewId, (state, now) => markSending(state, now, token, true));
   try {
-    const sent: Record<string, any> | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), feedbackCli, context }, notes) : null;
-    const answered: Record<string, any> | null = hasReplies ? exportFeedbackReplies({ repoRoot, feedbackCli, context }, replies) : null;
+    const sent: ExportResult | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), feedbackCli, context: review }, notes) : null;
+    const answered: ReplyResult | null = hasReplies ? exportFeedbackReplies({ repoRoot, feedbackCli, context: review }, replies) : null;
     const ok = Boolean(sent?.ok || answered?.ok);
     return {
       ok,
@@ -1495,20 +1982,21 @@ export function sendFeedback({ repoRoot, implementation = null, feedbackCli, con
       ...(ok ? {} : { error: sent?.error || answered?.error || "Nothing could be sent." }),
     };
   } finally {
-    updateAgentState(context.reviewId, (state, now) => markSending(state, now, token, false));
+    updateAgentState(review.reviewId, (state, now) => markSending(state, now, token, false));
   }
 }
 
 /** Reviewer controls for the listening agent. */
-export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: string, payload) {
+export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: string, payload: unknown) {
   return updateAgentState(context.reviewId, (state, now) => {
     if (action === "stop") {
       const session = liveSession(state);
       if (session && !session.stopRequestedAt) session.stopRequestedAt = new Date(now).toISOString();
     } else {
-      const body = typeof payload?.body === "string" ? payload.body.trim() : "";
-      if (typeof payload?.requestId !== "string" || !body || body.length > 4000) throw new Error("Write an answer of up to 4000 characters.");
-      respondToRequest(state, now, payload.requestId, body);
+      const { body: text, requestId } = fieldsOf(payload);
+      const body = typeof text === "string" ? text.trim() : "";
+      if (typeof requestId !== "string" || !body || body.length > 4000) throw new Error("Write an answer of up to 4000 characters.");
+      respondToRequest(state, now, requestId, body);
     }
     return agentStatus(state, now);
   });
@@ -1519,7 +2007,7 @@ export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: s
 // web page attempting a request will carry a foreign Origin. Combined with the
 // required application/json content type (which forces a CORS preflight this
 // server never approves), this blocks drive-by requests from other sites.
-function isTrustedRequest(request, port) {
+function isTrustedRequest(request: http.IncomingMessage, port: number) {
   const contentType = String(request.headers["content-type"] || "");
   if (!contentType.toLowerCase().startsWith("application/json")) return false;
   const origin = request.headers["origin"];
@@ -1531,7 +2019,15 @@ function isTrustedRequest(request, port) {
   return allowed.has(origin);
 }
 
-async function handleFeedbackExport(request, response, context) {
+/** What the HTTP handlers need from the server for one feedback request. */
+interface FeedbackRequestContext {
+  repoRoot: string;
+  feedbackCli: string;
+  jobs: ViewerWorker;
+  port: number;
+}
+
+async function handleFeedbackExport(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext) {
   try {
     if (!isTrustedRequest(request, context.port)) {
       sendJson(response, 403, {
@@ -1541,14 +2037,14 @@ async function handleFeedbackExport(request, response, context) {
       return;
     }
     const raw = await readRequestBody(request);
-    let payload;
+    let payload: unknown;
     try {
-      payload = JSON.parse(raw || "{}");
+      payload = parseJson(raw || "{}");
     } catch {
       sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    if (!isRecord(payload)) {
       sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
       return;
     }
@@ -1560,38 +2056,37 @@ async function handleFeedbackExport(request, response, context) {
       });
       return;
     }
-    const result = await context.jobs.call("sendFeedback", [payload.implementationId, payload.notes, payload.replies]);
+    const result = workerRecord(await context.jobs.call("sendFeedback", [payload.implementationId, payload.notes, payload.replies]));
     sendJson(response, result.ok ? 200 : 422, {
       ...result,
-      ...await context.jobs.call("snapshot", [true]),
+      ...workerRecord(await context.jobs.call("snapshot", [true])),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
 }
 
-export function readFeedbackThread(repoRoot, threadId) {
+export function readFeedbackThread(repoRoot: string, threadId: string): Thread | null {
   const feedbackRoot = feedbackDirectory(repoRoot);
   const manifestPath = path.join(feedbackRoot, "manifest.json");
   if (!fs.existsSync(manifestPath)) return null;
 
   const manifest = readJson(manifestPath);
-  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
+  if (!isDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest)) {
     throw new Error(
       "this feedback workspace uses an unsupported v0.1 layout",
     );
   }
-  if ((manifest.threads || []).includes(threadId)) {
-    return readJson(
-      path.join(feedbackRoot, "threads", `${threadId}.json`),
-    );
+  if (manifest.threads.includes(threadId)) {
+    const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
+    return parseDocument(THREAD_SCHEMA_ID, readJson(file), file);
   }
   return null;
 }
 
 // Reviewer-driven thread actions: continue (reply), close (resolve), or reopen.
 // Closure is always the reviewer's decision — the agent only ever replies.
-async function handleThreadAction(request, response, context, action) {
+async function handleThreadAction(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext & { implementationId: string }, action: string) {
   try {
     if (!isTrustedRequest(request, context.port)) {
       sendJson(response, 403, {
@@ -1608,16 +2103,16 @@ async function handleThreadAction(request, response, context, action) {
       return;
     }
     const raw = await readRequestBody(request);
-    let payload;
+    let payload: unknown;
     try {
-      payload = JSON.parse(raw || "{}");
+      payload = parseJson(raw || "{}");
     } catch {
       sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
     const currentImplementationId = activeImplementationId(context.repoRoot);
     if (
-      !payload ||
+      !isRecord(payload) ||
       payload.implementationId !== context.implementationId ||
       payload.implementationId !== currentImplementationId
     ) {
@@ -1634,11 +2129,11 @@ async function handleThreadAction(request, response, context, action) {
     }
     try {
       if (action === "reply") {
-        const result = await context.jobs.call("exportFeedbackReplies", [context.implementationId, [{
+        const result = workerRecord(await context.jobs.call("exportFeedbackReplies", [context.implementationId, [{
           ref: payload.clientId || createHash("sha256").update(JSON.stringify([threadId, payload.body, payload.attachments])).digest("hex"),
           threadId, body: payload.body, attachments: payload.attachments,
-        }]]);
-        if (!result.ok) throw new Error(result.error || result.skipped?.[0]?.reason || "Reply could not be sent.");
+        }]]));
+        if (!result.ok) throw new Error(stringField(result, "error") || stringField(listOf(result.skipped)[0], "reason") || "Reply could not be sent.");
       } else if (action === "resolve") {
         await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "resolve", "--id", threadId]]);
       } else if (action === "reopen") {
@@ -1659,21 +2154,22 @@ async function handleThreadAction(request, response, context, action) {
       status: thread.status,
       resolvedAt: thread.resolvedAt || null,
       comment: action === "reply" ? last : undefined,
-      ...await context.jobs.call("snapshot", [true]),
+      ...workerRecord(await context.jobs.call("snapshot", [true])),
     });
   } catch (error) {
     sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
 }
 
-function approvedFileEndpoint(input, script: string): FileEndpoint {
-  const data = JSON.parse(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
-  const stage = data.stages.find((stage) => stage.id === input.stageId);
-  const file = stage?.files.find((file) => file.path === input.path);
-  const ownership = file?.memberships.find((membership) => membership.nodeId === input.nodeId);
+/** The approved file as the browser last saw it; fails when it changed since. */
+function approvedFileEndpoint(input: unknown, data: ImplementationData): FileEndpoint {
+  const { stageId, path: filePath, nodeId, fileRevision, ownership: shownOwnership } = fieldsOf(input);
+  const stage = data.stages.find((stage) => stage.id === stageId);
+  const file = stage?.files.find((file) => file.path === filePath);
+  const ownership = file?.memberships.find((membership) => membership.nodeId === nodeId);
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
-  if (file.revision !== input.fileRevision || !isDeepStrictEqual(ownership, input.ownership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
-  return { stageId: stage.id, nodeId: input.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
+  if (file.revision !== fileRevision || !isDeepStrictEqual(ownership, shownOwnership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
+  return { stageId: stage.id, nodeId: ownership.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
     baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
@@ -1699,11 +2195,12 @@ export async function openRegisteredReview(id: string, generation: string): Prom
       const fail = (error: Error) => { clearTimeout(timer); reject(error); };
       child.once("error", fail);
       child.once("exit", (code) => fail(new Error(`The review service exited before opening (${code}).`)));
-      child.once("message", (message: any) => {
+      child.once("message", (message: unknown) => {
         clearTimeout(timer);
-        if (message?.type !== "ready" || message.reviewId !== id || typeof message.url !== "string") {
-          child.kill(); reject(new Error(message?.message || "Invalid review service startup response."));
-        } else resolve(message.url);
+        const url = stringField(message, "url");
+        if (stringField(message, "type") !== "ready" || stringField(message, "reviewId") !== id || url === undefined) {
+          child.kill(); reject(new Error(stringField(message, "message") || "Invalid review service startup response."));
+        } else resolve(url);
       });
     });
   } finally { child.unref(); }
@@ -1711,28 +2208,39 @@ export async function openRegisteredReview(id: string, generation: string): Prom
 
 export function reviewSessionUnavailable(context: ReviewContext) {
   try { return readReview(context.reviewId).generation !== context.generation; }
-  catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+  catch (error) { return errorCode(error) === "REVIEW_UNAVAILABLE"; }
 }
 /** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
 export function reviewRetirementCheck(context: ReviewContext) {
   const directory = reviewDirectory(context.reviewId);
   const identity = () => { const stat = fs.statSync(directory, { bigint: true }); return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`; };
   let original: string | null | undefined;
-  try { original = identity(); } catch (error) { if (error.code === "ENOENT") original = null; }
+  try { original = identity(); } catch (error) { if (errorCode(error) === "ENOENT") original = null; }
   return () => {
     if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
     let current: string;
-    try { current = identity(); } catch (error) { return error.code === "ENOENT"; }
+    try { current = identity(); } catch (error) { return errorCode(error) === "ENOENT"; }
     if (original === null) return true;
     if (original === undefined) {
       // A new generation may have appeared while the initial identity was unreadable.
       try { if (readReview(context.reviewId).generation !== context.generation) return true; }
-      catch (error) { return error.code === "REVIEW_UNAVAILABLE"; }
+      catch (error) { return errorCode(error) === "REVIEW_UNAVAILABLE"; }
       original = current;
     }
     return current !== original;
   };
 }
+interface ViewerServerOptions {
+  viewerDir: string;
+  port: number;
+  repoRoot: string;
+  feedbackCli: string;
+  implementationId: string;
+  dataSource: ViewerWorker;
+  viewerVersion: string;
+  context: ReviewContext;
+}
+
 function serveViewer({
   viewerDir,
   port,
@@ -1742,16 +2250,16 @@ function serveViewer({
   dataSource,
   viewerVersion,
   context,
-}) {
+}: ViewerServerOptions): Promise<http.Server> {
   const review = assertReviewContext(context);
-  let server = null;
-  let management = null;
-  const manage = (method, args) => {
+  let server: http.Server | null = null;
+  let management: ViewerWorker | null = null;
+  const manage = (method: string, args: unknown[]) => {
     if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
     return management.call(method, args);
   };
-  const requestHandler = async (request, response) => {
-    const url = new URL(request.url, `http://${VIEWER_HOST}`);
+  const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
+    const url = new URL(request.url ?? "/", `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
 
     // Every review API request is explicitly scoped, even on a dedicated server.
@@ -1779,9 +2287,12 @@ function serveViewer({
     if (pathname === "/api/attachments" && request.method === "POST") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request, 29 * 1024 * 1024));
-        if (typeof payload.data !== "string" || payload.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || Buffer.from(payload.data, "base64").toString("base64") !== payload.data) throw new Error("Invalid attachment bytes or file larger than 20 MiB.");
-        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, payload.filename, payload.mediaType, Buffer.from(payload.data, "base64")));
+        const { data, filename, mediaType } = await readRequestFields(request, 29 * 1024 * 1024);
+        if (typeof data !== "string" || data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || Buffer.from(data, "base64").toString("base64") !== data) throw new Error("Invalid attachment bytes or file larger than 20 MiB.");
+        // storeAttachment rejects a name that is not a string; a missing type means the default.
+        const type = typeof mediaType === "string" ? mediaType : mediaType ? undefined : "";
+        if (type === undefined) throw new Error("Invalid attachment media type.");
+        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, typeof filename === "string" ? filename : "", type, Buffer.from(data, "base64")));
         sendJson(response, 200, { ok: true, attachment });
       } catch (error) { sendJson(response, 400, { ok: false, error: cliErrorMessage(error) }); }
       return;
@@ -1807,9 +2318,10 @@ function serveViewer({
     if (request.method === "POST" && pathname === "/api/draft-snapshots") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Draft snapshots require a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
+        const payload = await readRequestFields(request);
         const notes = await dataSource.call("resolveLineDraftSnapshots", [implementationId, payload.notes]);
-        sendJson(response, 200, { ok: true, snapshots: notes.map(note => note?.snapshot || null) });
+        if (!isList(notes)) throw new Error("Draft snapshots require a list of notes.");
+        sendJson(response, 200, { ok: true, snapshots: notes.map(note => fieldsOf(note).snapshot || null) });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
@@ -1817,9 +2329,9 @@ function serveViewer({
     if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
+        const payload = await readRequestFields(request);
         const method = pathname === "/api/approval-snapshots" ? "captureApproval" : "compareApproval";
-        sendJson(response, 200, { ok: true, ...await dataSource.call(method, [implementationId, payload]) });
+        sendJson(response, 200, { ok: true, ...workerRecord(await dataSource.call(method, [implementationId, payload])) });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
@@ -1827,10 +2339,10 @@ function serveViewer({
     if (request.method === "POST" && ["/api/reviews/storage", "/api/reviews/delete", "/api/reviews/clean-unused"].includes(pathname)) {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Managing review data requires a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
+        const payload = await readRequestFields(request);
         if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: await manage("inspectStorage", [payload.reviewId, payload.generation]) });
-        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...await manage("deleteStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
-        else sendJson(response, 200, { ok: true, ...await manage("cleanStorage", [payload.reviewId, payload.generation, payload.fingerprint]) });
+        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...workerRecord(await manage("deleteStorage", [payload.reviewId, payload.generation, payload.fingerprint])) });
+        else sendJson(response, 200, { ok: true, ...workerRecord(await manage("cleanStorage", [payload.reviewId, payload.generation, payload.fingerprint])) });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
@@ -1843,7 +2355,7 @@ function serveViewer({
     if (request.method === "POST" && pathname === "/api/reviews/completion") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Changing completion requires a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
+        const payload = await readRequestFields(request);
         await manage("setCompleted", [payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt]);
         sendJson(response, 200, { ok: true });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
@@ -1853,21 +2365,23 @@ function serveViewer({
     if (request.method === "POST" && pathname === "/api/reviews/open") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Opening a review requires a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
-        sendJson(response, 200, { ok: true, url: await openRegisteredReview(payload.reviewId, payload.generation) });
+        const payload = await readRequestFields(request);
+        // Identities of another type fail the registry's own identity checks.
+        sendJson(response, 200, { ok: true, url: await openRegisteredReview(stringField(payload, "reviewId") ?? "", stringField(payload, "generation") ?? "") });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
 
     if (pathname === "/api/review-state") {
       try {
-        let record;
-        if (request.method === "GET") record = await dataSource.call("readReview", [implementationId, review.id]);
+        let result: unknown;
+        if (request.method === "GET") result = await dataSource.call("readReview", [implementationId, review.id]);
         else if (request.method === "POST" && isTrustedRequest(request, port)) {
-          const payload = JSON.parse(await readRequestBody(request));
+          const payload = await readRequestFields(request);
           if (payload.reviewId !== review.id) throw new Error("This request belongs to another review.");
-          record = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
+          result = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
         } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
+        const record = workerRecord(result);
         sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
@@ -1876,7 +2390,7 @@ function serveViewer({
     if (request.method === "POST" && ["/api/agent/stop", "/api/agent/respond"].includes(pathname)) {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
-        const payload = JSON.parse(await readRequestBody(request));
+        const payload = await readRequestFields(request);
         sendJson(response, 200, { ok: true, agent: await dataSource.call("controlAgent", [implementationId, pathname.slice("/api/agent/".length), payload]) });
       } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
       return;
@@ -1905,7 +2419,7 @@ function serveViewer({
       try {
         sendJson(response, 200, {
           ok: true,
-          ...await dataSource.call("snapshot", []),
+          ...workerRecord(await dataSource.call("snapshot", [])),
         });
       } catch (error) {
         sendJson(response, 500, {
@@ -1918,9 +2432,9 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/evidence") {
       try {
-        const result = await dataSource.call("evidenceFile", [url.searchParams.get("stage"), url.searchParams.get("item"), url.searchParams.get("index")]);
-        const bytes = Buffer.from(result.content, "base64");
-        const headers = { "content-type": result.mediaType, "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
+        const result = workerRecord(await dataSource.call("evidenceFile", [url.searchParams.get("stage"), url.searchParams.get("item"), url.searchParams.get("index")]));
+        const bytes = Buffer.from(workerString(result, "content"), "base64");
+        const headers = { "content-type": workerString(result, "mediaType"), "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
         // Safari refuses to play video from a server without range support.
         const range = evidenceRange(request.headers.range, bytes.length);
         if (!range) {
@@ -1942,13 +2456,13 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/file-content") {
       try {
-        const result = await dataSource.call("fileContent", [url.searchParams.get("stage"), url.searchParams.get("path"), url.searchParams.get("base"), url.searchParams.get("head"), url.searchParams.get("target")]);
+        const result = workerRecord(await dataSource.call("fileContent", [url.searchParams.get("stage"), url.searchParams.get("path"), url.searchParams.get("base"), url.searchParams.get("head"), url.searchParams.get("target")]));
+        const mediaType = workerString(result, "mediaType"), content = Buffer.from(workerString(result, "content"), "base64");
         if (url.searchParams.get("raw") === "1") {
-          if (url.searchParams.get("image") === "1" && !result.mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
-          const bytes = Buffer.from(result.content, "base64");
-          response.writeHead(200, { "content-type": result.mediaType, "content-length": bytes.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
-          response.end(bytes);
-        } else sendJson(response, 200, { ok: true, ...result, content: Buffer.from(result.content, "base64").toString("utf8") });
+          if (url.searchParams.get("image") === "1" && !mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
+          response.writeHead(200, { "content-type": mediaType, "content-length": content.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
+          response.end(content);
+        } else sendJson(response, 200, { ok: true, ...result, content: content.toString("utf8") });
       } catch (error) { sendJson(response, 422, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
@@ -1968,9 +2482,9 @@ function serveViewer({
       try {
         sendJson(response, 200, {
           ok: true,
-          ...await dataSource.call("fileDiff", [stageId, filePath, baseRevision, headRevision,
+          ...workerRecord(await dataSource.call("fileDiff", [stageId, filePath, baseRevision, headRevision,
             url.searchParams.get("mode") || "changes", Number(url.searchParams.get("offset") || 0),
-            url.searchParams.get("side"), url.searchParams.has("line") ? Number(url.searchParams.get("line")) : null]),
+            url.searchParams.get("side"), url.searchParams.has("line") ? Number(url.searchParams.get("line")) : null])),
         });
       } catch (error) {
         sendJson(response, 422, {
@@ -2014,7 +2528,7 @@ function serveViewer({
       request.method === "POST" &&
       ["/api/feedback/reply", "/api/feedback/resolve", "/api/feedback/reopen"].includes(pathname)
     ) {
-      const action = pathname.split("/").pop();
+      const action = pathname.split("/").at(-1) ?? "";
       handleThreadAction(
         request,
         response,
@@ -2026,18 +2540,18 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/implementation") {
       try {
-        const script = await dataSource.call("implementationDataScript", []);
-        const payload = JSON.parse(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
-        sendJson(response, 200, { ok: true, implementation: payload });
+        const script = workerText(await dataSource.call("implementationDataScript", []));
+        sendJson(response, 200, { ok: true, implementation: implementationFromScript(script) });
       } catch (error) { sendJson(response, 500, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
 
     if (pathname === "/implementation-data.js") {
-      let script;
-      try { script = await dataSource.call("implementationDataScript", []); }
+      let script: string;
+      try { script = workerText(await dataSource.call("implementationDataScript", [])); }
       catch (error) {
-        if (error.code !== "REVIEW_UNAVAILABLE" && error.code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
+        const code = errorCode(error);
+        if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
           response.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
           response.end(cliErrorMessage(error)); return;
         }
@@ -2075,51 +2589,70 @@ function serveViewer({
     });
   };
 
-  server = http.createServer(requestHandler);
-  server.once("close", () => { if (management) void management.close(); });
+  const httpServer = http.createServer(requestHandler);
+  server = httpServer;
+  httpServer.once("close", () => { if (management) void management.close(); });
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, VIEWER_HOST, () => {
+    httpServer.once("error", reject);
+    httpServer.listen(port, VIEWER_HOST, () => {
       const shouldRetire = reviewRetirementCheck(context);
       const retirement = setInterval(() => {
         if (shouldRetire()) {
           clearInterval(retirement); review.state = {}; void dataSource.close();
         }
       }, 1000);
-      retirement.unref(); server.once("close", () => clearInterval(retirement));
-      resolve(server);
+      retirement.unref(); httpServer.once("close", () => clearInterval(retirement));
+      resolve(httpServer);
     });
   });
 }
 
-function createViewerWorker(repoRoot, context: ReviewContext, management = false) {
+/** A worker result that must be an object. Results cross a structured-clone
+ * boundary, so the main thread narrows what it reads from them. */
+function workerRecord(value: unknown): JsonRecord {
+  if (!isRecord(value)) throw new Error("The viewer worker returned an invalid result.");
+  return value;
+}
+
+function workerText(value: unknown): string {
+  if (typeof value !== "string") throw new Error("The viewer worker returned an invalid result.");
+  return value;
+}
+
+function workerString(result: JsonRecord, key: string): string {
+  return workerText(result[key]);
+}
+
+function createViewerWorker(repoRoot: string, context: ReviewContext, management = false) {
   const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot, context, management } });
-  const pending = new Map();
-  const reads = new Map();
+  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
+  const reads = new Map<string, Promise<unknown>>();
   let sequence = 0;
   let stopped = false;
-  const rejectAll = (error) => {
+  const rejectAll = (error: unknown) => {
     stopped = true;
     for (const { reject } of pending.values()) reject(error);
     pending.clear(); reads.clear();
   };
   worker.on("error", rejectAll);
   worker.on("exit", () => rejectAll(new Error("Viewer worker stopped; reopen the viewer.")));
-  worker.on("message", ({ id, result, error, code }) => {
-    const request = pending.get(id);
-    if (!request) return;
+  worker.on("message", (message: unknown) => {
+    const { id, result, error, code } = fieldsOf(message);
+    const request = typeof id === "number" ? pending.get(id) : undefined;
+    if (!request || typeof id !== "number") return;
     pending.delete(id);
-    if (error) request.reject(Object.assign(new Error(error), { code })); else request.resolve(result);
+    if (error) request.reject(Object.assign(new Error(String(error)), { code })); else request.resolve(result);
   });
   return {
     get healthy() { return !stopped; },
-    call(method, args) {
+    call(method: string, args: unknown[]): Promise<unknown> {
       if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
       const key = ["snapshot", "fileDiff", "fileContent", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
-      if (key && reads.has(key)) return reads.get(key);
+      const shared = key ? reads.get(key) : undefined;
+      if (shared) return shared;
       if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
       const id = ++sequence;
-      const promise = new Promise((resolve, reject) => {
+      const promise = new Promise<unknown>((resolve, reject) => {
         pending.set(id, { resolve, reject });
         worker.postMessage({ id, method, args });
       });
@@ -2133,54 +2666,124 @@ function createViewerWorker(repoRoot, context: ReviewContext, management = false
   };
 }
 
-if (!isMainThread && workerData?.repoRoot) {
-  const root = workerData.repoRoot;
-  const context: ReviewContext = Object.freeze(workerData.context);
-  const source = workerData.management ? null : createViewerDataSource(root);
-  const feedbackCli = locateFeedbackCli();
-  parentPort.on("message", async ({ id, method, args }) => {
-    try {
-      if (workerData.management) {
-        // Management survives retirement of the launching review. Every job uses
-        // its explicitly selected target; no repository command is allowed here.
-        let result;
-        if (method === "inspectStorage") result = inspectReviewStorage(args[0], args[1]);
-        else if (method === "deleteStorage") result = deleteReviewData(args[0], args[1], args[2]);
-        else if (method === "cleanStorage") result = cleanUnusedReviewFiles(args[0], args[1], args[2]);
-        else if (method === "listReviews") result = registeredReviews();
-        else if (method === "setCompleted") result = setReviewCompleted(args[0], args[1], args[2], args[3]);
-        else throw new Error("Unknown review management operation.");
-        parentPort.postMessage({ id, result }); return;
-      }
-      const localState = ["readReview", "patchReviewState"].includes(method);
-      if (localState) {
-        if (args[1] !== context.reviewId || readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
-      } else assertReviewContext(context); // Includes queued repository reads and commands.
-      let result;
-      if (method === "readReview") result = readReview(context.reviewId);
-      else if (method === "patchReviewState") result = patchReviewState(context.reviewId, args[2], args[3]);
-      else if (method === "snapshot") result = { ...source.snapshot(...args), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
-      else if (["fileDiff", "fileContent", "implementationDataScript", "evidenceFile"].includes(method)) result = await source[method](...args);
-      else {
-        if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-        if (method === "refreshRemote") result = refreshRemoteReview(context.reviewId, context.generation);
-        else if (method === "resolveLineDraftSnapshots") result = resolveLineDraftSnapshots(root, args[1]);
-        else if (method === "captureApproval") result = captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationDataScript()));
-        else if (method === "compareApproval") result = compareApprovalSnapshot(context, args[1].snapshotId, approvedFileEndpoint(args[1], source.implementationDataScript()), args[1].offset || 0, args[1].mode ?? "changes", args[1].scope ?? "stage");
-        else if (method === "sendFeedback") result = sendFeedback({ repoRoot: root, feedbackCli, context }, args[1], args[2]);
-        else if (method === "controlAgent") result = controlAgent(context, args[1], args[2]);
-        else if (method === "exportFeedbackReplies") result = exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
-        else if (method === "feedbackCli") result = runFeedbackCli(feedbackCli, context, args[1]);
-        else throw new Error("Unknown viewer operation.");
-      }
-      parentPort.postMessage({ id, result });
-    } catch (error) { parentPort.postMessage({ id, error: cliErrorMessage(error), code: error.code }); }
+type ViewerWorker = ReturnType<typeof createViewerWorker>;
+
+// --- Worker side. Jobs arrive from this module's own main thread, but every
+// argument is narrowed: most originate in HTTP request bodies or query strings.
+
+/** The string argument at index; any other value becomes "", which every job rejects as invalid. */
+function textArg(args: unknown[], index: number): string {
+  const value = args[index];
+  return typeof value === "string" ? value : "";
+}
+
+/** A query-string argument, which is absent (null) when not given. */
+function queryArg(args: unknown[], index: number): string | null {
+  const value = args[index];
+  return typeof value === "string" ? value : null;
+}
+
+function stateValue(value: unknown): StateChange["before"] {
+  if (!isRecord(value) || typeof value.present !== "boolean") throw new Error("Invalid state change value.");
+  return Object.hasOwn(value, "value") ? { present: value.present, value: value.value } : { present: value.present };
+}
+
+/** Review state changes from the browser. patchReviewState checks their limits
+ * and keys; this establishes their shape, with the same messages. */
+function parseStateChanges(value: unknown): StateChange[] {
+  if (!isList(value)) throw new Error("Invalid state changes.");
+  return value.map((item) => {
+    const { path: keys, before, after } = fieldsOf(item);
+    if (!isStringArray(keys)) throw new Error("Invalid state change path.");
+    return { path: keys, before: stateValue(before), after: stateValue(after) };
   });
 }
 
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function parseWorkerContext(value: unknown): ReviewContext {
+  const reviewId = stringField(value, "reviewId"), generation = stringField(value, "generation");
+  const repositoryRoot = stringField(value, "repositoryRoot"), implementationId = stringField(value, "implementationId");
+  if (reviewId === undefined || generation === undefined || repositoryRoot === undefined || implementationId === undefined) {
+    throw new Error("The viewer worker started without a review context.");
+  }
+  return Object.freeze({ reviewId, generation, repositoryRoot, implementationId });
+}
 
-function openBrowser(url) {
+// Management survives retirement of the launching review. Every job uses
+// its explicitly selected target; no repository command is allowed here.
+function runManagementJob(method: unknown, args: unknown[]) {
+  if (method === "inspectStorage") return inspectReviewStorage(textArg(args, 0), textArg(args, 1));
+  if (method === "deleteStorage") return deleteReviewData(textArg(args, 0), textArg(args, 1), textArg(args, 2));
+  if (method === "cleanStorage") return cleanUnusedReviewFiles(textArg(args, 0), textArg(args, 1), textArg(args, 2));
+  if (method === "listReviews") return registeredReviews();
+  if (method === "setCompleted") {
+    const [, , completed, expectedCompletedAt] = args;
+    const expected = expectedCompletedAt === null ? null : typeof expectedCompletedAt === "string" ? expectedCompletedAt : undefined;
+    if (typeof completed !== "boolean" || expected === undefined) throw new Error("Invalid review lifecycle change.");
+    return setReviewCompleted(textArg(args, 0), textArg(args, 1), completed, expected);
+  }
+  throw new Error("Unknown review management operation.");
+}
+
+async function runViewerJob(root: string, context: ReviewContext, source: ReturnType<typeof createViewerDataSource>, feedbackCli: string, method: unknown, args: unknown[]): Promise<unknown> {
+  const localState = method === "readReview" || method === "patchReviewState";
+  // A state read returns the same record whose generation it checked.
+  const record = localState ? readReview(context.reviewId) : undefined;
+  if (record) {
+    if (args[1] !== context.reviewId || record.generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+  } else assertReviewContext(context); // Includes queued repository reads and commands.
+  if (method === "readReview") return record;
+  if (method === "patchReviewState") return patchReviewState(context.reviewId, textArg(args, 2), parseStateChanges(args[3]));
+  if (method === "snapshot") return { ...source.snapshot(args[0] === true), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
+  if (method === "fileDiff") {
+    const [, , , , mode, offset, , line] = args;
+    return source.fileDiff(textArg(args, 0), textArg(args, 1), textArg(args, 2), textArg(args, 3), typeof mode === "string" ? mode : "",
+      typeof offset === "number" ? offset : NaN, queryArg(args, 6), typeof line === "number" ? line : null);
+  }
+  if (method === "fileContent") return source.fileContent(queryArg(args, 0), queryArg(args, 1), queryArg(args, 2), queryArg(args, 3), queryArg(args, 4));
+  if (method === "implementationDataScript") return source.implementationDataScript();
+  if (method === "evidenceFile") return source.evidenceFile(queryArg(args, 0), queryArg(args, 1), queryArg(args, 2));
+  if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
+  if (method === "refreshRemote") return refreshRemoteReview(context.reviewId, context.generation);
+  if (method === "resolveLineDraftSnapshots") return resolveLineDraftSnapshots(root, args[1]);
+  if (method === "captureApproval") return captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationData()));
+  if (method === "compareApproval") {
+    const input = fieldsOf(args[1]);
+    const snapshotId = stringField(input, "snapshotId") ?? "", offset = input.offset || 0, mode = input.mode ?? "changes", scope = input.scope ?? "stage";
+    // Values of the wrong type fail compareApprovalSnapshot's own checks.
+    return compareApprovalSnapshot(context, snapshotId, approvedFileEndpoint(input, source.implementationData()),
+      typeof offset === "number" ? offset : NaN, typeof mode === "string" ? mode : "", typeof scope === "string" ? scope : "");
+  }
+  if (method === "sendFeedback") return sendFeedback({ repoRoot: root, feedbackCli, context }, args[1], args[2]);
+  if (method === "controlAgent") return controlAgent(context, textArg(args, 1), args[2]);
+  if (method === "exportFeedbackReplies") return exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
+  if (method === "feedbackCli") {
+    const commandArgs = args[1];
+    if (!isStringArray(commandArgs)) throw new Error("Invalid feedback command.");
+    return runFeedbackCli(feedbackCli, context, commandArgs);
+  }
+  throw new Error("Unknown viewer operation.");
+}
+
+function serveWorkerJobs(port: MessagePort, root: string, context: ReviewContext, management: boolean) {
+  const source = management ? null : createViewerDataSource(root);
+  const feedbackCli = locateFeedbackCli();
+  port.on("message", async (message: unknown) => {
+    const { id, method, args } = fieldsOf(message);
+    try {
+      const result = source ? await runViewerJob(root, context, source, feedbackCli, method, listOf(args)) : runManagementJob(method, listOf(args));
+      port.postMessage({ id, result });
+    } catch (error) { port.postMessage({ id, error: cliErrorMessage(error), code: errorCode(error) }); }
+  });
+}
+
+const startup: unknown = workerData;
+if (!isMainThread && parentPort && isRecord(startup) && typeof startup.repoRoot === "string" && startup.repoRoot) {
+  serveWorkerJobs(parentPort, startup.repoRoot, parseWorkerContext(startup.context), Boolean(startup.management));
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function openBrowser(url: string) {
   if (process.env.SEMANTIC_VIEW_NO_OPEN) return;
   try {
     if (process.platform === "win32") {
@@ -2195,13 +2798,10 @@ function openBrowser(url) {
   }
 }
 
-function implementationSummary(repoRoot) {
-  const implementationRoot = path.join(repoRoot, ".semantic-review");
-  const manifest = readJson(path.join(implementationRoot, "manifest.json"));
+function implementationSummary(repoRoot: string) {
+  const manifest = readManifest(manifestPath(repoRoot));
   const fileCount = manifest.stages.reduce((total, stageId) => {
-    const stage = readJson(
-      path.join(implementationRoot, "stages", `${stageId}.json`),
-    );
+    const stage = readStageDocument(stagePath(repoRoot, stageId));
     return total + stage.change.files.length;
   }, 0);
   return {
@@ -2212,7 +2812,7 @@ function implementationSummary(repoRoot) {
   };
 }
 
-function notifyLauncher(message) {
+function notifyLauncher(message: object) {
   if (typeof process.send !== "function") return;
   try {
     process.send(message, () => {
@@ -2231,7 +2831,7 @@ async function main() {
   const implementation = implementationSummary(repoRoot);
   const registered = process.env.SEMANTIC_FLOW_REVIEW_ID
     ? readReview(process.env.SEMANTIC_FLOW_REVIEW_ID)
-    : registerReview(repoRoot, implementation.implementationId, implementation.title);
+    : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
   const context = captureReviewContext(registered.id);
   if (process.env.SEMANTIC_FLOW_REVIEW_ID && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_ID !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_GENERATION !== context.generation)) throw new Error("The requested review session changed before startup.");
   const dataSource = createViewerWorker(repoRoot, context);
@@ -2245,14 +2845,14 @@ async function main() {
   const viewerVersion = fingerprint.digest("hex");
 
   let port = registered.viewer?.port || viewerPort();
-  let server = null;
+  let server: http.Server | null = null;
   const fallback = 20000 + (Number.parseInt(context.reviewId.slice(-64, -56), 16) % 40000);
-  const matching = (occupant) => occupant && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
+  const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {
       server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
-      if (!["EADDRINUSE", "EACCES"].includes(error.code)) throw error;
+      if (!["EADDRINUSE", "EACCES"].includes(errorCode(error) ?? "")) throw error;
       const occupant = await probeViewer(port);
       if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion) {
         await dataSource.close();
@@ -2305,9 +2905,9 @@ const isDirectRun =
 if (isDirectRun && isMainThread) {
   main().catch(async (error) => {
     await startupWorker?.close();
-    notifyLauncher({ type: "error", message: error.message });
+    notifyLauncher({ type: "error", message: errorMessage(error) });
     if (process.exitCode === undefined || process.exitCode === 0) {
-      console.error(`semantic-view: ${error.message}`);
+      console.error(`semantic-view: ${errorMessage(error)}`);
       process.exitCode = 1;
     }
   });

@@ -6,7 +6,7 @@ import test from 'node:test';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
-import { createRepository, feedbackCli, flowCli, initializeImplementation } from '../helpers/repository.mjs';
+import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
 
@@ -19,7 +19,7 @@ function setup(t) {
   source.write('personal.txt', 'untouched\n');
   return { author, source, head };
 }
-const dataFor = (record) => JSON.parse(createImplementationDataScript(record.repositoryRoot).replace(/^window.SEMANTIC_IMPLEMENTATION = /, '').replace(/;\s*$/, ''));
+const dataFor = (record) => implementationFromScript(createImplementationDataScript(record.repositoryRoot));
 const change = (path, value) => ({ path, before: { present: false }, after: { present: true, value } });
 function endpoint(data) {
   const s = data.stages.findLast((stage) => stage.files.some((file) => file.path === 'code.txt')), file = s.files.find((f) => f.path === 'code.txt');
@@ -322,7 +322,7 @@ test('remote commit diffs show only incremental edits without a cumulative stage
   const review = startRemoteReview(source.root, 'feature');
   const { createViewerDataSource } = await import('../../../skills/semantic-flow/scripts/semantic-view.mjs');
   const dataSource = createViewerDataSource(review.repositoryRoot);
-  const data = JSON.parse(dataSource.implementationDataScript().replace(/^window.SEMANTIC_IMPLEMENTATION = /, '').replace(/;\s*$/, ''));
+  const data = implementationFromScript(dataSource.implementationDataScript());
   assert.equal(data.stages.length, 3);
   assert.ok(data.stages.every((stage) => stage.id.startsWith('commit-')));
   const stage = data.stages.find((stage) => stage.id === `commit-${updated}`), file = stage.files[0];

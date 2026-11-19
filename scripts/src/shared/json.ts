@@ -1,13 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
-import {
-  parse,
-  parseTree,
-  printParseErrorCode,
-  type Node as JsonNode,
-  type ParseError,
-} from "jsonc-parser/lib/esm/main.js";
+// Bundles use the package's ESM build (see the alias in build-skill.ts). The
+// build and release tools run this file through tsx and load the CommonJS entry:
+// the package does not mark its ESM build as ESM, so Node.js 20 cannot load it.
+import * as jsonc from "jsonc-parser";
+import type { Node as JsonNode, ParseError } from "jsonc-parser";
 import { fail } from "./errors.js";
+import { errorMessage } from "./narrow.js";
 
 function findDuplicateKeys(
   node: JsonNode | undefined,
@@ -34,20 +33,23 @@ function findDuplicateKeys(
   }
 }
 
-export function readJson(file: string): any {
+export function readJson(file: string): unknown {
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (error) {
-    fail(`Cannot read ${file}: ${(error as Error).message}`);
+    fail(`Cannot read ${file}: ${errorMessage(error)}`);
   }
 
   if (text.charCodeAt(0) === 0xfeff) {
     fail(`${file}: UTF-8 byte-order marks are not allowed.`);
   }
 
+  // jsonc-parser checks the syntax and finds duplicate keys. It builds objects
+  // by assignment, which drops "__proto__" keys, so the value comes from the
+  // native parser: schema validation must see every property.
   const parseErrors: ParseError[] = [];
-  const value = parse(text, parseErrors, {
+  const tree = jsonc.parseTree(text, parseErrors, {
     allowTrailingComma: false,
     disallowComments: true,
   });
@@ -55,25 +57,22 @@ export function readJson(file: string): any {
     const details = parseErrors
       .map(
         (error) =>
-          `${printParseErrorCode(error.error)} at character ${error.offset}`,
+          `${jsonc.printParseErrorCode(error.error)} at character ${error.offset}`,
       )
       .join(", ");
     fail(`${file}: invalid JSON: ${details}.`);
   }
 
   const duplicateErrors: string[] = [];
-  findDuplicateKeys(
-    parseTree(text, [], {
-      allowTrailingComma: false,
-      disallowComments: true,
-    }),
-    file,
-    duplicateErrors,
-  );
+  findDuplicateKeys(tree, file, duplicateErrors);
   if (duplicateErrors.length > 0) {
     fail(duplicateErrors.join("\n"));
   }
-  return value;
+  try {
+    return parseJson(text);
+  } catch (error) {
+    fail(`${file}: invalid JSON: ${errorMessage(error)}.`);
+  }
 }
 
 export function writeJson(file: string, value: unknown): void {
@@ -92,4 +91,10 @@ export function listJsonFiles(directory: string): string[] {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => path.join(directory, entry.name))
     .sort();
+}
+
+/** Parses JSON text from a file, Git object or another process. The result is
+ * unvalidated: narrow it or validate it against its schema before use. */
+export function parseJson(text: string): unknown {
+  return JSON.parse(text);
 }

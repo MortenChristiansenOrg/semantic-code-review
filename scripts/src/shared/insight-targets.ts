@@ -1,16 +1,14 @@
+import type { CodeTarget } from "./documents.js";
 import { git } from "./git.js";
-import { immutableFact } from "./validation-context.js";
+import { factCache } from "./validation-context.js";
+
+const treeFacts = factCache<string | null>();
+const blobLineFacts = factCache<string[] | null>();
+const renameFacts = factCache<string | null>();
+const patchFacts = factCache<string | null>();
 
 /** Immutable authoring anchor. Context survives publication and pruning of old commits. */
-export interface CodeTarget {
-  path: string;
-  revision: string;
-  blobId: string;
-  startLine: number;
-  endLine: number;
-  contextStartLine: number;
-  context: string[];
-}
+export type { CodeTarget };
 
 const hash = /^[0-9a-f]{40}$/;
 function assertPath(value: string) {
@@ -19,13 +17,13 @@ function assertPath(value: string) {
   }
 }
 function blobAt(root: string, revision: string, file: string) {
-  const tree = immutableFact(JSON.stringify(["insight-tree", root, revision, file]), () =>
+  const tree = treeFacts(JSON.stringify([root, revision, file]), () =>
     git(["--literal-pathspecs", "ls-tree", "-z", revision, "--", file], { cwd: root, allowFailure: true }));
   const entry = /^(100644|100755) blob ([a-f0-9]{40})\t([^\0]+)\0$/.exec(tree || "");
   return entry?.[3] === file ? entry[2] : null;
 }
 function blobLines(root: string, blob: string): string[] | null {
-  return immutableFact(JSON.stringify(["insight-blob", root, blob]), () => {
+  return blobLineFacts(JSON.stringify([root, blob]), () => {
     const bytes: Buffer | null = git(["cat-file", "blob", blob], { cwd: root, allowFailure: true, encoding: "buffer" });
     if (!bytes || bytes.includes(0)) return null;
     const lines = bytes.toString("utf8").split("\n");
@@ -69,7 +67,7 @@ export function resolveCodeTarget(root: string, target: CodeTarget, head: string
   let currentPath = target.path;
   // Follow Git's rename identity even if another file now occupies the old path.
   if (head !== target.revision) {
-    const changes = immutableFact(JSON.stringify(["insight-renames", root, target.revision, head]), () =>
+    const changes = renameFacts(JSON.stringify([root, target.revision, head]), () =>
       git(["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames=50%", target.revision, head, "--"], { cwd: root, allowFailure: true }));
     if (changes === null) return stale("Original revision unavailable; inspect the saved context and retarget.");
     const fields = changes.split("\0");
@@ -94,7 +92,7 @@ export function resolveCodeTarget(root: string, target: CodeTarget, head: string
       return first < 0 ? 0 : haystack.indexOf(needle, first + 1) < 0 ? 1 : 2;
     };
     if (occurrences(originalLines) > 1 || occurrences(lines) > 1) return stale("Repeated code makes the line mapping ambiguous.", currentPath);
-    const patch = immutableFact(JSON.stringify(["insight-patch", root, target.blobId, blob]), () =>
+    const patch = patchFacts(JSON.stringify([root, target.blobId, blob]), () =>
       git(["diff", "--no-ext-diff", "--no-textconv", "--unified=0", target.blobId, blob], { cwd: root, allowFailure: true }));
     if (patch === null) return stale("Cannot compare the original and current file.", currentPath);
     let shift = 0;

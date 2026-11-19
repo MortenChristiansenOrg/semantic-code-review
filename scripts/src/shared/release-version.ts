@@ -15,9 +15,17 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export function nextVersion(current: string, change: "breaking" | "feature" | "fix" | "none", stable = false): string {
+export const RELEASE_CHANGES = ["breaking", "feature", "fix", "none"] as const;
+export type ReleaseChange = (typeof RELEASE_CHANGES)[number];
+
+export function isReleaseChange(value: unknown): value is ReleaseChange {
+  return RELEASE_CHANGES.some((change) => change === value);
+}
+
+/** The next version for a change classification given on the command line. */
+export function nextVersion(current: string, change: string, stable = false): string {
   const [major, minor, patch] = parseVersion(current);
-  if (!["breaking", "feature", "fix", "none"].includes(change)) throw new Error("Choose breaking, feature, fix, or none.");
+  if (!isReleaseChange(change)) throw new Error("Choose breaking, feature, fix, or none.");
   if (stable) {
     if (major !== 0) throw new Error("The explicit stable transition only applies before 1.0.0.");
     return "1.0.0";

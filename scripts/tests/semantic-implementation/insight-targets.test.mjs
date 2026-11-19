@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { captureCodeTarget, resolveCodeTarget, createViewerDataSource } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
-import { createRepository, initializeImplementation, beginStage, organizeStage } from "../helpers/repository.mjs";
+import { createRepository, implementationFromScript, initializeImplementation, beginStage, organizeStage } from "../helpers/repository.mjs";
 
 const content = "// header\nfunction check(value) {\n  if (!value) throw new Error('missing');\n  return value;\n}\n// footer\n";
 function fixture(t, text = content) {
@@ -127,7 +127,7 @@ test("all insight kinds and validation support optional capture, replacement, re
   repo.semantic("stage", "target", "--collection", "risks", "--item-id", "risk", "--code-path", "src/check.js", "--code-start", "3");
   organizeStage(repo); repo.semantic("stage", "finish");
   const source = createViewerDataSource(repo.root);
-  const data = JSON.parse(source.implementationDataScript().replace(/^window.SEMANTIC_IMPLEMENTATION = /, "").trim().replace(/;$/, ""));
+  const data = implementationFromScript(source.implementationDataScript());
   assert.equal(data.stages[0].insights.find(item => item.id === "risk").codeTarget.status, "current");
   repo.semantic("stage", "target", "--stage", "implementation", "--finalized", "--collection", "risks", "--item-id", "risk", "--remove");
   repo.semantic("validate");
@@ -164,7 +164,7 @@ test("restacking resolves from the original anchor and publication preserves it"
   repo.semantic("restack", "--from", "implementation");
   assert.deepEqual(repo.readJson(file).decisions[0].codeTarget, original);
   const viewer = createViewerDataSource(repo.root);
-  const readViewer = () => JSON.parse(viewer.implementationDataScript().replace(/^window.SEMANTIC_IMPLEMENTATION = /, "").trim().replace(/;$/, ""));
+  const readViewer = () => implementationFromScript(viewer.implementationDataScript());
   assert.equal(readViewer().stages[0].insights[0].codeTarget.startLine, 4);
   repo.semantic("publish");
   const published = JSON.parse(repo.git("show", "semantic-flow/test-implementation/metadata:" + file));

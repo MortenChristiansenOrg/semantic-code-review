@@ -579,3 +579,14 @@ test("deleted file anchors refresh while the deletion remains in the stage", (t)
   assert.equal(pending.reanchored, true);
   assert.equal(pending.target.path, "removed.txt");
 });
+
+test("feedback validation sees every stored property, including __proto__", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "proto-key");
+  const file = repository.feedbackPath("threads", "proto-key.json");
+  const text = JSON.stringify(repository.readAbsoluteJson(file));
+  repository.writeAbsolute(file, `{"__proto__":null,${text.slice(1)}`);
+
+  repository.expectFeedbackFailure("must NOT have additional properties", "validate");
+});

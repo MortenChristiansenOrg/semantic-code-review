@@ -13,6 +13,7 @@ import {
   createImplementationWithStages,
   createRepository,
   flowCli,
+  implementationFromScript,
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
@@ -130,6 +131,25 @@ test("review leaves a detached viewer running after the command exits", async (t
   assert.equal(payload.ok, true);
   assert.equal(payload.implementation.implementationId, "persistent-review");
 
+});
+
+test("review starts the viewer for a manifest without a title", async (t) => {
+  const port = await reserveViewerPort();
+  let viewerPid;
+  t.after(() => stopViewer(port, viewerPid));
+  const repository = createRepository(t, "semantic-flow-review-");
+  initializeImplementation(repository, { implementationId: "untitled-review" });
+  const { title, ...manifest } = repository.readJson(".semantic-review/manifest.json");
+  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+
+  const launch = spawnSync(process.execPath, [flowCli, "review"], {
+    cwd: repository.root, encoding: "utf8", timeout: 10_000,
+    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+  });
+  const started = /running persistently in the background \(PID (\d+)\)/.exec(launch.stdout);
+  if (started) viewerPid = Number(started[1]);
+  assert.equal(launch.status, 0, launch.stderr);
+  assert.match(launch.stdout, /^Implementation: untitled-review — 0 stages, 0 files$/m);
 });
 
 test("feedback resolves, validates, and returns compact pending work", (t) => {
@@ -317,6 +337,26 @@ test("status reports coverage, evidence, feedback, and validation", (t) => {
   assert.equal(working.criteria.covered, 0);
   assert.deepEqual(working.criteria.inProgress, ["story#works"]);
   assert.deepEqual(working.criteria.missing, []);
+});
+
+test("status leaves criteria without IDs out of coverage", (t) => {
+  const repository = createRepository(t, "semantic-flow-status-");
+  initializeImplementation(repository);
+  beginStage(repository);
+  const stageFile = ".semantic-review/.work/stages/implementation.json";
+  const stage = repository.readJson(stageFile);
+  stage.specificationRefs = ["story#undefined"];
+  repository.write(stageFile, JSON.stringify(stage));
+  const file = ".semantic-review/requirements/story.json";
+  const specification = repository.readJson(file);
+  specification.acceptanceCriteria.push(null);
+  repository.write(file, JSON.stringify(specification));
+
+  const status = JSON.parse(repository.flow("status", "--json"));
+  assert.equal(status.criteria.total, 1);
+  assert.deepEqual(status.criteria.inProgress, []);
+  assert.deepEqual(status.criteria.missing, ["story#works"]);
+  assert.equal(status.validation.artifact.passed, false);
 });
 
 test("version reports installed and schema versions", () => {
@@ -526,7 +566,7 @@ test("viewer serves its installed release version and replaces an older running 
   assert.equal(payload.implementation.viewerReleaseVersion, "9.9.9");
   assert.equal(payload.implementation.skillVersion, "0.2.0");
   const script = await fetch(`http://127.0.0.1:${port}/implementation-data.js`).then(response => response.text());
-  assert.match(script, /"viewerReleaseVersion":"9.9.9"/);
+  assert.equal(implementationFromScript(script).viewerReleaseVersion, "9.9.9");
   assert.equal(fs.readFileSync(manifestPath, "utf8"), original);
 });
 

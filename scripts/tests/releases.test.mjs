@@ -144,6 +144,18 @@ test('archive validation rejects wrong versions, missing files, changed contents
   assert.equal(fs.existsSync(path.join(root, 'bad')), false);
 });
 
+test('validated release metadata keeps the checksum of every file', () => {
+  const files = distribution();
+  const metadata = JSON.parse(files.get('RELEASE.json').toString());
+  files.delete('RELEASE.json');
+  files.set('__proto__', Buffer.from('root file'));
+  metadata.files = Object.fromEntries([...files].map(([name, bytes]) => [name, sha256(bytes)]));
+  files.set('RELEASE.json', Buffer.from(JSON.stringify(metadata)));
+  const verified = validateDistribution(files, '0.2.0').files;
+  assert.ok(Object.hasOwn(verified, '__proto__'));
+  assert.equal(verified['__proto__'], sha256(Buffer.from('root file')));
+});
+
 test('GitHub client paginates and reports network, auth, and size errors without exposing credentials', async (t) => {
   const original = globalThis.fetch;
   t.after(() => { globalThis.fetch = original; });

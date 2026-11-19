@@ -3,9 +3,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
 import {
   commandOptionNames,
   renderCliHelp,
@@ -20,24 +17,85 @@ import {
   repeatedOption,
   type Options,
 } from "./shared/arguments.js";
+import {
+  FEEDBACK_MANIFEST_SCHEMA_ID,
+  INSIGHT_COLLECTIONS,
+  MANIFEST_SCHEMA_ID,
+  SPECIFICATION_SCHEMA_ID,
+  STAGE_SCHEMA_ID,
+  THREAD_SCHEMA_ID,
+  isFeedbackId,
+  type Comment,
+  type CommentAuthor,
+  type FeedbackManifest,
+  type FileChange,
+  type ImplementationManifest,
+  type InsightCollection,
+  type LineTarget,
+  type Specification,
+  type Stage,
+  type Target,
+  type TargetKind,
+  type Thread,
+} from "./shared/documents.js";
 import { fail } from "./shared/errors.js";
-import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
-import { readJson } from "./shared/json.js";
+import { parseJson, readJson } from "./shared/json.js";
+import { errorMessage, isRecord, isStringArray, stringField } from "./shared/narrow.js";
+import { parseDocument, readDocument } from "./shared/schema-validation.js";
 import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
 import { isDeepStrictEqual } from "node:util";
-import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
+import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
-import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundThrough, sendInProgress, touchAgent, updateAgentState } from "./shared/agent-session.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundThrough, sendInProgress, touchAgent, updateAgentState, type ClaimedThread } from "./shared/agent-session.js";
 
-function commentAttachments(paths, options) { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
-function commentInput(paths, options) {
+const renamedPathFacts = factCache<string | null>();
+const renameMapFacts = factCache<string | null>();
+const lineCountFacts = factCache<number>();
+
+/** Locations of one review's artifact and feedback state. */
+interface FeedbackPaths {
+  root: string;
+  implementationId: string;
+  reviewId: string;
+  semantic: string;
+  feedback: string;
+  feedbackManifest: string;
+  threads: string;
+}
+
+/** The validated implementation artifact feedback targets refer to. */
+interface SemanticArtifact {
+  manifest: ImplementationManifest;
+  requirements: Map<string, Specification>;
+  stages: Map<string, Stage>;
+}
+
+/** The validated feedback manifest and its threads, keyed by thread ID. */
+interface Feedback {
+  manifest: FeedbackManifest;
+  threads: Map<string, Thread>;
+}
+
+type ResolvedAttachment = ReturnType<typeof resolveAttachment>;
+type ResolvedComment = Omit<Comment, "attachments"> & { attachments: ResolvedAttachment[] };
+type AgentReply = { threadId: string; claimId?: string };
+
+function requiredOption(options: Options, name: string): string {
+  const value = option(options, name, { required: true });
+  if (value === undefined) fail(`Missing required option --${name}.`);
+  return value;
+}
+
+function commentAttachments(paths: FeedbackPaths, options: Options): Attachment[] { return attachmentReferences(paths.reviewId, repeatedOption(options, "attachments")); }
+function commentInput(paths: FeedbackPaths, options: Options): { body: string; attachments: Attachment[] } {
   const body = option(options, "body") || "", attachments = commentAttachments(paths, options);
   if (!body.trim() && !attachments.length) fail("A message requires text or at least one attachment.");
   return { body, attachments };
 }
-function agentComments(paths, comments) { return comments.map((comment) => ({ ...comment, attachments: (comment.attachments || []).map((attachment) => resolveAttachment(paths.reviewId, attachment.id)) })); }
+function agentComments(paths: FeedbackPaths, comments: Comment[]): ResolvedComment[] { return comments.map((comment) => ({ ...comment, attachments: (comment.attachments || []).map((attachment) => resolveAttachment(paths.reviewId, attachment.id)) })); }
 let feedbackWritten = false;
 function writeJson(file: string, value: unknown) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -45,33 +103,25 @@ function writeJson(file: string, value: unknown) {
   feedbackWritten = true;
 }
 
-const MANIFEST_SCHEMA =
-  "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
-const THREAD_SCHEMA =
-  "https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json";
-
-const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const skillDirectory = path.resolve(scriptDirectory, "..");
-const feedbackSchemaDirectory =
-  process.env.SEMANTIC_REVIEW_FEEDBACK_SCHEMA_DIR ??
-  path.resolve(skillDirectory, "references", "feedback-schema");
 const HELP = renderCliHelp(reviewFeedbackApi);
 
-function repositoryRoot() {
-  return path.resolve(
-    git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() }),
-  );
+function repositoryRoot(): string {
+  const root: unknown = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
+  if (typeof root !== "string") fail("Cannot determine the repository root.");
+  return path.resolve(root);
 }
 
-function pathsFor(root) {
+function pathsFor(root: string): FeedbackPaths {
   const manifestPath = path.join(root, ".semantic-review", "manifest.json");
   if (!fs.existsSync(manifestPath)) fail("No active .semantic-review artifact exists.");
-  const manifest = readJson(manifestPath);
-  const feedback = feedbackDirectory(root, manifest.implementationId);
+  // Only the identity is needed here; commands that use the artifact validate it.
+  const implementationId = stringField(readJson(manifestPath), "implementationId");
+  if (implementationId === undefined) fail("The active .semantic-review manifest has no implementation ID.");
+  const feedback = feedbackDirectory(root, implementationId);
   return {
     root,
-    implementationId: manifest.implementationId,
-    reviewId: reviewId(root, manifest.implementationId),
+    implementationId,
+    reviewId: reviewId(root, implementationId),
     semantic: path.join(root, ".semantic-review"),
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
@@ -79,7 +129,7 @@ function pathsFor(root) {
   };
 }
 
-function withFeedbackLock<T>(paths, action: () => T): T {
+function withFeedbackLock<T>(paths: FeedbackPaths, action: () => T): T {
   const recordFile = path.join(reviewDirectory(paths.reviewId), "review.json");
   const generation = fs.existsSync(recordFile) ? readReview(paths.reviewId).generation : null;
   return withReviewLock(paths.reviewId, () => {
@@ -105,7 +155,7 @@ export function withCheckedFeedback<T>(root: string, requireResolved: boolean, a
   });
 }
 
-function listJsonIds(directory) {
+function listJsonIds(directory: string): string[] {
   if (!fs.existsSync(directory)) return [];
   return fs
     .readdirSync(directory, { withFileTypes: true })
@@ -114,108 +164,78 @@ function listJsonIds(directory) {
     .sort();
 }
 
-function semanticArtifact(paths) {
+function semanticArtifact(paths: FeedbackPaths): SemanticArtifact {
   if (!fs.existsSync(path.join(paths.semantic, "manifest.json"))) {
     fail("No active .semantic-review artifact exists.");
   }
-  const manifest = readJson(path.join(paths.semantic, "manifest.json"));
+  const manifest = readDocument(MANIFEST_SCHEMA_ID, path.join(paths.semantic, "manifest.json"));
   if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
-  const requirements = new Map<string, any>(
+  const requirements = new Map(
     manifest.requirements.map((id) => [
       id,
-      readJson(path.join(paths.semantic, "requirements", `${id}.json`)),
+      readDocument(SPECIFICATION_SCHEMA_ID, path.join(paths.semantic, "requirements", `${id}.json`)),
     ]),
   );
-  const stages = new Map<string, any>(
+  const stages = new Map(
     manifest.stages.map((id) => [
       id,
-      readJson(path.join(paths.semantic, "stages", `${id}.json`)),
+      readDocument(STAGE_SCHEMA_ID, path.join(paths.semantic, "stages", `${id}.json`)),
     ]),
   );
   return { manifest, requirements, stages };
 }
 
-function schemaValidator() {
-  return immutableFact("review-feedback.ts-schema", compileSchemaValidator);
-}
-
-function compileSchemaValidator() {
-  const ajv = new Ajv2020({
-    allErrors: true,
-    strict: true,
-    strictRequired: false,
-  });
-  addFormats(ajv);
-  for (const file of [
-    "common.schema.json",
-    "manifest.schema.json",
-    "thread.schema.json",
-  ]) {
-    const fullPath = path.join(feedbackSchemaDirectory, file);
-    if (!fs.existsSync(fullPath)) fail(`Missing feedback schema ${fullPath}.`);
-    ajv.addSchema(readJson(fullPath));
-  }
-  return ajv;
-}
-
-function validateDocument(ajv, value, file) {
-  const validator = ajv.getSchema(value?.$schema);
-  if (!validator) fail(`${file}: unsupported or missing $schema.`);
-  if (!validator(value)) {
-    fail(
-      validator.errors
-        .map(
-          (error) =>
-            `${file}${error.instancePath || "/"} ${error.message ?? "is invalid"}`,
-        )
-        .join("\n"),
-    );
-  }
-}
-
-function loadFeedback(paths, { required = true } = {}) {
-  if (!fs.existsSync(paths.feedbackManifest)) {
-    if (required) fail("No feedback manifest exists for this review.");
-    return null;
-  }
-  const manifest = readJson(paths.feedbackManifest);
-  if (manifest.formatVersion !== "0.1" || !Array.isArray(manifest.threads)) {
+/** Reads the feedback manifest and the unvalidated threads it lists; validateFeedback validates each thread. */
+function loadFeedback(paths: FeedbackPaths): { manifest: FeedbackManifest; threads: Map<string, unknown> } {
+  if (!fs.existsSync(paths.feedbackManifest)) fail("No feedback manifest exists for this review.");
+  const value = readJson(paths.feedbackManifest);
+  if (!isRecord(value) || value.formatVersion !== "0.1" || !Array.isArray(value.threads)) {
     fail(
       "This feedback workspace uses an unsupported v0.1 layout.",
     );
   }
-  const threads = new Map();
-  for (const id of manifest.threads ?? []) {
+  const manifest = parseDocument(FEEDBACK_MANIFEST_SCHEMA_ID, value, paths.feedbackManifest);
+  const threads = new Map<string, unknown>();
+  for (const id of manifest.threads) {
     threads.set(id, readJson(path.join(paths.threads, `${id}.json`)));
   }
   return { manifest, threads };
 }
 
-function collectionExists(stage, collection, itemId) {
+function collectionExists(stage: Stage, collection: InsightCollection, itemId: string): boolean {
   // Evidence can be removed, for example when a capture leaks a secret, without moving the
   // stage head. Its threads stay valid; the viewer shows them on the stage instead.
   if (collection === "evidence") return true;
-  return Array.isArray(stage[collection]) &&
-    stage[collection].some((item) => item.id === itemId);
+  const items: readonly { id: string }[] = stage[collection];
+  return items.some((item) => item.id === itemId);
 }
 
-function renamedPathBetween(root, fromRevision, toRevision, repositoryPath) {
-  return immutableFact(JSON.stringify(["rename", root, fromRevision, toRevision, repositoryPath]), () => readRenamedPath(root, fromRevision, toRevision, repositoryPath));
+function changedFileAt(stage: Stage, repositoryPath: string): FileChange | undefined {
+  return stage.change.files.find(
+    (file) => file.path === repositoryPath || file.previousPath === repositoryPath,
+  );
 }
 
-function readRenamedPath(root, fromRevision, toRevision, repositoryPath) {
-  const raw = immutableFact(JSON.stringify(["rename-map", root, fromRevision, toRevision]), () => git([
-    "--no-pager",
-    "diff",
-    "--name-status",
-    "-z",
-    "--find-renames=50%",
-    fromRevision,
-    toRevision,
-  ], {
-    cwd: root,
-    allowFailure: true,
-  }));
+function renamedPathBetween(root: string, fromRevision: string, toRevision: string, repositoryPath: string): string | null {
+  return renamedPathFacts(JSON.stringify([root, fromRevision, toRevision, repositoryPath]), () => readRenamedPath(root, fromRevision, toRevision, repositoryPath));
+}
+
+function readRenamedPath(root: string, fromRevision: string, toRevision: string, repositoryPath: string): string | null {
+  const raw = renameMapFacts(JSON.stringify([root, fromRevision, toRevision]), (): string | null => {
+    const output: unknown = git([
+      "--no-pager",
+      "diff",
+      "--name-status",
+      "-z",
+      "--find-renames=50%",
+      fromRevision,
+      toRevision,
+    ], {
+      cwd: root,
+      allowFailure: true,
+    });
+    return typeof output === "string" ? output : null;
+  });
   if (raw === null) return null;
   const fields = raw.split("\0");
   for (let index = 0; index < fields.length && fields[index];) {
@@ -233,15 +253,16 @@ function readRenamedPath(root, fromRevision, toRevision, repositoryPath) {
   return null;
 }
 
-function lineCountAtRevision(root, revision, repositoryPath) {
-  return immutableFact(JSON.stringify(["lines", root, revision, repositoryPath]), () => readLineCount(root, revision, repositoryPath));
+function lineCountAtRevision(root: string, revision: string, repositoryPath: string): number {
+  return lineCountFacts(JSON.stringify([root, revision, repositoryPath]), () => readLineCount(root, revision, repositoryPath));
 }
 
-function readLineCount(root, revision, repositoryPath) {
-  const contents = gitRaw(["show", `${revision}:${repositoryPath}`], {
+function readLineCount(root: string, revision: string, repositoryPath: string): number {
+  const contents: unknown = gitRaw(["show", `${revision}:${repositoryPath}`], {
     cwd: root,
     encoding: "buffer",
   });
+  if (!Buffer.isBuffer(contents)) fail(`Cannot read ${repositoryPath} at ${revision}.`);
   if (contents.includes(0)) {
     fail(`Feedback line target ${repositoryPath} is binary.`);
   }
@@ -253,11 +274,8 @@ function readLineCount(root, revision, repositoryPath) {
   return contents.at(-1) === 0x0a ? lineBreaks : lineBreaks + 1;
 }
 
-function validateLineTarget(target, stage, root) {
-  const file = stage.change.files.find(
-    (candidate) =>
-      candidate.path === target.path || candidate.previousPath === target.path,
-  );
+function validateLineTarget(target: LineTarget, stage: Stage, root: string): void {
+  const file = changedFileAt(stage, target.path);
   if (!file) return;
 
   const oldPath = file.previousPath ?? file.path;
@@ -286,84 +304,77 @@ function validateLineTarget(target, stage, root) {
   }
 }
 
-function validateTarget(target, semantic, root) {
-  const specification = target.specificationId
-    ? semantic.requirements.get(target.specificationId)
-    : undefined;
-  if (["specification", "criterion"].includes(target.kind) && !specification) {
-    fail(`Feedback target specification ${target.specificationId} does not exist.`);
-  }
-  if (
-    target.kind === "criterion" &&
-    !specification.acceptanceCriteria.some(
-      (criterion) => criterion.id === target.criterionId,
-    )
-  ) {
-    fail(
-      `Feedback target criterion ${target.specificationId}#${target.criterionId} does not exist.`,
-    );
+function validateTarget(target: Target, semantic: SemanticArtifact, root: string): void {
+  if (target.kind === "specification" || target.kind === "criterion") {
+    const specification = semantic.requirements.get(target.specificationId);
+    if (!specification) {
+      fail(`Feedback target specification ${target.specificationId} does not exist.`);
+    }
+    if (
+      target.kind === "criterion" &&
+      !specification.acceptanceCriteria.some(
+        (criterion) => criterion.id === target.criterionId,
+      )
+    ) {
+      fail(
+        `Feedback target criterion ${target.specificationId}#${target.criterionId} does not exist.`,
+      );
+    }
+    return;
   }
 
-  if (["stage", "node", "insight", "file", "line"].includes(target.kind)) {
-    const stage = semantic.stages.get(target.stageId);
-    if (!stage) fail(`Feedback target stage ${target.stageId} does not exist.`);
-    if (
-      target.stageBranch === stage.change.branch &&
-      target.stageHead === stage.change.headRevision
-    ) {
-      if (
-        target.kind === "node" &&
-        !stage.nodes.some((node) => node.id === target.nodeId)
-      ) {
-        fail(`Feedback node ${target.stageId}/${target.nodeId} does not exist.`);
-      }
-      if (
-        target.kind === "insight" &&
-        !collectionExists(stage, target.collection, target.itemId)
-      ) {
-        fail(
-          `Feedback insight ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
-        );
-      }
-      const changedFile =
-        ["file", "line"].includes(target.kind) &&
-        stage.change.files.find(
-          (file) =>
-            file.path === target.path || file.previousPath === target.path,
-        );
-      if (["file", "line"].includes(target.kind) && !changedFile) {
-        fail(`Feedback path ${target.path} is not changed by ${target.stageId}.`);
-      }
-      if (target.kind === "line") {
-        validateLineTarget(target, stage, root);
-      }
-    }
+  const stage = semantic.stages.get(target.stageId);
+  if (!stage) fail(`Feedback target stage ${target.stageId} does not exist.`);
+  if (
+    target.stageBranch !== stage.change.branch ||
+    target.stageHead !== stage.change.headRevision
+  ) {
+    return;
+  }
+  if (
+    target.kind === "node" &&
+    !stage.nodes.some((node) => node.id === target.nodeId)
+  ) {
+    fail(`Feedback node ${target.stageId}/${target.nodeId} does not exist.`);
+  }
+  if (
+    target.kind === "insight" &&
+    !collectionExists(stage, target.collection, target.itemId)
+  ) {
+    fail(
+      `Feedback insight ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
+    );
+  }
+  if ((target.kind === "file" || target.kind === "line") && !changedFileAt(stage, target.path)) {
+    fail(`Feedback path ${target.path} is not changed by ${target.stageId}.`);
+  }
+  if (target.kind === "line") {
+    validateLineTarget(target, stage, root);
   }
 }
 
 function validateFeedback(
-  paths,
-  { quiet = false, requireResolved = false } = {},
-) {
+  paths: FeedbackPaths,
+  { quiet = false, requireResolved = false }: { quiet?: boolean; requireResolved?: boolean } = {},
+): { semantic: SemanticArtifact; feedback: Feedback } {
   const semantic = semanticArtifact(paths);
-  const feedback = loadFeedback(paths);
-  const ajv = schemaValidator();
-  validateDocument(ajv, feedback.manifest, paths.feedbackManifest);
-  if (feedback.manifest.implementationId !== semantic.manifest.implementationId) {
+  const { manifest, threads: storedThreads } = loadFeedback(paths);
+  if (manifest.implementationId !== semantic.manifest.implementationId) {
     fail("Feedback implementationId does not match the active semantic implementation.");
   }
 
-  const listedThreads = new Set(feedback.manifest.threads);
+  const listedThreads = new Set(manifest.threads);
   for (const id of listJsonIds(paths.threads)) {
     if (!listedThreads.has(id)) fail(`Unlisted feedback thread ${id}.`);
   }
 
-  for (const [id, thread] of feedback.threads) {
-    validateDocument(ajv, thread, path.join(paths.threads, `${id}.json`));
+  const threads = new Map<string, Thread>();
+  for (const [id, value] of storedThreads) {
+    const thread = parseDocument(THREAD_SCHEMA_ID, value, path.join(paths.threads, `${id}.json`));
     if (thread.id !== id) {
       fail(`Feedback thread ${id} has internal ID ${thread.id}.`);
     }
-    const commentIds = new Set();
+    const commentIds = new Set<string>();
     if (thread.comments[0]?.author !== "user") {
       fail(`Feedback thread ${id} must begin with a user comment.`);
     }
@@ -386,10 +397,11 @@ function validateFeedback(
         `Feedback thread ${id} is assigned to missing stage ${thread.assignedStageId}.`,
       );
     }
+    threads.set(id, thread);
   }
 
   if (requireResolved) {
-    const open = [...feedback.threads.values()]
+    const open = [...threads.values()]
       .filter((thread) => thread.status === "open")
       .map((thread) => thread.id);
     if (open.length) {
@@ -399,13 +411,13 @@ function validateFeedback(
 
   if (!quiet) {
     console.log(
-      `Feedback validation passed: ${feedback.threads.size} thread(s).`,
+      `Feedback validation passed: ${threads.size} thread(s).`,
     );
   }
-  return { semantic, feedback };
+  return { semantic, feedback: { manifest, threads } };
 }
 
-function initialize(paths, options) {
+function initialize(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "init"));
   if (fs.existsSync(paths.feedbackManifest)) fail("Feedback state already exists.");
   if (fs.existsSync(paths.feedback) && fs.readdirSync(paths.feedback).length > 0) {
@@ -415,12 +427,13 @@ function initialize(paths, options) {
   }
   const semantic = semanticArtifact(paths);
   try {
-    writeJson(paths.feedbackManifest, {
-      $schema: MANIFEST_SCHEMA,
+    const manifest: FeedbackManifest = {
+      $schema: FEEDBACK_MANIFEST_SCHEMA_ID,
       formatVersion: "0.1",
       implementationId: semantic.manifest.implementationId,
       threads: [],
-    });
+    };
+    writeJson(paths.feedbackManifest, manifest);
     validateFeedback(paths, { quiet: true });
   } catch (error) {
     fs.rmSync(paths.feedback, { recursive: true, force: true });
@@ -429,69 +442,74 @@ function initialize(paths, options) {
   console.log(`Initialized feedback for ${semantic.manifest.implementationId}.`);
 }
 
-function buildTarget(options, semantic, root) {
-  const kind = option(options, "target-kind", { required: true });
-  const target: Record<string, any> = {
-    kind,
-    label: option(options, "label", { required: true }),
-  };
-  if (["specification", "criterion"].includes(kind)) {
-    target.specificationId = option(options, "specification", { required: true });
-  }
-  if (kind === "criterion") {
-    target.criterionId = option(options, "criterion", { required: true });
-  }
-  if (["stage", "node", "insight", "file", "line"].includes(kind)) {
-    target.stageId = option(options, "stage", { required: true });
-    const stage = semantic.stages.get(target.stageId);
-    if (!stage) fail(`Stage ${target.stageId} does not exist.`);
-    target.stageBranch = stage.change.branch;
-    target.stageHead = stage.change.headRevision;
-  }
-  if (kind === "node") {
-    target.nodeId = option(options, "node", { required: true });
-  }
-  if (kind === "insight") {
-    target.collection = option(options, "collection", { required: true });
-    target.itemId = option(options, "item", { required: true });
-  }
-  if (["file", "line"].includes(kind)) {
-    target.path = option(options, "path", { required: true });
-  }
-  if (kind === "line") {
-    target.side = option(options, "side", { required: true });
-    const line = Number(option(options, "line", { required: true }));
-    if (!Number.isInteger(line) || line < 1) {
-      fail("--line must be a positive integer.");
+const TARGET_KINDS = ["specification", "criterion", "stage", "node", "insight", "file", "line"] as const satisfies readonly TargetKind[];
+
+/** Builds a target from command options. Field order matches stored targets, which retries compare as JSON. */
+function buildTarget(options: Options, semantic: SemanticArtifact, root: string): Target {
+  const kindOption = requiredOption(options, "target-kind");
+  const label = requiredOption(options, "label");
+  const kind = TARGET_KINDS.find((candidate) => candidate === kindOption);
+  if (!kind) fail(`--target-kind must be one of ${TARGET_KINDS.join(", ")}.`);
+  let target: Target;
+  if (kind === "specification") {
+    target = { kind, label, specificationId: requiredOption(options, "specification") };
+  } else if (kind === "criterion") {
+    const specificationId = requiredOption(options, "specification");
+    target = { kind, label, specificationId, criterionId: requiredOption(options, "criterion") };
+  } else {
+    const stageId = requiredOption(options, "stage");
+    const stage = semantic.stages.get(stageId);
+    if (!stage) fail(`Stage ${stageId} does not exist.`);
+    const anchor = { stageId, stageBranch: stage.change.branch, stageHead: stage.change.headRevision };
+    if (kind === "stage") {
+      target = { kind, label, ...anchor };
+    } else if (kind === "node") {
+      target = { kind, label, ...anchor, nodeId: requiredOption(options, "node") };
+    } else if (kind === "insight") {
+      const collectionOption = requiredOption(options, "collection");
+      const itemId = requiredOption(options, "item");
+      const collection = INSIGHT_COLLECTIONS.find((candidate) => candidate === collectionOption);
+      if (!collection) fail(`--collection must be one of ${INSIGHT_COLLECTIONS.join(", ")}.`);
+      target = { kind, label, ...anchor, collection, itemId };
+    } else if (kind === "file") {
+      target = { kind, label, ...anchor, path: requiredOption(options, "path") };
+    } else {
+      const targetPath = requiredOption(options, "path");
+      const sideOption = requiredOption(options, "side");
+      const line = Number(requiredOption(options, "line"));
+      if (!Number.isInteger(line) || line < 1) {
+        fail("--line must be a positive integer.");
+      }
+      if (sideOption !== "old" && sideOption !== "new") fail("--side must be old or new.");
+      target = { kind, label, ...anchor, path: targetPath, side: sideOption, line };
     }
-    target.line = line;
   }
   validateTarget(target, semantic, root);
   return target;
 }
 
-function writeThread(paths, thread) {
+function writeThread(paths: FeedbackPaths, thread: Thread): void {
   writeJson(path.join(paths.threads, `${thread.id}.json`), thread);
 }
 
-function createThread(paths, options, semantic, knownIds, ajv) {
-  const id = option(options, "id", { required: true });
+function createThread(paths: FeedbackPaths, options: Options, semantic: SemanticArtifact, knownIds: Set<string>): Thread {
+  const id = requiredOption(options, "id");
   if (knownIds.has(id)) fail(`Feedback thread ${id} already exists.`);
   const target = buildTarget(options, semantic, paths.root);
   const assignedStageId =
     option(options, "assigned-stage") ?? target.stageId;
-  const assignedStage = semantic.stages.get(assignedStageId);
-  if (!assignedStage) {
+  const assignedStage = assignedStageId === undefined ? undefined : semantic.stages.get(assignedStageId);
+  if (assignedStageId === undefined || !assignedStage) {
     fail("Feedback threads require a valid assigned stage.");
   }
   const now = new Date().toISOString();
-  const thread = {
-    $schema: THREAD_SCHEMA,
+  const thread = parseDocument(THREAD_SCHEMA_ID, {
+    $schema: THREAD_SCHEMA_ID,
     id,
     status: "open",
     comments: [
       {
-        id: option(options, "comment-id", { required: true }),
+        id: requiredOption(options, "comment-id"),
         author: "user",
         ...commentInput(paths, options),
         createdAt: now,
@@ -501,18 +519,16 @@ function createThread(paths, options, semantic, knownIds, ajv) {
     assignedStageId,
     stageHead: assignedStage.change.headRevision,
     createdAt: now,
-  };
-  validateDocument(ajv, thread, "Feedback thread input");
+  }, "Feedback thread input");
   knownIds.add(id);
   return thread;
 }
 
-function addThreads(paths, optionSets: Options[]) {
+function addThreads(paths: FeedbackPaths, optionSets: Options[]): Thread[] {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
-  const ajv = schemaValidator();
   const knownIds = new Set(feedback.threads.keys());
   const threads = optionSets.map((options) =>
-    createThread(paths, options, semantic, knownIds, ajv),
+    createThread(paths, options, semantic, knownIds),
   );
   const oldManifest = structuredClone(feedback.manifest);
   feedback.manifest.threads.push(...threads.map((thread) => thread.id));
@@ -531,7 +547,7 @@ function addThreads(paths, optionSets: Options[]) {
   return threads;
 }
 
-function addThread(paths, options) {
+function addThread(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread add"),
@@ -540,13 +556,13 @@ function addThread(paths, options) {
   console.log(`Added feedback thread ${thread.id}.`);
 }
 
-function batchThreadOptions(value, index): Options {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+function batchThreadOptions(value: unknown, index: number): Options {
+  if (!isRecord(value)) {
     fail(`Feedback thread batch item ${index + 1} must be an object.`);
   }
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
-    if (name === "attachments" && Array.isArray(item) && item.every((id) => typeof id === "string")) {
+    if (name === "attachments" && isStringArray(item)) {
       options.set(name, item);
     } else if (typeof item === "string") {
       options.set(name, [item]);
@@ -565,21 +581,28 @@ function batchThreadOptions(value, index): Options {
   return options;
 }
 
-function addThreadBatch(paths, options) {
+/** The non-empty JSON array a batch option carries; each item is narrowed separately. */
+function batchItems(options: Options, name: "threads" | "replies"): unknown[] {
+  const raw = requiredOption(options, name);
+  let values: unknown;
+  try {
+    values = parseJson(raw);
+  } catch {
+    fail(`--${name} must contain a JSON array.`);
+  }
+  if (!Array.isArray(values) || values.length === 0) {
+    fail(`--${name} must contain a non-empty JSON array.`);
+  }
+  const items: unknown[] = values;
+  return items;
+}
+
+function addThreadBatch(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread add-batch"),
   );
-  const raw = option(options, "threads", { required: true })!;
-  let values: unknown;
-  try {
-    values = JSON.parse(raw);
-  } catch {
-    fail("--threads must contain a JSON array.");
-  }
-  if (!Array.isArray(values) || values.length === 0) {
-    fail("--threads must contain a non-empty JSON array.");
-  }
+  const values = batchItems(options, "threads");
   if (flag(options, "partial")) {
     console.log(JSON.stringify(partialFeedbackBatch(paths, values, "add")));
     return;
@@ -591,7 +614,8 @@ function addThreadBatch(paths, options) {
   console.log(`Added ${threads.length} feedback thread(s).`);
 }
 
-function refreshableTarget(target, semantic, root) {
+/** Moves a copy of a pending target to its stage's current head, or returns null when it cannot follow safely. */
+function refreshableTarget(target: Target, semantic: SemanticArtifact, root: string): Target | null {
   if (target.kind === "line") return null;
   if (target.kind === "specification") {
     return semantic.requirements.has(target.specificationId) ? target : null;
@@ -612,10 +636,7 @@ function refreshableTarget(target, semantic, root) {
   } else if (target.kind === "insight") {
     if (!collectionExists(stage, target.collection, target.itemId)) return null;
   } else if (target.kind === "file") {
-    let changedFile = stage.change.files.find(
-      (file) =>
-        file.path === target.path || file.previousPath === target.path,
-    );
+    let changedFile = changedFileAt(stage, target.path);
     if (!changedFile) {
       const renamedPath = renamedPathBetween(
         root,
@@ -623,12 +644,7 @@ function refreshableTarget(target, semantic, root) {
         stage.change.headRevision,
         target.path,
       );
-      changedFile = renamedPath
-        ? stage.change.files.find(
-            (file) =>
-              file.path === renamedPath || file.previousPath === renamedPath,
-          )
-        : null;
+      changedFile = renamedPath ? changedFileAt(stage, renamedPath) : undefined;
     }
     if (!changedFile) return null;
     if (
@@ -646,7 +662,7 @@ function refreshableTarget(target, semantic, root) {
   return target;
 }
 
-function refreshPendingAnchor(paths, semantic, thread) {
+function refreshPendingAnchor(paths: FeedbackPaths, semantic: SemanticArtifact, thread: Thread): boolean {
   const before = JSON.stringify({
     stageHead: thread.stageHead,
     target: thread.target,
@@ -666,7 +682,20 @@ function refreshPendingAnchor(paths, semantic, thread) {
   return true;
 }
 
-function nextFeedback(paths, options) {
+interface CompactComment { author: CommentAuthor; body: string; attachments?: ResolvedAttachment[] }
+/** A compact target omits the anchor its stage group already states. */
+type CompactTarget = Omit<Target, "stageBranch" | "stageHead">;
+interface CompactThread { id: string; stale: boolean; reanchored?: true; comments: CompactComment[]; target: CompactTarget }
+interface FullThread { id: string; stageHead: string; comments: ResolvedComment[]; target: Target }
+interface FeedbackGroup {
+  stageId: string;
+  stageBranch: string;
+  stageBase?: string;
+  stageHead: string;
+  threads: (CompactThread | FullThread)[];
+}
+
+function nextFeedback(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, "next"));
   const json = flag(options, "json");
   const compact = flag(options, "compact");
@@ -688,18 +717,17 @@ function nextFeedback(paths, options) {
     claimedElsewhere = awaiting.filter((thread) => taken.has(thread.id)).length;
     awaiting = awaiting.filter((thread) => !taken.has(thread.id));
   }
-  const reanchored = new Set();
-  const originals = new Map();
+  const reanchored = new Set<string>();
+  const originals = new Map<string, Thread>();
   for (const thread of awaiting) {
     originals.set(thread.id, structuredClone(thread));
     if (refreshPendingAnchor(paths, semantic, thread)) reanchored.add(thread.id);
   }
   if (reanchored.size) {
-    const ajv = schemaValidator();
     for (const thread of awaiting) {
       if (!reanchored.has(thread.id)) continue;
-      validateDocument(
-        ajv,
+      parseDocument(
+        THREAD_SCHEMA_ID,
         thread,
         path.join(paths.threads, `${thread.id}.json`),
       );
@@ -717,13 +745,14 @@ function nextFeedback(paths, options) {
       throw error;
     }
   }
-  const groups = [];
-  for (const stageId of semantic.manifest.stages) {
+  const groups: FeedbackGroup[] = [];
+  const listed: Thread[] = [];
+  for (const [stageId, stage] of semantic.stages) {
     const threads = awaiting.filter(
       (thread) => thread.assignedStageId === stageId,
     );
     if (threads.length) {
-      const stage = semantic.stages.get(stageId);
+      listed.push(...threads);
       groups.push(
         compact
           ? {
@@ -731,7 +760,7 @@ function nextFeedback(paths, options) {
               stageBranch: stage.change.branch,
               stageBase: stage.change.baseRevision,
               stageHead: stage.change.headRevision,
-              threads: threads.map((thread) => {
+              threads: threads.map((thread): CompactThread => {
                 const {
                   stageBranch: _targetBranch,
                   stageHead: targetHead,
@@ -759,7 +788,7 @@ function nextFeedback(paths, options) {
               stageId,
               stageBranch: stage.change.branch,
               stageHead: stage.change.headRevision,
-              threads: threads.map((thread) => ({
+              threads: threads.map((thread): FullThread => ({
                 id: thread.id,
                 stageHead: thread.stageHead,
                 comments: agentComments(paths, thread.comments),
@@ -770,9 +799,14 @@ function nextFeedback(paths, options) {
     }
   }
   if (claim) {
-    const claimed = groups.flatMap((group) => group.threads.map((thread) => thread.id));
+    const claimed = listed.map((thread): ClaimedThread => {
+      const through = latestUserCommentId(thread);
+      // Awaiting threads end with an unanswered user comment.
+      if (!through) fail(`Feedback thread ${thread.id} has no user comment.`);
+      return { id: thread.id, through };
+    });
     const claimId = updateAgentState(paths.reviewId, (state, now) =>
-      createClaim(state, now, sessionId, claimed.map((id) => ({ id, through: latestUserCommentId(feedback.threads.get(id))! }))));
+      createClaim(state, now, sessionId, claimed));
     console.log(JSON.stringify({ claim: claimId, claimedElsewhere, stages: groups }, null, compact ? undefined : 2));
     return;
   }
@@ -796,7 +830,7 @@ function nextFeedback(paths, options) {
   }
 }
 
-function replyThread(paths, options) {
+function replyThread(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply"),
@@ -805,27 +839,33 @@ function replyThread(paths, options) {
   console.log(`Added reply ${commentId} to feedback thread ${id}.`);
 }
 
-function applyReply(paths, options, feedback) {
+/** The thread reopened: open status and no resolution time, fields otherwise in place. */
+function reopened(thread: Thread): Thread {
+  const { resolvedAt: _resolvedAt, ...rest } = thread;
+  return { ...rest, status: "open" };
+}
+
+function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback): { id: string; commentId: string; thread: Thread } {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply"),
   );
-  const id = option(options, "id", { required: true });
+  const id = requiredOption(options, "id");
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
-  const commentId = option(options, "comment-id", { required: true });
+  const commentId = requiredOption(options, "comment-id");
   if (thread.comments.some((comment) => comment.id === commentId)) {
     fail(`Comment ${commentId} already exists in thread ${id}.`);
   }
   const author = option(options, "author") || "user";
-  if (!["user", "agent"].includes(author)) {
+  if (author !== "user" && author !== "agent") {
     fail("--author must be user or agent.");
   }
   // An agent reply answers what its round claimed; comments added meanwhile stay queued.
   // Naming the round fences late replies from a round that was replaced or expired.
   const claimId = option(options, "claim");
   if (claimId && author !== "agent") fail("--claim applies only to agent replies.");
-  let respondsTo;
+  let respondsTo: string | undefined;
   if (author === "agent") {
     const state = readAgentState(paths.reviewId);
     respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
@@ -838,18 +878,21 @@ function applyReply(paths, options, feedback) {
     createdAt: new Date().toISOString(),
     ...(respondsTo ? { respondsTo } : {}),
   });
-  if (thread.status === "resolved") {
-    thread.status = "open";
-    delete thread.resolvedAt;
-  }
-  return { id, commentId, thread };
+  const replied = thread.status === "resolved" ? reopened(thread) : thread;
+  feedback.threads.set(id, replied);
+  return { id, commentId, thread: replied };
 }
 
-function replyThreads(paths, optionSets: Options[]) {
+function agentReplies(optionSets: Options[]): AgentReply[] {
+  return optionSets.filter((options) => option(options, "author") === "agent")
+    .map((options) => ({ threadId: requiredOption(options, "id"), claimId: option(options, "claim") }));
+}
+
+function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string; commentId: string; thread: Thread }[] {
   const { feedback } = validateFeedback(paths, { quiet: true });
-  const originals = new Map();
+  const originals = new Map<string, Thread>();
   for (const options of optionSets) {
-    const id = option(options, "id", { required: true });
+    const id = requiredOption(options, "id");
     const thread = feedback.threads.get(id);
     if (thread && !originals.has(id)) {
       originals.set(id, structuredClone(thread));
@@ -858,25 +901,25 @@ function replyThreads(paths, optionSets: Options[]) {
   const replies = optionSets.map((options) => applyReply(paths, options, feedback));
   try {
     for (const id of originals.keys()) {
-      writeThread(paths, feedback.threads.get(id));
+      const thread = feedback.threads.get(id);
+      if (thread) writeThread(paths, thread);
     }
     validateFeedback(paths, { quiet: true });
   } catch (error) {
-    for (const [id, thread] of originals) writeThread(paths, thread);
+    for (const thread of originals.values()) writeThread(paths, thread);
     throw error;
   }
-  recordReplies(paths, optionSets.filter((options) => option(options, "author") === "agent")
-    .map((options) => ({ threadId: option(options, "id"), claimId: option(options, "claim") })));
+  recordReplies(paths, agentReplies(optionSets));
   return replies;
 }
 
-function batchReplyOptions(value, index): Options {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+function batchReplyOptions(value: unknown, index: number): Options {
+  if (!isRecord(value)) {
     fail(`Feedback reply batch item ${index + 1} must be an object.`);
   }
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
-    if (name === "attachments" && Array.isArray(item) && item.every((id) => typeof id === "string")) {
+    if (name === "attachments" && isStringArray(item)) {
       options.set(name, item);
     } else if (typeof item === "string") {
       options.set(name, [item]);
@@ -893,25 +936,16 @@ function batchReplyOptions(value, index): Options {
   return options;
 }
 
-function replyThreadBatch(paths, options) {
+function replyThreadBatch(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply-batch"),
   );
-  const raw = option(options, "replies", { required: true })!;
-  let values: unknown;
-  try {
-    values = JSON.parse(raw);
-  } catch {
-    fail("--replies must contain a JSON array.");
-  }
-  if (!Array.isArray(values) || values.length === 0) {
-    fail("--replies must contain a non-empty JSON array.");
-  }
+  const values = batchItems(options, "replies");
   // A batch-level round applies to every agent reply that does not name its own.
   const claim = option(options, "claim");
   const items = claim
-    ? values.map((value) => value && typeof value === "object" && !Array.isArray(value) && value.author === "agent" && !("claim" in value) ? { ...value, claim } : value)
+    ? values.map((value) => isRecord(value) && value.author === "agent" && !("claim" in value) ? { ...value, claim } : value)
     : values;
   if (flag(options, "partial")) {
     console.log(JSON.stringify(partialFeedbackBatch(paths, items, "reply")));
@@ -924,28 +958,33 @@ function replyThreadBatch(paths, options) {
   console.log(`Added ${replies.length} feedback reply/replies.`);
 }
 
+interface PartialBatchResult {
+  accepted: { index: number; id: string; commentId: string | undefined }[];
+  rejected: { index: number; error: string }[];
+}
+
 // Validate item inputs in memory, then write the valid subset in one transaction.
 // Store/lock/artifact errors propagate; only item validation errors are skipped.
-function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
+function partialFeedbackBatch(paths: FeedbackPaths, values: unknown[], mode: "add" | "reply"): PartialBatchResult {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
-  const ajv = schemaValidator();
   const originalManifest = structuredClone(feedback.manifest);
-  const originals = new Map();
+  const originals = new Map<string, Thread | undefined>();
   const changed = new Set<string>();
   const knownIds = new Set<string>(feedback.threads.keys());
-  const accepted = [];
-  const rejected = [];
-  const agentReplies: { threadId: string; claimId?: string }[] = [];
+  const accepted: PartialBatchResult["accepted"] = [];
+  const rejected: PartialBatchResult["rejected"] = [];
+  const replies: AgentReply[] = [];
   for (const [index, value] of values.entries()) {
-    let id;
-    let before;
+    let id: string | undefined;
+    let before: Thread | undefined;
     try {
       const options = mode === "add" ? batchThreadOptions(value, index) : batchReplyOptions(value, index);
-      id = option(options, "id", { required: true });
-      before = feedback.threads.has(id) ? structuredClone(feedback.threads.get(id)) : undefined;
+      id = requiredOption(options, "id");
+      const current = feedback.threads.get(id);
+      before = current ? structuredClone(current) : undefined;
       if (!originals.has(id)) originals.set(id, before);
       if (before) {
-        const commentId = option(options, "comment-id", { required: true });
+        const commentId = requiredOption(options, "comment-id");
         const existing = before.comments.find((comment) => comment.id === commentId);
         if (existing) {
           const author = mode === "add" ? "user" : option(options, "author") || "user";
@@ -960,13 +999,13 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
         }
       }
       if (mode === "add") {
-        const thread = createThread(paths, options, semantic, knownIds, ajv);
+        const thread = createThread(paths, options, semantic, knownIds);
         feedback.threads.set(id, thread);
         feedback.manifest.threads.push(id);
       } else {
         const reply = applyReply(paths, options, feedback);
-        validateDocument(ajv, reply.thread, "Feedback reply input");
-        if (option(options, "author") === "agent") agentReplies.push({ threadId: id, claimId: option(options, "claim") });
+        parseDocument(THREAD_SCHEMA_ID, reply.thread, "Feedback reply input");
+        if (option(options, "author") === "agent") replies.push({ threadId: id, claimId: option(options, "claim") });
       }
       changed.add(id);
       accepted.push({ index, id, commentId: option(options, "comment-id") });
@@ -975,12 +1014,15 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
         if (before) feedback.threads.set(id, before);
         else feedback.threads.delete(id);
       }
-      rejected.push({ index, error: error.message });
+      rejected.push({ index, error: errorMessage(error) });
     }
   }
   if (changed.size) {
     try {
-      for (const id of changed) writeThread(paths, feedback.threads.get(id));
+      for (const id of changed) {
+        const thread = feedback.threads.get(id);
+        if (thread) writeThread(paths, thread);
+      }
       if (mode === "add") writeJson(paths.feedbackManifest, feedback.manifest);
       validateFeedback(paths, { quiet: true });
     } catch (error) {
@@ -992,22 +1034,20 @@ function partialFeedbackBatch(paths, values, mode: "add" | "reply") {
       if (mode === "add") writeJson(paths.feedbackManifest, originalManifest);
       throw error;
     }
-    recordReplies(paths, agentReplies.filter((reply) => changed.has(reply.threadId)));
+    recordReplies(paths, replies.filter((reply) => changed.has(reply.threadId)));
   }
   return { accepted, rejected };
 }
 
-function recordReplies(paths, replies: { threadId: string; claimId?: string }[]) {
+function recordReplies(paths: FeedbackPaths, replies: AgentReply[]): void {
   if (replies.length) updateAgentState(paths.reviewId, (state, now) => recordAgentReplies(state, now, replies));
 }
 
-const ID_PATTERN = /^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
 /** Shows a question that is not about one thread in the viewer; its answer returns through `feedback`. */
-function askReviewer(paths, options) {
-  const id = option(options, "id", { required: true })!;
-  if (id.length > 80 || !ID_PATTERN.test(id)) fail("--id must be a lowercase hyphenated identifier of at most 80 characters.");
-  const body = (option(options, "body", { required: true }) || "").trim();
+function askReviewer(paths: FeedbackPaths, options: Options): void {
+  const id = requiredOption(options, "id");
+  if (!isFeedbackId(id)) fail("--id must be a lowercase hyphenated identifier of at most 80 characters.");
+  const body = requiredOption(options, "body").trim();
   if (!body || body.length > 4000) fail("--body must contain 1 to 4000 characters.");
   const choices = repeatedOption(options, "choice").map((choice) => choice.trim());
   if (choices.length > 6 || choices.some((choice) => !choice || choice.length > 200)) fail("Use at most six nonblank --choice values of up to 200 characters.");
@@ -1016,8 +1056,8 @@ function askReviewer(paths, options) {
 }
 
 /** Describes the running round's current work in the viewer. */
-function reportProgress(paths, options) {
-  const body = (option(options, "body", { required: true }) || "").trim();
+function reportProgress(paths: FeedbackPaths, options: Options): void {
+  const body = requiredOption(options, "body").trim();
   if (!body || body.length > 200) fail("--body must contain 1 to 200 characters.");
   updateAgentState(paths.reviewId, (state, now) => {
     const session = liveSession(state)?.id ?? null;
@@ -1030,13 +1070,13 @@ function reportProgress(paths, options) {
   console.log("Updated the viewer's progress note.");
 }
 
-function resolveThread(paths, options) {
+function resolveThread(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread resolve"),
   );
   const { feedback } = validateFeedback(paths, { quiet: true });
-  const id = option(options, "id", { required: true });
+  const id = requiredOption(options, "id");
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
   if (thread.status !== "open") {
@@ -1044,11 +1084,8 @@ function resolveThread(paths, options) {
   }
   const commentId = option(options, "comment-id");
   const body = option(options, "body");
-  if (Boolean(commentId) !== Boolean(body)) {
-    fail("--comment-id and --body must be provided together.");
-  }
   const resolvedAt = new Date().toISOString();
-  if (commentId) {
+  if (commentId && body) {
     if (thread.comments.some((comment) => comment.id === commentId)) {
       fail(`Comment ${commentId} already exists in thread ${id}.`);
     }
@@ -1058,44 +1095,48 @@ function resolveThread(paths, options) {
       body,
       createdAt: resolvedAt,
     });
+  } else if (commentId || body) {
+    fail("--comment-id and --body must be provided together.");
   }
-  thread.status = "resolved";
-  thread.resolvedAt = resolvedAt;
-  writeThread(paths, thread);
+  writeThread(paths, { ...thread, status: "resolved", resolvedAt });
   validateFeedback(paths, { quiet: true });
   console.log(`Resolved feedback thread ${id}.`);
 }
 
-function reopenThread(paths, options) {
+function reopenThread(paths: FeedbackPaths, options: Options): void {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reopen"),
   );
   const { feedback } = validateFeedback(paths, { quiet: true });
-  const id = option(options, "id", { required: true });
+  const id = requiredOption(options, "id");
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
   if (thread.status !== "resolved") {
     fail(`Feedback thread ${id} is not resolved.`);
   }
-  thread.status = "open";
-  delete thread.resolvedAt;
-  writeThread(paths, thread);
+  writeThread(paths, reopened(thread));
   validateFeedback(paths, { quiet: true });
   console.log(`Reopened feedback thread ${id}.`);
 }
 
-function dispatch(paths, positionals, options) {
-  const [command, subcommand, ...extra] = positionals;
+function rejectExtraPositionals(positionals: string[]): void {
+  const extra = positionals.slice(2);
   if (extra.length) fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
-  if (!command || command === "help" || options.has("help")) {
-    const help = options.get("help");
-    if (help && (help.length !== 1 || help[0] !== true)) {
-      fail("--help is a flag.");
-    }
-    console.log(HELP);
-    return;
+}
+
+function printHelp(positionals: string[], options: Options): void {
+  rejectExtraPositionals(positionals);
+  const help = options.get("help");
+  if (help && (help.length !== 1 || help[0] !== true)) {
+    fail("--help is a flag.");
   }
+  console.log(HELP);
+}
+
+function dispatch(paths: FeedbackPaths, positionals: string[], options: Options): void {
+  rejectExtraPositionals(positionals);
+  const [command, subcommand] = positionals;
   if (command === "init" && !subcommand) return initialize(paths, options);
   if (command === "thread" && subcommand === "add") {
     return addThread(paths, options);
@@ -1111,13 +1152,13 @@ function dispatch(paths, positionals, options) {
     return replyThreadBatch(paths, options);
   }
   if (command === "attachment" && subcommand === "add") {
-    const file = path.resolve(process.cwd(), option(options, "file", { required: true }));
+    const file = path.resolve(process.cwd(), requiredOption(options, "file"));
     if (!fs.statSync(file).isFile() || fs.statSync(file).size > MAX_ATTACHMENT_BYTES) fail("Choose a local file of 20 MiB or smaller.");
     const attachment = storeAttachment(paths.reviewId, readReview(paths.reviewId).generation, path.basename(file), option(options, "media-type") || "application/octet-stream", fs.readFileSync(file));
     console.log(JSON.stringify(resolveAttachment(paths.reviewId, attachment.id), null, 2)); return;
   }
   if (command === "attachment" && subcommand === "show") {
-    console.log(JSON.stringify(resolveAttachment(paths.reviewId, option(options, "id", { required: true })), null, 2)); return;
+    console.log(JSON.stringify(resolveAttachment(paths.reviewId, requiredOption(options, "id")), null, 2)); return;
   }
   if (command === "thread" && subcommand === "resolve") {
     return resolveThread(paths, options);
@@ -1140,7 +1181,7 @@ function dispatch(paths, positionals, options) {
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
 }
 
-export function runReviewFeedbackCli() {
+export function runReviewFeedbackCli(): void {
 
 try {
   const { positionals, options: parsedOptions } = parseArguments(
@@ -1149,7 +1190,7 @@ try {
   const options = expandInputOptions(parsedOptions, process.cwd());
   const command = positionals.join(" ");
   if (!positionals.length || positionals[0] === "help" || options.has("help")) {
-    dispatch(null, positionals, options);
+    printHelp(positionals, options);
     return;
   }
   if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
@@ -1167,7 +1208,7 @@ try {
   withFeedbackLock(paths, () => withValidationContext(() => dispatch(paths, positionals, options)));
 
 } catch (error) {
-  console.error(`Error: ${error.message}`);
+  console.error(`Error: ${errorMessage(error)}`);
   process.exit(1);
 }
 

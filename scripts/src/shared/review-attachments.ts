@@ -3,11 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import type { FeedbackAttachment } from "./documents.js";
+import { parseJson } from "./json.js";
+import { isRecord } from "./narrow.js";
 import { atomicJson, readReview, reviewDirectory, touchReview } from "./review-store.js";
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_COMMENT_ATTACHMENTS = 10;
-export type Attachment = { id: string; filename: string; mediaType: string; size: number; sha256: string; path: string };
+export type Attachment = FeedbackAttachment;
 const hash = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 function directory(reviewId: string, id: string) {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid attachment identity.");
@@ -23,12 +26,20 @@ export function imageMediaType(bytes: Buffer) {
 function filenameValid(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 255 && Buffer.from(value).toString("utf8") === value && !/[\\/\x00-\x1f\x7f]/.test(value) && ![".", ".."].includes(value);
 }
+/** The attachment recorded in a metadata.json file, if it has every field. */
+function storedAttachment(value: unknown): Attachment | undefined {
+  const attachment = isRecord(value) ? value.attachment : undefined;
+  if (!isRecord(attachment)) return undefined;
+  const { id, filename, mediaType, size, sha256, path } = attachment;
+  if (typeof id !== "string" || typeof filename !== "string" || typeof mediaType !== "string" ||
+      typeof size !== "number" || typeof sha256 !== "string" || typeof path !== "string") return undefined;
+  return { id, filename, mediaType, size, sha256, path };
+}
 /** Returns metadata and a contained local path, without loading file bytes into agent output. */
 export function resolveAttachment(reviewId: string, id: string): Attachment & { localPath: string } {
   const dir = directory(reviewId, id), root = reviewDirectory(reviewId);
-  const record = JSON.parse(fs.readFileSync(path.join(dir, "metadata.json"), "utf8"));
-  const metadata: Attachment = record.attachment;
-  if (metadata?.id !== id || metadata.path !== `attachments/${id}/content.bin` || !filenameValid(metadata.filename) ||
+  const metadata = storedAttachment(parseJson(fs.readFileSync(path.join(dir, "metadata.json"), "utf8")));
+  if (!metadata || metadata.id !== id || metadata.path !== `attachments/${id}/content.bin` || !filenameValid(metadata.filename) ||
       !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(metadata.mediaType) || !/^[a-f0-9]{64}$/.test(metadata.sha256) ||
       !Number.isSafeInteger(metadata.size) || metadata.size < 0 || metadata.size > MAX_ATTACHMENT_BYTES) throw new Error("Invalid stored attachment metadata.");
   const localPath = path.join(root, metadata.path);

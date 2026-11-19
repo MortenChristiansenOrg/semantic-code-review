@@ -11,6 +11,7 @@ import {
   createRepository,
   feedbackCli,
   flowCli,
+  implementationFromScript,
   initializeImplementation,
   organizeStage,
   scriptsDirectory,
@@ -22,6 +23,7 @@ const moduleUrl = pathToFileURL(
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
+  createSnapshotReader,
   createViewerDataSource,
   exportFeedback,
   exportFeedbackReplies,
@@ -232,9 +234,7 @@ test("viewer data preserves zero-context hunk ownership", async (t) => {
 
   const dataSource = createViewerDataSource(repository.root);
   const script = dataSource.implementationDataScript();
-  const data = JSON.parse(
-    script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  );
+  const data = implementationFromScript(script);
   const stage = data.stages[0];
   const file = data.stages[0].files[0];
   const diff = await dataSource.fileDiff(
@@ -284,9 +284,7 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
   });
 
   const firstScript = dataSource.implementationDataScript();
-  const stage = JSON.parse(
-    firstScript.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  ).stages[0];
+  const stage = implementationFromScript(firstScript).stages[0];
   const initialDiffCalls = calls.filter((args) => args.includes("diff")).length;
   assert.equal(initialDiffCalls, 1);
   assert.equal(dataSource.implementationDataScript(), firstScript);
@@ -367,10 +365,7 @@ test("lazy stage diff preserves renamed file content changes", async (t) => {
   repository.semantic("stage", "finish");
 
   const dataSource = createViewerDataSource(repository.root);
-  const data = JSON.parse(
-    dataSource.implementationDataScript()
-      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  );
+  const data = implementationFromScript(dataSource.implementationDataScript());
   assert.deepEqual(
     data.stages[0].files.map(({ path, previousPath, kind }) => ({
       path,
@@ -411,10 +406,7 @@ test("file revisions ignore unrelated changes in the same stage", (t) => {
   repository.semantic("stage", "finish");
 
   const dataSource = createViewerDataSource(repository.root);
-  const readData = () => JSON.parse(
-    dataSource.implementationDataScript()
-      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  );
+  const readData = () => implementationFromScript(dataSource.implementationDataScript());
   const initial = readData();
   const initialRevisions = new Map(
     initial.stages[0].files.map((file) => [file.path, file.revision]),
@@ -445,10 +437,7 @@ test("file revisions ignore unrelated changes in the same stage", (t) => {
 test("lazy diff stays bound to the metadata stage revision", async (t) => {
   const { repository } = createImplementationWithStages(t);
   const dataSource = createViewerDataSource(repository.root);
-  const initial = JSON.parse(
-    dataSource.implementationDataScript()
-      .match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  );
+  const initial = implementationFromScript(dataSource.implementationDataScript());
   const initialStage = initial.stages[0];
 
   repository.write("implementation.txt", "changed after viewer load\n");
@@ -594,7 +583,7 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
   const dataSource = createViewerDataSource(repository.root);
   const readData = () => {
     const script = dataSource.implementationDataScript();
-    return JSON.parse(script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+    return implementationFromScript(script);
   };
 
   assert.deepEqual(readData().feedback, []);
@@ -750,9 +739,7 @@ test("feedback target stays present when it leaves the current stage diff", (t) 
   repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
 
   const script = createImplementationDataScript(repository.root);
-  const data = JSON.parse(
-    script.match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1],
-  );
+  const data = implementationFromScript(script);
   assert.deepEqual(data.feedback[0].targetState, { state: "present" });
   assert.deepEqual(
     data.stages[0].files.map((file) => file.path),
@@ -855,7 +842,7 @@ test("viewer release version is independent of artifact creation metadata", (t) 
   initializeImplementation(repository);
   const manifest = repository.readJson(".semantic-review/manifest.json");
   const source = createViewerDataSource(repository.root);
-  const data = () => JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const data = () => implementationFromScript(source.implementationDataScript());
   manifest.skillVersion = "0.2.0";
   repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
   const runningVersion = fs.readFileSync(path.resolve(scriptsDirectory, "..", "VERSION"), "utf8").trim();
@@ -898,7 +885,7 @@ test("repeated files compare with their last stage across gaps, renames, and cum
   const manifest = repository.readJson('.semantic-review/manifest.json');
   repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
   const source = createViewerDataSource(repository.root);
-  const data = JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const data = implementationFromScript(source.implementationDataScript());
   const stage = data.stages[2], file = stage.files[0];
   assert.equal(file.baseRevision, first);
   assert.equal(file.previousStageId, 'first');
@@ -947,7 +934,7 @@ test("a rename follows its source history when the destination was previously de
   const manifest = repository.readJson('.semantic-review/manifest.json');
   repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
   const source = createViewerDataSource(repository.root);
-  const data = JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const data = implementationFromScript(source.implementationDataScript());
   const file = data.stages.at(-1).files[0];
   assert.equal(file.baseRevision, updated);
   assert.equal(file.previousStageId, 'update');
@@ -967,7 +954,7 @@ test("file revisions detect base and head mode changes without blob changes", (t
   organizeStage(repository); repository.semantic('stage', 'finish');
   const stagePath = '.semantic-review/stages/implementation.json', stage = repository.readJson(stagePath);
   const source = createViewerDataSource(repository.root);
-  const revision = () => JSON.parse(source.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]).stages[0].files[0].revision;
+  const revision = () => implementationFromScript(source.implementationDataScript()).stages[0].files[0].revision;
   const original = revision(), branch = repository.git('branch', '--show-current');
   const baseBlob = repository.git('rev-parse', `${stage.change.baseRevision}:code.txt`);
   repository.git('switch', 'main'); repository.git('update-index', '--chmod=+x', 'code.txt');
@@ -1026,4 +1013,149 @@ for (const kind of ['modified', 'deleted', 'renamed']) test(`legacy line snapsho
   const stage = buildFeedbackTargetData(repository.root).stages[0];
   const note = { kind: 'line', id: `l:implementation:old:1:${stage.files[0].path}`, snapshot: { base: stage.baseRevision, head: stage.headRevision } };
   assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
+});
+
+test("a feedback thread that fails its schema does not hide the other threads", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["valid", "damaged"]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-comment`, "--body", "Check this.",
+      "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  }
+  const file = repository.feedbackPath("threads", "damaged.json");
+  const original = repository.readAbsoluteJson(file);
+  repository.writeAbsolute(file, JSON.stringify({ ...original, createdAt: "not a date" }));
+  const implementationData = () => implementationFromScript(createImplementationDataScript(repository.root));
+
+  const data = implementationData();
+  assert.deepEqual(data.feedback.map((thread) => thread.id), ["valid"]);
+  assert.equal(data.awaitingAgentReplies, 1);
+  assert.equal(data.stages.length, 1);
+
+  // A duplicate key is a strict-validation error; the viewer reads the thread as before.
+  const text = JSON.stringify(original);
+  repository.writeAbsolute(file, `{"createdAt":"not a date",${text.slice(1)}`);
+  const repaired = implementationData();
+  assert.deepEqual(repaired.feedback.map((thread) => thread.id), ["valid", "damaged"]);
+  assert.equal(repaired.awaitingAgentReplies, 2);
+});
+
+test("a missing or truncated feedback thread does not take down the viewer and is noticed once restored", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["valid", "damaged"]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-comment`, "--body", "Check this.",
+      "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  }
+  const file = repository.feedbackPath("threads", "damaged.json");
+  const original = fs.readFileSync(file, "utf8");
+  const dataSource = createViewerDataSource(repository.root);
+  const implementationData = () => implementationFromScript(dataSource.implementationDataScript());
+  const reader = createSnapshotReader(repository.root);
+  const snapshots = () => {
+    const [polled, read] = [viewerSnapshot(repository.root), reader()];
+    assert.equal(polled.awaitingAgentReplies, read.awaitingAgentReplies);
+    return { polled, read };
+  };
+  const healthy = snapshots();
+  assert.equal(healthy.polled.awaitingAgentReplies, 2);
+
+  for (const damage of [() => repository.writeAbsolute(file, "{"), () => fs.rmSync(file)]) {
+    damage();
+    const data = implementationData();
+    assert.deepEqual(data.feedback.map((thread) => thread.id), ["valid"]);
+    assert.equal(data.awaitingAgentReplies, 1);
+    assert.equal(data.stages.length, 1);
+    const damaged = snapshots();
+    assert.equal(damaged.polled.awaitingAgentReplies, 1);
+    assert.notEqual(damaged.polled.revision, healthy.polled.revision);
+    assert.notEqual(damaged.read.revision, healthy.read.revision);
+
+    repository.writeAbsolute(file, original);
+    const restored = snapshots();
+    assert.equal(restored.polled.revision, healthy.polled.revision);
+    assert.equal(restored.read.revision, healthy.read.revision);
+    assert.deepEqual(implementationData().feedback.map((thread) => thread.id), ["valid", "damaged"]);
+  }
+});
+
+test("viewer snapshots skip listed thread IDs that are not feedback IDs", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "valid", "--comment-id", "valid-comment", "--body", "Check this.",
+    "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  // A thread outside the threads directory, reachable only through a path in the ID.
+  fs.copyFileSync(repository.feedbackPath("threads", "valid.json"), repository.feedbackPath("outside.json"));
+  const manifestFile = repository.feedbackPath("manifest.json");
+  const manifest = repository.readAbsoluteJson(manifestFile);
+  repository.writeAbsolute(manifestFile, JSON.stringify({ ...manifest, threads: ["valid", "../outside", "../missing", "Valid"] }));
+
+  assert.equal(viewerSnapshot(repository.root).awaitingAgentReplies, 1);
+  assert.equal(createSnapshotReader(repository.root)().awaitingAgentReplies, 1);
+});
+
+test("stored __proto__ keys stay ordinary data on the viewer page", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const [specificationId] = repository.readJson(".semantic-review/manifest.json").requirements;
+  const specificationPath = `.semantic-review/requirements/${specificationId}.json`;
+  const specification = repository.readJson(specificationPath);
+  // In a JavaScript object literal this key would set the prototype, so the page would inherit a reference it cannot render.
+  repository.write(specificationPath, JSON.stringify({ ...specification, source: { kind: "local", nested: { kept: false }, url: 1 } })
+    .replace('"kind":"local"', '"kind":"local","__proto__":{"reference":{"toString":1}}'));
+  const stagePath = ".semantic-review/stages/implementation.json";
+  const stage = repository.readJson(stagePath);
+  repository.write(stagePath, JSON.stringify({ ...stage, nodes: stage.nodes.map((node, index) => index ? node : { ...node, description: "PLACEHOLDER" }) })
+    .replace('"PLACEHOLDER"', '{"__proto__":{"inherited":true},"text":"</script><script>"}'));
+  const script = createViewerDataSource(repository.root).implementationDataScript();
+  assert.doesNotMatch(script, /<\/script/i);
+
+  const data = implementationFromScript(script);
+  const [source] = data.requirements.map((requirement) => requirement.source);
+  assert.deepEqual(source, { kind: "local" });
+  assert.equal(Object.getPrototypeOf(source), Object.prototype);
+  const { description } = data.stages[0].nodes[0];
+  assert.equal(Object.getPrototypeOf(description), Object.prototype);
+  assert.deepEqual(Object.keys(description), ["__proto__", "text"]);
+  assert.equal(description.text, "</script><script>");
+});
+
+test("a thread removed while a snapshot reads it does not fail the poll", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["valid", "removed"]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-comment`, "--body", "Check this.",
+      "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  }
+  const file = repository.feedbackPath("threads", "removed.json");
+  const original = fs.readFileSync(file, "utf8");
+  const healthyPoll = viewerSnapshot(repository.root);
+
+  // The cached reader finds the file by its stat, then it disappears before the read.
+  let removeOnRead = false;
+  const reader = createSnapshotReader(repository.root, { readFile: (target) => {
+    if (removeOnRead && target === file) fs.rmSync(file);
+    return fs.readFileSync(target, "utf8");
+  } });
+  const healthy = reader(true);
+  removeOnRead = true;
+  const removed = reader(true);
+  removeOnRead = false;
+  const missing = createSnapshotReader(repository.root)();
+  assert.equal(removed.revision, missing.revision);
+  assert.notEqual(removed.revision, healthy.revision);
+  assert.equal(removed.awaitingAgentReplies, 1);
+  repository.writeAbsolute(file, original);
+  assert.equal(reader(true).revision, healthy.revision);
+
+  // The uncached reader hashes the bytes it counted, even when the file disappears right after.
+  const read = fs.readFileSync;
+  t.mock.method(fs, "readFileSync", (target, ...args) => {
+    const result = read(target, ...args);
+    if (String(target) === file) fs.rmSync(file);
+    return result;
+  });
+  const polled = viewerSnapshot(repository.root);
+  t.mock.restoreAll();
+  assert.deepEqual(polled, healthyPoll);
+  assert.notEqual(viewerSnapshot(repository.root).revision, healthyPoll.revision);
 });

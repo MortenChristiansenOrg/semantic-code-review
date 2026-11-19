@@ -879,3 +879,12 @@ test("stage set --finalized updates metadata on a finalized stage", (t) => {
   assert.deepEqual(stage.change, before.change);
   repository.semantic("validate", "--publish");
 });
+
+test("manifest document IDs are validated before they name files", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const manifest = repository.readJson(".semantic-review/manifest.json");
+  manifest.stages = ["../../outside"];
+  repository.write(".semantic-review/manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  repository.expectSemanticFailure(/manifest\.json\/stages\/0 must match pattern/, "validate");
+});
