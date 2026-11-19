@@ -462,7 +462,6 @@ test("repository metadata and maintainer guidance preserve portability", async (
   );
   const { selectedNodeForFile } = await import("../../viewer/src/files.ts");
   const { aggregateApprovalState } = await import("../../viewer/src/approvals.ts");
-  const { formatCommentBody } = await import("../../viewer/src/html.ts");
 
   assert.match(attributes, /^\* text=auto eol=lf$/m);
   assert.match(editorConfig, /^end_of_line = lf$/m);
@@ -484,15 +483,6 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.equal(aggregateApprovalState(["approved", "approved"]), "approved");
   assert.equal(aggregateApprovalState(["stale", "stale"]), "stale");
   assert.equal(aggregateApprovalState(["approved", "stale"]), "stale");
-  assert.equal(
-    formatCommentBody("First line\n\nUse `my code`."),
-    "First line\n\nUse <code>my code</code>.",
-  );
-  assert.equal(
-    formatCommentBody("<script>\n`<b>`"),
-    "&lt;script&gt;\n<code>&lt;b&gt;</code>",
-  );
-  assert.equal(formatCommentBody("one\r\ntwo\r`three`"), "one\ntwo\n<code>three</code>");
   assert.match(viewerApp, /stage\.nodes\.every\(\(node\) => nodeApprovalState\(stage, node\) === "approved"\)/);
   assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
   assert.match(viewerApp, /Approve every step before approving the stage/);

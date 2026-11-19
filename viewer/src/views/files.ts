@@ -4,6 +4,7 @@ import { repeat } from "lit-html/directives/repeat.js";
 import type { ApprovalState } from "./controls";
 import { bubbleIcon, doubleCheckIcon, noteIcon } from "./icons";
 import { legacyHtml } from "./legacy-html";
+import { fileNotesView, type ThreadListView } from "./thread";
 
 export interface FileNoteBadgeView {
   /** Unresolved file threads. */
@@ -14,10 +15,10 @@ export interface FileNoteBadgeView {
   expanded: boolean;
 }
 
-/** An open file: its diff and file notes, still built as legacy HTML. */
+/** An open file: its diff, still built as legacy HTML, and its notes. */
 export interface OpenFileView {
   diff: string;
-  notes: string;
+  notes: ThreadListView;
 }
 
 export interface FileRowView {
@@ -101,7 +102,7 @@ function fileRow(row: FileRowView): TemplateResult {
           <button class="mini-approve ${on ? "is-on" : ""} ${stale ? "is-stale" : ""}" data-action="approve" data-id=${row.approvalId} ?disabled=${row.approvalDisabled} type="button" aria-pressed=${String(on)} title=${stale ? "Changed since approval — re-approve" : on ? "Approved" : "Approve file"}><span>${stale ? "!" : on ? "✓" : ""}</span></button>
         </div>
       </div>
-      ${row.open ? html`<div class="cinema-diff">${legacyHtml(row.open.diff)}${legacyHtml(row.open.notes)}</div>` : nothing}
+      ${row.open ? html`<div class="cinema-diff">${legacyHtml(row.open.diff)}${fileNotesView(row.open.notes)}</div>` : nothing}
     </div>`;
 }
 

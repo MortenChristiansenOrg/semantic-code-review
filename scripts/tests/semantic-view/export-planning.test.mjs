@@ -674,10 +674,6 @@ test("viewer client refreshes data without reloading the page", () => {
     app,
     /data-kind="\$\{esc\(kind\)\}" data-id="\$\{esc\(id\)\}" data-stage="\$\{esc\(stageId \|\| ""\)\}"/,
   );
-  assert.match(
-    app,
-    /data-action="jump-to"[^>]*data-stage="\$\{esc\(ref\.stageId \|\| ""\)\}"/,
-  );
   assert.match(styles, /\.drow > code \{/);
   assert.doesNotMatch(styles, /\.drow code \{/);
 });

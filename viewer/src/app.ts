@@ -7,8 +7,8 @@
 import * as api from "./api";
 import { aggregateApprovalState } from "./approvals";
 import { selectedNodeForFile } from "./files";
-import { esc, formatCommentBody } from "./html";
-import { patchElement } from "./views/legacy-html";
+import { esc } from "./html";
+import { lineThreadIsland, renderLineThreads } from "./views/line-threads";
 import { renderPage } from "./views/page";
 
 (async function () {
@@ -98,6 +98,10 @@ import { renderPage } from "./views/page";
   const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
+    // A local feedback write changes what the page shows, so no server
+    // revision is fully shown any more; the next poll fetches again, even if
+    // another session has since returned the server to the revision loaded.
+    selectionRevision = notShown;
     if (!snapshot || typeof snapshot.revision !== "string") return;
     adoptAgentStatus(snapshot.agent);
   }
@@ -257,6 +261,16 @@ import { renderPage } from "./views/page";
   const draftSnapshots = new WeakMap();
 
   let lastHiddenPoll = 0;
+  // The latest server revision a poll handled while a code selection deferred the
+  // full implementation (see below), notShown after a local feedback write
+  // (the page then matches no server revision), and null once the page shows
+  // data.viewerRevision.
+  const notShown = Symbol("not shown");
+  let selectionRevision = null;
+  const codeSelected = () => Boolean(window.getSelection()?.toString()) && !document.activeElement?.matches("input, textarea");
+  // Feedback anchors to stage revisions, so it may only join a diff from the same revisions.
+  const diffRevisions = (implementation) => JSON.stringify((implementation.stages || []).map((stage) =>
+    [stage.id, stage.baseRevision, stage.headRevision, (stage.files || []).map((file) => [file.path, file.baseRevision || null])]));
   async function pollViewerRevision() {
     if (reviewDeleted || polling) return;
     // Hidden tabs keep checking slowly while an agent listens or works, so a finished round can notify.
@@ -272,7 +286,10 @@ import { renderPage } from "./views/page";
       }
       const snapshot = await response.json();
       if (!snapshot.ok) return;
-      if (snapshot.revision === data.viewerRevision) { adoptAgentStatus(snapshot.agent); return; }
+      // Once the selection clears, a deferred implementation is adopted whatever the revision now is.
+      const handled = selectionRevision === null ? snapshot.revision === data.viewerRevision
+        : selectionRevision !== notShown && snapshot.revision === selectionRevision && codeSelected();
+      if (handled) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await api.getImplementation();
@@ -280,16 +297,29 @@ import { renderPage } from "./views/page";
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
-      const selection = window.getSelection();
-      const selected = Boolean(selection?.toString()) && !document.activeElement?.matches("input, textarea");
-      if (!roundNotice) refreshNotice = "Review updated";
-      if (selected) {
-        // A code selection must not prevent an open conversation from refreshing.
-        // Keep metadata aligned with the visible diff until the selection clears.
-        // Leave viewerRevision unchanged so the next poll still adopts the full snapshot.
-        artifactThreads.splice(0, artifactThreads.length, ...(payload.implementation.feedback || []));
-        artifactThreads.forEach((thread) => updateThreadEls(thread, threadCollapsed(thread), selection));
-      } else { adoptImplementation(payload.implementation); render(); }
+      // A code selection must not prevent an open conversation from refreshing.
+      // Keep metadata aligned with the visible diff until the selection clears:
+      // adopt only the threads, so rendering leaves the selected code rows alone,
+      // and only while the stage revisions match the shown diff (a restack waits).
+      // Leave viewerRevision unchanged so the first poll after it still adopts the
+      // full snapshot; until then this revision is not fetched again, and only
+      // changed feedback renders, as each render closes an open tooltip.
+      // Thread lists the selection runs through keep what they show (see heldThreads).
+      const feedback = payload.implementation.feedback || [];
+      if (codeSelected()) {
+        // Record the revision of the data adopted; the server may have moved on since the probe.
+        selectionRevision = payload.implementation.viewerRevision;
+        if (diffRevisions(payload.implementation) === diffRevisions(data) && JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
+          artifactThreads.splice(0, artifactThreads.length, ...feedback);
+          if (!roundNotice) refreshNotice = "Review updated";
+          render();
+        }
+      } else {
+        selectionRevision = null;
+        adoptImplementation(payload.implementation);
+        if (!roundNotice) refreshNotice = "Review updated";
+        render();
+      }
       adoptAgentStatus(snapshot.agent);
     } catch {
       // External artifact writes can be transient; retry without replacing good data.
@@ -1128,10 +1158,20 @@ import { renderPage } from "./views/page";
   }
   // Local notes still worth showing: drafts, plus exported notes whose artifact
   // thread has not been reloaded yet. Once the artifact thread is present the
-  // local marker is hidden so a sent note is never rendered twice.
-  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId) {
+  // local marker is hidden so a sent note is never rendered twice. A list the
+  // selection holds (`list`: its key, held `threads` and `latest` threads) keeps a
+  // sent note while the hold keeps out its thread, which the list would show
+  // otherwise; a thread shown elsewhere, such as among resolved notes, replaces it.
+  function sentNoteWaiting(c, list) {
+    if (!c.exported || !artifactThreadById(c.threadId)) return true;
+    const has = (threads) => threads.some((t) => t.id === c.threadId);
+    if (!list || !selectedThreadLists.has(list.key) || !has(list.latest) || has(list.threads)) return false;
+    heldThreadLists.add(list.key);
+    return true;
+  }
+  function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId, list = null) {
     return elementNotes(id).filter(
-      ({ c }) => (!c.exported || !artifactThreadById(c.threadId)) && matchesNodeContext(c, nodeId) &&
+      ({ c }) => sentNoteWaiting(c, list) && matchesNodeContext(c, nodeId) &&
         (!kind || c.kind === kind) && (kind !== "node" || c.stageId === stageId),
     );
   }
@@ -1161,10 +1201,10 @@ import { renderPage } from "./views/page";
     });
     return counts;
   }
-  function visibleLocalNotes() {
+  function visibleLocalNotes(list = null) {
     return state.comments
       .map((c, i) => ({ c, i }))
-      .filter(({ c }) => !c.exported || !artifactThreadById(c.threadId));
+      .filter(({ c }) => sentNoteWaiting(c, list));
   }
   function activeNoteCount() {
     return artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
@@ -1223,25 +1263,6 @@ import { renderPage } from "./views/page";
       : kind === "insight" ? "Insight"
       : "Thread";
   }
-  function threadTypeIcon(kind) {
-    if (kind === "stage")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M12 3.5l8 4-8 4-8-4 8-4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12l8 4 8-4M4 16l8 4 8-4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`;
-    if (kind === "node")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="3" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.8" fill="currentColor"/></svg>`;
-    if (kind === "specification")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M12 3.2l2.3 5 5.5.5-4.1 3.6 1.2 5.3L12 20.4 6.8 22.6 8 17.3 3.9 13.7l5.5-.5 2.3-5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
-    if (kind === "criterion")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 12.4l2.4 2.4 4.6-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    if (kind === "insight")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M9 18h6M10 21h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12 3a6 6 0 0 0-3.4 10.9c.6.4.9 1 .9 1.6v.5h5v-.5c0-.6.3-1.2.9-1.6A6 6 0 0 0 12 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
-    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
-  }
-  function threadStatusIcon(status) {
-    if (status === "resolved")
-      return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="7" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg>`;
-  }
-
   function reviewable() {
     let n = 0;
     data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
@@ -1287,9 +1308,6 @@ import { renderPage } from "./views/page";
   function renameFrom(file) {
     if (file.kind !== "renamed" || !file.previousPath) return "";
     return `<span class="fp-from" data-tooltip-focus title="Renamed from ${esc(file.previousPath)}">← ${esc(shortPath(file.previousPath))}</span>`;
-  }
-  function caret() {
-    return `<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
 
   /* ---- reasoning tags (the signature) ----------------------------------- */
@@ -1622,21 +1640,13 @@ import { renderPage } from "./views/page";
     }
     return { state: "present" };
   }
+  function jumpModel(ref) {
+    return { kind: ref.kind, id: ref.id, stageId: ref.stageId || "", nodeId: ref.nodeId || "" };
+  }
   // An exported feedback thread: a reviewer <-> agent conversation the reviewer
   // can continue, mark resolved, or reopen. Only the reviewer controls closure.
-  function renderArtifactThread(t, withLabel, collapsedOverride) {
-    const collapsed = collapsedOverride !== undefined ? collapsedOverride : threadCollapsed(t);
-    const msgs = (t.comments || [])
-      .map((cm) => {
-        const agent = cm.author === "agent";
-        const unread = isUnreadReply(t, cm);
-        const stamp = fmtTime(cm.createdAt);
-        return `<div class="tmsg tmsg-${agent ? "agent" : "user"}${unread ? " is-unread" : ""}"${agent ? ` data-reply-key="${esc(replyKey(t, cm))}"` : ""}>
-          <div class="tmsg-h"><span class="tmsg-who">${agent ? "Implementation agent" : "You"}${unread ? `<span class="tmsg-new">New</span>` : ""}</span>${stamp ? `<time>${esc(stamp)}</time>` : ""}</div>
-          <p class="comment-body">${formatCommentBody(cm.body)}</p>${attachmentList(cm.attachments)}
-        </div>`;
-      })
-      .join("");
+  // `withLabel` marks the notes panel's copy, which names the target and can jump to it.
+  function threadModel(t, withLabel) {
     const disp = threadTargetDisplay(t);
     const ref = threadElementRef(t);
     const kind = (t.target && t.target.kind) || "thread";
@@ -1651,138 +1661,135 @@ import { renderPage } from "./views/page";
         (["specification", "criterion", "insight"].includes(kind) ||
           (tgtStageId && tgtStageId !== t.assignedStageId)),
     );
-    const assignedTag = showAssigned
-      ? `<span class="tthread-stage" title="Assigned to stage: ${esc(assignedStage.title)}">${esc(assignedStage.title)}</span>`
-      : "";
-    const agentState = threadAgentState(t);
-    const agentTag = agentState
-      ? `<span class="tthread-agent is-${agentState}">${{ queued: "Queued", working: "Agent working", new: "New reply", answered: "Answered" }[agentState]}</span>`
-      : "";
-    const jump = !withLabel
-      ? ""
-      : ref
-        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
-        : tstate.state === "deleted"
-          ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
-          : "";
-    const title =
-      (withLabel || kind === "line" && tstate.state === "renamed") && t.target && t.target.label
-        ? `<strong class="tthread-title" title="${esc(disp.title)}">${esc(disp.text)}</strong>`
-        : `<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`;
-    const busy = threadBusy(t.id);
     let staleMsg = "";
     if ((kind === "file" || kind === "line") && !noteNodeId(threadNote(t)))
       staleMsg = "Original step unknown or unavailable. This conversation is kept in the global list.";
     if (tstate.state === "deleted")
       staleMsg = `This file was deleted after the feedback was sent.`;
     else if (tstate.state === "renamed")
-      staleMsg = `This file was renamed to ${esc(splitPath(tstate.to).name)} after the feedback was sent.${kind === "line" ? " The original line is shown here at file level; its current position is unverified." : ""}`;
+      staleMsg = `This file was renamed to ${splitPath(tstate.to).name} after the feedback was sent.${kind === "line" ? " The original line is shown here at file level; its current position is unverified." : ""}`;
     else if (tstate.state === "not-in-stage")
       staleMsg = `This file is no longer changed in this stage.`;
     else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
       staleMsg = `Stage changed since this feedback was sent.`;
     if (withLabel && !ref && !staleMsg) staleMsg = "The original target is no longer available.";
-    const stale = staleMsg
-      ? `<p class="tthread-stale">${staleMsg}</p>`
-      : "";
-    const err = threadError(t.id)
-      ? `<p class="tthread-err">${esc(threadError(t.id))}</p>`
-      : "";
-    // Pending reply drafts render as unsent messages the reviewer can revise or
-    // remove before preparing feedback; the one being edited is shown as a form.
-    const draftReplies = repliesForThread(t.id)
-      .filter((r) => r.id !== replyEditId)
-      .map((r) => `<div class="tmsg tmsg-user tmsg-draft" data-reply-id="${esc(r.id)}">
-          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">${sendingDrafts.has(r.id) ? "Sending…" : "Draft"}</span>
-            ${sendingDrafts.has(r.id) ? "" : `<span class="tmsg-act">
-              <button data-action="reply-edit" data-id="${esc(t.id)}" data-reply-id="${esc(r.id)}" type="button">Edit</button>
-              <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
-            </span>`}
-          </div>
-          <p class="comment-body">${formatCommentBody(r.body)}</p>${attachmentList(r.attachments)}
-        </div>`)
-      .join("");
-    const actionable = t.status === "open" || t.status === "resolved";
-    const actions = actionable
-      ? `<div class="tthread-act">
-          ${t.status === "resolved"
-            ? `<button data-action="thread-reopen" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>${busy ? `<span class="tspin" aria-hidden="true"></span>Reopening…` : "Unresolve"}</button>`
-            : `<button class="tthread-resolve" data-action="thread-resolve" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>${busy ? `<span class="tspin" aria-hidden="true"></span>Resolving…` : "Mark resolved"}</button>`}
-          ${replyTo === t.id ? "" : `<button data-action="thread-reply" data-id="${esc(t.id)}" type="button" ${busy ? "disabled" : ""}>Reply</button>`}
-        </div>`
-      : "";
-    const editing = replyTo === t.id && replyEditId != null;
-    const replyForm = replyTo === t.id && Boolean(withLabel) === state.notesOpen
-      ? `<form class="tthread-reply" data-reply-form data-id="${esc(t.id)}">
-          <textarea name="reply-body" rows="3" placeholder="Continue the conversation…">${esc(replyDraft)}</textarea>${attachmentEditor(replyAttachments)}
-          <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${editing ? "Update reply" : "Save reply"}</button></div>
-        </form>`
-      : "";
-    return `<article class="tthread status-${esc(t.status)} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
-      <div class="tthread-h" data-action="toggle-thread-collapse" data-id="${esc(t.id)}" role="button" tabindex="0" aria-expanded="${String(!collapsed)}" title="${collapsed ? "Expand thread" : "Collapse thread"}">
-        <span class="tthread-caret">${caret()}</span>
-        <span class="tthread-type" title="${esc(threadTypeLabel(kind))}" aria-label="${esc(threadTypeLabel(kind))}">${threadTypeIcon(kind)}</span>
-        ${title}
-        ${assignedTag}
-        ${agentTag}
-        <span class="tthread-status-ic s-${esc(t.status)}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
-        ${jump}
-      </div>
-      <div class="tthread-body">
-        <div class="tthread-body-inner">
-          ${stale}
-          <div class="tthread-msgs">${msgs}${draftReplies}</div>
-          ${err}
-          ${actions}
-          ${replyForm}
-        </div>
-      </div>
-    </article>`;
+    return {
+      id: t.id, status: t.status, collapsed: threadCollapsed(t), kind, kindLabel: threadTypeLabel(kind),
+      title: (withLabel || kind === "line" && tstate.state === "renamed") && t.target && t.target.label
+        ? { text: disp.text, tooltip: disp.title } : null,
+      assignedStage: showAssigned ? assignedStage.title : "",
+      agentState: threadAgentState(t),
+      jump: !withLabel ? null : ref ? jumpModel(ref) : tstate.state === "deleted" ? "deleted" : null,
+      stale: staleMsg,
+      error: threadError(t.id),
+      busy: threadBusy(t.id),
+      messages: (t.comments || []).map((cm) => {
+        const agent = cm.author === "agent";
+        return { author: agent ? "agent" : "user", unread: isUnreadReply(t, cm), replyKey: agent ? replyKey(t, cm) : "",
+          time: fmtTime(cm.createdAt), body: cm.body, attachments: attachmentModels(cm.attachments) };
+      }),
+      // Pending reply drafts render as unsent messages the reviewer can revise or
+      // remove before preparing feedback; the one being edited is shown as a form.
+      drafts: repliesForThread(t.id).filter((r) => r.id !== replyEditId)
+        .map((r) => ({ id: r.id, body: r.body, attachments: attachmentModels(r.attachments), sending: sendingDrafts.has(r.id) })),
+      actionable: t.status === "open" || t.status === "resolved",
+      replying: replyTo === t.id,
+      reply: replyTo === t.id && Boolean(withLabel) === state.notesOpen
+        ? { draft: replyDraft, editing: replyEditId != null, attachments: attachmentEditorModel(replyAttachments), saveDisabled: uploadOps.size > 0 }
+        : null,
+    };
   }
-  // A browser-local note. Drafts can be edited/deleted; a sent note awaiting its
-  // artifact thread is shown read-only.
-  function renderLocalNote({ c, i }, withLabel = false) {
-    if (compose && compose.editIndex === i && withLabel === state.notesOpen) return renderComposer(compose);
-    const label = noteTargetLabel(c);
+  const localNoteIds = new WeakMap();
+  let lastLocalNoteId = 0;
+  function localNoteId(note) {
+    if (!localNoteIds.has(note)) localNoteIds.set(note, `note-${++lastLocalNoteId}`);
+    return localNoteIds.get(note);
+  }
+  // A browser-local note, or the composer editing it in its place. Drafts can be
+  // edited/deleted; a sent note awaiting its artifact thread is shown read-only.
+  function localNoteEntry({ c, i }, withLabel = false) {
+    // Keyed by the note itself, so a deleted note's row is removed rather than reused for another.
+    const key = `n:${localNoteId(c)}`;
+    if (compose && compose.editIndex === i && withLabel === state.notesOpen) return { type: "composer", key, composer: composerModel(compose) };
     const ref = localNoteRef(c);
-    const jump = withLabel && ref ? `<button class="tthread-jump" data-action="jump-to" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" aria-label="Show note target" title="Show note target">${arrowRight()}</button>` : "";
-    const missing = withLabel && !ref ? `<p class="tthread-stale">Original target or step unavailable. This note is kept in the global list.</p>`
-      : ref && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
-    const sent = Boolean(c.exported);
-    const mode = c.mode || "personal";
-    const acts = sent || sendingDrafts.has(c)
-      ? ""
-      : `<div class="tnote-act">
-          <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
-          <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
-        </div>`;
-    return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${esc(mode)} ${sent ? "is-sent" : "is-draft"}">
-        <div class="tthread-h tnote-h">
-          <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : sendingDrafts.has(c) ? "Sending…" : "Draft"}</span>` : ""}
-          ${withLabel || renamedLineNote(c) ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
-        </div>
-        ${missing}
-        <div class="tmsg tmsg-user ${mode === "feedback" && !sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${esc(fmtTime(c.createdAt))}</time>${acts}</div>
-        <p class="comment-body">${formatCommentBody(c.body)}</p>${attachmentList(c.attachments)}</div>
-      </article>`;
+    return { type: "note", key, note: {
+      index: i, id: localNoteId(c), mode: c.mode === "feedback" ? "feedback" : "personal", sent: Boolean(c.exported), sending: sendingDrafts.has(c),
+      label: withLabel || renamedLineNote(c) ? noteTargetLabel(c) : null,
+      jump: withLabel && ref ? jumpModel(ref) : null,
+      missing: withLabel && !ref ? "Original target or step unavailable. This note is kept in the global list."
+        : ref && ref.kind !== c.kind ? "The line snapshot changed. Open the current file to review its location." : "",
+      time: fmtTime(c.createdAt), body: c.body, attachments: attachmentModels(c.attachments),
+    } };
   }
-  // Inline note composer, rendered directly in the element's own thread so the
-  // reviewer can keep looking at what they are commenting on while they write.
-  const attachmentIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>`;
-  const paperclipIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9a1 1 0 0 0 2 2l8-8"/></svg>`;
-  function attachmentList(attachments = [], editable = false) {
-    if (!attachments.length) return "";
-    return `<div class="attachments">${attachments.map((file) => `<div class="attachment" data-render-key="${esc(file.id)}">
-      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(api.attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
-      <span class="attachment-name" title="${esc(file.filename)}">${esc(file.filename)}</span><small>${(file.size / 1024).toFixed(1)} KiB</small>
-      ${editable ? `<button class="attachment-remove" type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>` : ""}</div>`).join("")}</div>`;
+  function threadEntry(t, withLabel = false) {
+    return { type: "thread", key: `t:${t.id}`, thread: threadModel(t, withLabel) };
   }
-  function attachmentEditor(attachments) {
+  // A thread list a code selection runs through keeps the threads it showed
+  // until the selection leaves it: which threads it has, their comments and
+  // their status stay as the server last sent them while shown, so what is
+  // selected (and copied) does not change under the reviewer. Models are still
+  // built from the reviewer's own state (busy, errors, collapse, replies,
+  // drafts and local notes). Each render works out the held lists afresh from
+  // the current selection, so a list adopts the latest threads once it leaves.
+  let shownThreadLists = new Map();     // list key -> the threads it last showed
+  let nextThreadLists = shownThreadLists;
+  let selectedThreadLists = new Set();
+  let heldThreadLists = new Set();      // lists that show older threads than the latest
+  function threadListsInSelection() {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || selection.isCollapsed || document.activeElement?.matches("input, textarea")) return new Set();
+    const range = selection.getRangeAt(0);
+    // A hidden or inert list (the inactive notes tab, a closed panel) shows
+    // nothing that is selected, nor does one inside a closed step or file.
+    const insideClosed = (el) => {
+      for (let det = el.closest("details:not([open])"); det; det = det.parentElement?.closest("details:not([open])") || null) {
+        const summary = det.querySelector(":scope > summary");
+        if (!summary || !summary.contains(el)) return true;
+      }
+      return false;
+    };
+    const shown = (el) => !el.closest("[hidden], [inert]") && !insideClosed(el) && el.getClientRects().length > 0;
+    return new Set([...app.querySelectorAll("[data-thread-list]")].filter((el) => shown(el) && range.intersectsNode(el)).map((el) => el.dataset.threadList));
+  }
+  // A list's key names everything that decides its threads, so a held list is reused only for the same list.
+  const threadListKey = (...identity) => JSON.stringify(identity);
+  function heldThreads(key, latest) {
+    const shown = selectedThreadLists.has(key) && shownThreadLists.get(key);
+    const threads = shown || latest;
+    if (shown && (shown.length !== latest.length || shown.some((t, i) => t !== latest[i]))) heldThreadLists.add(key);
+    nextThreadLists.set(key, threads);
+    return threads;
+  }
+  // The held copies of a thread, which the reviewer's own resolve or reopen updates.
+  function heldThreadCopies(id) {
+    return [...shownThreadLists.values()].flat().filter((t) => t.id === id);
+  }
+  document.addEventListener("selectionchange", () => {
+    if (!heldThreadLists.size) return;
+    const selected = threadListsInSelection();
+    if ([...heldThreadLists].some((key) => !selected.has(key))) render();
+  });
+  // Keys stay unique when local notes share a timestamp.
+  function uniqueKeys(entries) {
+    const seen = new Set();
+    return entries.map((entry, index) => {
+      const key = seen.has(entry.key) ? `${entry.key}#${index}` : entry.key;
+      seen.add(key);
+      return key === entry.key ? entry : { ...entry, key };
+    });
+  }
+  // An element's threads, then its local notes.
+  function threadListEntries(threads, locals) {
+    return uniqueKeys([...threads.map((t) => threadEntry(t)), ...locals.map((local) => localNoteEntry(local))]);
+  }
+  const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  function attachmentModels(attachments = []) {
+    return attachments.map((file) => ({ id: file.id, filename: file.filename, size: (file.size / 1024).toFixed(1),
+      preview: IMAGE_TYPES.includes(file.mediaType) ? api.attachmentUrl(file.id, true) : "" }));
+  }
+  function attachmentEditorModel(attachments) {
     const status = uploadStatus.get(attachments);
-    return `${attachmentList(attachments, true)}<div class="attachment-tools"><label class="attach-files">${paperclipIcon}<span>Attach files</span><input type="file" multiple data-attachment-input aria-label="Attach files"></label>
-      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop into the text field / paste an image</span></div>
-      ${status?.busy ? `<p role="status">Uploading files…</p>` : ""}${status?.error ? `<p class="tthread-err" role="alert">${esc(status.error)}</p>` : ""}`;
+    return { attachments: attachmentModels(attachments), uploading: Boolean(status?.busy), error: status?.error || "" };
   }
   function editorAttachments(form) {
     if (form?.matches("[data-note-form]") && compose) return compose.attachments ||= [];
@@ -1860,36 +1867,22 @@ import { renderPage } from "./views/page";
     const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter(Boolean);
     if (form && files.length) { event.preventDefault(); uploadFiles(files, editorAttachments(form)); }
   });
-  function renderComposer(ctx) {
-    const mode = !data.remote && ctx.mode === "feedback" ? "feedback" : "personal";
-    return `<form class="note-compose mode-${esc(mode)}" data-note-form>
-      <div class="nc-mode" role="radiogroup" aria-label="Note type">
-        <label class="nc-opt"><input type="radio" name="nc-mode" value="personal" ${mode !== "feedback" ? "checked" : ""}><span><b>Personal</b><small>Just for you.</small></span></label>
-        ${data.remote ? "" : `<label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>`}
-      </div>
-      <textarea name="nc-body" rows="3" placeholder="A concise observation for your review…">${esc(ctx.body || "")}</textarea>${attachmentEditor(ctx.attachments ||= [])}
-      <div class="nc-actions">
-        <button type="button" data-action="compose-cancel">Cancel</button>
-        <button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${ctx.editIndex != null ? "Save note" : "Add note"}</button>
-      </div>
-    </form>`;
+  function composerModel(ctx) {
+    return { mode: !data.remote && ctx.mode === "feedback" ? "feedback" : "personal", remote: Boolean(data.remote), body: ctx.body || "",
+      attachments: attachmentEditorModel(ctx.attachments ||= []), editing: ctx.editIndex != null, saveDisabled: uploadOps.size > 0 };
   }
-  function threadInline(id, kind, stageId) {
+  // The notes on a stage, step or evidence, while they are shown.
+  function inlineThreadModel(id, kind, stageId) {
     const composingNew = compose && compose.kind === kind && compose.id === id &&
       (kind !== "node" || compose.stageId === stageId) &&
       matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
-    const arts = artifactThreadsForElement(kind, id, stageId);
-    const locals = localVisibleForElement(id, elementNodeId(kind, id), kind, stageId);
-    const hasContent = arts.length || locals.length;
-    if (!state.openThreads[threadStateKey(kind, id, stageId)] && !composingNew) return "";
-    if (!hasContent && !composingNew) return "";
-    const rows =
-      arts.map((t) => renderArtifactThread(t, false)).join("") +
-      locals.map((ln) => renderLocalNote(ln)).join("");
-    const footer = composingNew
-      ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button">＋ Add note</button>`;
-    return `<div class="thread" data-thread="${esc(id)}">${rows}${footer}</div>`;
+    if (!state.openThreads[threadStateKey(kind, id, stageId)] && !composingNew) return null;
+    const listKey = threadListKey(kind, stageId || "", id);
+    const latest = artifactThreadsForElement(kind, id, stageId);
+    const threads = heldThreads(listKey, latest);
+    const entries = threadListEntries(threads, localVisibleForElement(id, elementNodeId(kind, id), kind, stageId, { key: listKey, threads, latest }));
+    if (!entries.length && !composingNew) return null;
+    return { id, kind, stageId: stageId || "", listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
 
   /* ---- file rows -------------------------------------------------------- */
@@ -1918,21 +1911,17 @@ import { renderPage } from "./views/page";
       insights: fileCodeInsights(stage, file.path).length,
       notes: counts.file || counts.personal ? { threads: counts.file, personal: counts.personal, expanded: open && state.openThreads[id] !== false } : null,
       lineComments: counts.line,
-      open: open && entry ? { diff: diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: node.id }), notes: fileNotesBlock(id) } : null,
+      open: open && entry ? { diff: diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: node.id }), notes: fileNotesModel(id) } : null,
     };
   }
   // File notes can be hidden independently of the open diff.
-  function fileNotesBlock(id) {
+  function fileNotesModel(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
-    const arts = artifactThreadsForElement("file", id);
-    const locals = localVisibleForElement(id);
-    const rows = state.openThreads[id] === false ? "" :
-      arts.map((t) => renderArtifactThread(t, false)).join("") +
-      locals.map((ln) => renderLocalNote(ln)).join("");
-    const footer = composingNew
-      ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${esc(id)}" type="button">＋ Add note</button>`;
-    return `<div class="thread file-notes" data-thread="${esc(id)}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
+    const listKey = threadListKey("file", elementNodeId("file", id), id);
+    const latest = artifactThreadsForElement("file", id);
+    const threads = state.openThreads[id] === false ? [] : heldThreads(listKey, latest);
+    const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads, latest }));
+    return { id, kind: "file", stageId: null, listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
   // A group's unapproved or stale file approvals that can be captured now.
   function groupPendingApprovals(stage, node, files) {
@@ -2053,24 +2042,27 @@ import { renderPage } from "./views/page";
   // A collapsible conversation attached to a single diff line. It renders as a
   // full-width row directly beneath its line and stays hidden until the line's
   // gutter bubble is toggled open, so notes never crowd the surrounding code.
-  function lineThreadRow(lineId) {
+  // The legacy diff leaves an island row for the thread, which the thread
+  // template is rendered into after each render (see renderLineThreads).
+  function lineThreadContent(lineId) {
     const composingNew =
       compose && compose.kind === "line" && compose.id === lineId && matchesNodeContext(compose, elementNodeId("line", lineId)) && compose.editIndex == null;
-    const open = Boolean(state.openLineThreads[lineId]);
-    const arts = artifactThreadsForElement("line", lineId);
-    const locals = localVisibleForElement(lineId);
-    const hasContent = arts.length || locals.length;
-    if ((!open && !composingNew) || (!hasContent && !composingNew)) return "";
-    const rows =
-      arts.map((t) => renderArtifactThread(t, false)).join("") +
-      locals.map((ln) => renderLocalNote(ln)).join("");
-    const footer = composingNew
-      ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="line" data-id="${esc(lineId)}" type="button">＋ Add note</button>`;
-    const hide = hasContent
-      ? `<button class="line-thread-hide" data-action="line-note" data-id="${esc(lineId)}" type="button" title="Hide these notes">Hide</button>`
-      : "";
-    return `<div class="drow drow-thread"><div class="line-thread" data-thread="${esc(lineId)}"><div class="line-thread-h"><span class="line-thread-where">Line notes</span>${hide}</div>${rows}${footer}</div></div>`;
+    if (!state.openLineThreads[lineId] && !composingNew) return null;
+    const key = lineListKey(lineId);
+    const latest = artifactThreadsForElement("line", lineId);
+    const arts = heldThreads(key, latest);
+    const locals = localVisibleForElement(lineId, undefined, null, undefined, { key, threads: arts, latest });
+    if (!arts.length && !locals.length && !composingNew) return null;
+    return { arts, locals, composingNew };
+  }
+  function lineThreadRow(lineId) {
+    return lineThreadContent(lineId) ? lineThreadIsland(lineId, esc) : "";
+  }
+  function lineListKey(lineId) { return threadListKey("line", elementNodeId("line", lineId), lineId); }
+  function lineThreadModel(lineId) {
+    const content = lineThreadContent(lineId);
+    return content && { id: lineId, kind: "line", stageId: null, listKey: lineListKey(lineId), entries: threadListEntries(content.arts, content.locals),
+      composer: content.composingNew ? composerModel(compose) : null };
   }
   // Render one code row plus, when the file is diff-anchored (ctx present) and
   // the row maps to a real line, its gutter affordance and any attached thread.
@@ -2581,10 +2573,10 @@ import { renderPage } from "./views/page";
       approval: nodeApprovalState(stage, node),
       legend: reasoningLegendModel(linked),
       insights: list.map((ins) => insightTagModel(stage, ins, node)),
-      insightThreads: list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join(""),
+      insightThreads: list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => inlineThreadModel(insightKey(stage.id, ins.collection, ins.id), "insight")).filter(Boolean),
       files: nodeFilesModel(stage, node),
       notes: notesToggleModel("node", node.id, stage.id),
-      thread: threadInline(node.id, "node", stage.id),
+      thread: inlineThreadModel(node.id, "node", stage.id),
     };
   }
 
@@ -2605,7 +2597,7 @@ import { renderPage } from "./views/page";
       acceptance: stageAcceptanceRefs(stage).map(acceptanceChipModel),
       notes: notesToggleModel("stage", stage.id),
       approve: stageApproveModel(stage),
-      thread: threadInline(stage.id, "stage"),
+      thread: inlineThreadModel(stage.id, "stage"),
       nodes: stage.nodes.map((n, ni) => nodeModel(stage, n, ni, i)),
     };
   }
@@ -2654,7 +2646,8 @@ import { renderPage } from "./views/page";
     const si = stage ? data.stages.indexOf(stage) : 900;
     const nodeId = c.kind === "node" ? c.id : c.kind === "insight" ? insightByKey(c.id)?.nodeRefs?.[0] : noteNodeId(c);
     const ni = nodeId ? stage?.nodes.findIndex((n) => n.id === nodeId) ?? -1 : -1;
-    return { si, stageTitle: stage?.title || "Other targets", ni,
+    // The stage's ID keys its group, so a reordered stage keeps its notes' elements.
+    return { si, stageKey: stage ? `stage:${stage.id}` : "other", stageTitle: stage?.title || "Other targets", ni,
       nodeKey: `${stage?.id || ""}::${nodeId || c.kind === "stage" && "overview" || "unknown"}`,
       nodeTitle: ni >= 0 ? stage.nodes[ni].title : c.kind === "stage" ? "Stage overview" : "Other targets / original step unknown" };
   }
@@ -2670,9 +2663,9 @@ import { renderPage } from "./views/page";
     entries.forEach(({ c, i, thread }) => {
       const g = noteGroupKey(c);
       const d = noteDayKey(c);
-      if (!stageMap.has(g.si)) stageMap.set(g.si, { si: g.si, title: g.stageTitle, nodes: new Map() });
+      if (!stageMap.has(g.si)) stageMap.set(g.si, { si: g.si, key: g.stageKey, title: g.stageTitle, nodes: new Map() });
       const st = stageMap.get(g.si);
-      if (!st.nodes.has(g.nodeKey)) st.nodes.set(g.nodeKey, { ni: g.ni, title: g.nodeTitle, days: new Map() });
+      if (!st.nodes.has(g.nodeKey)) st.nodes.set(g.nodeKey, { key: g.nodeKey, ni: g.ni, title: g.nodeTitle, days: new Map() });
       const nd = st.nodes.get(g.nodeKey);
       if (!nd.days.has(d.key)) nd.days.set(d.key, { key: d.key, label: d.label, items: [] });
       nd.days.get(d.key).items.push({ c, i, thread });
@@ -2702,57 +2695,36 @@ import { renderPage } from "./views/page";
   function pendingFeedbackCount() {
     return pendingFeedback().length + pendingReplies().length;
   }
-  function notesPanel() {
-    const localEntries = visibleLocalNotes();
-    const activeThreads = artifactThreads.filter((t) => t.status !== "resolved");
-    const resolvedThreads = artifactThreads.filter((t) => t.status === "resolved");
-    const groupedBody = (threads, locals) => groupedNotes([
-      ...threads.map((thread) => ({ c: threadNote(thread), thread })), ...locals,
-    ]).map((st) => `<section class="note-stage">
-      <h3 class="note-stage-h">${esc(st.title)}</h3>
-      ${st.nodesArr.map((nd) => `<div class="note-node"><h4 class="note-node-h">${esc(nd.title)}</h4>
-        ${nd.daysArr.map((day) => `<div class="note-day">${esc(day.label)}</div><div class="note-convos">${day.items.map((item) => item.thread ? renderArtifactThread(item.thread, true) : renderLocalNote(item, true)).join("")}</div>`).join("")}
-      </div>`).join("")}</section>`).join("");
-    const activeBody = groupedBody(activeThreads, localEntries) || `<div class="notes-empty"><span>✎</span><p>No notes yet.</p><small>Leave a note on any stage, step, file, or line.</small></div>`;
-    const resolvedBody = groupedBody(resolvedThreads, []);
-    const resolvedEmpty = `<div class="notes-empty small"><small>No resolved threads yet.</small></div>`;
-    const filter = state.notesFilter === "resolved" ? "resolved" : "active";
+  function noteGroupsModel(entries) {
+    return groupedNotes(entries).map((st) => ({ key: st.key, title: st.title,
+      nodes: st.nodesArr.map((nd) => ({ key: nd.key, title: nd.title,
+        days: nd.daysArr.map((day) => ({ key: day.key, label: day.label,
+          entries: uniqueKeys(day.items.map((item) => item.thread ? threadEntry(item.thread, true) : localNoteEntry(item, true))) })) })) }));
+  }
+  function notesPanelModel() {
+    // Each column is held on its own; the reviewer's own resolve or reopen still moves a held thread.
+    const latestActive = artifactThreads.filter((t) => t.status !== "resolved");
+    const activeThreads = heldThreads("notes:active", latestActive).filter((t) => t.status !== "resolved");
+    const resolvedThreads = heldThreads("notes:resolved", artifactThreads.filter((t) => t.status === "resolved")).filter((t) => t.status === "resolved");
+    const groups = (threads, locals) => noteGroupsModel([...threads.map((thread) => ({ c: threadNote(thread), thread })), ...locals]);
     const activeCount = activeNoteCount();
-    const resolvedCount = resolvedThreads.length;
-    const toggle = `<div class="notes-switch" role="tablist">
-      <button class="notes-switch-btn ${filter === "active" ? "is-on" : ""}" data-action="notes-filter" data-filter="active" type="button" role="tab" aria-selected="${filter === "active"}">Active${activeCount ? `<b>${activeCount}</b>` : ""}</button>
-      <button class="notes-switch-btn ${filter === "resolved" ? "is-on" : ""}" data-action="notes-filter" data-filter="resolved" type="button" role="tab" aria-selected="${filter === "resolved"}">Resolved${resolvedCount ? `<b>${resolvedCount}</b>` : ""}</button>
-    </div>`;
-    const track = `<div class="notes-track is-${filter}">
-      <div class="notes-col notes-col-active" ${filter === "active" ? "" : "hidden inert"}>${activeBody}</div>
-      <div class="notes-col notes-col-resolved" ${filter === "resolved" ? "" : "hidden inert"}>${resolvedBody}${resolvedThreads.length ? "" : resolvedEmpty}</div>
-    </div>`;
-    const body = `${toggle}${track}`;
     const pending = pendingFeedbackCount();
-    const working = exportState.phase === "working";
-    const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
-    const autoSend = agentTakesFeedback()
-      ? `<label class="notes-auto-send" title="Send each feedback note and reply to the listening agent when you save it. Personal notes stay local."><input type="checkbox" name="auto-send" ${autoSendPreferred ? "checked" : ""}><span>Send automatically</span></label>` : "";
     const hint = autoSendActive()
       ? `Feedback notes and replies go to the listening agent when you save them. ${pending ? "Prepare feedback sends earlier drafts." : "Personal notes stay local."}`
       : pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to."
         : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically.";
-    const foot = data.remote ? `<div class="notes-foot"><p>Personal notes stay on this computer.</p></div>` : `<div class="notes-foot">
-        <div class="notes-export-row">
-          <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
-            ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
-          </button>
-          ${autoSend}
-        </div>
-        ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${hint}</p>`}
-        ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
-      </div>`;
-    return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
-      <div class="side-head"><div><span class="eyebrow">Your review notes</span><h2>${data.remote ? "Personal notes" : "Notes &amp; feedback"}</h2></div><button data-action="toggle-notes" aria-label="Close" type="button">×</button></div>
-      <div class="notes-list">${body}</div>
-      ${foot}
-    </aside>`;
+    return {
+      open: Boolean(state.notesOpen), remote: Boolean(data.remote),
+      filter: state.notesFilter === "resolved" ? "resolved" : "active",
+      activeCount, resolvedCount: resolvedThreads.length,
+      active: groups(activeThreads, visibleLocalNotes({ key: "notes:active", threads: activeThreads, latest: latestActive })), resolved: groups(resolvedThreads, []),
+      export: data.remote ? null : {
+        pending, working: exportState.phase === "working",
+        outcome: exportState.phase === "error" ? "error" : exportState.phase === "done" ? "done" : "",
+        message: exportState.message || "", hint, skips: exportState.skips || [],
+        autoSend: agentTakesFeedback() ? autoSendPreferred : null,
+      },
+    };
   }
   function labelFor(kind, id, stageId) {
     if (kind === "node" && stageId) return stageById.get(stageId)?.nodes.find((node) => node.id === id)?.title || id;
@@ -2785,6 +2757,9 @@ import { renderPage } from "./views/page";
   /* ---- render ----------------------------------------------------------- */
   function render() {
     if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
+    selectedThreadLists = threadListsInSelection();
+    heldThreadLists = new Set();
+    nextThreadLists = new Map();
     renderPage(app, {
       topbar: topbarModel(),
       agentBar: agentBarModel(),
@@ -2795,8 +2770,10 @@ import { renderPage } from "./views/page";
       },
       story: storyModel(),
       coverage: coverageModel(),
-      notes: notesPanel(),
+      notes: notesPanelModel(),
     });
+    renderLineThreads(app, lineThreadModel);
+    shownThreadLists = nextThreadLists;
     enhance();
     if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
@@ -2921,7 +2898,9 @@ import { renderPage } from "./views/page";
     if (d.tooltip) {
       const el = ensurePop();
       el.className = "tag-pop-float is-tooltip";
-      el.innerHTML = `<strong>${esc(d.tooltip)}</strong>`;
+      // A label the layout cuts off is named in full by the owner's fuller hint.
+      const clipped = d.tooltipClipped && [...btn.querySelectorAll("[data-clippable]")].some((label) => label.scrollWidth > label.clientWidth);
+      el.innerHTML = `<strong>${esc(clipped ? d.tooltipClipped : d.tooltip)}</strong>`;
       return;
     }
     const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
@@ -3279,7 +3258,7 @@ import { renderPage } from "./views/page";
     } else if (a === "thread-reopen") {
       threadAction(btn.dataset.id, "reopen");
     } else if (a === "toggle-thread-collapse") {
-      toggleThreadCollapse(btn.dataset.id);
+      toggleThreadCollapse(btn.dataset.id, btn);
     } else if (a === "notes-filter") {
       const f = btn.dataset.filter === "resolved" ? "resolved" : "active";
       if (state.notesFilter !== f) { state.notesFilter = f; persist(); applyNotesFilter(); }
@@ -3421,17 +3400,18 @@ import { renderPage } from "./views/page";
   async function threadAction(threadId, kind) {
     const thread = artifactThreadById(threadId);
     if (!thread) return;
-    const wasCollapsed = threadCollapsed(thread);
     threadOps[threadId] = { busy: true, error: "" };
-    updateThreadEls(thread, wasCollapsed);
+    render();
     try {
       const res = await api.threadAction(kind, { implementationId: data.implementationId, threadId });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
       if (!res.ok || !out.ok) throw new Error(out.error || `Action failed (HTTP ${res.status}).`);
       adoptViewerSnapshot(out);
-      if (out.status) thread.status = out.status;
-      if ("resolvedAt" in out) thread.resolvedAt = out.resolvedAt;
+      for (const copy of [thread, ...heldThreadCopies(threadId)]) {
+        if (out.status) copy.status = out.status;
+        if ("resolvedAt" in out) copy.resolvedAt = out.resolvedAt;
+      }
       threadOps[threadId] = { busy: false, error: "" };
       if (!state.threadCollapsed) state.threadCollapsed = {};
       if (kind === "resolve") state.threadCollapsed[threadId] = true;
@@ -3459,27 +3439,18 @@ import { renderPage } from "./views/page";
       render();
     } catch (err) {
       threadOps[threadId] = { busy: false, error: err.message || "Action failed." };
-      updateThreadEls(thread, threadCollapsed(thread));
+      render();
     }
   }
 
-  // Replace every rendered instance of a thread in place (notes panel + any
-  // inline copy) without touching the rest of the DOM.
-  function updateThreadEls(t, collapsed, selection = null) {
-    document.querySelectorAll(`.tthread[data-thread-id="${cssEsc(t.id)}"]`).forEach((el) => {
-      if (selection?.rangeCount && selection.getRangeAt(0).intersectsNode(el)) return;
-      const withLabel = Boolean(el.closest(".note-convos"));
-      const tmp = document.createElement("div");
-      tmp.innerHTML = renderArtifactThread(t, withLabel, collapsed);
-      const fresh = tmp.firstElementChild;
-      if (fresh) { patchElement(el, fresh); enhanceTooltips(el); }
-    });
-  }
-  function toggleThreadCollapse(id) {
+  // Toggles what the reviewer sees in the header used, which a held list may show
+  // differently from the latest copy (a thread resolved since defaults to collapsed).
+  function toggleThreadCollapse(id, header) {
     const t = artifactThreadById(id);
     if (!t) return;
     if (!state.threadCollapsed) state.threadCollapsed = {};
-    const collapsed = !threadCollapsed(t);
+    const shown = header?.getAttribute("aria-expanded");
+    const collapsed = shown ? shown === "true" : !threadCollapsed(t);
     state.threadCollapsed[id] = collapsed;
     persist();
     render();
@@ -3541,9 +3512,13 @@ import { renderPage } from "./views/page";
           (out.replied || []).forEach((entry) => {
             const thread = artifactThreadById(entry.threadId);
             if (!thread) return;
-            if (entry.comment) thread.comments.push(entry.comment);
-            if (entry.status) thread.status = entry.status;
-            if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+            // Held copies show the sent reply in place of its draft; a copy shared by several lists gets it once.
+            // A retried send whose earlier response was lost returns a comment a poll may already have loaded.
+            for (const copy of new Set([thread, ...heldThreadCopies(entry.threadId)])) {
+              if (entry.comment && !copy.comments.some((comment) => entry.comment.id != null && comment.id === entry.comment.id)) copy.comments.push(entry.comment);
+              if (entry.status) copy.status = entry.status;
+              if ("resolvedAt" in entry) copy.resolvedAt = entry.resolvedAt;
+            }
           });
           const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
           repliesSent = sentIds.size;
@@ -3775,7 +3750,7 @@ import { renderPage } from "./views/page";
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
-      persist();
+      persist(); render();
     }
   });
   document.addEventListener("submit", (e) => {
@@ -3842,7 +3817,7 @@ import { renderPage } from "./views/page";
     }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof Element) {
       const h = e.target.closest('[data-action="toggle-thread-collapse"]');
-      if (h && !e.target.closest("button, a")) { e.preventDefault(); toggleThreadCollapse(h.dataset.id); return; }
+      if (h && !e.target.closest("button, a")) { e.preventDefault(); toggleThreadCollapse(h.dataset.id, h); return; }
     }
     if (e.key === "Escape") {
       if (compose) { compose = null; persist(); render(); return; }
@@ -3856,15 +3831,19 @@ import { renderPage } from "./views/page";
      When the reviewer selects a token inside a diff, highlight every other
      occurrence of that exact text within the same file view. */
   function clearSelHits(root) {
-    const hits = root.querySelectorAll("mark.sel-hit");
-    if (!hits.length) return;
-    hits.forEach((m) => m.replaceWith(document.createTextNode(m.textContent)));
-    root.normalize();
+    const parents = new Set();
+    root.querySelectorAll("mark.sel-hit").forEach((m) => {
+      parents.add(m.parentNode);
+      m.replaceWith(document.createTextNode(m.textContent));
+    });
+    parents.forEach((parent) => parent.normalize());
   }
   function applySelHits(root, term, skipRange) {
     clearSelHits(root);
     const needle = term.toLowerCase();
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    // Line threads are lit templates, which own their text nodes; only code is marked.
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
+      node.parentElement?.closest("[data-lit-island]") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
     const targets = [];
     let node;
     while ((node = walker.nextNode())) {
@@ -3945,11 +3924,13 @@ import { renderPage } from "./views/page";
   render = function () {
     forceHidePop();
     const focused = document.activeElement;
-    // A replaced control is found again by everything that identifies it.
-    const focusField = Boolean(focused?.matches?.("textarea[name], input[name]"));
+    // A control replaced by the render, as a draft's editor is when it moves
+    // between its inline thread and the notes panel, passes focus to the one
+    // that matches all it is identified by: its data attributes other than
+    // tooltips, and its name and value. A control for something else, such as
+    // another draft's Delete, never matches, so focus then stays where it fell.
     const focusSelector = focused?.matches?.("[data-action], textarea[name], input[name]")
-      ? [...focused.attributes]
-        .filter(({ name }) => (name === "name" || name === "value" || name.startsWith("data-")) && !name.startsWith("data-tooltip"))
+      ? [...focused.attributes].filter(({ name }) => name === "name" || name === "value" || name.startsWith("data-") && !name.startsWith("data-tooltip"))
         .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
@@ -3959,8 +3940,6 @@ import { renderPage } from "./views/page";
     revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.
-    const notesEl = app.querySelector(".notes-list");
-    const notesScroll = notesEl ? notesEl.scrollTop : 0;
     const winScroll = { left: window.scrollX, top: window.scrollY };
     // Each open file's diff has its own inner scroll; capture it per file so
     // adding a line note (or any re-render) never resets where the reviewer is
@@ -3997,8 +3976,6 @@ import { renderPage } from "./views/page";
         }
       }
     });
-    const newNotes = app.querySelector(".notes-list");
-    if (newNotes) newNotes.scrollTop = notesScroll;
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
@@ -4007,9 +3984,9 @@ import { renderPage } from "./views/page";
     if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
       focused.focus({ preventScroll: true });
       if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
-    } else if (!focused?.isConnected && focusSelector) {
-      const focusRoot = focusField && state.notesOpen ? app.querySelector(".side.notes") : app;
-      const replacement = focusRoot?.querySelector(focusSelector);
+    } else if (!focused?.isConnected && focusLost && focusSelector) {
+      // A closed panel stays in the page, inert; only a usable control takes focus.
+      const replacement = [...app.querySelectorAll(focusSelector)].find((el) => !el.closest("[inert]"));
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
     pendingDiffs.forEach((entry) => ensureFileDiff(entry));

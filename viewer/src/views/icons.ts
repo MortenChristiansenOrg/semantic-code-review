@@ -1,4 +1,4 @@
-// Decorative icons shared by the story column's templates.
+// Decorative icons shared by the page's templates.
 import { html } from "lit-html";
 
 /** A speech bubble: feedback threads. */
@@ -12,3 +12,6 @@ export const doubleCheckIcon = html`<svg class="tico" viewBox="0 0 24 24" width=
 
 /** A downward chevron on disclosures. */
 export const caretIcon = html`<svg class="chev" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+/** An arrow: jumps to what a note or thread is about. */
+export const arrowIcon = html`<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;

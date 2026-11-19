@@ -298,6 +298,91 @@ test('open threads refresh while code remains selected, and edited replies survi
   expect(errors).toEqual([]);
 });
 
+async function selectCode(page) {
+  await page.locator('.drow code').first().evaluate((el) => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+}
+
+test('a local resolve during a selection does not mark a reopened server revision as shown', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('reopened')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Agent reply', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'with-reply';
+  await expect(page.locator('.stage .tthread')).toContainText('Agent reply');
+  // Another session reopens the thread before the next poll, returning the server to the revision shown.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-action="thread-resolve"]').dispatchEvent('click');
+  await expect(badge).toHaveText('Notes 0');
+  await expect(badge).toHaveText('Notes 1');
+  expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
+});
+
+test('a local resolve undone elsewhere shows the server\'s thread again', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('undone')];
+  await mount(page, data, { openThreads: { first: true } });
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect(badge).toHaveText('Notes 1');
+  // The resolve is accepted, but another session reopens the thread before the
+  // next poll, so the server is back at the revision the page loaded.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(badge).toHaveText('Notes 0');
+  await expect(badge).toHaveText('Notes 1');
+});
+
+test('a local resolve after feedback adopted during a selection still converges on the server', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('elsewhere'), thread('local')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect(badge).toHaveText('Notes 2');
+  // Another session resolves one thread, which the selection picks up.
+  data.feedback[0].status = 'resolved';
+  const initial = data.viewerRevision;
+  data.viewerRevision = 'one-resolved';
+  await expect(badge).toHaveText('Notes 1');
+  // The reviewer resolves the other; the other session then reopens both, returning the server to the first revision.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-thread-id="local"] [data-action="thread-resolve"]').dispatchEvent('click');
+  await expect(badge).toHaveText('Notes 0');
+  data.feedback[0].status = 'open';
+  data.viewerRevision = initial;
+  await expect(badge).toHaveText('Notes 2');
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(badge).toHaveText('Notes 2');
+});
+
+test('a selection records the revision of the adopted data, not the one the probe reported', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('raced')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  // The probe reports B; the implementation has moved on to C by the time it is fetched.
+  await page.route((url) => url.pathname === '/api/implementation', (route) => {
+    data.feedback[0].status = 'resolved';
+    data.viewerRevision = 'C';
+    return route.fallback();
+  }, { times: 1 });
+  data.viewerRevision = 'B';
+  await expect(badge).toHaveText('Notes 0');
+  // The server returns to B, whose thread is open.
+  data.feedback[0].status = 'open';
+  data.viewerRevision = 'B';
+  await expect(badge).toHaveText('Notes 1');
+  expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
+});
+
 test('resolve and reopen update global badge, lists, and inline thread immediately', async ({ page }) => {
   const data = fixture(); data.feedback = [thread('resolve-me')];
   await mount(page, data, { openThreads: { first: true } });
@@ -3313,5 +3398,791 @@ test('a focused file button whose file moves to another group never moves focus 
   await expect(one.locator('.fg-name')).toHaveText(['web', 'zeta']);
   await expect(search('shared.js')).not.toBeFocused();
   await expect(search('other.js')).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+async function markDraft(input, start, end, direction) {
+  await input.focus();
+  await input.evaluate((el, [start, end, direction]) => { el.setSelectionRange(start, end, direction); el.dataset.marker = 'kept'; }, [start, end, direction]);
+}
+async function expectDraftKept(input, value, start, end, direction) {
+  await expect(input).toHaveValue(value);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute('data-marker', 'kept');
+  expect(await input.evaluate((el) => [el.selectionStart, el.selectionEnd, el.selectionDirection])).toEqual([start, end, direction]);
+}
+
+test('reply and note drafts keep their text, caret, selection and focus across agent replies and new threads', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('first-thread'), thread('second-thread')];
+  const errors = await mount(page, data, { openThreads: { first: true } });
+  const stage = page.locator('.stage[data-stage="first"]');
+  await stage.locator('[data-thread-id="second-thread"] [data-action="thread-reply"]').click();
+  const reply = stage.locator('textarea[name="reply-body"]');
+  await expect(reply).toBeFocused();
+  await reply.fill('A reply in progress');
+  await markDraft(reply, 2, 7, 'backward');
+  // An agent reply, and a new thread before the one being answered.
+  data.feedback[1].comments.push({ author: 'agent', body: 'Agent answer', createdAt: '2026-09-08T10:01:00Z' });
+  data.feedback.unshift(thread('new-thread'));
+  data.viewerRevision = 'agent-replied';
+  await expect(stage.locator('[data-thread-id="second-thread"]')).toContainText('Agent answer');
+  await expect(stage.locator('.thread > .tthread')).toHaveCount(3);
+  await expectDraftKept(reply, 'A reply in progress', 2, 7, 'backward');
+  await expect(stage.locator('[data-thread-id="second-thread"] [data-action="thread-reply"]')).toHaveCount(0);
+  await reply.press('Control+Enter');
+  const draft = stage.locator('[data-thread-id="second-thread"] .tmsg-draft');
+  await expect(draft).toContainText('A reply in progress');
+  await expect(draft.locator('.tmsg-draft-tag')).toHaveText('Draft');
+  await draft.locator('[data-action="reply-edit"]').click();
+  await expect(reply).toHaveValue('A reply in progress');
+  await expect(reply).toBeFocused();
+  await expect(stage.locator('form.tthread-reply .nc-save')).toHaveText('Update reply');
+  await stage.locator('[data-action="reply-cancel"]').click();
+
+  // A new note keeps its draft when a thread appears on the same stage.
+  await stage.locator('.thread .thread-add').click();
+  const note = stage.locator('textarea[name="nc-body"]');
+  await expect(note).toBeFocused();
+  await stage.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await expect(stage.locator('.note-compose')).toHaveClass(/mode-feedback/);
+  await note.fill('A note in progress');
+  await markDraft(note, 4, 9, 'forward');
+  data.feedback.push(thread('later-thread'));
+  data.viewerRevision = 'thread-added';
+  await expect(stage.locator('.thread > .tthread')).toHaveCount(4);
+  await expectDraftKept(note, 'A note in progress', 4, 9, 'forward');
+  await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
+  await note.press('Control+Enter');
+  await expect(stage.locator('.tnote')).toContainText('A note in progress');
+  await expect(stage.locator('.tnote .tnote-state')).toHaveText('Draft');
+  expect(errors).toEqual([]);
+});
+
+test('line threads in a diff keep drafts across live updates and refresh beside a code selection', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  // A second occurrence of the selected word in code, beside the one in the thread.
+  data.stages[0].files[0].lines[1].s = '// first context';
+  data.feedback = [thread('line', 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' })];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"]`);
+  await expect(lineThread.locator('.tthread')).toContainText('Feedback line');
+  await lineThread.evaluate((el) => { el.dataset.marker = 'kept'; });
+  await lineThread.locator('.thread-add').click();
+  const input = lineThread.locator('textarea[name="nc-body"]');
+  await expect(input).toBeFocused();
+  await input.fill('A line note in progress');
+  await markDraft(input, 3, 8, 'backward');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Fixed the first constant', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'line-reply';
+  await expect(lineThread.locator('.tthread')).toContainText('Fixed the first constant');
+  await expectDraftKept(input, 'A line note in progress', 3, 8, 'backward');
+  await expect(lineThread).toHaveAttribute('data-marker', 'kept');
+
+  // Selecting code marks its other occurrences in the code only; a live update
+  // then refreshes the line thread without disturbing the selection.
+  await input.evaluate((el) => el.blur());
+  await page.locator(`[data-line-id="${lineId}"] code`).evaluate((code) => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (!text.textContent.includes('first')) text = walker.nextNode();
+    const start = text.textContent.indexOf('first');
+    const range = document.createRange(); range.setStart(text, start); range.setEnd(text, start + 'first'.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    code.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  const hits = page.locator('.cinema-diff mark.sel-hit');
+  await expect(hits).toHaveCount(1);
+  await expect(hits).toHaveText('first');
+  await expect(lineThread).toContainText('Fixed the first constant');
+  await expect(lineThread.locator('mark.sel-hit')).toHaveCount(0);
+  data.feedback[0].comments.push({ author: 'agent', body: 'Second agent reply', createdAt: '2026-09-08T10:02:00Z' });
+  data.viewerRevision = 'second-line-reply';
+  await expect(lineThread.locator('.tthread')).toContainText('Second agent reply');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe('first');
+  await expect(input).toHaveValue('A line note in progress');
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await input.press('Control+Enter');
+  await expect(lineThread.locator('.tnote')).toContainText('A line note in progress');
+  await expect(page.locator(`.lact[data-id="${lineId}"]`)).toHaveClass(/has-note/);
+  expect(errors).toEqual([]);
+});
+
+test('thread headers describe their state in tooltips that follow it, and comment bodies stay literal', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [{ id: 'literal', status: 'open', target: { kind: 'file', stageId: 'first', nodeId: 'first-one', path: 'shared.js', label: 'shared.js' },
+    comments: [{ author: 'user', body: 'Use `<b>x</b>` here\r\nand <i>there</i>', createdAt: '2026-09-08T10:00:00Z' }] }];
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const header = page.locator('.notes-col-active [data-thread-id="literal"] .tthread-h');
+  await expect(header).toHaveAttribute('data-tooltip', 'Collapse thread · File · open · Show what this thread is about');
+  const body = page.locator('.notes-col-active [data-thread-id="literal"] .comment-body');
+  await expect(body.locator('code')).toHaveText('<b>x</b>');
+  await expect(body).toHaveJSProperty('textContent', 'Use <b>x</b> here\nand <i>there</i>');
+  await expect(body.locator('b, i')).toHaveCount(0);
+  await header.click();
+  await expect(header).toHaveAttribute('aria-expanded', 'false');
+  await expect(header).toHaveAttribute('data-tooltip', 'Expand thread · File · open · Show what this thread is about');
+  await header.press('Enter');
+  await expect(header).toHaveAttribute('data-tooltip', /^Collapse thread/);
+  await page.locator('.notes-col-active [data-action="thread-resolve"]').click();
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  const resolved = page.locator('.notes-col-resolved [data-thread-id="literal"] .tthread-h');
+  await expect(resolved).toHaveAttribute('data-tooltip', 'Expand thread · File · resolved · Show what this thread is about');
+  await expect(resolved.locator('.tthread-status-ic')).toHaveAttribute('aria-label', 'resolved');
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('jumping from the notes panel finds a step thread in its own stage when step IDs repeat', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) stage.nodes[0].id = 'same-node';
+  data.feedback = [thread('second-step', 'open', { kind: 'node', stageId: 'second', nodeId: 'same-node', label: 'Second step' })];
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="second-step"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-stage', 'second');
+  await jump.click();
+  await expect(page.locator('.stage[data-stage="second"] details[data-node="same-node"]')).toHaveJSProperty('open', true);
+  await expect(page.locator('.stage[data-stage="second"] details[data-node="same-node"] .thread [data-thread-id="second-step"]')).toBeVisible();
+  await expect(page.locator('.stage[data-stage="first"] details[data-node="same-node"]')).toHaveJSProperty('open', false);
+  expect(errors).toEqual([]);
+});
+
+test('preparing feedback reports failures, skipped replies and the sent result in the notes panel', async ({ page }) => {
+  const errors = await mount(page, fixture(), {
+    comments: [{ kind: 'stage', id: 'first', body: 'Send this', mode: 'feedback', createdAt: 1 }],
+    replyDrafts: [{ id: 'rd-gone', threadId: 'gone', body: 'Reply to a removed thread', attachments: [], createdAt: 2 }],
+  });
+  await showNotes(page);
+  const prepare = page.locator('.notes-export');
+  await expect(prepare).toHaveText('Prepare feedback (2)');
+  await expect(page.locator('.notes-export-hint')).toContainText('sent to the semantic-flow artifact');
+  await page.route('**/api/feedback/export*', (route) => route.fulfill({ status: 500, json: { ok: false, error: 'The artifact is <locked>' } }));
+  await prepare.click();
+  await expect(page.locator('.notes-export-msg')).toHaveClass(/is-error/);
+  await expect(page.locator('.notes-export-msg')).toHaveText('The artifact is <locked>');
+  await expect(page.locator('.notes-export-skips li')).toHaveText(['reply — thread no longer exists']);
+  await expect(prepare).toHaveText('Prepare feedback (2)');
+  await page.unroute('**/api/feedback/export*');
+  await prepare.click();
+  await expect(page.locator('.notes-export-msg')).toHaveClass(/is-done/);
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 feedback thread, 1 skipped.');
+  await expect(prepare).toHaveText('Prepare feedback (1)');
+  await expect(page.locator('.side.notes .tnote .tnote-state')).toHaveText('Sent');
+  expect(errors).toEqual([]);
+});
+
+test('a reply to the second evidence on a step keeps its editor when the first evidence gains a discussion', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push(evidenceInsight({ attachments: [] }), { ...evidenceInsight({ attachments: [] }), id: 'shot-2', title: 'Second capture' });
+  const target = (itemId) => ({ kind: 'insight', stageId: 'first', collection: 'evidence', itemId, label: 'Evidence' });
+  data.feedback = [thread('on-second', 'open', target('shot-2'))];
+  const errors = await mount(page, data, { openThreads: { 'i:first:evidence:shot': true, 'i:first:evidence:shot-2': true } });
+  await openFile(page);
+  const threads = page.locator('details[data-node="first-one"] .node-reasoning .thread');
+  await expect(threads).toHaveCount(1);
+  const second = threads.and(page.locator('[data-thread="i:first:evidence:shot-2"]'));
+  await second.locator('[data-action="thread-reply"]').click();
+  const reply = second.locator('textarea[name="reply-body"]');
+  await expect(reply).toBeFocused();
+  await reply.fill('About the second capture');
+  await markDraft(reply, 3, 9, 'backward');
+  data.feedback.unshift(thread('on-first', 'open', target('shot')));
+  data.viewerRevision = 'first-evidence-discussed';
+  await expect(threads).toHaveCount(2);
+  await expect(threads.first()).toHaveAttribute('data-thread', 'i:first:evidence:shot');
+  await expectDraftKept(reply, 'About the second capture', 3, 9, 'backward');
+  expect(errors).toEqual([]);
+});
+
+test('a note edited in the notes panel keeps its editor when its stage moves', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data, { comments: [
+    { kind: 'stage', id: 'first', body: 'Other note', mode: 'personal', createdAt: 2 },
+    { kind: 'stage', id: 'second', body: 'Saved note', mode: 'personal', createdAt: 1 },
+  ] });
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  await expect(panel.locator('.note-stage-h')).toHaveText(['Stage first', 'Stage second']);
+  await panel.locator('.tnote', { hasText: 'Saved note' }).locator('[data-action="edit-note"]').click();
+  const editor = panel.locator('textarea[name="nc-body"]');
+  await expect(editor).toBeFocused();
+  await editor.fill('Saved note, revised');
+  await markDraft(editor, 2, 8, 'backward');
+  data.stages.reverse();
+  data.viewerRevision = 'stages-reordered';
+  await expect(page.locator('.stage').first()).toHaveAttribute('data-stage', 'second');
+  // The edited note's group moves from last to first and keeps its editor.
+  await expect(panel.locator('.note-stage-h')).toHaveText(['Stage second', 'Stage first']);
+  await expectDraftKept(editor, 'Saved note, revised', 2, 8, 'backward');
+  expect(errors).toEqual([]);
+});
+
+test('opening the notes panel from an agent notification keeps the reply being written', async ({ page }) => {
+  const now = new Date().toISOString();
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const listening = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now };
+  const data = { ...fixture(), feedback: [{ id: 'pending', status: 'open', target, comments: [comment('u1', 'user', 'Rename this.')] }], agent: listening };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  const errors = await mount(page, data, { openThreads: { first: true } });
+  await baseline;
+  const stage = page.locator('.stage[data-stage="first"]');
+  await stage.locator('[data-thread-id="pending"] [data-action="thread-reply"]').click();
+  const inline = stage.locator('textarea[name="reply-body"]');
+  await expect(inline).toBeFocused();
+  await inline.fill('A reply in progress');
+  await inline.evaluate((el) => el.setSelectionRange(2, 7, 'backward'));
+  await page.evaluate(() => {
+    window.notices = [];
+    window.Notification = class { static permission = 'granted'; constructor(title) { this.title = title; window.notices.push(this); } close() {} };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+  });
+  data.feedback[0].comments.push(comment('a1', 'agent', 'Renamed it.', '2026-10-08T10:05:00Z'));
+  data.agent = { ...listening, lastRound: { id: 'r1', completedAt: now, threadIds: ['pending'] } };
+  data.viewerRevision = 'answered';
+  await expect.poll(() => page.evaluate(() => window.notices.length), { timeout: 8000 }).toBe(1);
+  await expect(inline).toBeFocused();
+  await page.evaluate(() => { delete document.hidden; window.notices[0].onclick(); });
+  const reply = page.locator('.side.notes textarea[name="reply-body"]');
+  await expect(reply).toHaveValue('A reply in progress');
+  await expect(inline).toHaveCount(0);
+  await expect(reply).toBeFocused();
+  expect(await reply.evaluate((el) => [el.selectionStart, el.selectionEnd, el.selectionDirection])).toEqual([2, 7, 'backward']);
+  // Focus the reviewer moves elsewhere stays there when the reply moves back.
+  const toggle = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await toggle.focus();
+  await toggle.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(inline).toHaveValue('A reply in progress');
+  await expect(toggle).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('an agent reply waits while a code selection runs through its line thread, then appears', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' })];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"]`);
+  const panelThread = page.locator('.side.notes [data-thread-id="line"]');
+  await expect(lineThread.locator('.tthread')).toContainText('Feedback line');
+  // Select from the first code row to the third, across the line thread between them.
+  const selection = () => page.evaluate(() => String(window.getSelection()));
+  await page.evaluate(() => {
+    const code = (line) => document.querySelector(`[data-line-id="l:first:new:${line}:shared.js"] code`);
+    const range = document.createRange();
+    range.setStart(code(1), 0); range.setEnd(code(3), code(3).childNodes.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+  const selected = await selection();
+  expect(selected).toContain('Feedback line');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'reply-during-selection';
+  // The copy in the notes panel is outside the selection and updates at once.
+  await expect(panelThread).toContainText('Reply during the selection');
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  await expect(lineThread).not.toContainText('Reply during the selection');
+  expect(await selection()).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(lineThread).toContainText('Reply during the selection');
+  expect(errors).toEqual([]);
+});
+
+test('a thread title cut off in its header is named in full by the header tooltip', async ({ page }) => {
+  const data = fixture();
+  const label = 'A stage conversation whose title is far too long to fit in the header of the notes panel';
+  data.feedback = [thread('long', 'open', { kind: 'stage', stageId: 'first', label }), thread('short', 'open', { kind: 'stage', stageId: 'first', label: 'Short' })];
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const title = (id) => page.locator(`.side.notes [data-thread-id="${id}"] .tthread-title`);
+  expect(await title('long').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  const tooltip = page.locator('#review-tooltip');
+  await title('long').hover();
+  await expect(tooltip).toHaveText(`Collapse thread · Stage · ${label} · open · Show what this thread is about`);
+  await title('short').hover();
+  await expect(tooltip).toHaveText('Collapse thread · Stage · open · Show what this thread is about');
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('deleting a reply draft or a note never passes focus to another one\'s Delete', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('done-a', 'resolved'), thread('done-b', 'resolved'), thread('open-c')];
+  const draft = (id, threadId) => ({ id, threadId, body: `Draft ${id}`, attachments: [], createdAt: 2 });
+  const note = (body, createdAt) => ({ kind: 'stage', id: 'first', body, mode: 'personal', createdAt });
+  const errors = await mount(page, data, {
+    notesFilter: 'resolved', threadCollapsed: { 'done-a': false, 'done-b': false },
+    replyDrafts: [draft('r-a', 'done-a'), draft('r-b', 'done-b'), draft('r-c', 'open-c')],
+    comments: [note('First note', 1), note('Second note', 2), note('Third note', 3)],
+  });
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const focusedAction = () => page.evaluate(() => document.activeElement?.getAttribute('data-action') ?? null);
+  // A second Enter must not reach another draft's Delete in the Resolved tab.
+  const drafts = panel.locator('.notes-col-resolved .tmsg-draft');
+  await expect(drafts).toHaveCount(2);
+  await panel.locator('[data-reply-id="r-a"] [data-action="reply-del"]').press('Enter');
+  await expect(drafts).toHaveCount(1);
+  expect(await focusedAction()).toBeNull();
+  await page.keyboard.press('Enter');
+  await expect(drafts).toHaveAttribute('data-reply-id', 'r-b');
+  // Deleting a note shifts the index of the notes after it; none of their controls takes focus.
+  await panel.locator('[data-action="notes-filter"][data-filter="active"]').click();
+  const notes = panel.locator('.notes-col-active .tnote');
+  await expect(notes).toHaveCount(3);
+  await notes.filter({ hasText: 'First note' }).locator('[data-action="del-note"]').press('Enter');
+  await expect(notes).toHaveCount(2);
+  expect(await focusedAction()).toBeNull();
+  await page.keyboard.press('Enter');
+  await expect(notes).toHaveCount(2);
+  await expect(panel.locator('.notes-col-active .tmsg-draft')).toHaveAttribute('data-reply-id', 'r-c');
+  expect(errors).toEqual([]);
+});
+
+// Selects from the first code row of the open diff to the third, across the line thread under the first.
+async function selectAcrossLineThread(page) {
+  await page.evaluate(() => {
+    const code = (line) => document.querySelector(`[data-line-id="l:first:new:${line}:shared.js"] code`);
+    const range = document.createRange();
+    range.setStart(code(1), 0); range.setEnd(code(3), code(3).childNodes.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+  return page.evaluate(() => String(window.getSelection()));
+}
+const lineTarget = { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' };
+
+test('a line thread held by a code selection applies the reviewer\'s collapse and busy state at once', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', lineTarget)];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"] .tthread`);
+  await expect(lineThread).toContainText('Feedback line');
+  const selected = await selectAcrossLineThread(page);
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'reply-during-selection';
+  await expect(page.locator('.side.notes [data-thread-id="line"]')).toContainText('Reply during the selection');
+  await expect(lineThread).not.toContainText('Reply during the selection');
+  // Collapsing from the keyboard applies while the selection still holds the thread.
+  const header = lineThread.locator('.tthread-h');
+  await header.focus();
+  await header.press('Enter');
+  await expect(lineThread).toHaveClass(/is-collapsed/);
+  await header.press('Enter');
+  await expect(lineThread).not.toHaveClass(/is-collapsed/);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  // A resolve in progress disables its button, so a second Enter sends nothing.
+  let requests = 0, release;
+  const released = new Promise((resolve) => { release = resolve; });
+  await page.route((url) => url.pathname === '/api/feedback/resolve', async (route) => { requests += 1; await released; await route.fallback(); });
+  const resolve = lineThread.locator('[data-action="thread-resolve"]');
+  await resolve.focus();
+  await resolve.press('Enter');
+  await expect(resolve).toBeDisabled();
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 200)));
+  expect(requests).toBe(1);
+  release();
+  await expect(page.locator('.side.notes .notes-col-resolved [data-thread-id="line"]')).toHaveCount(1);
+  await expect(page.locator('.side.notes .notes-col-active [data-thread-id="line"]')).toHaveCount(0);
+  expect(requests).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('a thread that leaves a selected list shows its updates where the selection does not reach', async ({ page }) => {
+  const data = fixture();
+  data.feedback = ['a', 'b', 'c'].map((id) => thread(id));
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const active = page.locator('.side.notes .notes-col-active');
+  await expect(active.locator('.tthread')).toHaveCount(3);
+  // Select from the first active thread's comment to the last one's.
+  const selected = await page.evaluate(() => {
+    const bodies = document.querySelectorAll('.side.notes .notes-col-active .tthread .comment-body');
+    const range = document.createRange();
+    range.setStart(bodies[0], 0); range.setEnd(bodies[bodies.length - 1], bodies[bodies.length - 1].childNodes.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    return String(window.getSelection());
+  });
+  expect(selected).toContain('Feedback b');
+  // Resolved elsewhere, and answered.
+  data.feedback[1].status = 'resolved';
+  data.feedback[1].comments.push({ author: 'agent', body: 'Answered after resolving', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'b-resolved';
+  const resolved = page.locator('.side.notes .notes-col-resolved [data-thread-id="b"]');
+  await expect(resolved).toContainText('Answered after resolving');
+  await expect(resolved).toHaveClass(/status-resolved/);
+  // The selected list still shows what was selected.
+  await expect(active.locator('[data-thread-id="b"]')).toHaveClass(/status-open/);
+  await expect(active.locator('[data-thread-id="b"]')).not.toContainText('Answered after resolving');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  // A later update reaches the resolved copy as well.
+  data.feedback[1].comments.push({ author: 'agent', body: 'A second answer', createdAt: '2026-09-08T10:02:00Z' });
+  data.viewerRevision = 'b-answered-again';
+  await expect(resolved).toContainText('A second answer');
+  // The reviewer's own resolve applies to the held list at once.
+  const resolveA = active.locator('[data-thread-id="a"] [data-action="thread-resolve"]');
+  await resolveA.focus();
+  await resolveA.press('Enter');
+  await expect(active.locator('[data-thread-id="a"]')).toHaveCount(0);
+  await expect(active.locator('[data-thread-id="b"]')).toHaveCount(1);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(active.locator('[data-thread-id="b"]')).toHaveCount(0);
+  await expect(active.locator('.tthread')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a code selection holds which threads a line thread shows until it leaves', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', lineTarget)];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const threads = page.locator(`.line-thread[data-thread="${lineId}"] .tthread`);
+  const panel = page.locator('.side.notes');
+  await expect(threads).toHaveCount(1);
+  const selected = await selectAcrossLineThread(page);
+  expect(selected).toContain('Feedback line');
+  // Another thread on the same line stays out of the selection.
+  data.feedback.push(thread('line-two', 'open', lineTarget));
+  data.viewerRevision = 'second-line-thread';
+  await expect(panel.locator('[data-thread-id="line-two"]')).toHaveCount(1);
+  await expect(threads).toHaveCount(1);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  // The selected thread stays when the server removes it.
+  data.feedback.shift();
+  data.viewerRevision = 'first-line-thread-removed';
+  await expect(panel.locator('[data-thread-id="line"]')).toHaveCount(0);
+  await expect(threads).toHaveCount(1);
+  await expect(threads).toHaveAttribute('data-thread-id', 'line');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(threads).toHaveCount(1);
+  await expect(threads).toHaveAttribute('data-thread-id', 'line-two');
+  expect(errors).toEqual([]);
+});
+
+// Selects from the start of the first element matching `from` to the end of the first matching `to`.
+async function selectBetween(page, from, to) {
+  return page.evaluate(([from, to]) => {
+    const start = document.querySelector(from), end = document.querySelector(to);
+    const range = document.createRange();
+    range.setStart(start, 0); range.setEnd(end, end.childNodes.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    return String(window.getSelection());
+  }, [from, to]);
+}
+
+test('a file opened under another step during a selection shows and resolves that step\'s threads', async ({ page }) => {
+  const data = fixture();
+  const fileTarget = (nodeId) => ({ kind: 'file', stageId: 'first', nodeId, path: 'shared.js', label: 'shared.js' });
+  data.feedback = [thread('step-one', 'open', fileTarget('first-one')), thread('step-two', 'open', fileTarget('first-two'))];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' } });
+  await openFile(page);
+  const two = page.locator('details[data-node="first-two"]');
+  if (!await two.evaluate((el) => el.open)) await two.locator('summary').click();
+  await expect(page.locator('details[data-node="first-one"] .file-notes .tthread')).toHaveAttribute('data-thread-id', 'step-one');
+  const selected = await selectBetween(page, 'details[data-node="first-one"] .file-notes .tthread .comment-body', 'details[data-node="first-two"] .frow-open');
+  expect(selected).toContain('Feedback step-one');
+  const open = two.locator('.frow-open');
+  await open.focus();
+  await open.press('Enter');
+  await expect(two.locator('.cinema-diff')).toBeVisible();
+  const threads = two.locator('.file-notes .tthread');
+  await expect(threads).toHaveCount(1);
+  await expect(threads).toHaveAttribute('data-thread-id', 'step-two');
+  const resolved = [];
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => { resolved.push(route.request().postDataJSON().threadId); return route.fallback(); });
+  const resolve = threads.locator('[data-action="thread-resolve"]');
+  await resolve.focus();
+  await resolve.press('Enter');
+  await expect.poll(() => resolved).toEqual(['step-two']);
+  await expect(threads).toHaveClass(/status-resolved/);
+  expect(data.feedback[0].status).toBe('open');
+  expect(errors).toEqual([]);
+});
+
+test('a closed step reached by a selection shows its latest threads when opened', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('step-a', 'open', { kind: 'node', stageId: 'first', nodeId: 'first-one', label: 'Step one' }), thread('outside')];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const one = page.locator('details[data-node="first-one"]');
+  // Show the step's threads, then close the step again.
+  await one.locator(':scope > summary').click();
+  await one.locator('.node-foot .notes-toggle').click();
+  await expect(one.locator('[data-thread-id="step-a"]')).toBeVisible();
+  await one.locator(':scope > summary').click();
+  await expect(one).toHaveJSProperty('open', false);
+  await expect(one.locator('[data-thread-id="step-a"]')).toHaveCount(1);
+  await showNotes(page);
+  // The selection runs across the closed step, from the step before it to the one after.
+  const selected = await selectBetween(page, 'details[data-node="first-one"] > summary', 'details[data-node="first-two"] > summary');
+  expect(selected).not.toContain('Feedback step-a');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Answered while closed', createdAt: '2026-09-08T10:01:00Z' });
+  data.feedback[1].comments.push({ author: 'agent', body: 'Outside answered', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'answered-while-closed';
+  await expect(page.locator('.side.notes [data-thread-id="outside"]')).toContainText('Outside answered');
+  const summary = one.locator(':scope > summary');
+  await summary.focus();
+  await summary.press('Enter');
+  await expect(one).toHaveJSProperty('open', true);
+  await expect(one.locator('[data-thread-id="step-a"]')).toContainText('Answered while closed');
+  expect(errors).toEqual([]);
+});
+
+test('deleting a note never reuses its Delete for another note with the same time', async ({ page }) => {
+  const data = fixture();
+  const note = (body) => ({ kind: 'stage', id: 'first', body, mode: 'personal', createdAt: 5 });
+  const errors = await mount(page, data, { comments: [note('First note'), note('Second note'), note('Third note')] });
+  await showNotes(page);
+  const notes = page.locator('.side.notes .notes-col-active .tnote');
+  await expect(notes).toHaveCount(3);
+  await notes.filter({ hasText: 'First note' }).locator('[data-action="del-note"]').press('Enter');
+  await expect(notes).toHaveCount(2);
+  expect(await page.evaluate(() => document.activeElement?.getAttribute('data-action') ?? null)).toBeNull();
+  await page.keyboard.press('Enter');
+  await page.evaluate(() => new Promise((done) => setTimeout(done, 100)));
+  await expect(notes).toHaveCount(2);
+  await expect(notes.filter({ hasText: 'Second note' })).toHaveCount(1);
+  await expect(notes.filter({ hasText: 'Third note' })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a thread resolved during a selection reaching the hidden Resolved tab moves there', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('a'), thread('b'), thread('done', 'resolved')];
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const active = panel.locator('.notes-col-active');
+  await expect(active.locator('.tthread')).toHaveCount(2);
+  // From an Active comment through the footer, across the hidden Resolved column.
+  const selected = await selectBetween(page, '.side.notes .notes-col-active .tthread .comment-body', '.side.notes .notes-foot');
+  expect(selected).toContain('Feedback b');
+  const resolveB = active.locator('[data-thread-id="b"] [data-action="thread-resolve"]');
+  await resolveB.focus();
+  await resolveB.press('Enter');
+  await expect(active.locator('[data-thread-id="b"]')).toHaveCount(0);
+  await expect(panel.locator('.notes-col-resolved [data-thread-id="b"]')).toHaveCount(1);
+  const filter = panel.locator('[data-action="notes-filter"][data-filter="resolved"]');
+  await filter.focus();
+  await filter.press('Enter');
+  await expect(panel.locator('.notes-col-resolved [data-thread-id="b"]')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('the first collapse of a held thread applies to what the reviewer sees', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('a'), thread('b')];
+  const errors = await mount(page, data);
+  await showNotes(page);
+  const active = page.locator('.side.notes .notes-col-active');
+  await expect(active.locator('.tthread')).toHaveCount(2);
+  const selected = await page.evaluate(() => {
+    const bodies = document.querySelectorAll('.side.notes .notes-col-active .tthread .comment-body');
+    const range = document.createRange();
+    range.setStart(bodies[0], 0); range.setEnd(bodies[1], bodies[1].childNodes.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    return String(window.getSelection());
+  });
+  // Resolved elsewhere: the held copy stays open and expanded.
+  data.feedback[1].status = 'resolved';
+  data.viewerRevision = 'b-resolved';
+  await expect(page.locator('.side.notes .notes-col-resolved [data-thread-id="b"]')).toHaveCount(1);
+  const held = active.locator('[data-thread-id="b"]');
+  await expect(held).toHaveClass(/status-open/);
+  await expect(held).not.toHaveClass(/is-collapsed/);
+  const header = held.locator('.tthread-h');
+  await header.focus();
+  await header.press('Enter');
+  await expect(held).toHaveClass(/is-collapsed/);
+  await header.press('Enter');
+  await expect(held).not.toHaveClass(/is-collapsed/);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  expect(errors).toEqual([]);
+});
+
+test('a tooltip stays open while a code selection defers a review update, which applies once it leaves', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', lineTarget)];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const selected = await selectAcrossLineThread(page);
+  // A comment from the reviewer's other session, so no unread reply is marked read meanwhile.
+  data.feedback[0].comments.push({ author: 'user', body: 'Added during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.stages[1].title = 'Stage second, renamed';
+  data.viewerRevision = 'reply-during-selection';
+  await expect(page.locator('.side.notes [data-thread-id="line"]')).toContainText('Added during the selection');
+  const tooltip = page.locator('#review-tooltip');
+  await page.locator('.side.notes [data-thread-id="line"] .tthread-h').hover();
+  await expect(tooltip).toHaveClass(/is-shown/);
+  // Later polls see the same deferred revision and leave the page alone.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
+  await expect(tooltip).toHaveClass(/is-shown/);
+  await expect(page.locator('#stage-title-second')).toHaveText('Stage second');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(page.locator('#stage-title-second')).toHaveText('Stage second, renamed');
+  expect(errors).toEqual([]);
+});
+
+test('a sent note in a selected line thread stays until the selection leaves, then its thread replaces it', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true },
+    comments: [{ kind: 'line', id: lineId, nodeId: 'first-one', body: 'Sent line note', mode: 'feedback', exported: true, threadId: 'sent', createdAt: 1 }] });
+  await openFile(page);
+  await showNotes(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"]`);
+  const panel = page.locator('.side.notes');
+  await expect(lineThread.locator('.tnote')).toContainText('Sent line note');
+  const selected = await selectAcrossLineThread(page);
+  expect(selected).toContain('Sent line note');
+  data.feedback = [{ ...thread('sent', 'open', lineTarget), comments: [{ author: 'user', body: 'Sent line note', createdAt: '2026-09-08T10:00:00Z' }] }];
+  data.viewerRevision = 'sent-thread-arrived';
+  // Outside the selection the thread replaces the note.
+  await expect(panel.locator('.tthread[data-thread-id="sent"]')).toHaveCount(1);
+  await expect(panel.locator('.tnote')).toHaveCount(0);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  await expect(lineThread.locator('.tnote')).toContainText('Sent line note');
+  await expect(lineThread.locator('.tthread[data-thread-id="sent"]')).toHaveCount(0);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(lineThread.locator('.tthread[data-thread-id="sent"]')).toHaveCount(1);
+  await expect(lineThread.locator('.tnote')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a reply sent while a selection holds an earlier copy of its thread shows once in every copy', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', lineTarget)];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true },
+    replyDrafts: [{ id: 'rd-1', threadId: 'line', body: 'My reply', attachments: [], createdAt: 2 }] });
+  await openFile(page);
+  await showNotes(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"] .tthread`);
+  const panelThread = page.locator('.side.notes [data-thread-id="line"]');
+  await expect(lineThread.locator('.tmsg-draft')).toContainText('My reply');
+  await selectAcrossLineThread(page);
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'reply-during-selection';
+  await expect(panelThread).toContainText('Reply during the selection');
+  await expect(lineThread).not.toContainText('Reply during the selection');
+  await page.route('**/api/feedback/export*', (route) => route.fulfill({ json: { ok: true, exported: [], skipped: [],
+    replied: [{ ref: 'rd-1', threadId: 'line', comment: { id: 'c-2', author: 'user', body: 'My reply', createdAt: '2026-09-08T10:02:00Z' } }] } }));
+  const prepare = page.locator('.notes-export');
+  await prepare.focus();
+  await prepare.press('Enter');
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 reply');
+  for (const copy of [lineThread, panelThread]) {
+    await expect(copy.locator('.tmsg-draft')).toHaveCount(0);
+    await expect(copy.locator('.tmsg', { hasText: 'My reply' })).toHaveCount(1);
+  }
+  await expect(lineThread).not.toContainText('Reply during the selection');
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(lineThread).toContainText('Reply during the selection');
+  await expect(lineThread.locator('.tmsg', { hasText: 'My reply' })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('feedback restored to the adopted revision during a selection shows once the selection clears', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('kept'), thread('restored')];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' } });
+  await openFile(page);
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(1);
+  await selectAcrossLineThread(page);
+  const original = data.feedback;
+  data.feedback = [original[0]];
+  data.viewerRevision = 'without-restored';
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(0);
+  // The server returns to the revision the page adopted in full before the selection.
+  data.feedback = original;
+  data.viewerRevision = 'initial';
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('feedback for restacked stages waits for a code selection to clear before it shows', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const selected = await selectAcrossLineThread(page);
+  data.stages[0].headRevision = 'c'.repeat(40);
+  data.feedback = [{ ...thread('restacked', 'open', lineTarget), comments: [{ author: 'agent', body: 'About the restacked line', createdAt: '2026-09-08T10:01:00Z' }] }];
+  data.viewerRevision = 'restacked';
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
+  // The shown diff is from the earlier stage head, so the new line thread does not join it yet.
+  await expect(panel.locator('[data-thread-id="restacked"]')).toHaveCount(0);
+  await expect(page.locator('[data-thread-id="restacked"]')).toHaveCount(0);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(panel.locator('[data-thread-id="restacked"]')).toContainText('About the restacked line');
+  await expect(page.locator(`.line-thread[data-thread="${lineId}"] [data-thread-id="restacked"]`)).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a reply a poll already loaded before its send response shows once', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('t')];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'My reply', attachments: [], createdAt: 2 }] });
+  await showNotes(page);
+  const panelThread = page.locator('.side.notes [data-thread-id="t"]');
+  await expect(panelThread.locator('.tmsg-draft')).toContainText('My reply');
+  // An earlier send saved the reply, but its response was lost; a poll loads the saved comment.
+  const saved = { id: 'c-2', author: 'user', body: 'My reply', createdAt: '2026-09-08T10:02:00Z' };
+  data.feedback[0].comments.push(saved);
+  data.viewerRevision = 'reply-saved';
+  await expect(panelThread.locator('.tmsg:not(.tmsg-draft)', { hasText: 'My reply' })).toHaveCount(1);
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(1);
+  // The retry returns the same comment.
+  await page.route('**/api/feedback/export*', (route) => route.fulfill({ json: { ok: true, exported: [], skipped: [],
+    replied: [{ ref: 'rd-1', threadId: 't', comment: saved }] } }));
+  const prepare = page.locator('.notes-export');
+  await prepare.focus();
+  await prepare.press('Enter');
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 reply');
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(0);
+  await expect(panelThread.locator('.tmsg', { hasText: 'My reply' })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a selection in the Active column does not bring back a sent note whose thread is resolved', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('other'), { ...thread('sent', 'resolved'), comments: [{ author: 'user', body: 'Sent stage note', createdAt: '2026-09-08T10:00:00Z' }] }];
+  const errors = await mount(page, data, { comments: [{ kind: 'stage', id: 'first', body: 'Sent stage note', mode: 'feedback', exported: true, threadId: 'sent', createdAt: 1 }] });
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const active = panel.locator('.notes-col-active');
+  const activeFilter = panel.locator('[data-action="notes-filter"][data-filter="active"]');
+  await expect(active.locator('.tthread')).toHaveCount(1);
+  await expect(active.locator('.tnote')).toHaveCount(0);
+  await expect(activeFilter.locator('b')).toHaveText('1');
+  await selectBetween(page, '.side.notes .notes-col-active .tthread .comment-body', '.side.notes .notes-col-active .tthread .comment-body');
+  // A review update renders the page while the Active column is held.
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'reply-during-selection';
+  await expect(page.locator('.review-update')).toHaveText('Review updated');
+  await expect(active.locator('.tnote')).toHaveCount(0);
+  await expect(activeFilter.locator('b')).toHaveText('1');
   expect(errors).toEqual([]);
 });
