@@ -887,8 +887,9 @@
       // The HTML parser turns a literal carriage return into a newline; a reference keeps it.
       .replaceAll("\r", "&#13;");
   }
+  // Comments are prose: any line ending is a line break, as the HTML parser would make it.
   function formatCommentBody(v) {
-    return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
+    return esc(String(v).replace(/\r\n?/g, "\n")).replace(/`([^`\n]+)`/g, "<code>$1</code>");
   }
   /* File approvals are scoped to a node and observe the complete file plus its ownership.
      Changes outside owned ranges conservatively make that approval stale too. */

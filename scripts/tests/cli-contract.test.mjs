@@ -460,6 +460,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     formatCommentBody("<script>\n`<b>`"),
     "&lt;script&gt;\n<code>&lt;b&gt;</code>",
   );
+  assert.equal(formatCommentBody("one\r\ntwo\r`three`"), "one\ntwo\n<code>three</code>");
   assert.match(viewerApp, /stage\.nodes\.every\(\(node\) => nodeApprovalState\(stage, node\) === "approved"\)/);
   assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
   assert.match(viewerApp, /Approve every step before approving the stage/);
