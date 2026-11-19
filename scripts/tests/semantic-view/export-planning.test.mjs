@@ -682,7 +682,7 @@ test("viewer client refreshes data without reloading the page", () => {
   );
   assert.match(
     app,
-    /data-kind="\$\{kind\}" data-id="\$\{id\}" data-stage="\$\{stageId \|\| ""\}"/,
+    /data-kind="\$\{esc\(kind\)\}" data-id="\$\{esc\(id\)\}" data-stage="\$\{esc\(stageId \|\| ""\)\}"/,
   );
   assert.match(
     app,

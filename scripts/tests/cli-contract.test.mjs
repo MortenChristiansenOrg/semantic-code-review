@@ -417,7 +417,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
   assert.doesNotMatch(viewerApp, /approveBtn\("node"/);
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
-  assert.match(viewerApp, /data-node-id="\$\{node\.id\}"/);
+  assert.match(viewerApp, /data-node-id="\$\{esc\(node\.id\)\}"/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);
   const selectedNodeStart = viewerApp.indexOf("function selectedNodeForFile(activeValue, file)");
   const selectedNodeEnd = viewerApp.indexOf("\n  function activeFileNodeId", selectedNodeStart);

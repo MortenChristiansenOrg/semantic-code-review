@@ -1187,7 +1187,7 @@
     const m = map[st.key] || map.pending;
     const stages = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
     return `<button class="ac-chip tag-face" type="button" data-tagpop="1"
-      data-type="acceptance" data-vstat="${m.vstat}"
+      data-type="acceptance" data-vstat="${esc(m.vstat)}"
       data-glyph="${esc(m.glyph)}" data-label="${esc(m.label)}" data-meta="${esc(`${acId} · ${stages}`)}"
       data-title="${esc(ac ? ac.text : acId)}" data-body=""
       aria-haspopup="true"><span class="ac-chip-id">${esc(acId)}</span><span class="ac-chip-stat vstat-${m.vstat}">${esc(m.glyph)}</span></button>`;
@@ -1276,7 +1276,7 @@
     return kind === "added" ? "Added" : kind === "deleted" ? "Deleted" : kind === "renamed" ? "Renamed" : "Modified";
   }
   function fileKind(kind) {
-    return `<span class="kind k-${esc(kind)}" role="img" aria-label="${kindLabel(kind)}" title="${kindLabel(kind)}">${kindGlyph(kind)}</span>`;
+    return `<span class="kind k-${esc(kind)}" role="img" aria-label="${esc(kindLabel(kind))}" title="${esc(kindLabel(kind))}">${kindGlyph(kind)}</span>`;
   }
   // A renamed/moved file shows where it came from so reviewers can place it; the
   // full pre-rename path stays in the tooltip when the shown one is shortened.
@@ -1416,7 +1416,7 @@
     const before = evidence.attachments.filter((item) => item.role === "before");
     const after = evidence.attachments.filter((item) => item.role === "after");
     const others = evidence.attachments.filter((item) => !item.role);
-    const column = (title, list) => `<section aria-label="${title}"><h4>${title}</h4>${list.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}</section>`;
+    const column = (title, list) => `<section aria-label="${esc(title)}"><h4>${title}</h4>${list.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}</section>`;
     const nodes = (ins.nodeRefs || []).map((id) => nodeTitleById.get(`${stage.id}:${id}`) || id);
     const criteria = evidence.specificationRefs.map((ref) => {
       const criterion = allAcceptance.find((item) => item.ref === ref);
@@ -1495,7 +1495,7 @@
       : "";
     return `<span class="tag ${ins.codeTarget || ins.evidence ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
       ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"
-        data-type="${ins.type}" data-vstat="${vs ? vs.key : ""}"
+        data-type="${esc(ins.type)}" data-vstat="${esc(vs ? vs.key : "")}"
         data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}" data-review="${esc(INSIGHT_REVIEW[review].text)}"
         data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
         aria-haspopup="true">
@@ -1509,7 +1509,7 @@
     const counts = INSIGHT_ORDER
       .map((t) => ({ t, c: insights.filter((i) => i.type === t).length }))
       .filter((x) => x.c);
-    const legend = counts.map((x) => `<button type="button" class="rk type-${x.t}" data-action="focus-reasoning" data-type="${x.t}" aria-label="${INSIGHT[x.t].label}: ${x.c}"><b aria-hidden="true">${INSIGHT[x.t].glyph}</b>${x.c}</button>`).join("");
+    const legend = counts.map((x) => `<button type="button" class="rk type-${x.t}" data-action="focus-reasoning" data-type="${esc(x.t)}" aria-label="${INSIGHT[x.t].label}: ${x.c}"><b aria-hidden="true">${INSIGHT[x.t].glyph}</b>${x.c}</button>`).join("");
     const failed = insights.filter((i) => { const v = vstatus(i); return v && v.key !== "passed"; }).length;
     const alert = failed ? `<button type="button" class="rk rk-alert" data-action="focus-reasoning" data-type="not-passed" aria-label="Checks not passed: ${failed}"><b aria-hidden="true">✕</b>${failed}</button>` : "";
     return `<div class="reasoning-summary"><span class="eyebrow">Reasoning</span><div class="reasoning-key">${legend}${alert}</div></div>`;
@@ -1533,20 +1533,20 @@
     const of = subject ? ` ${esc(subject)}` : "";
     const label = stage ? ` aria-label="${esc(`${st === "stale" && !blocked ? "Re-approve" : st === "approved" && !blocked ? "Approved" : "Approve"} stage ${stageNumber(stage)}: ${stage.title}`)}"` : "";
     if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
+      return `<button class="approve ${size}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
         <span class="check"></span>Approve${of}</button>`;
     }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} title="Changed since you approved it — click to re-approve">
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} title="Changed since you approved it — click to re-approve">
         <span class="check">!</span>Re-approve${of}</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${kind}" data-id="${esc(id)}" type="button" aria-pressed="${on}"${label}>
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="${on}"${label}>
       <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}${of}</button>`;
   }
   function stageNumber(stage) { return String(data.stages.indexOf(stage) + 1).padStart(2, "0"); }
   function commentBtn(kind, id, stageId) {
-    return `<button class="comment" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
+    return `<button class="comment" data-action="comment" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button">＋ Add note</button>`;
   }
   function threadStateKey(kind, id, stageId) {
     return kind === "node" ? `n:${stageId}:${id}` : id;
@@ -1555,7 +1555,7 @@
     const { total, open: openCount } = threadToggleCounts(kind, id, stageId);
     if (!total) return "";
     const open = Boolean(state.openThreads[threadStateKey(kind, id, stageId)]);
-    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
+    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
       ${bubble()}<b>${total}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
   }
   function noteCluster(kind, id, stageId) {
@@ -1692,7 +1692,7 @@
     const jump = !withLabel
       ? ""
       : ref
-        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
+        ? `<button class="tthread-jump" data-action="jump-to" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" title="Show what this thread is about" aria-label="Show what this thread is about">${arrowRight()}</button>`
         : tstate.state === "deleted"
           ? `<button class="tthread-jump" type="button" disabled title="This file no longer exists" aria-label="This file no longer exists">${arrowRight()}</button>`
           : "";
@@ -1749,14 +1749,14 @@
           <div class="nc-actions"><button type="button" data-action="reply-cancel">Cancel</button><button class="nc-save" type="submit" ${uploadOps.size ? "disabled" : ""}>${editing ? "Update reply" : "Save reply"}</button></div>
         </form>`
       : "";
-    return `<article class="tthread status-${t.status} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
+    return `<article class="tthread status-${esc(t.status)} ${collapsed ? "is-collapsed" : ""}" data-thread-id="${esc(t.id)}">
       <div class="tthread-h" data-action="toggle-thread-collapse" data-id="${esc(t.id)}" role="button" tabindex="0" aria-expanded="${String(!collapsed)}" title="${collapsed ? "Expand thread" : "Collapse thread"}">
         <span class="tthread-caret">${caret()}</span>
         <span class="tthread-type" title="${esc(threadTypeLabel(kind))}" aria-label="${esc(threadTypeLabel(kind))}">${threadTypeIcon(kind)}</span>
         ${title}
         ${assignedTag}
         ${agentTag}
-        <span class="tthread-status-ic s-${t.status}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
+        <span class="tthread-status-ic s-${esc(t.status)}" title="${esc(t.status)}" aria-label="${esc(t.status)}">${threadStatusIcon(t.status)}</span>
         ${jump}
       </div>
       <div class="tthread-body">
@@ -1776,7 +1776,7 @@
     if (compose && compose.editIndex === i && withLabel === state.notesOpen) return renderComposer(compose);
     const label = noteTargetLabel(c);
     const ref = localNoteRef(c);
-    const jump = withLabel && ref ? `<button class="tthread-jump" data-action="jump-to" data-kind="${ref.kind}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" aria-label="Show note target" title="Show note target">${arrowRight()}</button>` : "";
+    const jump = withLabel && ref ? `<button class="tthread-jump" data-action="jump-to" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}" data-stage="${esc(ref.stageId || "")}" data-node-id="${esc(ref.nodeId || "")}" type="button" aria-label="Show note target" title="Show note target">${arrowRight()}</button>` : "";
     const missing = withLabel && !ref ? `<p class="tthread-stale">Original target or step unavailable. This note is kept in the global list.</p>`
       : ref && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
     const sent = Boolean(c.exported);
@@ -1925,13 +1925,13 @@
       locals.map((ln) => renderLocalNote(ln)).join("");
     const footer = composingNew
       ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="${kind}" data-id="${id}" data-stage="${stageId || ""}" type="button">＋ Add note</button>`;
-    return `<div class="thread" data-thread="${id}">${rows}${footer}</div>`;
+      : `<button class="thread-add" data-action="comment" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button">＋ Add note</button>`;
+    return `<div class="thread" data-thread="${esc(id)}">${rows}${footer}</div>`;
   }
 
   /* ---- file rows -------------------------------------------------------- */
   function classBadge(cls) {
-    return `<span class="cls cls-${cls}">${CLASS_LABEL[cls] || cls}</span>`;
+    return `<span class="cls cls-${esc(cls)}">${esc(CLASS_LABEL[cls] || cls)}</span>`;
   }
   function fileMetrics(file) {
     return `<span class="metrics"><i class="add">+${file.additions}</i><i class="del">−${file.deletions}</i></span>`;
@@ -1955,18 +1955,18 @@
     const threadN = counts.file;
     const lineN = counts.line;
     const noteN = counts.personal;
-    const openAttrs = `data-action="open-file" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${isActive}"`;
+    const openAttrs = `data-action="open-file" data-id="${esc(id)}" data-node-id="${esc(node.id)}" type="button" aria-expanded="${isActive}"`;
     const notesOpen = isActive && state.openThreads[id] !== false;
     const combinedLabel = `${threadN} file comment${threadN === 1 ? "" : "s"}, ${noteN} personal note${noteN === 1 ? "" : "s"}`;
     const threadBadge = threadN || noteN
-      ? `<button class="mini-count mini-threads ${notesOpen ? "is-open" : ""}" data-action="toggle-file-notes" data-id="${id}" data-node-id="${node.id}" type="button" aria-expanded="${notesOpen}" title="${combinedLabel}" aria-label="${combinedLabel}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
+      ? `<button class="mini-count mini-threads ${notesOpen ? "is-open" : ""}" data-action="toggle-file-notes" data-id="${esc(id)}" data-node-id="${esc(node.id)}" type="button" aria-expanded="${notesOpen}" title="${esc(combinedLabel)}" aria-label="${esc(combinedLabel)}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
       : "";
     const lineBadge = lineN
       ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
       : "";
     return `<div data-render-key="${esc(id)}" class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
-      <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${id}">
-        <div class="frow-open" data-action="open-file" data-id="${id}" data-node-id="${node.id}" role="button" tabindex="0" title="${esc(file.path)}">
+      <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${esc(id)}">
+        <div class="frow-open" data-action="open-file" data-id="${esc(id)}" data-node-id="${esc(node.id)}" role="button" tabindex="0" title="${esc(file.path)}">
           ${fileKind(file.kind)}
           <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
           ${classBadge(cls)}${sharedChip}
@@ -1991,8 +1991,8 @@
       locals.map((ln) => renderLocalNote(ln)).join("");
     const footer = composingNew
       ? renderComposer(compose)
-      : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${id}" type="button">＋ Add note</button>`;
-    return `<div class="thread file-notes" data-thread="${id}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
+      : `<button class="thread-add" data-action="comment" data-kind="file" data-id="${esc(id)}" type="button">＋ Add note</button>`;
+    return `<div class="thread file-notes" data-thread="${esc(id)}">${rows ? `<div class="file-note-threads">${rows}</div>` : ""}${footer}</div>`;
   }
   // A group's unapproved or stale file approvals that can be captured now.
   function groupPendingApprovals(stage, node, files) {
@@ -2036,7 +2036,7 @@
 
     // Files are always visible — there are very few cases where a node is
     // worth opening without also inspecting its files.
-    return `<div class="payload ${done === total ? "all-done" : ""}" data-node-files="${node.id}">
+    return `<div class="payload ${done === total ? "all-done" : ""}" data-node-files="${esc(node.id)}">
       <div class="fgroups">${groupHtml}</div>
     </div>`;
   }
@@ -2151,7 +2151,7 @@
   // the row maps to a real line, its gutter affordance and any attached thread.
   function codeRow(rowClass, gutterOld, gutterNew, sign, code, ctx, side, lineNo) {
     if (!ctx || !ctx.stageId || !lineNo) {
-      return `<div class="${rowClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span><i>${sign}</i><code>${code}</code></div>`;
+      return `<div class="${esc(rowClass)}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span><i>${sign}</i><code>${code}</code></div>`;
     }
     const lineId = lineKey(ctx.stageId, side, lineNo, ctx.path);
     const count = visibleThreadCount("line", lineId);
@@ -2257,8 +2257,8 @@
   function viewToggle(id) {
     const mode = fileViewMode(id);
     return `<div class="view-toggle" role="group" aria-label="Diff view">
-      <button class="vt ${mode === "hunk" ? "is-on" : ""}" data-action="set-view" data-id="${id}" data-mode="hunk" type="button" aria-pressed="${mode === "hunk"}">Changes</button>
-      <button class="vt ${mode === "full" ? "is-on" : ""}" data-action="set-view" data-id="${id}" data-mode="full" type="button" aria-pressed="${mode === "full"}">Full file</button>
+      <button class="vt ${mode === "hunk" ? "is-on" : ""}" data-action="set-view" data-id="${esc(id)}" data-mode="hunk" type="button" aria-pressed="${mode === "hunk"}">Changes</button>
+      <button class="vt ${mode === "full" ? "is-on" : ""}" data-action="set-view" data-id="${esc(id)}" data-mode="full" type="button" aria-pressed="${mode === "full"}">Full file</button>
     </div>`;
   }
   function hideRemovedToggle(id) {
@@ -2341,7 +2341,7 @@
         ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
         ${approveBtn("file", fileApprovalKey(stage.id, opts.nodeId || activeFileNodeId(id), file.path), "sm")}
         ${commentBtn("file", id)}
-        ${opts.close ? `<button class="diff-close" data-action="${opts.close}" type="button" aria-label="Close">×</button>` : ""}
+        ${opts.close ? `<button class="diff-close" data-action="${esc(opts.close)}" type="button" aria-label="Close">×</button>` : ""}
       </div>
     </header>`;
   }
@@ -2745,7 +2745,7 @@
     const approval = nodeApprovalState(stage, node);
     const done = approval === "approved";
     const stale = approval === "stale";
-    return `<details class="node ${done ? "is-approved" : ""} ${stale ? "is-stale" : ""}" data-node="${node.id}">
+    return `<details class="node ${done ? "is-approved" : ""} ${stale ? "is-stale" : ""}" data-node="${esc(node.id)}">
       <summary>
         <span class="node-check" title="${stale ? "One or more file approvals are stale" : ""}">${stale ? "!" : done ? "✓" : ""}</span>
         <span class="node-ix">${stageIndex + 1}.${nodeIndex + 1}</span>
@@ -2784,14 +2784,14 @@
       ? `<span class="sm-deps" data-tooltip-focus title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
       : "";
     const number = String(i + 1).padStart(2, "0");
-    return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${stage.id}" aria-labelledby="stage-title-${esc(stage.id)}">
+    return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${esc(stage.id)}" aria-labelledby="stage-title-${esc(stage.id)}">
       <div class="stage-card">
       <div class="stage-bar">
-        <button class="stop ${done ? "is-approved" : ""}" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
+        <button class="stop ${done ? "is-approved" : ""}" data-action="toggle-stage" data-id="${esc(stage.id)}" type="button" aria-expanded="${open}">
           <span class="stop-num">${done ? "✓" : number}</span>
         </button>
         <div class="stage-head">
-          <button class="stage-title" data-action="toggle-stage" data-id="${stage.id}" type="button" aria-expanded="${open}">
+          <button class="stage-title" data-action="toggle-stage" data-id="${esc(stage.id)}" type="button" aria-expanded="${open}">
             <span class="stage-kicker">Stage ${number}</span>
             <h2 id="stage-title-${esc(stage.id)}">${esc(stage.title)}</h2>
           </button>
