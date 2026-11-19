@@ -105,13 +105,6 @@ function gitRawBuffer(args: string[], options: Omit<GitRawOptions, "encoding" | 
   return gitRaw(args, { ...options, encoding: "buffer" });
 }
 
-/** A required option's value; option() itself fails when it is missing. */
-function requiredOption(options: Options, name: string): string {
-  const value = option(options, name, { required: true });
-  if (value === undefined) fail(`Missing required option --${name}.`);
-  return value;
-}
-
 /** The explicit stage ID that editing a finalized stage requires. */
 function explicitStageId(requested: string | undefined, optionName: string): string {
   if (!requested || requested === "current") {
@@ -1063,14 +1056,14 @@ function specificationFromOptions(options: Options): Specification {
     fail("At least one --criterion <id>=<text> is required.");
   }
 
-  const kind = requiredOption(options, "source-kind");
-  const reference = requiredOption(options, "source-reference");
+  const kind = option(options, "source-kind", { required: true });
+  const reference = option(options, "source-reference", { required: true });
   const sourceUrl = option(options, "source-url");
   return {
     $schema: SPECIFICATION_SCHEMA_ID,
-    id: requiredOption(options, "specification-id"),
-    title: requiredOption(options, "specification-title"),
-    summary: requiredOption(options, "specification-summary"),
+    id: option(options, "specification-id", { required: true }),
+    title: option(options, "specification-title", { required: true }),
+    summary: option(options, "specification-summary", { required: true }),
     source: { kind, reference, ...(sourceUrl ? { url: sourceUrl } : {}) },
     acceptanceCriteria: criteria,
   };
@@ -1092,8 +1085,8 @@ function initialize(paths: ArtifactPaths, options: Options): void {
   assertCleanWorkingTree(paths.root, "Initialization");
 
   const specificationInput = specificationFromOptions(options);
-  const implementationId = requiredOption(options, "implementation-id");
-  const targetBranch = requiredOption(options, "target-branch");
+  const implementationId = option(options, "implementation-id", { required: true });
+  const targetBranch = option(options, "target-branch", { required: true });
   git(["check-ref-format", "--branch", targetBranch], { cwd: paths.root });
   const targetHead = branchCommit(paths.root, targetBranch);
   const baseRevision = commitObject(
@@ -1116,8 +1109,8 @@ function initialize(paths: ArtifactPaths, options: Options): void {
     ...(skillVersion ? { skillVersion } : {}),
     formatVersion: "0.1",
     implementationId,
-    title: requiredOption(options, "title"),
-    summary: requiredOption(options, "summary"),
+    title: option(options, "title", { required: true }),
+    summary: option(options, "summary", { required: true }),
     baseRevision,
     targetBranch,
     branchPrefix,
@@ -1183,7 +1176,7 @@ function beginStage(paths: ArtifactPaths, options: Options): void {
     );
   }
 
-  const id = requiredOption(options, "id");
+  const id = option(options, "id", { required: true });
   if (artifact.stages.has(id)) {
     fail(`Stage ${id} is already finalized.`);
   }
@@ -1216,13 +1209,13 @@ function beginStage(paths: ArtifactPaths, options: Options): void {
   const stageInput: WorkStage = {
     $schema: WORK_STAGE_SCHEMA_ID,
     id,
-    title: requiredOption(options, "title"),
-    summary: requiredOption(options, "summary"),
+    title: option(options, "title", { required: true }),
+    summary: option(options, "summary", { required: true }),
     branch,
     dependsOn: repeatedOption(options, "depends-on"),
     specificationRefs: repeatedOption(options, "specification-ref"),
     nodes: [],
-    rationale: requiredOption(options, "rationale"),
+    rationale: option(options, "rationale", { required: true }),
     decisions: [],
     assumptions: [],
     alternatives: [],
@@ -1380,16 +1373,16 @@ interface RecordedItem {
 }
 
 function itemForKind(kind: string, options: Options): RecordedItem {
-  const id = requiredOption(options, "item-id");
+  const id = option(options, "item-id", { required: true });
   switch (kind) {
     case "decision":
       return {
         collection: "decisions",
         value: {
           id,
-          category: requiredOption(options, "category"),
-          summary: requiredOption(options, "summary"),
-          rationale: requiredOption(options, "rationale"),
+          category: option(options, "category", { required: true }),
+          summary: option(options, "summary", { required: true }),
+          rationale: option(options, "rationale", { required: true }),
         },
         allowed: ["category", "summary", "rationale"],
       };
@@ -1398,8 +1391,8 @@ function itemForKind(kind: string, options: Options): RecordedItem {
         collection: "assumptions",
         value: {
           id,
-          statement: requiredOption(options, "statement"),
-          riskIfWrong: requiredOption(options, "risk-if-wrong"),
+          statement: option(options, "statement", { required: true }),
+          riskIfWrong: option(options, "risk-if-wrong", { required: true }),
         },
         allowed: ["statement", "risk-if-wrong"],
       };
@@ -1408,8 +1401,8 @@ function itemForKind(kind: string, options: Options): RecordedItem {
         collection: "alternatives",
         value: {
           id,
-          approach: requiredOption(options, "approach"),
-          reasonRejected: requiredOption(options, "reason-rejected"),
+          approach: option(options, "approach", { required: true }),
+          reasonRejected: option(options, "reason-rejected", { required: true }),
         },
         allowed: ["approach", "reason-rejected"],
       };
@@ -1418,16 +1411,16 @@ function itemForKind(kind: string, options: Options): RecordedItem {
         collection: "failedAttempts",
         value: {
           id,
-          approach: requiredOption(options, "approach"),
-          outcome: requiredOption(options, "outcome"),
-          lesson: requiredOption(options, "lesson"),
+          approach: option(options, "approach", { required: true }),
+          outcome: option(options, "outcome", { required: true }),
+          lesson: option(options, "lesson", { required: true }),
         },
         allowed: ["approach", "outcome", "lesson"],
       };
     case "risk": {
       const value: JsonRecord = {
         id,
-        summary: requiredOption(options, "summary"),
+        summary: option(options, "summary", { required: true }),
       };
       const mitigation = option(options, "mitigation");
       if (mitigation !== undefined) value.mitigation = mitigation;
@@ -1442,7 +1435,7 @@ function itemForKind(kind: string, options: Options): RecordedItem {
         collection: "openQuestions",
         value: {
           id,
-          question: requiredOption(options, "question"),
+          question: option(options, "question", { required: true }),
         },
         allowed: ["question"],
       };
@@ -1515,7 +1508,7 @@ function targetInsight(paths: ArtifactPaths, options: Options): void {
   const explicitId = finalized ? explicitStageId(requested, "stage") : undefined;
   const artifact = validateArtifact(paths, { quiet: true, validateGit: false });
   const id = explicitId ?? selectedWorkingStageId(artifact, requested, "stage");
-  const collection = requiredOption(options, "collection"), itemId = requiredOption(options, "item-id");
+  const collection = option(options, "collection", { required: true }), itemId = option(options, "item-id", { required: true });
   if (!isInsightCollection(collection)) fail("Unknown insight collection.");
   const remove = flag(options, "remove");
   const hasCode = ["code-path", "code-start", "code-end"].some(key => options.has(key));
@@ -1543,9 +1536,9 @@ function recordStageItem(paths: ArtifactPaths, options: Options, batch: StageBat
   const explicitId = finalized ? explicitStageId(requestedStage, "stage") : undefined;
   const stageId = explicitId
     ?? selectedWorkingStageId(batch?.artifact ?? validateArtifact(paths, { quiet: true, validateGit: false }), requestedStage, "stage");
-  const kind = requiredOption(options, "kind");
+  const kind = option(options, "kind", { required: true });
   const item = itemForKind(kind, options);
-  const itemId = requiredOption(options, "item-id");
+  const itemId = option(options, "item-id", { required: true });
   const nodeRefs = repeatedOption(options, "node-ref");
   if (nodeRefs.length > 0) {
     item.value.nodeRefs = nodeRefs;
@@ -1596,12 +1589,12 @@ function recordValidation(paths: ArtifactPaths, options: Options, batch: StageBa
   const stageId = explicitId
     ?? selectedWorkingStageId(batch?.artifact ?? validateArtifact(paths, { quiet: true, validateGit: false }), requestedStage, "stage");
   const replace = flag(options, "replace");
-  const itemId = requiredOption(options, "item-id");
+  const itemId = option(options, "item-id", { required: true });
   const value: JsonRecord = {
     id: itemId,
-    type: requiredOption(options, "type"),
-    status: requiredOption(options, "status"),
-    summary: requiredOption(options, "summary"),
+    type: option(options, "type", { required: true }),
+    status: option(options, "status", { required: true }),
+    summary: option(options, "summary", { required: true }),
   };
   const command = option(options, "command");
   if (command !== undefined) {
@@ -1717,11 +1710,11 @@ function writeEvidence(paths: ArtifactPaths, options: Options): void {
   const specificationRefs = repeatedOption(options, "specification-ref");
   const nodeRefs = repeatedOption(options, "node-ref");
   const reproduction = option(options, "reproduction");
-  const itemId = requiredOption(options, "item-id");
+  const itemId = option(options, "item-id", { required: true });
   const value: JsonRecord = {
     id: itemId,
-    kind: requiredOption(options, "kind"),
-    summary: requiredOption(options, "summary"),
+    kind: option(options, "kind", { required: true }),
+    summary: option(options, "summary", { required: true }),
     ...(specificationRefs.length ? { specificationRefs } : {}),
     ...(inputs.length ? { attachments: inputs.map(({ attachment, extension }) => ({ path: evidenceAttachmentPath(id, attachment.sha256, extension), ...attachment })) } : {}),
     ...(inline !== undefined ? { inline } : {}),
@@ -1766,7 +1759,7 @@ function removeEvidence(paths: ArtifactPaths, options: Options): void {
 
 function deleteEvidence(paths: ArtifactPaths, options: Options): void {
   const { id, finalized } = evidenceStage(paths, options, "stage evidence-remove");
-  const itemId = requiredOption(options, "item-id");
+  const itemId = option(options, "item-id", { required: true });
   const updated = updateStage(paths, id, finalized, (current) => {
     const index = current.evidence.findIndex((existing) => existing.id === itemId);
     if (index < 0) fail(`Stage ${id} has no evidence ${itemId}.`);
@@ -1798,7 +1791,7 @@ function recordStageBatch(paths: ArtifactPaths, options: Options): void {
   const id = finalized ? explicitStageId(requested, "stage") : selectedWorkingStageId(artifact, requested, "stage");
   const stage = finalized ? artifact.stages.get(id) : artifact.workStages.get(id);
   if (!stage) fail(`Stage ${id} does not exist.`);
-  const items: unknown = parseJson(requiredOption(options, "items"));
+  const items: unknown = parseJson(option(options, "items", { required: true }));
   if (!Array.isArray(items) || !items.length) fail("--items must be a non-empty JSON array.");
   // Each entry is narrowed to options by objectOptions and validated with the stage.
   const entries: unknown[] = items;
@@ -1891,7 +1884,7 @@ function organizeStage(paths: ArtifactPaths, options: Options): void {
   const explicitId = finalized ? explicitStageId(requestedStage, "stage") : undefined;
   const inputFile = path.resolve(
     paths.root,
-    requiredOption(options, "file"),
+    option(options, "file", { required: true }),
   );
   const organization = parseAnyDocument([STAGE_ORGANIZATION_SCHEMA_ID], readJson(inputFile), inputFile);
 

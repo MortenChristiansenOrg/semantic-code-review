@@ -134,6 +134,9 @@ export function expandInputOptions(options: Options, cwd: string): Options {
   return expanded;
 }
 
+export function option(options: Options, name: string, settings: OptionSettings & { required: true }): string;
+export function option(options: Options, name: string, settings: OptionSettings & { defaultValue: string }): string;
+export function option(options: Options, name: string, settings?: OptionSettings): string | undefined;
 export function option(
   options: Options,
   name: string,

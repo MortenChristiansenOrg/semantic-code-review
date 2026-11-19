@@ -124,12 +124,6 @@ function strings(value: unknown): string[] {
     : [];
 }
 
-function requiredOption(options: Options, name: string): string {
-  const value = option(options, name, { required: true });
-  if (value === undefined) fail(`Missing required option --${name}.`);
-  return value;
-}
-
 function normalizedPath(value: string): string {
   // Native resolution also expands Windows short-path aliases (for example RUNNER~1).
   const resolved = fs.existsSync(value) ? fs.realpathSync.native(value) : path.resolve(value);
@@ -1212,7 +1206,7 @@ function fastForwardBranch(root: string, ref: string, checkout: string | undefin
 function refreshTarget(options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticFlowApi, "refresh-target"));
   const root = repositoryRoot(path.resolve(option(options, "project") ?? process.cwd()));
-  const targetBranch = requiredOption(options, "target-branch");
+  const targetBranch = option(options, "target-branch", { required: true });
   const json = flag(options, "json");
   git(["check-ref-format", "--branch", targetBranch], { cwd: root });
   const targetRef = `refs/heads/${targetBranch}`;
