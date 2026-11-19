@@ -468,8 +468,8 @@ export interface LegacyDraftNote extends Partial<Omit<DraftNote, "kind" | "id" |
  * so every field may be absent or hold a legacy shape on the wire. The page
  * normalises the state on load; check values before relying on their current shape. */
 export interface ReviewState {
-  /** `true` is a legacy approval without a revision; the page discards it. */
-  approvals?: Record<string, ApprovalRecord | true>;
+  /** A boolean is a legacy approval without a revision; the page discards it. */
+  approvals?: Record<string, ApprovalRecord | boolean>;
   insightReviews?: Record<string, InsightReviewRecord>;
   comments?: (DraftNote | LegacyDraftNote)[];
   replyDrafts?: ReplyDraft[];
@@ -601,7 +601,8 @@ export type DiffQuery = {
   offset?: string;
 } & (
   | { side?: undefined; line?: undefined }
-  /** `line` is a decimal line number on `side`; the server rejects one without the other. */
+  /** `line` is a decimal line number on `side`. The server ignores `line` without `side`
+   * and rejects `side` without `line`. */
   | { side: DiffSide; line: string }
 );
 
@@ -915,8 +916,8 @@ export type ThreadActionResponse =
       ok: true;
       status: ThreadStatus;
       resolvedAt: string | null;
-      /** For `reply` only: the thread's last comment after the reply. A retry after
-       * the agent answered returns the agent's comment, not the reviewer's reply. */
+      /** For `reply` only: the thread's last comment when the server answers. If other
+       * comments followed the reply, a retry returns the latest of those instead. */
       comment?: FeedbackComment;
     } & ViewerSnapshot)
   | ApiFailure;
