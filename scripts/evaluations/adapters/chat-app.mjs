@@ -54,12 +54,23 @@ export function extractArchive(tar, archive, destination, cwd, env) {
     return run([tar, '-xf', file, '-C', destination], cwd, env);
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
+/** Whether the arguments name a command, parsed as the CLI parses them: an
+ * option without `=` takes the next argument as its value unless that is an option. */
+function hasCommand(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index];
+    if (value === '--help') return true;
+    if (!value.startsWith('--')) return true;
+    if (!value.includes('=', 3) && args[index + 1] !== undefined && !args[index + 1].startsWith('--')) index += 1;
+  }
+  return false;
+}
 // Builds before the single executable shipped each command group as its own executable.
 const groupExecutables = { implementation: 'semantic-implementation.mjs', feedback: 'review-feedback.mjs' };
 /** The command line that runs `semantic-flow.mjs <args>` in the skill's build, whichever executable layout it has. */
 function cliCommand(node, skill, args) {
-  const [group, command] = args;
-  const grouped = group === 'implementation' || (group === 'feedback' && command !== undefined && !command.startsWith('--'));
+  const [group, ...rest] = args;
+  const grouped = group === 'implementation' || (group === 'feedback' && hasCommand(rest));
   const separate = grouped && path.join(skill, 'scripts', groupExecutables[group]);
   return separate && fs.existsSync(separate) ? [node, separate, ...args.slice(1)] : [node, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
 }

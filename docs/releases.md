@@ -69,7 +69,9 @@ contain an updater that rejects releases with the single `semantic-flow.mjs`
 (“Release is missing scripts/semantic-implementation.mjs”) and keeps the old
 installation. Move from such a release once by hand: download and verify the
 archive as described above, then stop the viewer and replace the skill folder as
-for a source-based installation. Later updates use `/semantic-flow update` again.
+for a source-based installation. The same applies to a local build of this
+repository: the old updater's `update --source` rejects it too, so replace the
+folder by hand. Later updates use `/semantic-flow update` again.
 
 After installation, ask for `/semantic-flow update`. It displays release notes,
 including skipped versions, verifies the download and all file digests, and then

@@ -307,6 +307,12 @@ test("publication rejects target drift until the stack is restacked", (t) => {
     "validate-stack",
   );
 
+  const refs = () => repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads");
+  const before = { refs: refs(), manifest: repository.read(".semantic-review/manifest.json") };
+  repository.expectSemanticFailure("Option --json is a flag", "restack", "--base", "main", "--json=false");
+  assert.equal(refs(), before.refs);
+  assert.equal(repository.read(".semantic-review/manifest.json"), before.manifest);
+
   repository.semantic("restack", "--base", "main");
   repository.semantic("validate", "--publish");
 });

@@ -759,6 +759,8 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
       `Target branch ${candidate.targetBranch} advanced, but automatic restacking cannot preserve detached HEAD ${originalHead}. Check out a semantic stage or the target branch first.`,
     );
   }
+  // Load the service first, so a failed import never leaves the branch detached.
+  const { restackOntoTarget } = await implementationService();
   // A checked-out stage branch is detached while the restack rewrites it.
   const detachedBranch =
     originalBranch !== null && stageBranches.has(originalBranch) ? originalBranch : null;
@@ -766,7 +768,6 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     git(["switch", "--detach"], { cwd: candidate.worktree });
   }
 
-  const { restackOntoTarget } = await implementationService();
   let restackSummary: RestackSummary;
   try {
     restackSummary = restackOntoTarget(candidate.worktree, candidate.targetBranch);

@@ -41,6 +41,8 @@ test('CLI commands follow the executable layout of each compared build', (t) => 
   assert.deepEqual(cliCommand(older, ['implementation', 'init', '--title', 'T']), [node, at('semantic-implementation.mjs'), 'init', '--title', 'T']);
   assert.deepEqual(cliCommand(older, ['feedback', 'thread', 'add']), [node, at('review-feedback.mjs'), 'thread', 'add']);
   assert.deepEqual(cliCommand(older, ['feedback', '--json']), [node, at('semantic-flow.mjs'), 'feedback', '--json']);
+  assert.deepEqual(cliCommand(older, ['feedback', '--input', '-', 'next']), [node, at('review-feedback.mjs'), '--input', '-', 'next']);
+  assert.deepEqual(cliCommand(older, ['feedback', '--wait', '--json', '--session', 'abc']), [node, at('semantic-flow.mjs'), 'feedback', '--wait', '--json', '--session', 'abc']);
   assert.deepEqual(cliCommand(older, ['inspect', '--json']), [node, at('semantic-flow.mjs'), 'inspect', '--json']);
   const current = path.join(skill, 'scripts', 'semantic-flow.mjs');
   assert.deepEqual(cliCommand(skill, ['implementation', 'init']), [node, current, 'implementation', 'init']);

@@ -2324,8 +2324,10 @@ function restack(paths: ArtifactPaths, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
   const fromId = option(options, "from");
   const baseOption = option(options, "base");
+  // Reject a malformed --json before the restack rewrites any refs.
+  const json = flag(options, "json");
   const summary = restackStages(paths, { fromId, baseOption });
-  if (flag(options, "json")) {
+  if (json) {
     console.log(JSON.stringify(summary));
   } else {
     console.log(
