@@ -1639,7 +1639,7 @@ export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets)
     );
   }
   if (note.kind === "file") {
-    const match = /^f:([^:]+):(.+)$/.exec(noteId);
+    const match = /^f:([^:]+):([^]+)$/.exec(noteId);
     if (!match) throw new Error(`unrecognized file id "${note.id}"`);
     const [, stageId, filePath] = match;
     const stage = implementation.stages.find((s) => s.id === stageId);
@@ -1647,7 +1647,7 @@ export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets)
     return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
   }
   if (note.kind === "line") {
-    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(noteId);
+    const match = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(noteId);
     if (!match) throw new Error(`unrecognized line id "${note.id}"`);
     const [, stageId, side, line, filePath] = match;
     const stage = implementation.stages.find((s) => s.id === stageId);
@@ -1728,7 +1728,7 @@ export function resolveLineDraftSnapshots(repoRoot: string, notes: unknown): unk
     const snapshot = note.snapshot;
     if (!isRecord(snapshot) || snapshot.fileRevision) return note;
     const { base, head } = snapshot;
-    const match = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(stringField(note, "id") ?? "");
+    const match = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(stringField(note, "id") ?? "");
     if (!match || typeof base !== "string" || typeof head !== "string" || ![base, head].every(rev => /^[a-f0-9]{40,64}$/.test(rev))) return note;
     try {
       const stage = { change: { baseRevision: base, headRevision: head } };
