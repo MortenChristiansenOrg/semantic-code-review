@@ -53,8 +53,9 @@ export function configureApi(scope: { reviewId?: string; generation?: string }):
   generation = scope.generation;
 }
 
+// Only this viewer's own server receives the review scope.
 function scoped(url: URL): URL {
-  if (reviewId && url.pathname.startsWith("/api/")) {
+  if (reviewId && url.origin === window.location.origin && url.pathname.startsWith("/api/")) {
     url.searchParams.set("review", reviewId);
     url.searchParams.set("generation", generation || "");
   }

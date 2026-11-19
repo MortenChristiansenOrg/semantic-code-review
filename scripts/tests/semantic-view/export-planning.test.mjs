@@ -657,9 +657,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.match(app, /pendingDiffs\.forEach/);
   assert.match(app, /replies: sendable\.map/);
   assert.doesNotMatch(app, /\/api\/feedback\/reply-batch/);
-
-
-
+  assert.doesNotMatch(api, /\/api\/feedback\/reply-batch/);
   assert.match(app, /api\.getImplementation\(\)/);
   // One module issues every server request.
   for (const file of fs.readdirSync(viewerSources).filter((name) => name.endsWith(".ts") && name !== "api.ts")) {

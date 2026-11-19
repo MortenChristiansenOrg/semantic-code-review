@@ -316,17 +316,16 @@ export interface RemoteInfo {
  * `implementationDataScript`.
  *
  * When the review is unavailable, `/implementation-data.js` sends a reduced payload
- * (`UnavailableImplementationData`): `summary` holds the error, the lists are
- * empty, `baseRevision` and `targetBranch` are empty strings, and the fields marked
- * optional below are absent. `/api/implementation` always sends the full form. */
+ * (`UnavailableImplementationData`) instead. `/api/implementation` always sends
+ * this full form. */
 export interface ImplementationData {
   implementationId: string;
   reviewId: string;
   /** Present for remote branch reviews; null otherwise. */
-  remote?: RemoteInfo | null;
+  remote: RemoteInfo | null;
   title: string;
   /** The manifest's `skillVersion`, or null when it has none. */
-  skillVersion?: string | null;
+  skillVersion: string | null;
   /** The release version of the installed viewer, or `unversioned`. */
   viewerReleaseVersion: string;
   summary: string;
@@ -336,11 +335,12 @@ export interface ImplementationData {
   stages: Stage[];
   feedback: FeedbackThread[];
   /** Equals `ViewerSnapshot.revision` for the documents this payload was built from. */
-  viewerRevision?: string;
-  awaitingAgentReplies?: number;
+  viewerRevision: string;
+  awaitingAgentReplies: number;
 }
 
-/** The reduced `window.SEMANTIC_IMPLEMENTATION` sent when the review is unavailable. */
+/** The reduced `window.SEMANTIC_IMPLEMENTATION` sent when the review is unavailable:
+ * `summary` holds the error and the lists are empty. */
 export interface UnavailableImplementationData {
   implementationId: string;
   reviewId: string;
@@ -454,14 +454,24 @@ export interface EditorState {
   replyAttachments: Attachment[];
 }
 
+/** A draft note saved by an older viewer: `at` instead of `createdAt`, and no `mode`. */
+export interface LegacyDraftNote extends Partial<Omit<DraftNote, "kind" | "id" | "body">> {
+  kind: NoteKind;
+  id: string;
+  body: string;
+  /** Epoch milliseconds. */
+  at?: number;
+}
+
 /** The persisted viewer state (`state` in the page). The server starts it as `{}`
- * and stores what the page writes, so every field may be absent on the wire; the
- * page fills defaults on load. */
-// Unverified: states saved by older viewers may hold further legacy keys; no index signature is declared for them.
+ * and returns whatever the page wrote, including records saved by older viewers,
+ * so every field may be absent or hold a legacy shape on the wire. The page
+ * normalises the state on load; check values before relying on their current shape. */
 export interface ReviewState {
-  approvals?: Record<string, ApprovalRecord>;
+  /** `true` is a legacy approval without a revision; the page discards it. */
+  approvals?: Record<string, ApprovalRecord | true>;
   insightReviews?: Record<string, InsightReviewRecord>;
-  comments?: DraftNote[];
+  comments?: (DraftNote | LegacyDraftNote)[];
   replyDrafts?: ReplyDraft[];
   editor?: EditorState;
   /** Stage ID -> expanded. */
@@ -470,8 +480,8 @@ export interface ReviewState {
   openThreads?: Record<string, boolean>;
   /** Line ID -> line notes open. */
   openLineThreads?: Record<string, boolean>;
-  /** File ID -> node whose slice of the file is open, or null. */
-  activeFiles?: Record<string, string | null>;
+  /** File ID -> node whose slice of the file is open, or null. Older viewers saved `true`. */
+  activeFiles?: Record<string, string | null | boolean>;
   /** File approval key -> show the comparison with the approved content. */
   approvalComparisons?: Record<string, boolean>;
   /** Feedback thread ID -> collapsed. */
@@ -482,8 +492,8 @@ export interface ReviewState {
   fileView?: Record<string, "hunk" | "full">;
   /** File ID -> hide removed lines. */
   hideDeleted?: Record<string, boolean>;
-  /** Specification ID -> expanded. */
-  specificationOpen?: Record<string, boolean>;
+  /** Specification ID -> expanded. Older viewers saved one boolean. */
+  specificationOpen?: Record<string, boolean> | boolean;
   lastNoteMode?: NoteMode;
   coverageOpen?: boolean;
   notesOpen?: boolean;
@@ -498,6 +508,8 @@ export interface ReviewState {
   readReplies?: Record<string, boolean>;
   /** `AgentStatus.targetRefresh.at` of the dismissed target refresh notice. */
   dismissedTargetRefresh?: string;
+  /** Keys written by older viewers, such as `active`. */
+  [legacyKey: string]: unknown;
 }
 
 /** One side of a state change: whether the key exists and its value. */
@@ -587,10 +599,11 @@ export type DiffQuery = {
   mode?: DiffMode;
   /** Decimal row offset; defaults to 0. */
   offset?: string;
-  side?: DiffSide;
-  /** Decimal line number on `side`. */
-  line?: string;
-};
+} & (
+  | { side?: undefined; line?: undefined }
+  /** `line` is a decimal line number on `side`; the server rejects one without the other. */
+  | { side: DiffSide; line: string }
+);
 
 /** GET `/api/diff` response (worker `fileDiff`). Pages hold at most 900 rows. */
 export type DiffResponse = ApiResult<{
@@ -902,7 +915,8 @@ export type ThreadActionResponse =
       ok: true;
       status: ThreadStatus;
       resolvedAt: string | null;
-      /** The new comment, for `reply` only. */
+      /** For `reply` only: the thread's last comment after the reply. A retry after
+       * the agent answered returns the agent's comment, not the reviewer's reply. */
       comment?: FeedbackComment;
     } & ViewerSnapshot)
   | ApiFailure;
