@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
@@ -668,7 +668,7 @@ test("viewer client refreshes data without reloading the page", () => {
     .filter((name) => name.endsWith(".ts") && name !== "api.ts");
   assert.ok(modules.includes("app.ts"));
   for (const file of modules) {
-    assert.doesNotMatch(fs.readFileSync(new URL(file, viewerSources), "utf8"), directRequest, file);
+    assert.doesNotMatch(fs.readFileSync(path.join(fileURLToPath(viewerSources), file), "utf8"), directRequest, file);
   }
   assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);

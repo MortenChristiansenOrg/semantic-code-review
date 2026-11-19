@@ -118,8 +118,9 @@ export function fileContentUrl(query: FileContentQuery, hash = ""): string {
 export type FileContentJsonUrl = string & { readonly fileContentJson: true };
 
 /** URL of a file's complete content as JSON; also the key of its cached preview. */
-export function fileContentJsonUrl(query: Pick<FileContentQuery, "stage" | "path" | "base" | "head">): FileContentJsonUrl {
-  return fileContentUrl(query) as FileContentJsonUrl;
+export function fileContentJsonUrl({ stage, path, base, head }: Pick<FileContentQuery, "stage" | "path" | "base" | "head">): FileContentJsonUrl {
+  // Copy only these fields: a full query's target or raw flag would ask for bytes.
+  return fileContentUrl({ stage, path, base, head }) as FileContentJsonUrl;
 }
 
 /** Loads a file's complete content as JSON. */
