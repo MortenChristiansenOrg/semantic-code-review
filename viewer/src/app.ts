@@ -4110,7 +4110,12 @@ import { renderPage } from "./views/page";
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
-    if (!focused?.isConnected && (focusName || focusSelector)) {
+    // Moving a node, as a keyed list does when it reorders, blurs it although it survives.
+    const focusLost = !document.activeElement || document.activeElement === document.body;
+    if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
+      focused.focus({ preventScroll: true });
+      if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
+    } else if (!focused?.isConnected && (focusName || focusSelector)) {
       const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
       const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }

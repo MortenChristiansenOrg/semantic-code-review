@@ -89,6 +89,12 @@ export function patchElement(node: Element, next: Element): void {
 export type LegacyPrepare = (root: HTMLElement) => void;
 
 class LegacyHtmlDirective extends Directive {
+  // lit commits `content` to the part once and keeps it while it receives the
+  // same object back, so later updates patch in place. Because lit knows the
+  // part holds content, switching the binding to anything else clears it.
+  private anchor: Comment | null = null;
+  private content: DocumentFragment | null = null;
+
   constructor(info: PartInfo) {
     super(info);
     if (info.type !== PartType.CHILD) throw new Error("legacyHtml() can only be used as child content.");
@@ -100,11 +106,22 @@ class LegacyHtmlDirective extends Directive {
     const next = document.createElement("div");
     next.innerHTML = markup;
     prepare?.(next);
-    // On the first render the part still sits in the template's fragment,
-    // while `part.parentNode` already reports the container it will join.
-    const parent = part.startNode?.parentNode ?? part.parentNode;
-    patchChildren(parent, next, part.startNode, part.endNode);
-    return noChange;
+    const anchor = this.anchor;
+    if (anchor && this.content && anchor.parentNode && anchor.parentNode === part.startNode?.parentNode) {
+      patchChildren(anchor.parentNode, next, anchor, part.endNode);
+      return this.content;
+    }
+    // First render, or the part showed other content since: hand lit new nodes
+    // after an anchor that marks where the legacy range starts.
+    const content = document.createDocumentFragment();
+    this.anchor = document.createComment("");
+    content.append(this.anchor);
+    for (const node of Array.from(next.childNodes)) {
+      rememberRendered(node, node);
+      content.append(node);
+    }
+    this.content = content;
+    return content;
   }
 }
 

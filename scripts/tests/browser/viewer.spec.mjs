@@ -2931,6 +2931,16 @@ test('coverage, progress and the scrim follow approvals under a policy that bloc
   expect(await page.evaluate(() => window.styleViolations)).toEqual([]);
 });
 
+test('a stored agent question without a body does not stop page updates', async ({ page }) => {
+  const now = new Date().toISOString();
+  const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'q1', choices: [], createdAt: now }] } };
+  await mount(page, data);
+  await expect(page.locator('.agent-question')).toHaveCount(1);
+  await page.locator('.tb-btn[data-action="toggle-coverage"]').click();
+  await expect(page.locator('.side.coverage')).toHaveClass(/is-open/);
+});
+
 test('agent questions keep the draft, focus and caret across live updates and show their text literally', async ({ page }) => {
   const now = new Date().toISOString();
   const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
@@ -2938,7 +2948,8 @@ test('agent questions keep the draft, focus and caret across live updates and sh
   await mount(page, data);
   const first = page.locator('.agent-question').first();
   await expect(first.locator('.comment-body code')).toHaveText('<b>bold</b>');
-  await expect(first.locator('.comment-body')).toHaveText('Use <b>bold</b> or <i>this</i>?\nSecond line');
+  // toHaveText normalises whitespace; the line break must survive exactly.
+  await expect(first.locator('.comment-body')).toHaveJSProperty('textContent', 'Use <b>bold</b> or <i>this</i>?\nSecond line');
   await expect(first.locator('.comment-body b, .comment-body i')).toHaveCount(0);
   await expect(first.locator('[data-action="agent-choice"]')).toHaveText('<b>Yes</b>');
 
