@@ -98,6 +98,9 @@ import { renderPage } from "./views/page";
   const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
+    // A local feedback write changes what the page shows, so the revision a
+    // selection deferred is no longer fully shown; the next poll fetches again.
+    selectionRevision = null;
     if (!snapshot || typeof snapshot.revision !== "string") return;
     adoptAgentStatus(snapshot.agent);
   }
@@ -258,7 +261,8 @@ import { renderPage } from "./views/page";
 
   let lastHiddenPoll = 0;
   // The latest server revision a poll handled while a code selection deferred the
-  // full implementation (see below); null once the page shows data.viewerRevision.
+  // full implementation (see below); null once the page shows data.viewerRevision
+  // or a local feedback write changes what it shows.
   let selectionRevision = null;
   const codeSelected = () => Boolean(window.getSelection()?.toString()) && !document.activeElement?.matches("input, textarea");
   // Feedback anchors to stage revisions, so it may only join a diff from the same revisions.
@@ -299,7 +303,8 @@ import { renderPage } from "./views/page";
       // Thread lists the selection runs through keep what they show (see heldThreads).
       const feedback = payload.implementation.feedback || [];
       if (codeSelected()) {
-        selectionRevision = snapshot.revision;
+        // Record the revision of the data adopted; the server may have moved on since the probe.
+        selectionRevision = payload.implementation.viewerRevision;
         if (diffRevisions(payload.implementation) === diffRevisions(data) && JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
           artifactThreads.splice(0, artifactThreads.length, ...feedback);
           if (!roundNotice) refreshNotice = "Review updated";

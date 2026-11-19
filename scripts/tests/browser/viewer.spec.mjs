@@ -298,6 +298,53 @@ test('open threads refresh while code remains selected, and edited replies survi
   expect(errors).toEqual([]);
 });
 
+async function selectCode(page) {
+  await page.locator('.drow code').first().evaluate((el) => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  });
+}
+
+test('a local resolve during a selection does not mark a reopened server revision as shown', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('reopened')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  data.feedback[0].comments.push({ author: 'agent', body: 'Agent reply', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'with-reply';
+  await expect(page.locator('.stage .tthread')).toContainText('Agent reply');
+  // Another session reopens the thread before the next poll, returning the server to the revision shown.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ json: { ok: true, status: 'resolved' } }));
+  await page.locator('.stage [data-action="thread-resolve"]').dispatchEvent('click');
+  await expect(badge).toHaveText('Notes 0');
+  await expect(badge).toHaveText('Notes 1');
+  expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
+});
+
+test('a selection records the revision of the adopted data, not the one the probe reported', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('raced')];
+  await mount(page, data, { openThreads: { first: true } });
+  await openFile(page);
+  await selectCode(page);
+  const badge = page.locator('.tb-btn[data-action="toggle-notes"]');
+  // The probe reports B; the implementation has moved on to C by the time it is fetched.
+  await page.route((url) => url.pathname === '/api/implementation', (route) => {
+    data.feedback[0].status = 'resolved';
+    data.viewerRevision = 'C';
+    return route.fallback();
+  }, { times: 1 });
+  data.viewerRevision = 'B';
+  await expect(badge).toHaveText('Notes 0');
+  // The server returns to B, whose thread is open.
+  data.feedback[0].status = 'open';
+  data.viewerRevision = 'B';
+  await expect(badge).toHaveText('Notes 1');
+  expect(await page.evaluate(() => String(window.getSelection()))).toContain('const first');
+});
+
 test('resolve and reopen update global badge, lists, and inline thread immediately', async ({ page }) => {
   const data = fixture(); data.feedback = [thread('resolve-me')];
   await mount(page, data, { openThreads: { first: true } });
