@@ -1,5 +1,8 @@
 // Run from any directory. --scripts <bundled scripts directory> --baseline
 // measures an older checkout using the same generated fixtures and tracing.
+// A build with the single semantic-flow.mjs exports no viewer module, so the
+// viewer measurements load its source: --source <checkout> names the checkout
+// it was built from (by default the one that contains --scripts).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,6 +24,10 @@ const invocations = {
   'review-feedback': separateExecutables ? ['review-feedback.mjs'] : ['semantic-flow.mjs', 'feedback'],
   'semantic-flow': ['semantic-flow.mjs'],
 };
+const viewerModulePath = separateExecutables
+  ? path.join(selected, 'semantic-view.mjs')
+  : path.join(args.includes('--source') ? path.resolve(args[args.indexOf('--source') + 1]) : path.resolve(selected, '../../..'), 'scripts', 'src', 'semantic-view.ts');
+if (!fs.existsSync(viewerModulePath)) throw new Error(`No viewer module at ${viewerModulePath}. Pass --source <checkout> with the source checkout of the selected build.`);
 const commandArgs = (name, args) => { const [file, ...group] = invocations[name]; return [path.join(selected, file), ...group, ...args]; };
 function fixture() {
   const repo = createRepository(t, 'semantic-benchmark-');
@@ -67,8 +74,7 @@ try {
     measure(feedback, `reply among ${start + count} line threads`, [['review-feedback', 'thread', 'reply', '--id', 'thread-0', '--comment-id', `agent-${count}`, '--author', 'agent', '--body', 'Checked.']]);
   }
   measure(feedback, 'feedback preflight, 300 threads', [['semantic-flow', 'feedback', '--json']]);
-  // The current bundle exports nothing; load the viewer from the selected build's source.
-  const viewerModule = await import(pathToFileURL(separateExecutables ? path.join(selected, 'semantic-view.mjs') : path.resolve(selected, '../../../scripts/src/semantic-view.ts')));
+  const viewerModule = await import(pathToFileURL(viewerModulePath));
   const viewer = fixture();
   const large = Array.from({ length: 100000 }, (_, i) => `${String(i).padStart(6, '0')} ${'unchanged context '.repeat(8)}`).join('\n') + '\n';
   viewer.commitFile('large.txt', large, 'Large context');

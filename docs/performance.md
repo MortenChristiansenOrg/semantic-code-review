@@ -9,7 +9,9 @@ future work; incremental viewer refresh is available independently.
 
 Run `npm run benchmark` in `scripts/`. To compare the same fixtures against an
 older checkout, run `node benchmarks/operations.mjs --baseline --scripts
-/path/to/old/skills/semantic-flow/scripts`. The baseline below is commit
+/path/to/old/skills/semantic-flow/scripts`. For a build with the single
+`semantic-flow.mjs` outside its source checkout, add `--source /path/to/checkout`
+so the viewer measurements can load its source. The baseline below is commit
 `84b6d1c98ce2d19b6baa1aa06eacbcc5c46cfc20`. The script creates and removes temporary
 repositories; Git process counts use `GIT_TRACE2_EVENT`.
 
