@@ -8,7 +8,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
-  patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+  patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../src/semantic-view.ts';
 
 function setup(t) {
   const author = createRepository(t, 'remote-author-'), source = createRepository(t, 'remote-reviewer-');
@@ -81,8 +81,8 @@ test('remote feedback is rejected in store, export, and CLI while personal notes
   const { source } = setup(t), review = startRemoteReview(source.root, 'feature'), context = captureReviewContext(review.id);
   assert.throws(() => patchReviewState(review.id, review.generation, [change(['comments'], [{ mode: 'feedback', body: 'Send' }])]), /personal notes only/);
   assert.throws(() => patchReviewState(review.id, review.generation, [change(['editor'], { compose: { mode: 'feedback', body: 'Draft' } })]), /personal notes only/);
-  assert.throws(() => exportFeedback({ repoRoot: review.repositoryRoot, implementation: dataFor(review), feedbackCli, context }, []), /personal notes only/);
-  const result = spawnSync(process.execPath, [feedbackCli, 'init'], { cwd: review.repositoryRoot, encoding: 'utf8' });
+  assert.throws(() => exportFeedback({ repoRoot: review.repositoryRoot, implementation: dataFor(review), context }, []), /personal notes only/);
+  const result = spawnSync(process.execPath, [...feedbackCli, 'init'], { cwd: review.repositoryRoot, encoding: 'utf8' });
   assert.notEqual(result.status, 0); assert.match(result.stderr, /personal notes only/);
   assert.equal(fs.existsSync(path.join(reviewDirectory(review.id), 'feedback', 'manifest.json')), false);
   patchReviewState(review.id, review.generation, [change(['comments'], [{ mode: 'personal', body: 'Keep' }])]);
@@ -309,7 +309,7 @@ test('Windows short aliases for the review directory retain remote identity', { 
   assert.ok(shortPath, 'Windows must return a checkout path');
   if (shortPath === review.repositoryRoot) { t.skip('This volume does not create 8.3 aliases'); return; }
   assert.equal(reviewId(shortPath, review.implementationId), review.id);
-  const result = spawnSync(process.execPath, [feedbackCli, 'init'], { cwd: shortPath, encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [...feedbackCli, 'init'], { cwd: shortPath, encoding: 'utf8' });
   assert.notEqual(result.status, 0); assert.match(result.stderr, /personal notes only/);
 });
 
@@ -320,7 +320,7 @@ test('remote commit diffs show only incremental edits without a cumulative stage
   const updated = author.commitFile('code.txt', 'updated\n', 'Update code');
   author.git('switch', 'main');
   const review = startRemoteReview(source.root, 'feature');
-  const { createViewerDataSource } = await import('../../../skills/semantic-flow/scripts/semantic-view.mjs');
+  const { createViewerDataSource } = await import('../../src/semantic-view.ts');
   const dataSource = createViewerDataSource(review.repositoryRoot);
   const data = implementationFromScript(dataSource.implementationDataScript());
   assert.equal(data.stages.length, 3);

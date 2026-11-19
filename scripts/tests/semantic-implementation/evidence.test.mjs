@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { buildFeedbackTargetData, createViewerDataSource, evidenceRange, exportFeedback, readFeedbackThread } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
-import { beginStage, createRepository, feedbackCli, implementationFromScript, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
+import { buildFeedbackTargetData, createViewerDataSource, evidenceRange, exportFeedback, readFeedbackThread } from "../../src/semantic-view.ts";
+import { beginStage, createRepository, implementationFromScript, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
 
-const cli = (repo, ...args) => repo.result(process.execPath, [semanticCli, ...args]);
+const cli = (repo, ...args) => repo.result(process.execPath, [...semanticCli, ...args]);
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 function capture(t, name, bytes = PNG) {
@@ -150,7 +150,7 @@ test("removing evidence keeps feedback on it valid", t => {
   record(repo, "--file", capture(t, "shot.png"));
   organizeStage(repo, { id });
   repo.semantic("stage", "finish", "--id", id);
-  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root), feedbackCli },
+  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root) },
     [{ kind: "insight", id: `i:${id}:evidence:shot`, body: "Contains a secret", mode: "feedback", clientId: "secret" }]);
   assert.deepEqual(sent.skipped, []);
   repo.semantic("stage", "evidence-remove", "--stage", id, "--finalized", "--item-id", "shot");
@@ -210,7 +210,7 @@ test("publication and the viewer carry the evidence", t => {
   const insight = data.stages[0].insights.find(item => item.collection === "evidence");
   assert.equal("stale" in insight.evidence, false);
   assert.equal(insight.evidence.attachments[0].mediaType, "image/png");
-  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root), feedbackCli },
+  const sent = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root) },
     [{ kind: "insight", id: `i:${id}:evidence:shot`, body: "This shows the wrong page", mode: "feedback", clientId: "evidence-note" }]);
   assert.deepEqual(sent.skipped, []);
   assert.equal(readFeedbackThread(repo.root, sent.exported[0].threadId).target.collection, "evidence");

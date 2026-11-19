@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { createRepository, initializeImplementation } from '../helpers/repository.mjs';
-import { registerReview, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot, patchReviewState, reviewDirectory } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot, patchReviewState, reviewDirectory } from '../../src/semantic-view.ts';
 
 function setup(t) {
   const repo = createRepository(t, 'approved-snapshot-'); initializeImplementation(repo);

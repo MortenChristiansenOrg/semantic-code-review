@@ -4,9 +4,8 @@
 until the review ends. The reviewer never runs another command between rounds;
 feedback sent while you work is queued for your next round.
 
-`<semantic-flow>` and `<review-feedback>` mean `node` followed by the quoted
-`scripts/semantic-flow.mjs` and `scripts/review-feedback.mjs` paths under the
-installed skill root.
+`<semantic-flow>` means `node` followed by the quoted `scripts/semantic-flow.mjs`
+path under the installed skill root.
 
 ## Start
 
@@ -62,7 +61,7 @@ reports them on stderr.
 Before long steps, you may show what the round is doing:
 
 ```text
-<review-feedback> agent progress --input -
+<semantic-flow> feedback agent progress --input -
 {"body":"Changing the cancellation and refund stages"}
 ```
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { captureCodeTarget, resolveCodeTarget, createViewerDataSource } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
+import { captureCodeTarget, resolveCodeTarget, createViewerDataSource } from "../../src/semantic-view.ts";
 import { createRepository, implementationFromScript, initializeImplementation, beginStage, organizeStage } from "../helpers/repository.mjs";
 
 const content = "// header\nfunction check(value) {\n  if (!value) throw new Error('missing');\n  return value;\n}\n// footer\n";

@@ -79,8 +79,8 @@ platform guide's concrete invocations as:
 
 ```text
 <semantic-flow> <command>
-<semantic-implementation> <command>
-<review-feedback> <command>
+<semantic-flow> implementation <command>
+<semantic-flow> feedback <command>
 ```
 
 Substitute the selected guide's invocation; do not run these placeholders
@@ -170,7 +170,7 @@ Pass that document from an operating-system temporary file or through stdin as
 described by the selected platform guide:
 
 ```text
-<semantic-implementation> init --input <implementation-input.json>
+<semantic-flow> implementation init --input <implementation-input.json>
 ```
 
 Initialization records `main`'s current head as `baseRevision`. Override the
@@ -195,7 +195,7 @@ Place long mutation options in JSON:
 ```
 
 ```text
-<semantic-implementation> stage begin --input <semantic-stage.json>
+<semantic-flow> implementation stage begin --input <semantic-stage.json>
 ```
 
 The command creates and checks out:
@@ -227,7 +227,7 @@ Record insights when they become relevant:
 ```
 
 ```text
-<semantic-implementation> stage record --input <decision.json>
+<semantic-flow> implementation stage record --input <decision.json>
 ```
 
 All insight kinds can optionally link to a line or a span of committed code.
@@ -240,7 +240,7 @@ before retargeting.
 Attach or retarget an existing insight without replacing its text:
 
 ```text
-<semantic-implementation> stage target --collection decisions --item-id keep-policy-in-aggregate --code-path src/Orders/Order.cs --code-start 24 --code-end 31
+<semantic-flow> implementation stage target --collection decisions --item-id keep-policy-in-aggregate --code-path src/Orders/Order.cs --code-start 24 --code-end 31
 ```
 
 Use `--stage <id> --finalized` for a finalized stage. Use `--remove` instead of
@@ -263,7 +263,7 @@ Capture it by exercising the committed stage head, then record it from the stage
 branch with a clean worktree:
 
 ```bash
-semantic-implementation stage evidence --item-id settings-button --kind screenshot \
+<semantic-flow> implementation stage evidence --item-id settings-button --kind screenshot \
   --summary "Settings shows the new button" --after /tmp/settings.png \
   --specification-ref story#button --reproduction "Open /settings"
 ```
@@ -320,7 +320,7 @@ organization document:
 ```
 
 ```text
-<semantic-implementation> stage organize --file <stage-organization.json>
+<semantic-flow> implementation stage organize --file <stage-organization.json>
 ```
 
 Every changed file belongs to a node. If multiple nodes share one file, each
@@ -343,8 +343,8 @@ Record observed validation and link it to the relevant nodes:
 ```
 
 ```text
-<semantic-implementation> stage validation --input <validation.json>
-<semantic-implementation> stage finish
+<semantic-flow> implementation stage validation --input <validation.json>
+<semantic-flow> implementation stage finish
 ```
 
 A stage may contain several linear commits. Finalization rejects merge commits,
@@ -396,7 +396,7 @@ The agent or user may check out any stage branch and commit a correction:
 git switch semantic-flow/customer-order-cancellation/01-add-cancellation-policy
 # edit, test
 git commit -am "Handle paid pending orders"
-<semantic-implementation> restack --from add-cancellation-policy
+<semantic-flow> implementation restack --from add-cancellation-policy
 ```
 
 The command:
@@ -446,7 +446,7 @@ For a direct restack after the local target has already advanced:
 
 ```text
 git switch main
-<semantic-implementation> restack --base main
+<semantic-flow> implementation restack --base main
 ```
 
 Do not run a restack while an upper branch that must move is checked out.
@@ -466,14 +466,14 @@ After answering or restacking, the implementation agent sends all replies in
 one batch:
 
 ```text
-<review-feedback> thread reply-batch --input <replies-json>
+<semantic-flow> feedback thread reply-batch --input <replies-json>
 ```
 
 The same reply flow handles questions that require no code change. The
 reviewer then resolves the thread in the viewer or with:
 
 ```text
-<review-feedback> thread resolve --id <thread-id>
+<semantic-flow> feedback thread resolve --id <thread-id>
 ```
 
 Reopening or replying to a resolved thread makes it open again. Later stage
@@ -694,10 +694,10 @@ automatically in an interactive review.
 The CLI can register context too:
 
 ```text
-<review-feedback> init
-<review-feedback> attachment add --file <local-file>
-<review-feedback> thread reply --id <thread-id> --comment-id <comment-id> --attachments <attachment-id>
-<review-feedback> attachment show --id <attachment-id>
+<semantic-flow> feedback init
+<semantic-flow> feedback attachment add --file <local-file>
+<semantic-flow> feedback thread reply --id <thread-id> --comment-id <comment-id> --attachments <attachment-id>
+<semantic-flow> feedback attachment show --id <attachment-id>
 ```
 
 `attachment add` and `attachment show` print metadata and `localPath` as JSON.

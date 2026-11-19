@@ -35,14 +35,14 @@ concealed one.
 For a completed implementation, the exact structural checks are:
 
 ```text
-node <skill>/scripts/semantic-implementation.mjs validate --publish
-node <skill>/scripts/semantic-implementation.mjs validate-stack --json
+node <skill>/scripts/semantic-flow.mjs implementation validate --publish
+node <skill>/scripts/semantic-flow.mjs implementation validate-stack --json
 ```
 
 For compatible feedback, additionally run the read-only feedback validator:
 
 ```text
-node <skill>/scripts/review-feedback.mjs validate
+node <skill>/scripts/semantic-flow.mjs feedback validate
 ```
 
 Read thread JSON to verify reply/open/pending state. Do not run feedback preflight or

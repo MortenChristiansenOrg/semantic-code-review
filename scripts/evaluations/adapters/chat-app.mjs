@@ -146,13 +146,13 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   const checks = new Map(checkIds.map(id => [id, { id, passed: false, evidence: 'Prerequisite checks did not pass' }])), evidence = {};
   const add = (id, passed, detail) => checks.set(id, { id, passed: Boolean(passed), evidence: detail });
   const invoke = (label, command, cwd = fixture.repo, settings) => { const result = run(command, cwd, env, settings); evidence[label] = result; return result; };
-  const cli = (name, ...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', `${name}.mjs`), ...args];
+  const cli = (...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
   const git = (...args) => invoke(`git:${args.join(' ')}`, [capabilities.tools.git.path, ...args]);
   const done = () => ({ checks: [...checks.values()], evidence });
   const listed = git('worktree', 'list', '--porcelain', '-z');
   const roots = String(listed.stdout).split('\0').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
   if (listed.exitCode !== 0 || !roots.length || roots.some(repo => !inside(root, repo))) { add('worktree-scope', false, listed); return done(); }
-  const inspection = invoke('inspection', cli('semantic-flow', 'inspect', '--json'));
+  const inspection = invoke('inspection', cli('inspect', '--json'));
   let selected;
   try {
     const parsed = JSON.parse(inspection.stdout);
@@ -163,7 +163,7 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   catch (error) { add('worktree-scope', false, `${inspection.stderr}\n${error.message}`); return done(); }
   add('worktree-scope', true, { roots, selected: selected.worktree });
   const repo = selected.worktree;
-  for (const [id, args] of [['artifact-publication', ['validate', '--publish']], ['stack', ['validate-stack', '--json']]]) { const result = invoke(id, cli('semantic-implementation', ...args), repo); add(id, result.exitCode === 0 && !result.error, result); }
+  for (const [id, args] of [['artifact-publication', ['validate', '--publish']], ['stack', ['validate-stack', '--json']]]) { const result = invoke(id, cli('implementation', ...args), repo); add(id, result.exitCode === 0 && !result.error, result); }
   let manifest, stages, head;
   try {
     manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));

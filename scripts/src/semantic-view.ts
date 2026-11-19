@@ -7,9 +7,7 @@ export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.j
  * data model (stages, nodes, project-grouped files, full-context diffs), and
  * serves the bundled Cinema viewer on localhost.
  *
- * Usage: node semantic-view.mjs [review] [project-path]
- * The optional leading `review` token is accepted and ignored so the launch
- * reads naturally ("semantic-view review").
+ * Usage: node semantic-flow.mjs viewer serve [project-path] [--review <id> --generation <gen>]
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -1544,7 +1542,6 @@ const CONTENT_TYPES: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
-// Locate the sibling review-feedback CLI produced by the skill build.
 function readRequestBody(request: http.IncomingMessage, limit = 8 * 1024 * 1024): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];

@@ -1,4 +1,4 @@
-import { feedbackDirectory } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
+import { feedbackDirectory } from "../../src/shared/review-store.ts";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,15 +21,13 @@ export const scriptsDirectory = path.resolve(
   "semantic-flow",
   "scripts",
 );
-export const semanticCli = path.join(
-  scriptsDirectory,
-  "semantic-implementation.mjs",
-);
-export const feedbackCli = path.join(
-  scriptsDirectory,
-  "review-feedback.mjs",
-);
 export const flowCli = path.join(scriptsDirectory, "semantic-flow.mjs");
+/** Arguments that run a command of the implementation group. */
+export const semanticCli = [flowCli, "implementation"];
+/** Arguments that run a command of the feedback group. */
+export const feedbackCli = [flowCli, "feedback"];
+/** Node options that let a child process import the TypeScript sources. */
+export const sourceLoader = ["--import", import.meta.resolve("tsx")];
 
 /** The data the viewer page sees after running an implementation data script. */
 export function implementationFromScript(script) {
@@ -105,24 +103,24 @@ export function createRepository(t, prefix = "semantic-flow-") {
     run,
     result,
     git: (...args) => run("git", args),
-    semantic: (...args) => run(process.execPath, [semanticCli, ...args]),
-    feedback: (...args) => run(process.execPath, [feedbackCli, ...args]),
+    semantic: (...args) => run(process.execPath, [...semanticCli, ...args]),
+    feedback: (...args) => run(process.execPath, [...feedbackCli, ...args]),
     flow: (...args) => run(process.execPath, [flowCli, ...args]),
     expectSemanticFailure: (expected, ...args) =>
-      expectFailure(expected, process.execPath, [semanticCli, ...args]),
+      expectFailure(expected, process.execPath, [...semanticCli, ...args]),
     expectFeedbackFailure: (expected, ...args) =>
-      expectFailure(expected, process.execPath, [feedbackCli, ...args]),
+      expectFailure(expected, process.execPath, [...feedbackCli, ...args]),
     feedbackAsync: (...args) =>
       new Promise((resolve, reject) => {
         execFile(
           process.execPath,
-          [feedbackCli, ...args],
+          [...feedbackCli, ...args],
           { cwd: root, encoding: "utf8" },
           (error, stdout, stderr) => {
             if (error) {
               reject(
                 new Error(
-                  commandFailure(process.execPath, [feedbackCli, ...args], {
+                  commandFailure(process.execPath, [...feedbackCli, ...args], {
                     status: error.code,
                     stdout,
                     stderr,

@@ -4,22 +4,20 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
   createRepository,
-  feedbackCli,
   flowCli,
   implementationFromScript,
   initializeImplementation,
   organizeStage,
   scriptsDirectory,
+  sourceLoader,
 } from "../helpers/repository.mjs";
 
-const moduleUrl = pathToFileURL(
-  path.join(scriptsDirectory, "semantic-view.mjs"),
-).href;
+const moduleUrl = new URL("../../src/semantic-view.ts", import.meta.url).href;
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
@@ -466,7 +464,6 @@ test("feedback export commits the valid subset when one batch item is stale", (t
     {
       repoRoot: repository.root,
       implementation: buildFeedbackTargetData(repository.root),
-      feedbackCli,
     },
     [
       {
@@ -517,7 +514,7 @@ test("feedback reply export batches reviewer replies", (t) => {
   }
 
   const result = exportFeedbackReplies(
-    { repoRoot: repository.root, feedbackCli },
+    { repoRoot: repository.root },
     [
       { ref: "draft-first", threadId: "reply-first", body: "First response." },
       { ref: "draft-second", threadId: "reply-second", body: "Second response." },
@@ -789,7 +786,7 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   fs.cpSync(first.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
   const roots = [first.root, linked, otherRepo.root];
   const ids = roots.map((repoRoot) => {
-    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli },
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot) },
       [{ kind: "stage", id: "implementation", body: "Same message", clientId: "same-client" }]);
     assert.equal(result.ok, true);
     assert.equal(fs.existsSync(path.join(repoRoot, ".semantic-review-feedback")), false);
@@ -798,7 +795,7 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   assert.equal(new Set(roots.map((root) => feedbackDirectory(root))).size, 3);
   assert.equal(new Set(ids).size, 1); // Same IDs remain isolated by review identity.
   const before = fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8");
-  const replies = exportFeedbackReplies({ repoRoot: linked, feedbackCli }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
+  const replies = exportFeedbackReplies({ repoRoot: linked }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
   assert.equal(replies.ok, true);
   assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
   const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
@@ -810,9 +807,9 @@ test("concurrent first submissions initialize shared feedback once and deduplica
   const { repository } = createImplementationWithStages(t);
   const source = `import { exportFeedback, buildFeedbackTargetData } from ${JSON.stringify(moduleUrl)};
     const repoRoot = process.argv[1];
-    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot), feedbackCli: process.argv[2] }, [{ kind: "stage", id: "implementation", body: "Concurrent message", clientId: "retry" }]);
+    const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot) }, [{ kind: "stage", id: "implementation", body: "Concurrent message", clientId: "retry" }]);
     console.log(JSON.stringify(result));`;
-  const results = await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, repository.root, feedbackCli])));
+  const results = await Promise.all([0, 1].map(() => promisify(execFile)(process.execPath, [...sourceLoader, "--input-type=module", "-e", source, repository.root])));
   for (const result of results) assert.equal(JSON.parse(result.stdout).ok, true);
   const manifest = repository.readAbsoluteJson(repository.feedbackPath("manifest.json"));
   assert.equal(manifest.threads.length, 1);
@@ -845,7 +842,9 @@ test("viewer release version is independent of artifact creation metadata", (t) 
   const data = () => implementationFromScript(source.implementationDataScript());
   manifest.skillVersion = "0.2.0";
   repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
-  const runningVersion = fs.readFileSync(path.resolve(scriptsDirectory, "..", "VERSION"), "utf8").trim();
+  // This test loads the viewer from source, which has no installed VERSION file.
+  // The workflow helper tests check the served bundle reports the built version.
+  const runningVersion = "unversioned";
   assert.equal(data().skillVersion, "0.2.0");
   assert.equal(data().viewerReleaseVersion, runningVersion);
   assert.equal(repository.readJson(".semantic-review/manifest.json").skillVersion, "0.2.0");
@@ -987,13 +986,13 @@ test("line drafts survive unrelated restacks and reject actual file changes", (t
   const migrated = resolveLineDraftSnapshots(repository.root, [legacy])[0];
   assert.deepEqual(migrated.snapshot, modern.snapshot, 'migration preserves the original commit anchor');
   assert.equal(planFeedbackThreads([modern, migrated], current).planned.length, 2);
-  const result = exportFeedback({ repoRoot: repository.root, implementation: current, feedbackCli }, [legacy, modern]);
+  const result = exportFeedback({ repoRoot: repository.root, implementation: current }, [legacy, modern]);
   assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.exported.length, 2);
   const thread = readFeedbackThread(repository.root, result.exported[0].threadId);
   assert.equal(thread.target.kind, 'line'); assert.equal(thread.target.path, 'implementation.txt');
   stage.change.headRevision = repository.commitFile('implementation.txt', 'changed\n', 'Change the commented file');
   repository.write(stagePath, JSON.stringify(stage));
-  const rejected = exportFeedback({ repoRoot: repository.root, implementation: buildFeedbackTargetData(repository.root), feedbackCli }, [legacy, modern]);
+  const rejected = exportFeedback({ repoRoot: repository.root, implementation: buildFeedbackTargetData(repository.root) }, [legacy, modern]);
   assert.equal(rejected.ok, false); assert.equal(rejected.skipped.length, 2);
   assert.match(rejected.skipped[0].reason, /file changed/);
   const unavailable = { ...legacy, snapshot: { ...snapshot, head: 'f'.repeat(40) } };

@@ -16,7 +16,7 @@ net patch:
 
 1. Record the original restack invocation and the complete conflict context.
    If `feedback` or `sync` preflight triggered the restack, the invocation to
-   resume is `<semantic-implementation> restack --base <target-branch>` in the
+   resume is `<semantic-flow> implementation restack --base <target-branch>` in the
    artifact worktree. Record the original checkout too. Do not rerun the outer
    helper until the underlying restack succeeds: recovery moves a stage head
    that automatic preflight deliberately rejects. A target fast-forward done

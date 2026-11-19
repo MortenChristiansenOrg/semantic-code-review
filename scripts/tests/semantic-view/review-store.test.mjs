@@ -6,7 +6,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
+// Child processes import the same TypeScript sources.
+const sourceLoader = ['--import', import.meta.resolve('tsx')];
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-store-'));
@@ -81,9 +83,9 @@ test('deleted sessions cannot be resurrected by stale writes', (t) => {
 
 test('separate processes cannot lose independent state writes', async (t) => {
   const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
-  const moduleUrl = new URL('../../../skills/semantic-flow/scripts/semantic-view.mjs', import.meta.url).href;
+  const moduleUrl = new URL('../../src/semantic-view.ts', import.meta.url).href;
   const source = `import { patchReviewState } from ${JSON.stringify(moduleUrl)}; patchReviewState(process.argv[1], process.argv[2], JSON.parse(process.argv[3]));`;
-  await Promise.all(Array.from({ length: 6 }, (_, i) => promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, review.id, review.generation, JSON.stringify([change(['approvals', String(i)], i)])])));
+  await Promise.all(Array.from({ length: 6 }, (_, i) => promisify(execFile)(process.execPath, [...sourceLoader, '--input-type=module', '-e', source, review.id, review.generation, JSON.stringify([change(['approvals', String(i)], i)])])));
   assert.deepEqual(readReview(review.id).state.approvals, { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 });
 });
 

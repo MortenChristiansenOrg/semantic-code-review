@@ -12,8 +12,9 @@ Choose files by responsibility:
 | Command routing | `skills/semantic-flow/SKILL.md` |
 | Command workflows | `skills/semantic-flow/commands/` |
 | Shared runtime and quality rules | `skills/semantic-flow/docs/runtime.md`, `skills/semantic-flow/docs/artifact-quality.md` |
-| Semantic implementation CLI | `scripts/src/semantic-implementation.ts` |
-| Review feedback CLI | `scripts/src/review-feedback.ts` |
+| CLI entry and command groups | `scripts/src/cli.ts` |
+| Implementation commands | `scripts/src/semantic-implementation.ts` |
+| Feedback commands | `scripts/src/review-feedback.ts` |
 | Runtime command and option definitions | `scripts/src/command-api.ts` |
 | Published TypeScript command contract and JSDoc | `scripts/src/api/*.ts` (indexed by `scripts/src/api.ts`) |
 | Contract validation or skill packaging | `scripts/src/api-contract-check.ts`, `scripts/src/build-skill.ts` |

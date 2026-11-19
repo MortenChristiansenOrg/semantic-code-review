@@ -6,16 +6,16 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { createRepository, initializeImplementation, beginStage, finalizeStage, organizeStage, createImplementationWithStages, feedbackCli, flowCli, scriptsDirectory } from './helpers/repository.mjs';
-const { createViewerDataSource, createSnapshotReader, exportFeedback, exportFeedbackReplies, buildFeedbackTargetData } = await import(pathToFileURL(path.join(scriptsDirectory, 'semantic-view.mjs')));
+import { createViewerDataSource, createSnapshotReader, exportFeedback, exportFeedbackReplies, buildFeedbackTargetData } from '../src/semantic-view.ts';
 const input = (repo, ...args) => JSON.parse(repo.semantic(...args));
 
 function lineThreads(count) {
   return Array.from({ length: count }, (_, i) => ({ id: `thread-${i}`, 'comment-id': `comment-${i}`, body: 'Review this.', label: 'Line', 'target-kind': 'line', stage: 'implementation', path: 'implementation.txt', side: 'new', line: i + 1 }));
 }
-function trace(t, repo, cli, args) {
+function trace(t, repo, command, args) {
   const file = path.join(os.tmpdir(), `semantic-trace-${process.pid}-${Math.random()}.json`);
   t.after(() => fs.rmSync(file, { force: true }));
-  const result = spawnSync(process.execPath, [cli, ...args], { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_TRACE2_EVENT: file } });
+  const result = spawnSync(process.execPath, [...command, ...args], { cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_TRACE2_EVENT: file } });
   assert.equal(result.status, 0, result.stderr);
   return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(JSON.parse).filter((event) => event.event === 'start');
 }
@@ -140,7 +140,7 @@ test('large file pages preserve changes, full context, distant line targets and 
 
 test('viewer sends a failed batch once and deterministic retries do not duplicate feedback', (t) => {
   const { repository: repo } = createImplementationWithStages(t);
-  const context = { repoRoot: repo.root, feedbackCli, implementation: buildFeedbackTargetData(repo.root) };
+  const context = { repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root) };
   const notes = [{ ref: 0, clientId: 'draft-1', kind: 'stage', id: 'implementation', body: 'Review once' }, { ref: 1, kind: 'file', id: 'f:implementation:absent', body: 'Invalid' }];
   const first = exportFeedback(context, notes); const second = exportFeedback(context, notes);
   assert.deepEqual(first.exported, second.exported);
@@ -190,20 +190,23 @@ test('API index exposes all groups and contract checks still catch drift and mis
   const missing = check(); assert.notEqual(missing.status, 0); assert.match(missing.stderr, /no source JSDoc/);
 });
 
-test('one stale export item never falls back to one CLI process per item', (t) => {
+test('one stale export item never falls back to one feedback write per item', (t) => {
   const { repository: repo } = createImplementationWithStages(t);
   repo.feedback('init');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-export-count-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const counter = path.join(directory, 'calls.txt');
-  const wrapper = path.join(directory, 'feedback.mjs');
-  fs.writeFileSync(wrapper, `import fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(counter)}, 'call\\n'); await import(${JSON.stringify(pathToFileURL(feedbackCli).href)});`);
+  // The viewer adds feedback in-process; every accepted batch replaces the manifest once.
+  const manifest = repo.feedbackPath('manifest.json');
+  const rename = fs.renameSync;
+  let manifestWrites = 0;
+  t.mock.method(fs, 'renameSync', (from, to, ...rest) => {
+    if (path.resolve(String(to)) === manifest) manifestWrites += 1;
+    return rename(from, to, ...rest);
+  });
   const notes = Array.from({ length: 25 }, (_, index) => ({ ref: index, kind: 'stage', id: 'implementation', body: `Note ${index}` }));
   notes.push({ ref: 25, kind: 'file', id: 'f:implementation:missing.txt', body: 'Stale' });
-  const result = exportFeedback({ repoRoot: repo.root, feedbackCli: wrapper, implementation: buildFeedbackTargetData(repo.root) }, notes);
+  const result = exportFeedback({ repoRoot: repo.root, implementation: buildFeedbackTargetData(repo.root) }, notes);
   assert.equal(result.exported.length, 25);
   assert.equal(result.skipped.length, 1);
-  assert.equal(fs.readFileSync(counter, 'utf8'), 'call\n');
+  assert.equal(manifestWrites, 1);
 });
 
 test('streamed rename pages do not include a newly recreated old path', async (t) => {

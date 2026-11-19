@@ -51,7 +51,7 @@ or intended behavior needs clarification.
   validation described by `implement.md`.
 - If a finalized lower branch changed, restack from the earliest changed stage.
 - If the target branch advanced, check out a branch that will not be rewritten,
-  then run `<semantic-implementation> restack --base <target-branch>`, only when the
+  then run `<semantic-flow> implementation restack --base <target-branch>`, only when the
   artifact and Git state make that safe.
 - If the request is specifically to bring the latest target changes into the
   stack, follow `sync.md` instead. For any restack conflict, follow

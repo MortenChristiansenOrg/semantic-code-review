@@ -5,7 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../../skills/semantic-flow/scripts/semantic-view.mjs';
+import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../src/semantic-view.ts';
+// Child processes import the same TypeScript sources.
+const sourceLoader = ['--import', import.meta.resolve('tsx')];
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-cleanup-')), previous = process.env.SEMANTIC_FLOW_HOME;
   process.env.SEMANTIC_FLOW_HOME = path.join(root, 'data');
@@ -96,9 +98,9 @@ test('unused cleanup protects references and recent uploads, and permits retry o
 
 test('stale process writes cannot resurrect a deleted review', async (t) => {
   const { review } = setup(t);
-  const moduleUrl = new URL('../../../skills/semantic-flow/scripts/semantic-view.mjs', import.meta.url).href;
+  const moduleUrl = new URL('../../src/semantic-view.ts', import.meta.url).href;
   const source = `import { patchReviewState } from ${JSON.stringify(moduleUrl)}; try { patchReviewState(process.argv[1], process.argv[2], JSON.parse(process.argv[3])); } catch {} `;
-  const writers = Array.from({ length: 8 }, (_, i) => promisify(execFile)(process.execPath, ['--input-type=module', '-e', source, review.id, review.generation, JSON.stringify([change('draft' + i, 'late')])]));
+  const writers = Array.from({ length: 8 }, (_, i) => promisify(execFile)(process.execPath, [...sourceLoader, '--input-type=module', '-e', source, review.id, review.generation, JSON.stringify([change('draft' + i, 'late')])]));
   // Either a writer finishes before preview, invalidates it, or is rejected after retirement.
   for (;;) {
     const current = preview(review);

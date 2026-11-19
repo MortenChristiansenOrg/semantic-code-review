@@ -452,9 +452,7 @@ function createUpdateFixture(t) {
   function initialize() {
     initializeImplementation({
       semantic: (...args) => {
-        const result = spawnSync(process.execPath, [
-          path.join(installedSkill, "scripts", "semantic-implementation.mjs"), ...args,
-        ], { cwd: target, encoding: "utf8" });
+        const result = spawnSync(process.execPath, [copiedCli, "implementation", ...args], { cwd: target, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
         return result.stdout;
       },
@@ -777,7 +775,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   const deniedPortHook = a.path("denied-port.cjs");
   fs.writeFileSync(deniedPortHook, `const net = require('node:net'); const listen = net.Server.prototype.listen; let denied = 0; net.Server.prototype.listen = function(...args) { if (typeof args[0] === 'number' && denied++ < 2) { process.nextTick(() => this.emit('error', Object.assign(new Error('Reserved port'), { code: 'EACCES' }))); return this; } return listen.apply(this, args); };`);
   const start = async (root, denyPorts = false) => {
-    const child = spawn(process.execPath, [path.join(scriptsDirectory, "semantic-view.mjs"), "review", root], {
+    const child = spawn(process.execPath, [flowCli, "viewer", "serve", root], {
       cwd: a.root, stdio: ["ignore", "ignore", "pipe", "ipc"],
       env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port), GIT_DIR: a.path(".git"), ...(denyPorts ? { NODE_OPTIONS: `--import=${pathToFileURL(deniedPortHook).href}` } : {}) },
     });
@@ -822,7 +820,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   for (const result of exports) assert.equal(result.status, 200, await result.text());
   assert.equal(a.existsAbsolute(a.feedbackPath("manifest.json")), false);
   assert.equal(b.existsAbsolute(b.feedbackPath("manifest.json")), false);
-  const module = await import(pathToFileURL(path.join(scriptsDirectory, "semantic-view.mjs")).href);
+  const module = await import("../../src/semantic-view.ts");
   // A management request waiting on B's lock must not block A's HTTP loop.
   const heldLock = path.join(process.env.SEMANTIC_FLOW_HOME, "locks", third.reviewId + ".lock");
   fs.mkdirSync(heldLock);
@@ -892,14 +890,22 @@ test("concurrent review services isolate commands and reopen registered worktree
 
 test('a viewer-triggered feedback init cannot recreate data deleted after its initial generation check', async (t) => {
   const { repository } = createImplementationWithStages(t); repository.feedback('init');
-  const module = await import(pathToFileURL(path.join(scriptsDirectory, 'semantic-view.mjs')).href);
+  const module = await import('../../src/semantic-view.ts');
+  const { reviewFeedback } = await import('../../src/review-feedback.ts');
   const manifest = repository.readJson('.semantic-review/manifest.json');
   const id = module.reviewId(repository.root, manifest.implementationId), review = module.readReview(id);
+  const context = module.captureReviewContext(id);
   const record = path.join(module.reviewDirectory(id), 'review.json');
-  const preload = repository.path('delete-during-read.mjs');
-  fs.writeFileSync(preload, `import fs from 'node:fs'; import path from 'node:path'; const read = fs.readFileSync; let removed = false; fs.readFileSync = function(file, ...args) { const value = read.call(this, file, ...args); if (!removed && String(file) === ${JSON.stringify(record)}) { removed = true; fs.rmSync(path.dirname(String(file)), { recursive: true, force: true }); } return value; };`);
-  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, path.join(scriptsDirectory, 'review-feedback.mjs'), 'init'], { cwd: repository.root, env: { ...process.env, SEMANTIC_FLOW_REVIEW_ID: id, SEMANTIC_FLOW_REVIEW_GENERATION: review.generation }, encoding: 'utf8' });
-  assert.notEqual(result.status, 0); assert.match(result.stderr, /deleted|unavailable/);
+  // The viewer initializes feedback in-process for its review session.
+  const read = fs.readFileSync; let removed = false;
+  const mocked = t.mock.method(fs, 'readFileSync', function (file, ...args) {
+    const value = read.call(this, file, ...args);
+    if (!removed && String(file) === record) { removed = true; fs.rmSync(path.dirname(String(file)), { recursive: true, force: true }); }
+    return value;
+  });
+  assert.throws(() => reviewFeedback(repository.root, context).initialize(), /deleted|unavailable/);
+  mocked.mock.restore();
+  assert.equal(removed, true);
   assert.equal(fs.existsSync(module.reviewDirectory(id)), false);
   repository.feedback('init'); assert.notEqual(module.readReview(id).generation, review.generation);
 });

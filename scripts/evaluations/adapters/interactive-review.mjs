@@ -28,7 +28,7 @@ export const transcriptCriteria = {
   'kept-listening': 'Pass when the agent starts listening with `semantic-flow feedback --json --wait`, passes the returned session to every later wait, and waits again after each round, answer, and timeout until a wait returns `stopped`. Fail if it ends the run, stops waiting, or asks (in the chat or the viewer) whether to continue before that result.',
   'questions-first-with-claim': 'Pass when, within each round, the agent answers question-only threads before implementing change requests (an answer it deliberately holds because a change in the same round modifies the code it explains is allowed), and posts every agent reply with the round\'s claim (`--claim` on `thread reply`, or `claim` in `reply-batch` input). Fail replies without the round\'s claim or change work started before an unblocked question was answered.',
   'parallel-work': 'Pass when the round procedure is followed. If the transcript shows the harness offering subagents, questions are answered by parallel subagents that read code at the recorded stage commit without editing; otherwise the agent answers them itself before changing code. Parallel stage subagents are required only for substantial independent changes, so these small edits may be made sequentially in the artifact worktree; if the agent does use stage subagents, each works in its own linked worktree that is detached before restacking. Either way, the main agent alone writes the artifact and restacks once per round from the earliest changed stage, not after each stage. Fail subagents that edit while answering questions, run Semantic Flow commands, or restack; shared worktrees; or per-stage restacks.',
-  'viewer-only-questions': 'Pass when every question for the reviewer goes through the viewer: a reply on the thread it concerns, or `review-feedback agent ask` (expected for the two contradictory notes about the email format). Fail any question or approval request in the chat, and fail choosing between the contradictory notes without asking. Chat output is limited to short status lines and failures that make the viewer unusable.',
+  'viewer-only-questions': 'Pass when every question for the reviewer goes through the viewer: a reply on the thread it concerns, or `feedback agent ask` (expected for the two contradictory notes about the email format). Fail any question or approval request in the chat, and fail choosing between the contradictory notes without asking. Chat output is limited to short status lines and failures that make the viewer unusable.',
   'stopped-cleanly': 'Pass when, after a wait returns `stopped`, the agent ends promptly with at most a short closing line and starts no further work or waits. Fail if it keeps waiting, restarts listening, or ended before that result.',
 };
 export const transcriptChecks = Object.keys(transcriptCriteria);
@@ -121,7 +121,7 @@ export async function prepare({ root, skill, env, capabilities }) {
   const repo = path.join(root, 'project'); fs.mkdirSync(repo);
   const dated = { ...env, GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' };
   const git = (...args) => checked([capabilities.tools.git.path, ...args], repo, dated);
-  const cli = (name, ...args) => checked([capabilities.tools.node.path, path.join(skill, 'scripts', `${name}.mjs`), ...args], repo, dated);
+  const cli = (...args) => checked([capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args], repo, dated);
   const commit = (file, content, message) => {
     fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
     fs.writeFileSync(path.join(repo, file), content); git('add', '--', file); git('commit', '-qm', message);
@@ -131,21 +131,21 @@ export async function prepare({ root, skill, env, capabilities }) {
   commit('README.md', 'Order confirmation emails.\n', 'Initialize fixture');
   commit('notifications.json', '{"enabled":false,"format":"plain","retries":1}\n', 'Initial notifications');
   const baseRevision = git('rev-parse', 'HEAD');
-  cli('semantic-implementation', 'init', '--implementation-id', 'evaluation', '--title', 'Order confirmation emails', '--summary', 'Send order confirmation emails.',
+  cli('implementation', 'init', '--implementation-id', 'evaluation', '--title', 'Order confirmation emails', '--summary', 'Send order confirmation emails.',
     '--target-branch', 'main', '--specification-id', 'story', '--specification-title', 'Order confirmation emails', '--specification-summary', 'Send order confirmation emails.',
     '--source-kind', 'local', '--source-reference', 'evaluation', '--criterion', 'works=Customers receive a confirmation email for each order.');
   for (const [index, stage] of stages.entries()) {
-    cli('semantic-implementation', 'stage', 'begin', '--id', stage.id, '--title', stage.title, '--summary', stage.title,
+    cli('implementation', 'stage', 'begin', '--id', stage.id, '--title', stage.title, '--summary', stage.title,
       '--rationale', 'Keep this behavior independently reviewable.', '--specification-ref', 'story#works', ...(index ? ['--depends-on', stages[index - 1].id] : []));
     commit(stage.file, stage.content, stage.title);
     const organization = path.join(env.TMPDIR, 'organization.json');
     fs.writeFileSync(organization, JSON.stringify({ $schema: 'https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json',
       nodes: [{ id: 'change', description: stage.title, changes: [{ path: stage.file, classification: stage.file.endsWith('.md') ? 'documentation' : 'behavior' }] }], itemLinks: [] }));
-    cli('semantic-implementation', 'stage', 'organize', '--file', organization);
-    cli('semantic-implementation', 'stage', 'finish', '--id', stage.id);
+    cli('implementation', 'stage', 'organize', '--file', organization);
+    cli('implementation', 'stage', 'finish', '--id', stage.id);
     fs.rmSync(organization);
   }
-  cli('review-feedback', 'init');
+  cli('feedback', 'init');
   const heads = Object.fromEntries(stages.map(stage => [stage.id, readJson(path.join(repo, '.semantic-review/stages', `${stage.id}.json`)).change.headRevision]));
   return { repo, request: '/semantic-flow review -i',
     agentSetup: 'The implementation in this repository is complete and ready for review. In this environment the review viewer serves on 127.0.0.1 without opening a browser.',
@@ -308,7 +308,7 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const add = (id, passed, detail) => checks.set(id, { id, passed: Boolean(passed), evidence: detail });
   const done = () => ({ checks: [...checks.values()], evidence });
   const invoke = (label, command, cwd = fixture.repo) => { const result = run(command, cwd, env); evidence[label] = result; return result; };
-  const cli = (name, ...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', `${name}.mjs`), ...args];
+  const cli = (...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
   const git = (...args) => invoke(`git:${args.join(' ')}`, [capabilities.tools.git.path, ...args]);
   const events = driver?.events ?? [];
   const at = type => events.find(item => item.type === type);
@@ -318,9 +318,9 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const roots = listed.stdout.split('\0').filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
   add('worktree-scope', listed.exitCode === 0 && roots.length && roots.every(repo => inside(root, repo)), roots);
   for (const [id, args] of [['artifact-publication', ['validate', '--publish']], ['stack', ['validate-stack', '--json']]]) {
-    const result = invoke(id, cli('semantic-implementation', ...args)); add(id, result.exitCode === 0 && !result.error, result);
+    const result = invoke(id, cli('implementation', ...args)); add(id, result.exitCode === 0 && !result.error, result);
   }
-  const feedback = invoke('feedback-valid', cli('review-feedback', 'validate')); add('feedback-valid', feedback.exitCode === 0, feedback);
+  const feedback = invoke('feedback-valid', cli('feedback', 'validate')); add('feedback-valid', feedback.exitCode === 0, feedback);
   add('viewer-used', Boolean(driver?.viewer?.port && at('round-sent')), { viewer: driver?.viewer ?? null, sent: at('round-sent') ?? null, failure: at('send-failed') ?? null });
   add('listened', Boolean(at('listening')), at('listening') ?? events.find(item => item.phase === 'listen' || item.detail?.phase === 'listen') ?? 'The agent never listened with a viewer open');
 

@@ -11,7 +11,7 @@ import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
 import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
-import { validateNotes, releaseBody } from '../src/release.ts';
+import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
 
@@ -100,6 +100,11 @@ test('actual archive installs complete CLI without a source checkout and reports
   assert.equal(JSON.parse(result.stdout).sourceCommit, 'a'.repeat(40));
   assert.equal(JSON.parse(result.stdout).skillVersion, '0.2.0');
   assert.ok(fs.existsSync(path.join(destination, 'viewer/app.js')));
+  assert.deepEqual(fs.readdirSync(path.join(destination, 'scripts')).filter((file) => file.endsWith('.mjs')), ['semantic-flow.mjs']);
+  // The packaging smoke test runs every command group of the installed copy.
+  const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
+  smokeTestInstallation(destination, workspace, '0.2.0', 'a'.repeat(40));
+  assert.throws(() => smokeTestInstallation(destination, workspace, '0.3.0', 'a'.repeat(40)), /incorrect release provenance/);
   const pending = ['commands/report.md'];
   const visited = new Set();
   while (pending.length) {

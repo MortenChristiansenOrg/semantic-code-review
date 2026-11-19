@@ -83,19 +83,25 @@ export async function packageRelease(output: string): Promise<{ archive: string;
   try {
     const extracted = path.join(temporary, "semantic-flow");
     await unpackDistribution(fs.readFileSync(archive), extracted, version);
-    const cli = path.join(extracted, "scripts", "semantic-flow.mjs");
-    const run = (...args: string[]) => execFileSync(process.execPath, [cli, ...args], { cwd: temporary, windowsHide: true, encoding: "utf8" });
-    // Runtime commands operate in a user's Git repository, never the build checkout.
-    execFileSync("git", ["init", "-b", "main"], { cwd: temporary, windowsHide: true, stdio: "ignore" });
-    const installed = parseJson(run("version", "--json"));
-    if (stringField(installed, "skillVersion") !== version || stringField(installed, "sourceCommit") !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
-    for (const group of [[], ["implementation"], ["feedback"]]) run(...group, "--help");
-    // The viewer group is a server, not a help-style command. Loading it in a
-    // repository without an artifact must stop at the missing manifest.
-    const viewer = spawnSync(process.execPath, [cli, "viewer", "serve"], { cwd: temporary, windowsHide: true, encoding: "utf8" });
-    if (viewer.status === 0 || !viewer.stderr.includes("no .semantic-review/manifest.json found")) throw new Error(`The viewer group did not load: ${viewer.stderr}`);
+    smokeTestInstallation(extracted, temporary, version, sourceCommit);
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   return { archive, checksum, version, sourceCommit };
+}
+
+/** Runs every command group of an extracted skill from `workspace`, a directory
+ * outside any Git repository, and checks the reported release provenance. */
+export function smokeTestInstallation(extracted: string, workspace: string, version: string, sourceCommit: string): void {
+  const cli = path.join(extracted, "scripts", "semantic-flow.mjs");
+  const run = (...args: string[]) => execFileSync(process.execPath, [cli, ...args], { cwd: workspace, windowsHide: true, encoding: "utf8" });
+  // Runtime commands operate in a user's Git repository, never the build checkout.
+  execFileSync("git", ["init", "-b", "main"], { cwd: workspace, windowsHide: true, stdio: "ignore" });
+  const installed = parseJson(run("version", "--json"));
+  if (stringField(installed, "skillVersion") !== version || stringField(installed, "sourceCommit") !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
+  for (const group of [[], ["implementation"], ["feedback"]]) run(...group, "--help");
+  // The viewer group is a server, not a help-style command. Loading it in a
+  // repository without an artifact must stop at the missing manifest.
+  const viewer = spawnSync(process.execPath, [cli, "viewer", "serve"], { cwd: workspace, windowsHide: true, encoding: "utf8" });
+  if (viewer.status === 0 || !viewer.stderr.includes("no .semantic-review/manifest.json found")) throw new Error(`The viewer group did not load: ${viewer.stderr}`);
 }
 
 export async function publishRelease(

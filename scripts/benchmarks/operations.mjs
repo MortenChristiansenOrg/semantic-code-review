@@ -13,10 +13,19 @@ const cleanup = [];
 const t = { after: (fn) => cleanup.push(fn) };
 const traceFile = path.join(os.tmpdir(), `semantic-benchmark-${process.pid}.json`);
 const results = [];
+// Older builds shipped one executable per command group; current builds run
+// every group inside semantic-flow.mjs.
+const separateExecutables = fs.existsSync(path.join(selected, 'semantic-implementation.mjs'));
+const invocations = {
+  'semantic-implementation': separateExecutables ? ['semantic-implementation.mjs'] : ['semantic-flow.mjs', 'implementation'],
+  'review-feedback': separateExecutables ? ['review-feedback.mjs'] : ['semantic-flow.mjs', 'feedback'],
+  'semantic-flow': ['semantic-flow.mjs'],
+};
+const commandArgs = (name, args) => { const [file, ...group] = invocations[name]; return [path.join(selected, file), ...group, ...args]; };
 function fixture() {
   const repo = createRepository(t, 'semantic-benchmark-');
-  for (const [method, file] of [['semantic', 'semantic-implementation'], ['feedback', 'review-feedback'], ['flow', 'semantic-flow']]) {
-    repo[method] = (...args) => repo.run(process.execPath, [path.join(selected, `${file}.mjs`), ...args]);
+  for (const [method, name] of [['semantic', 'semantic-implementation'], ['feedback', 'review-feedback'], ['flow', 'semantic-flow']]) {
+    repo[method] = (...args) => repo.run(process.execPath, commandArgs(name, args));
   }
   return repo;
 }
@@ -24,8 +33,8 @@ function measure(repo, name, commands) {
   fs.writeFileSync(traceFile, '');
   let outputBytes = 0;
   const start = performance.now();
-  for (const [file, ...args] of commands) {
-    const result = spawnSync(process.execPath, [path.join(selected, `${file}.mjs`), ...args], {
+  for (const [name, ...args] of commands) {
+    const result = spawnSync(process.execPath, commandArgs(name, args), {
       cwd: repo.root, encoding: 'utf8', env: { ...process.env, GIT_TRACE2_EVENT: traceFile },
     });
     if (result.status !== 0) throw new Error(`${name}: ${result.stderr}`);
@@ -58,7 +67,8 @@ try {
     measure(feedback, `reply among ${start + count} line threads`, [['review-feedback', 'thread', 'reply', '--id', 'thread-0', '--comment-id', `agent-${count}`, '--author', 'agent', '--body', 'Checked.']]);
   }
   measure(feedback, 'feedback preflight, 300 threads', [['semantic-flow', 'feedback', '--json']]);
-  const viewerModule = await import(pathToFileURL(path.join(selected, 'semantic-view.mjs')));
+  // The current bundle exports nothing; load the viewer from the selected build's source.
+  const viewerModule = await import(pathToFileURL(separateExecutables ? path.join(selected, 'semantic-view.mjs') : path.resolve(selected, '../../../scripts/src/semantic-view.ts')));
   const viewer = fixture();
   const large = Array.from({ length: 100000 }, (_, i) => `${String(i).padStart(6, '0')} ${'unchanged context '.repeat(8)}`).join('\n') + '\n';
   viewer.commitFile('large.txt', large, 'Large context');

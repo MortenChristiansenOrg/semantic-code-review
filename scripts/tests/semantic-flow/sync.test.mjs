@@ -279,7 +279,7 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   const stage = repository.readJson(".semantic-review/stages/behavior.json");
 
   const failure = expectSyncFailure(repository, /Conflict context: stage base/);
-  assert.match(failure.stderr, /resume semantic-implementation.mjs restack --base main directly/);
+  assert.match(failure.stderr, /resume semantic-flow.mjs implementation restack --base main directly/);
   assert.equal(repository.git("rev-parse", "main"), target);
   assert.equal(repository.read(".semantic-review/manifest.json"), before.artifact);
   assert.deepEqual(snapshot(repository).stages, before.stages);

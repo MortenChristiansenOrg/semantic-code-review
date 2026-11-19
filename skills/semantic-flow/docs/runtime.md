@@ -27,13 +27,13 @@ Before invoking a bundled executable:
 Treat WSL and Linux containers as Linux. Select the guide from Node.js, not
 from repository path syntax. Stop before mutation on unsupported platforms.
 
-The platform guide defines these placeholders:
+The platform guide defines the `<semantic-flow>` placeholder:
 
 ```text
 <semantic-flow> <command>
-<semantic-implementation> <command>
-<review-feedback> <command>
-<semantic-view> review <project-path>
+<semantic-flow> implementation <command>
+<semantic-flow> feedback <command>
+<semantic-flow> review [--project <project-path>]
 ```
 
 Never invoke a placeholder literally.

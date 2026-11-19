@@ -29,8 +29,8 @@ function completeCompatible(f, env) {
   assert.notEqual(rebase.exitCode, 0); // The deliberately compatible textual conflict.
   r.write('notifications.json', '{"enabled":true,"format":"html","retries":2}\n'); r.git('add', 'notifications.json');
   checked(['git', '-c', 'core.editor=true', 'rebase', '--continue'], f.repo, env);
-  r.git('switch', 'main'); r.cli('semantic-implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
-  r.cli('review-feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
+  r.git('switch', 'main'); r.cli('implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
+  r.cli('feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
 }
 
 test('plans count grader calls, retain exact roles, pair variants and enforce the budget', () => {
@@ -378,7 +378,7 @@ test('corrupted or deleted feedback is failed task evidence, not a verifier cras
   const { root, env, fixture: f } = fixture(t, 'feedback-compatible');
   completeCompatible(f, env);
   assert.ok(verifyFixture(f, root, skill, 'feedback-compatible', env).checks.every(c => c.passed));
-  const inspection = JSON.parse(repository(f.repo, skill, env).cli('semantic-flow', 'inspect', '--json'));
+  const inspection = JSON.parse(repository(f.repo, skill, env).cli('inspect', '--json'));
   const thread = path.join(inspection.selected.feedbackDirectory, 'threads/delivery-retries.json');
   fs.writeFileSync(thread, '{broken');
   for (const mutate of [() => {}, () => fs.rmSync(thread)]) {

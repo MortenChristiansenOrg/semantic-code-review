@@ -82,7 +82,7 @@ export function environment(root) {
 }
 export function repository(root, skill, env) {
   const git = (...args) => checked(['git', ...args], root, env);
-  const cli = (name, ...args) => checked([process.execPath, path.join(skill, 'scripts', `${name}.mjs`), ...args], root, env);
+  const cli = (...args) => checked([process.execPath, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args], root, env);
   const write = (file, content) => {
     const destination = path.resolve(root, file);
     if (!inside(root, destination)) throw new Error('Fixture file escapes repository');
