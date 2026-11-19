@@ -60,8 +60,9 @@
   const AGENT_COMMAND = "/semantic-flow review -i";
   // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
   const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
-  const readAutoSendPreferred = () => { try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return false; } };
-  let autoSendPreferred = readAutoSendPreferred();
+  // Null when storage is unavailable, so the in-page choice still applies.
+  const readAutoSendPreferred = () => { try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return null; } };
+  let autoSendPreferred = readAutoSendPreferred() ?? false;
   // Saved notes (objects) and reply draft IDs waiting for an automatic send.
   const autoSendQueue = { notes: new Set(), replies: new Set() };
   // Drafts in the request being sent; they cannot be edited or deleted until it answers.
@@ -80,6 +81,8 @@
   const autoSendActive = () => autoSendPreferred && agentTakesFeedback();
   // Send just the saved note or reply at once; a save during a send goes out when that send finishes.
   function autoSendFeedback(saved) {
+    const stored = readAutoSendPreferred();
+    if (stored !== null && stored !== autoSendPreferred) adoptAutoSendPreferred(stored);
     if (!autoSendActive()) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); return; }
     if (saved) autoSendQueue[saved.note ? "notes" : "replies"].add(saved.note || saved.reply);
     if (exportState.phase === "working") return;
@@ -3765,8 +3768,10 @@
     const pending = pendingFeedback().filter(({ c }) => c !== editingNote && (!only || only.notes.has(c)));
     const replies = pendingReplies().filter((draft) => draft.id !== replyEditId && (!only || only.replies.has(draft.id)));
     if (!pending.length && !replies.length) return;
-    pending.forEach(({ c }) => sendingDrafts.add(c));
-    replies.forEach((draft) => sendingDrafts.add(draft.id));
+    // Each send locks and releases only its own drafts.
+    const locked = [...pending.map(({ c }) => c), ...replies.map((draft) => draft.id)];
+    locked.forEach((draft) => sendingDrafts.add(draft));
+    const release = () => locked.forEach((draft) => sendingDrafts.delete(draft));
     // The finally releases the drafts if setup throws; normal paths release them before rendering.
     try {
       requestReplyNotifications();
@@ -3820,13 +3825,14 @@
         } catch (err) {
           persist();
           exportState = { phase: "error", message: err.message || "Export failed.", skips };
-          sendingDrafts.clear();
-          autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
+          release();
           render();
+          // The failed drafts stay for Prepare feedback; saves queued meanwhile still go out.
+          autoSendFeedback();
           return;
         }
       }
-      sendingDrafts.clear();
+      release();
       persist();
       const parts = [];
       if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
@@ -3842,7 +3848,7 @@
       render();
       autoSendFeedback();
     } finally {
-      sendingDrafts.clear();
+      release();
     }
   }
 
@@ -4298,10 +4304,11 @@
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
   // Follow the preference across tabs only once the viewer is ready to render.
-  adoptAutoSendPreferred(readAutoSendPreferred());
+  adoptAutoSendPreferred(readAutoSendPreferred() ?? autoSendPreferred);
   window.addEventListener("storage", (e) => {
     if (e.key !== AUTO_SEND_KEY) return;
-    adoptAutoSendPreferred(e.newValue === "true");
+    // Events can arrive late; the stored value is the latest choice.
+    adoptAutoSendPreferred(readAutoSendPreferred() ?? e.newValue === "true");
     render();
   });
   render();
