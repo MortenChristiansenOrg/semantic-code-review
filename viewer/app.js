@@ -375,7 +375,7 @@
   // the file path (kept last so paths with no colons parse unambiguously).
   const lineKey = (stageId, side, line, path) => `l:${stageId}:${side}:${line}:${path}`;
   function parseLineId(id) {
-    const m = /^l:([^:]+):(old|new):(\d+):(.+)$/.exec(id || "");
+    const m = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(id || "");
     if (!m) return null;
     return { stageId: m[1], side: m[2], line: Number(m[3]), path: m[4] };
   }
@@ -883,7 +883,9 @@
   function esc(v) {
     return String(v)
       .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+      .replaceAll('"', "&quot;").replaceAll("'", "&#039;")
+      // The HTML parser turns a literal carriage return into a newline; a reference keeps it.
+      .replaceAll("\r", "&#13;");
   }
   function formatCommentBody(v) {
     return esc(v).replace(/`([^`\r\n]+)`/g, "<code>$1</code>");
@@ -1318,7 +1320,7 @@
   function codeContextHtml(target) {
     return `<div class="insight-code-block" tabindex="0" aria-label="Code context">${target.context.map((line, index) => {
       const number = target.contextStartLine + index;
-      return `<div class="insight-code-line ${number >= target.startLine && number <= target.endLine ? "is-target" : ""}"><span>${number}</span><code>${esc(line) || " "}</code></div>`;
+      return `<div class="insight-code-line ${number >= target.startLine && number <= target.endLine ? "is-target" : ""}"><span>${esc(number)}</span><code>${esc(line) || " "}</code></div>`;
     }).join("")}</div>`;
   }
   function openCodeInsight(stage, ins, choices = [ins]) {
@@ -1339,8 +1341,8 @@
         <p class="insight-target-status ${stale ? "needs-review" : ""}">${stale ? `Needs review: ${esc(target.reason)}` : target.status === "mapped" ? "Linked code is unchanged; mapped to this stage revision. The insight has not been re-reviewed." : "Linked to this stage revision."}</p>
         <div class="code-insight-columns"><article tabindex="0" aria-label="Insight text"><p class="eyebrow">${esc((INSIGHT[ins.type] || INSIGHT.decision).label)}</p><h3>${esc(ins.title)}</h3><div class="insight-full-body">${esc(ins.body || "")}</div>
           ${stale ? '<p>Review the insight against the revised code, then use <code>stage target</code> to retarget it or remove its code link. Its original context is preserved here.</p>' : ""}</article>
-          <section aria-label="Linked code"><h3>${stale ? "Original code" : "Linked code"}</h3><p class="insight-code-location">${esc(shown.path)}:${shown.startLine}–${shown.endLine} · ${esc(shown.revision.slice(0, 12))}</p>${codeContextHtml(shown)}
-            ${!stale && target.status === "mapped" ? `<details class="insight-original"><summary>Original context · ${esc(target.original.revision.slice(0, 12))}</summary><p>${esc(target.original.path)}:${target.original.startLine}–${target.original.endLine}</p>${codeContextHtml(target.original)}</details>` : ""}</section></div>`;
+          <section aria-label="Linked code"><h3>${stale ? "Original code" : "Linked code"}</h3><p class="insight-code-location">${esc(shown.path)}:${esc(shown.startLine)}–${esc(shown.endLine)} · ${esc(shown.revision.slice(0, 12))}</p>${codeContextHtml(shown)}
+            ${!stale && target.status === "mapped" ? `<details class="insight-original"><summary>Original context · ${esc(target.original.revision.slice(0, 12))}</summary><p>${esc(target.original.path)}:${esc(target.original.startLine)}–${esc(target.original.endLine)}</p>${codeContextHtml(target.original)}</details>` : ""}</section></div>`;
       dialog.querySelector("[data-close]").addEventListener("click", dismiss);
       dialog.querySelector("select")?.addEventListener("change", event => { ins = choices[Number(event.target.value)]; paint(); dialog.querySelector("select").focus(); });
     };
@@ -1787,7 +1789,7 @@
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
           <button class="tnote-del" data-action="del-note" data-index="${i}" type="button" aria-label="Delete note">×</button>
         </div>`;
-    return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
+    return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${esc(mode)} ${sent ? "is-sent" : "is-draft"}">
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
           ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : sendingDrafts.has(c) ? "Sending…" : "Draft"}</span>` : ""}
@@ -1899,7 +1901,7 @@
   });
   function renderComposer(ctx) {
     const mode = !data.remote && ctx.mode === "feedback" ? "feedback" : "personal";
-    return `<form class="note-compose mode-${mode}" data-note-form>
+    return `<form class="note-compose mode-${esc(mode)}" data-note-form>
       <div class="nc-mode" role="radiogroup" aria-label="Note type">
         <label class="nc-opt"><input type="radio" name="nc-mode" value="personal" ${mode !== "feedback" ? "checked" : ""}><span><b>Personal</b><small>Just for you.</small></span></label>
         ${data.remote ? "" : `<label class="nc-opt"><input type="radio" name="nc-mode" value="feedback" ${mode === "feedback" ? "checked" : ""}><span><b>Feedback</b><small>For the author.</small></span></label>`}
@@ -2689,7 +2691,7 @@
         <span><b>${totalNodes}</b> steps</span>
         <span><b>${totalFiles}</b> files</span>
         <span class="hero-skill-version">Viewer version: ${esc(data.viewerReleaseVersion || "Unknown")}</span>
-        <span class="hero-target">${esc(data.targetBranch)} ← ${data.baseRevision.slice(0, 7)}</span>
+        <span class="hero-target">${esc(data.targetBranch)} ← ${esc(data.baseRevision.slice(0, 7))}</span>
       </div>
     </section>`;
   }

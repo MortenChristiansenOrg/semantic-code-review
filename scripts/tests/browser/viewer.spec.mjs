@@ -154,8 +154,8 @@ for (const skillVersion of ['0.2.0', undefined]) {
   });
 }
 
-test('file names with quotes and angle brackets stay text and keep their controls working', async ({ page }) => {
-  const name = '"><img src=x onerror="window.injected=1">.js';
+test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {
+  const name = '"><img src=x onerror="window.injected=1">\r.js';
   const path = `src/${name}`;
   const data = fixture();
   for (const stage of data.stages) stage.files[0].path = path;
