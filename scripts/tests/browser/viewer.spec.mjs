@@ -4716,15 +4716,14 @@ const selectInLine = (page, line, token) => page.locator(`[data-line-id="${line}
 test('dragging selected diff text keeps later keyboard selections matching', async ({ page }) => {
   const data = fixture();
   const errors = await mount(page, data); await openFile(page);
-  await page.evaluate(() => { window.dragStarts = 0; document.addEventListener('dragstart', () => window.dragStarts++); });
-  // Drag the selected word out: the native drag takes the mouseup.
-  await page.locator('[data-line-id="l:first:new:3:shared.js"]').scrollIntoViewIfNeeded();
-  const word = await selectInLine(page, 'l:first:new:3:shared.js', 'second');
-  await page.mouse.move(word.x, word.y);
-  await page.mouse.down();
-  await page.mouse.move(word.x + 60, word.y + 80, { steps: 6 });
-  await page.mouse.up();
-  expect(await page.evaluate(() => window.dragStarts)).toBeGreaterThan(0);
+  // Drag the selected word out. Whether a headless browser starts a native
+  // drag differs by platform, so the drag's events are sent directly: a
+  // mousedown in the diff, then dragstart and dragend, which take the mouseup.
+  const word = page.locator('[data-line-id="l:first:new:3:shared.js"] code');
+  await selectInLine(page, 'l:first:new:3:shared.js', 'second');
+  await word.dispatchEvent('mousedown', { button: 0, buttons: 1 });
+  await word.dispatchEvent('dragstart');
+  await word.dispatchEvent('dragend');
   await selectInLine(page, 'l:first:new:3:shared.js', 'const');
   await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const', line: 'l:first:new:1:shared.js', code: true, connected: true }]);
   expect(errors).toEqual([]);
