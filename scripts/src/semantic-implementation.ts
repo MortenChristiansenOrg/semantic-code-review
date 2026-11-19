@@ -49,7 +49,7 @@ import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.j
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { listJsonFiles, parseJson, readJson, writeJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared/narrow.js";
-import { parseAnyDocument, parseDocument } from "./shared/schema-validation.js";
+import { parseDocument } from "./shared/schema-validation.js";
 import { reviewId, withReviewLock } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
@@ -216,18 +216,18 @@ function loadArtifact(paths: ArtifactPaths, options: { includeWork?: boolean } =
   const documents = readArtifactDocuments(paths, options);
   // Each document must carry its own kind's $schema; an unknown one keeps the
   // "unsupported schema" message of the former dispatch by $schema.
-  const manifest = parseAnyDocument([MANIFEST_SCHEMA_ID], documents.manifest, paths.manifest);
+  const manifest = parseDocument(MANIFEST_SCHEMA_ID, documents.manifest, paths.manifest);
   const requirements = new Map<string, Specification>();
   for (const { id, file, value } of documents.requirements) {
-    requirements.set(id, parseAnyDocument([SPECIFICATION_SCHEMA_ID], value, file));
+    requirements.set(id, parseDocument(SPECIFICATION_SCHEMA_ID, value, file));
   }
   const stages = new Map<string, Stage>();
   for (const { id, file, value } of documents.stages) {
-    stages.set(id, parseAnyDocument([STAGE_SCHEMA_ID], value, file));
+    stages.set(id, parseDocument(STAGE_SCHEMA_ID, value, file));
   }
   const workStages = new Map<string, WorkStage>();
   for (const { id, file, value } of documents.workStages) {
-    workStages.set(id, parseAnyDocument([WORK_STAGE_SCHEMA_ID], value, file));
+    workStages.set(id, parseDocument(WORK_STAGE_SCHEMA_ID, value, file));
   }
   return { manifest, requirements, stages, workStages };
 }
@@ -1691,7 +1691,7 @@ function evidenceInputs(options: Options): EvidenceInput[] {
 // Recording writes files before saving and prunes after, so concurrent evidence
 // edits must not interleave: one's rollback could delete the other's capture.
 function withEvidenceLock<T>(paths: ArtifactPaths, write: () => T): T {
-  const manifest = parseAnyDocument([MANIFEST_SCHEMA_ID], readJson(paths.manifest), paths.manifest);
+  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readJson(paths.manifest), paths.manifest);
   return withArtifactLock(paths, manifest.implementationId, write);
 }
 
@@ -1886,7 +1886,7 @@ function organizeStage(paths: ArtifactPaths, options: Options): void {
     paths.root,
     option(options, "file", { required: true }),
   );
-  const organization = parseAnyDocument([STAGE_ORGANIZATION_SCHEMA_ID], readJson(inputFile), inputFile);
+  const organization = parseDocument(STAGE_ORGANIZATION_SCHEMA_ID, readJson(inputFile), inputFile);
 
   const artifact = validateArtifact(paths, {
     quiet: true,
@@ -2499,7 +2499,7 @@ function repairArtifact(paths: ArtifactPaths, options: Options): void {
   if (!fs.existsSync(paths.manifest)) {
     fail(`No semantic implementation manifest exists at ${paths.manifest}.`);
   }
-  const manifest = parseAnyDocument([MANIFEST_SCHEMA_ID], readJson(paths.manifest), paths.manifest);
+  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readJson(paths.manifest), paths.manifest);
   const actions: { kind: "delete"; file: string }[] = [];
   const ambiguous: string[] = [];
 

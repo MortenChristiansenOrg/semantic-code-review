@@ -93,7 +93,7 @@ function candidateFiles(root: string): string[] {
 export function fileUsers(file: string): FileUser[] {
   try {
     let users: FileUser[];
-    const options = { encoding: "utf8" as const, timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] };
+    const options = { encoding: "utf8" as const, timeout: 5000, maxBuffer: 128 * 1024, windowsHide: true, stdio: "pipe" as const };
     if (process.platform === "win32") {
       const files = candidateFiles(file);
       if (!files.length) return [];

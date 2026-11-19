@@ -42,22 +42,6 @@ export interface DocumentTypes {
   [THREAD_SCHEMA_ID]: Thread;
 }
 export type SchemaId = keyof DocumentTypes;
-export type AnyDocument = DocumentTypes[SchemaId];
-
-const SCHEMA_IDS: readonly SchemaId[] = [
-  MANIFEST_SCHEMA_ID,
-  SPECIFICATION_SCHEMA_ID,
-  STAGE_SCHEMA_ID,
-  WORK_STAGE_SCHEMA_ID,
-  STAGE_ORGANIZATION_SCHEMA_ID,
-  FEEDBACK_MANIFEST_SCHEMA_ID,
-  THREAD_SCHEMA_ID,
-];
-
-export function isSchemaId(value: unknown): value is SchemaId {
-  return typeof value === "string" && (SCHEMA_IDS as readonly string[]).includes(value);
-}
-
 let ajv: Ajv2020 | undefined;
 
 function schemas(): Ajv2020 {
@@ -95,19 +79,10 @@ export function isDocument<K extends SchemaId>(id: K, value: unknown): value is 
 export function parseDocument<K extends SchemaId>(id: K, value: unknown, file: string): DocumentTypes[K] {
   const schemaId = isRecord(value) ? value.$schema : undefined;
   if (typeof schemaId !== "string") fail(`${file}: missing string $schema.`);
-  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}; expected ${id}.`);
+  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}.`);
   const validate = validator(id);
   if (!validate(value)) fail(schemaErrors(validate.errors, file));
   return value;
-}
-
-/** Validates value as a document of any of the given kinds, chosen by its $schema. */
-export function parseAnyDocument<K extends SchemaId>(ids: readonly K[], value: unknown, file: string): DocumentTypes[K] {
-  const schemaId = isRecord(value) ? value.$schema : undefined;
-  if (typeof schemaId !== "string") fail(`${file}: missing string $schema.`);
-  const id = ids.find((candidate) => candidate === schemaId);
-  if (!id) fail(`${file}: unsupported schema ${schemaId}.`);
-  return parseDocument(id, value, file);
 }
 
 /** Reads a JSON file and validates it as a document of this kind. */
