@@ -4,6 +4,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { parseJson } from "./json.js";
+import { isRecord, isStringArray } from "./narrow.js";
 import { atomicJson, reviewDirectory, withReviewLock } from "./review-store.js";
 
 /** A claim without agent activity for this long returns its threads to the queue. */
@@ -57,19 +59,63 @@ function agentFile(reviewId: string) {
   return path.join(reviewDirectory(reviewId), "agent.json");
 }
 
-/** Missing or unreadable runtime state is treated as idle. */
+const isString = (value: unknown): value is string => typeof value === "string";
+const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
+const isNullableString = (value: unknown) => value === null || typeof value === "string";
+const listOf = <T>(value: unknown, item: (entry: unknown) => entry is T): T[] =>
+  Array.isArray(value) ? value.filter(item) : [];
+
+function isClaimedThread(value: unknown): value is ClaimedThread {
+  return isRecord(value) && isString(value.id) && isString(value.through) && isOptionalString(value.answeredAt);
+}
+function isAgentClaim(value: unknown): value is AgentClaim {
+  return isRecord(value) && isString(value.id) && isNullableString(value.sessionId) && isString(value.startedAt) &&
+    isString(value.activityAt) && Array.isArray(value.threads) && value.threads.every(isClaimedThread) &&
+    isOptionalString(value.note) && isOptionalString(value.releasingAt);
+}
+function isRetiredThread(value: unknown): value is RetiredClaim["threads"][number] {
+  return isRecord(value) && isString(value.id) && isString(value.through);
+}
+function isRetiredClaim(value: unknown): value is RetiredClaim {
+  return isRecord(value) && isString(value.id) && Array.isArray(value.threads) && value.threads.every(isRetiredThread);
+}
+function isAgentRequest(value: unknown): value is AgentRequest {
+  return isRecord(value) && isString(value.id) && isNullableString(value.sessionId) && isString(value.body) &&
+    isStringArray(value.choices) && isString(value.createdAt) &&
+    (value.response === undefined || (isRecord(value.response) && isString(value.response.body) && isString(value.response.respondedAt)));
+}
+function isAgentSession(value: unknown): value is AgentSession {
+  return isRecord(value) && isString(value.id) && isString(value.startedAt) && isString(value.heartbeatAt) &&
+    isString(value.feedbackAt) && isOptionalString(value.stopRequestedAt) && isOptionalString(value.endedAt) &&
+    isOptionalString(value.endReason);
+}
+function isLastRound(value: unknown): value is NonNullable<AgentState["lastRound"]> {
+  return isRecord(value) && isString(value.id) && isString(value.completedAt) && isStringArray(value.threadIds);
+}
+function isTargetRefresh(value: unknown): value is TargetRefresh {
+  return isRecord(value) && isString(value.at) && isString(value.targetBranch) &&
+    isString(value.previousBaseRevision) && isString(value.baseRevision);
+}
+function sendsOf(value: unknown): Record<string, string> {
+  const sends: Record<string, string> = {};
+  if (isRecord(value)) for (const [token, until] of Object.entries(value)) if (isString(until)) sends[token] = until;
+  return sends;
+}
+
+/** Missing or unreadable runtime state is treated as idle; malformed entries are dropped. */
 export function readAgentState(reviewId: string): AgentState {
-  let value: any = null;
-  try { value = JSON.parse(fs.readFileSync(agentFile(reviewId), "utf8")); }
+  let value: unknown = null;
+  try { value = parseJson(fs.readFileSync(agentFile(reviewId), "utf8")); }
   catch { /* No agent has coordinated with this review yet. */ }
+  const stored = isRecord(value) ? value : {};
   return {
-    session: value?.session && typeof value.session.id === "string" ? value.session : null,
-    claims: Array.isArray(value?.claims) ? value.claims : [],
-    retiredClaims: Array.isArray(value?.retiredClaims) ? value.retiredClaims : [],
-    requests: Array.isArray(value?.requests) ? value.requests : [],
-    sends: value?.sends && typeof value.sends === "object" && !Array.isArray(value.sends) ? value.sends : {},
-    ...(value?.lastRound ? { lastRound: value.lastRound } : {}),
-    ...(value?.targetRefresh ? { targetRefresh: value.targetRefresh } : {}),
+    session: isAgentSession(stored.session) ? stored.session : null,
+    claims: listOf(stored.claims, isAgentClaim),
+    retiredClaims: listOf(stored.retiredClaims, isRetiredClaim),
+    requests: listOf(stored.requests, isAgentRequest),
+    sends: sendsOf(stored.sends),
+    ...(isLastRound(stored.lastRound) ? { lastRound: stored.lastRound } : {}),
+    ...(isTargetRefresh(stored.targetRefresh) ? { targetRefresh: stored.targetRefresh } : {}),
   };
 }
 
@@ -255,9 +301,13 @@ export function respondToRequest(state: AgentState, now: number, id: string, bod
 
 /** Returns and removes answered requests for the given session (or sessionless runs). */
 export function takeResponses(state: AgentState, sessionId: string | null) {
-  const answered = state.requests.filter((request) => request.response && (request.sessionId === sessionId || request.sessionId === null));
-  state.requests = state.requests.filter((request) => !answered.includes(request));
-  return answered.map((request) => ({ id: request.id, question: request.body, answer: request.response!.body }));
+  const answered: { id: string; question: string; answer: string }[] = [];
+  state.requests = state.requests.filter((request) => {
+    if (!request.response || (request.sessionId !== sessionId && request.sessionId !== null)) return true;
+    answered.push({ id: request.id, question: request.body, answer: request.response.body });
+    return false;
+  });
+  return answered;
 }
 
 /** Viewer-facing summary; contains no paths or process details. */
