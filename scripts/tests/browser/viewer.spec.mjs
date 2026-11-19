@@ -2041,6 +2041,22 @@ test('an open Markdown preview keeps its scroll when its group is renamed and it
   expect(await preview.evaluate((el) => el.scrollTop)).toBe(scrolled);
 });
 
+test('renaming the group of a focused approval does not move focus to another group', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].project = 'web';
+  await mount(page, data);
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  data.stages[0].files.unshift({ path: 'docs/guide.md', project: 'docs', kind: 'added', revision: 'docs-rev', additions: 1, deletions: 0,
+    memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: '# Guide' }] });
+  data.viewerRevision = 'docs-group';
+  await expect(node.locator('.fg-name')).toHaveText(['docs', 'web']);
+  await node.locator('.fgroup').filter({ hasText: 'web' }).locator('.fg-approve').focus();
+  data.stages[0].files[1].project = 'ui'; data.viewerRevision = 'renamed-group';
+  await expect(node.locator('.fg-name')).toHaveText(['docs', 'ui']);
+  await expect(node.locator('.fgroup').filter({ hasText: 'docs' }).locator('.fg-approve')).not.toBeFocused();
+});
+
 test('a focused group approval keeps acting on its own group when a group is inserted before it', async ({ page }) => {
   const data = fixture();
   data.stages[0].files[0].project = 'web';
@@ -2057,25 +2073,6 @@ test('a focused group approval keeps acting on its own group when a group is ins
   await saveAction(page, () => page.keyboard.press('Enter'), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
   expect(Object.keys(await page.evaluate(async () => (await (await fetch('/api/review-state')).json()).state.approvals || {})))
     .not.toContain(approvalKey('first', 'first-one', 'docs/guide.md'));
-});
-
-test('a source diff keeps its scroll across switching to Markdown preview and back', async ({ page }) => {
-  const data = fixture();
-  const file = data.stages[0].files[0];
-  Object.assign(file, { path: 'README.md', additions: 200, lines: Array.from({ length: 200 }, (_, i) => ({ t: 'add', n: i + 1, s: `Line ${i + 1}`, h: 1 })) });
-  file.memberships = [{ nodeId: 'first-one', classification: 'behavior', hunks: [1] }];
-  await mount(page, data);
-  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: '# Document', revision: 'b'.repeat(40), side: 'head' } }));
-  await openFile(page);
-  const source = page.locator('.cinema-diff .source-view .diff-scroll');
-  await source.evaluate((el) => { el.scrollTop = 600; });
-  const scrolled = await source.evaluate((el) => el.scrollTop);
-  expect(scrolled).toBeGreaterThan(0);
-  await page.getByRole('button', { name: 'Preview', exact: true }).click();
-  await expect(page.locator('.markdown-preview h1')).toHaveText('Document');
-  await page.getByRole('button', { name: 'Source', exact: true }).click();
-  await expect(source).toBeVisible();
-  expect(await source.evaluate((el) => el.scrollTop)).toBe(scrolled);
 });
 
 test('Markdown preview failures retain source controls and non-Markdown files have no toggle', async ({ page }) => {

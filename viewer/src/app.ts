@@ -3909,9 +3909,8 @@ import { renderPage } from "./views/page";
     root.style.scrollBehavior = previousBehavior;
   }
 
-  // An open file's last visible scroll position per scroller, keyed `${fileId}\0${selector}`.
+  // The scrolling parts of an open file's diff.
   const fileScrollers = [".diff-scroll", ".markdown-preview"];
-  const viewScrolls = new Map();
   const _render = render;
   render = function () {
     forceHidePop();
@@ -3920,7 +3919,7 @@ import { renderPage } from "./views/page";
     const focusRadioValue = focused?.matches('input[type="radio"]') ? focused.value : null;
     const focusAction = focused?.getAttribute("data-action");
     const focusSelector = focusAction
-      ? ["data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
+      ? ["data-action", "data-id", "data-kind", "data-stage", "data-node-id", "data-group", "data-mode", "data-filter"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
@@ -3937,12 +3936,12 @@ import { renderPage } from "./views/page";
     // looking within the diff.
     // Moving or recreating an element, as keyed lists do when stages, steps
     // or groups change, also resets the scroll of the diff or Markdown preview
-    // inside it. Only a visible scroller reports its position, so the last one
-    // is remembered while the reviewer switches between source and preview.
+    // inside it. Only a visible scroller reports its position, and only the
+    // same scroller, still visible, gets it back after this render.
     const pendingDiffs = [];
-    const openFiles = new Set(Object.keys(state.activeFiles).filter((fid) => activeFileNodeId(fid)));
-    for (const key of viewScrolls.keys()) if (!openFiles.has(key.split("\0")[0])) viewScrolls.delete(key);
-    openFiles.forEach((fid) => {
+    const viewScrolls = new Map();
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!activeFileNodeId(fid)) return;
       const holder = fileRowElement(fid)?.nextElementSibling;
       if (!holder?.classList.contains("cinema-diff")) return;
       for (const selector of fileScrollers) {
