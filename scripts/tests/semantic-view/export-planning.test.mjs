@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   beginStage,
   createImplementationWithStages,
@@ -641,24 +641,36 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
 });
 
 test("viewer client refreshes data without reloading the page", () => {
-  const app = fs.readFileSync(
-    path.resolve(scriptsDirectory, "..", "viewer", "app.js"),
-    "utf8",
-  );
+  // The shipped viewer is minified; read the repository sources.
+  const viewerSources = new URL("../../../viewer/src/", import.meta.url);
+  const app = fs.readFileSync(new URL("app.ts", viewerSources), "utf8");
+  const api = fs.readFileSync(new URL("api.ts", viewerSources), "utf8");
   const styles = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "styles.css"),
     "utf8",
   );
-  assert.match(app, /fetch\("\/api\/revision"/);
-  assert.match(app, /fetch\(`\/api\/diff\?\$\{query\}`/);
+  assert.match(app, /api\.getRevision\(\)/);
+  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision"\)/);
+  assert.match(app, /api\.getDiff\(query\)/);
+  assert.match(api, /getJson<DiffResponse>\(`\/api\/diff\?\$\{params\}`\)/);
   assert.match(app, /Loading diff…/);
   assert.match(app, /pendingDiffs\.forEach/);
   assert.match(app, /replies: sendable\.map/);
   assert.doesNotMatch(app, /\/api\/feedback\/reply-batch/);
-
-
-
-  assert.match(app, /fetch\("\/api\/implementation"/);
+  assert.doesNotMatch(api, /\/api\/feedback\/reply-batch/);
+  assert.match(app, /api\.getImplementation\(\)/);
+  // One module issues every server request.
+  const directRequest = /\bfetch\s*\(|XMLHttpRequest|sendBeacon|EventSource/;
+  assert.match("fetch (url)", directRequest);
+  assert.match("window.fetch(url)", directRequest);
+  const modules = fs.readdirSync(viewerSources, { recursive: true })
+    .map((name) => String(name).replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts");
+  assert.ok(modules.includes("app.ts"));
+  for (const file of modules) {
+    assert.doesNotMatch(fs.readFileSync(path.join(fileURLToPath(viewerSources), file), "utf8"), directRequest, file);
+  }
+  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);

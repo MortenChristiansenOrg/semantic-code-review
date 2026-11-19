@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": [],
+    "typeRoots": ["../scripts/node_modules/@types"],
+    "paths": {
+      "*": ["../scripts/node_modules/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "../scripts/src/shared/viewer-protocol.ts"]
+}

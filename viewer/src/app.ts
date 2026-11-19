@@ -1,6 +1,14 @@
+// @ts-nocheck
+// The legacy viewer closure is not yet typed. Later steps of #178 move its code
+// into typed modules (and lit-html templates) one region at a time.
 /* Semantic Flow review viewer — Cinema.
    Renders a semantic implementation artifact (window.SEMANTIC_IMPLEMENTATION) as a full-bleed
    inline-diff reading experience. */
+import * as api from "./api";
+import { aggregateApprovalState } from "./approvals";
+import { selectedNodeForFile } from "./files";
+import { esc, formatCommentBody } from "./html";
+
 (async function () {
   "use strict";
 
@@ -8,19 +16,12 @@
   const app = document.querySelector("#app");
   const requestReviewId = window.SEMANTIC_REVIEW_CONTEXT?.reviewId || data.reviewId;
   const requestGeneration = window.SEMANTIC_REVIEW_CONTEXT?.generation;
-  const fetch = (input, options) => {
-    const url = new URL(input, window.location.href);
-    if (requestReviewId && url.pathname.startsWith("/api/")) {
-      url.searchParams.set("review", requestReviewId);
-      url.searchParams.set("generation", requestGeneration || "");
-    }
-    return window.fetch(url.href, options);
-  };
+  api.configureApi({ reviewId: requestReviewId, generation: requestGeneration });
   let reviewDeleted = false;
   let deletedElsewhere = false;
   let savedReview;
   try {
-    const response = await fetch("/api/review-state", { cache: "no-store" });
+    const response = await api.getReviewState();
     savedReview = await response.json();
     if (!response.ok || !savedReview.ok) {
       if (savedReview.reviewUnavailable) { reviewDeleted = true; savedReview = { reviewId: requestReviewId, generation: requestGeneration, state: {} }; }
@@ -197,7 +198,7 @@
   }
   async function stopAgent() {
     try {
-      const response = await fetch("/api/agent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const response = await api.stopAgent();
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not stop the agent.");
       adoptAgentStatus(result.agent);
@@ -209,7 +210,7 @@
     agentAnswers.set(id, body);
     agentAnswerOps.set(id, { busy: true, error: "" }); render();
     try {
-      const response = await fetch("/api/agent/respond", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ requestId: id, body }) });
+      const response = await api.respondToAgent({ requestId: id, body });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not send the answer.");
       agentAnswerOps.delete(id); agentAnswers.delete(id);
@@ -236,7 +237,7 @@
     if (document.hidden) lastHiddenPoll = Date.now();
     polling = true;
     try {
-      const response = await fetch("/api/revision", { cache: "no-store" });
+      const response = await api.getRevision();
       if (!response.ok) {
         const failure = await response.json();
         if (failure.reviewUnavailable) markReviewDeleted(true);
@@ -247,7 +248,7 @@
       if (snapshot.revision === data.viewerRevision) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
-      const nextResponse = await fetch("/api/implementation", { cache: "no-store" });
+      const nextResponse = await api.getImplementation();
       if (!nextResponse.ok) return;
       const payload = await nextResponse.json();
       if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
@@ -272,7 +273,7 @@
     refreshingRemote = true; refreshNotice = ""; render();
     try {
       await flushReviewState();
-      const response = await fetch("/api/remote/refresh", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      const response = await api.refreshRemote();
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not refresh the remote branch.");
       await pollViewerRevision();
@@ -560,16 +561,16 @@
     if (!force && !offset && Array.isArray(entry.file.lines) && entry.file._diffMode === mode) return;
     entry.file._diffLoading = true;
     delete entry.file._diffError;
-    const query = new URLSearchParams({
+    const query = {
       stage: entry.stage.id,
       path: entry.file.path,
       base: fileBaseRevision(entry),
       head: entry.stage.headRevision,
       mode, offset: String(offset),
-    });
-    if (target) { query.set("side", target.side); query.set("line", String(target.line)); }
+      ...(target ? { side: target.side, line: String(target.line) } : {}),
+    };
     let pageLoaded = false;
-    const request = fetch(`/api/diff?${query}`, { cache: "no-store" })
+    const request = api.getDiff(query)
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok || !payload.ok) {
@@ -628,9 +629,6 @@
   }
   function nodeFileList(stage, node) {
     return stage.files.filter((file) => file.memberships.some((m) => m.nodeId === node.id));
-  }
-  function selectedNodeForFile(activeValue, file) {
-    return typeof activeValue === "string" && file.memberships?.some((m) => m.nodeId === activeValue) ? activeValue : null;
   }
   function activeFileNodeId(id) {
     const entry = fileById.get(id);
@@ -842,10 +840,7 @@
     if (!changes.length) return;
     savingState = true; showSaveStatus();
     try {
-      const response = await fetch("/api/review-state", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes }),
-      });
+      const response = await api.saveReviewState({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         if (payload.reviewUnavailable) markReviewDeleted(true);
@@ -880,17 +875,6 @@
   });
 
   /* ---- helpers ---------------------------------------------------------- */
-  function esc(v) {
-    return String(v)
-      .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;").replaceAll("'", "&#039;")
-      // The HTML parser turns a literal carriage return into a newline; a reference keeps it.
-      .replaceAll("\r", "&#13;");
-  }
-  // Comments are prose: any line ending is a line break, as the HTML parser would make it.
-  function formatCommentBody(v) {
-    return esc(String(v).replace(/\r\n?/g, "\n")).replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  }
   /* File approvals are scoped to a node and observe the complete file plus its ownership.
      Changes outside owned ranges conservatively make that approval stale too. */
   function revisionFor(id) {
@@ -923,7 +907,7 @@
       try {
         let retained = {};
         if (entry && !remove) {
-          const response = await fetch("/api/approval-snapshots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(approvalEndpoint(entry)) });
+          const response = await api.captureApprovalSnapshot(approvalEndpoint(entry));
           retained = await response.json();
           if (!response.ok || !retained.ok) throw new Error(retained.error || "Could not retain approved content.");
         }
@@ -1015,10 +999,6 @@
   }
   const approved = (id) => approvalState(id) === "approved";
   const approvalStale = (id) => approvalState(id) === "stale";
-  function aggregateApprovalState(states) {
-    if (!states.length || states.some((st) => st === "none")) return "none";
-    return states.every((st) => st === "approved") ? "approved" : "stale";
-  }
   function nodeApprovalState(stage, node) {
     return aggregateApprovalState(
       nodeFileList(stage, node).map((file) => approvalState(fileApprovalKey(stage.id, node.id, file.path))),
@@ -1386,14 +1366,8 @@
     };
     return { dialog, dismiss, show };
   }
-  function evidenceUrl(stageId, itemId, index) {
-    const url = new URL("/api/evidence", window.location.href);
-    url.searchParams.set("review", requestReviewId); url.searchParams.set("generation", requestGeneration);
-    url.searchParams.set("stage", stageId); url.searchParams.set("item", itemId); url.searchParams.set("index", String(index));
-    return url.href;
-  }
   function evidenceAttachmentHtml(stage, ins, attachment) {
-    const index = ins.evidence.attachments.indexOf(attachment), url = evidenceUrl(stage.id, ins.id, index);
+    const index = ins.evidence.attachments.indexOf(attachment), url = api.evidenceUrl({ stage: stage.id, item: ins.id, index: String(index) });
     const type = attachment.mediaType, name = attachment.caption || `${EVIDENCE_KIND[ins.evidence.kind] || "Evidence"} ${index + 1}`;
     const caption = attachment.caption ? `<figcaption>${esc(attachment.caption)}</figcaption>` : "";
     const open = `<a class="evidence-open" href="${esc(url)}" download="${esc(`${ins.id}-${index + 1}`)}">Download</a>`;
@@ -1405,7 +1379,7 @@
   const EVIDENCE_TEXT_LIMIT = 200000;
   async function loadEvidenceText(element) {
     try {
-      const response = await fetch(element.dataset.evidenceText);
+      const response = await api.getEvidence(element.dataset.evidenceText);
       if (!response.ok) throw new Error();
       const text = await response.text();
       element.textContent = text.length > EVIDENCE_TEXT_LIMIT ? `${text.slice(0, EVIDENCE_TEXT_LIMIT)}\n… Download the file for the rest.` : text;
@@ -1803,18 +1777,12 @@
   }
   // Inline note composer, rendered directly in the element's own thread so the
   // reviewer can keep looking at what they are commenting on while they write.
-  function attachmentUrl(id, preview = false) {
-    const url = new URL(`/api/attachments/${encodeURIComponent(id)}`, window.location.href);
-    url.searchParams.set("review", requestReviewId); url.searchParams.set("generation", requestGeneration);
-    if (preview) url.searchParams.set("preview", "1");
-    return url.href;
-  }
   const attachmentIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg>`;
   const paperclipIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m8 13 6-6a3 3 0 0 1 4 4l-8 8a5 5 0 0 1-7-7l9-9a2 2 0 0 1 3 3l-9 9a1 1 0 0 0 2 2l8-8"/></svg>`;
   function attachmentList(attachments = [], editable = false) {
     if (!attachments.length) return "";
     return `<div class="attachments">${attachments.map((file) => `<div class="attachment" data-render-key="${esc(file.id)}">
-      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
+      ${["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.mediaType) ? `<img src="${esc(api.attachmentUrl(file.id, true))}" alt="${esc(file.filename)}" loading="lazy">` : `<span class="attachment-icon">${attachmentIcon}</span>`}
       <span class="attachment-name" title="${esc(file.filename)}">${esc(file.filename)}</span><small>${(file.size / 1024).toFixed(1)} KiB</small>
       ${editable ? `<button class="attachment-remove" type="button" data-action="remove-attachment" data-id="${esc(file.id)}" aria-label="Remove ${esc(file.filename)}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8"/></svg></button>` : ""}</div>`).join("")}</div>`;
   }
@@ -1851,7 +1819,7 @@
           }
           let binary = "";
           for (let offset = 0; offset < bytes.length; offset += 32768) binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
-          const response = await fetch("/api/attachments", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) }) });
+          const response = await api.uploadAttachment({ filename: file.name, mediaType: file.type || "application/octet-stream", data: btoa(binary) });
           const result = await response.json();
           if (!response.ok || !result.ok) throw new Error(result.error || `Could not upload ${file.name}.`);
           if (!attachments.some((item) => item.id === result.attachment.id)) {
@@ -2276,22 +2244,15 @@
   function isMarkdown(entry) { return /\.(md|markdown)$/i.test(entry.file.path); }
   function markdownMode(entry) { return isMarkdown(entry) && Boolean(state.markdownPreview[entry.id]); }
   function markdownUrl(entry, target, image = false) {
-    const url = new URL("/api/file-content", window.location.href);
-    const params = { stage: entry.stage.id, path: entry.file.path, base: fileBaseRevision(entry), head: entry.stage.headRevision, review: requestReviewId, generation: requestGeneration || "" };
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-    if (target != null) {
-      const filePath = entry.file.kind === "deleted" ? entry.file.previousPath || entry.file.path : entry.file.path;
-      try {
-        const root = new URL("https://repository.invalid/");
-        const resolved = new URL(target, new URL(filePath.split("/").map(encodeURIComponent).join("/"), root));
-        if (resolved.origin !== root.origin) return null;
-        url.searchParams.set("target", decodeURIComponent(resolved.pathname.slice(1)));
-        url.searchParams.set("raw", "1");
-        if (image) url.searchParams.set("image", "1");
-        url.hash = resolved.hash;
-      } catch { return null; }
-    }
-    return url.href;
+    const query = { stage: entry.stage.id, path: entry.file.path, base: fileBaseRevision(entry), head: entry.stage.headRevision };
+    if (target == null) return api.fileContentJsonUrl(query);
+    const filePath = entry.file.kind === "deleted" ? entry.file.previousPath || entry.file.path : entry.file.path;
+    try {
+      const root = new URL("https://repository.invalid/");
+      const resolved = new URL(target, new URL(filePath.split("/").map(encodeURIComponent).join("/"), root));
+      if (resolved.origin !== root.origin) return null;
+      return api.fileContentUrl({ ...query, target: decodeURIComponent(resolved.pathname.slice(1)), raw: "1", ...(image ? { image: "1" } : {}) }, resolved.hash);
+    } catch { return null; }
   }
   function markdownBody(entry) {
     const key = markdownUrl(entry);
@@ -2304,7 +2265,7 @@
         if (markdownPreviews.size <= 12) break;
         if (cachedKey !== key && !(cached.entryId in state.activeFiles && state.markdownPreview[cached.entryId])) markdownPreviews.delete(cachedKey);
       }
-      fetch(key).then(async (response) => {
+      api.getFileContent(key).then(async (response) => {
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || "Could not load Markdown.");
         if (!window.renderMarkdownPreview) throw new Error("Markdown renderer unavailable; reload the viewer.");
@@ -2369,8 +2330,7 @@
     let pageLoaded = false;
     try {
       await flushReviewState();
-      const response = await fetch("/api/approval-comparison", { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode, scope: approvalBaseIncluded.has(id) ? "all" : "stage" }) });
+      const response = await api.compareApproval({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode, scope: approvalBaseIncluded.has(id) ? "all" : "stage" });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not compare approved content.");
       approvalComparisons.set(key, result);
@@ -2553,7 +2513,7 @@
           <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ${busy || !storage ? "disabled" : ""}>${storage?.deletionPending ? "Retry file removal" : "Delete review data"}</button></div>`;
     }
     async function details() {
-      const response = await fetch("/api/reviews/storage", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target) });
+      const response = await api.inspectReviewStorage(target);
       const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not inspect review storage.");
       storage = result.storage;
       if (storage.error) error = storage.error;
@@ -2568,7 +2528,7 @@
       try {
         if (action === "refresh") await details();
         else {
-          const response = await fetch(action === "delete" ? "/api/reviews/delete" : "/api/reviews/clean-unused", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...target, fingerprint: storage.fingerprint }) });
+          const response = await (action === "delete" ? api.deleteReviewData : api.cleanUnusedReviewData)({ ...target, fingerprint: storage.fingerprint });
           const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || "Could not clean review data.");
           if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && !reviewDeleted) markReviewDeleted();
           if (result.deleted && !result.cleanupPending) { dialog.close(); await refreshReviews(true); return; }
@@ -2649,7 +2609,7 @@
     if (reviewListBusy && !force) return;
     reviewListBusy = true; reviewListError = ""; updateReviewList();
     try {
-      const response = await fetch("/api/reviews", { cache: "no-store" });
+      const response = await api.getReviews();
       const result = await response.json();
       if (!response.ok || !result.ok || !Array.isArray(result.reviews)) throw new Error(result.error || "Could not load saved reviews.");
       reviewList = result.reviews;
@@ -2665,9 +2625,7 @@
     reviewListBusy = true; reviewListError = ""; updateReviewList();
     try {
       await flushReviewState();
-      const response = await fetch(complete ? "/api/reviews/completion" : "/api/reviews/open", {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(target),
-      });
+      const response = await (complete ? api.setReviewCompletion : api.openReview)(target);
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || "Could not open the selected review.");
       if (complete) await refreshReviews(true);
@@ -3696,11 +3654,7 @@
     threadOps[threadId] = { busy: true, error: "" };
     updateThreadEls(thread, wasCollapsed);
     try {
-      const res = await fetch(`/api/feedback/${kind}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ implementationId: data.implementationId, threadId }),
-      });
+      const res = await api.threadAction(kind, { implementationId: data.implementationId, threadId });
       let out = {};
       try { out = await res.json(); } catch { /* non-JSON */ }
       if (!res.ok || !out.ok) throw new Error(out.error || `Action failed (HTTP ${res.status}).`);
@@ -3788,14 +3742,10 @@
       let repliesSent = 0;
       if (pending.length || sendable.length) {
         try {
-          const res = await fetch("/api/feedback/export", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              implementationId: data.implementationId,
-              notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
-              replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
-            })
+          const res = await api.exportFeedback({
+            implementationId: data.implementationId,
+            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
+            replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
           });
           let out = {};
           try { out = await res.json(); } catch { /* non-JSON error body */ }
@@ -4289,7 +4239,7 @@
   const legacyDrafts = [...state.comments, compose].filter(note => note?.kind === "line" && !note.exported && note.snapshot && !note.snapshot.fileRevision);
   if (legacyDrafts.length && !reviewDeleted) {
     try {
-      const response = await fetch("/api/draft-snapshots", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: legacyDrafts }) });
+      const response = await api.resolveDraftSnapshots({ notes: legacyDrafts });
       const result = await response.json();
       if (response.ok && result.ok) legacyDrafts.forEach((note, index) => {
         if (result.snapshots?.[index]?.fileRevision) note.snapshot = result.snapshots[index];

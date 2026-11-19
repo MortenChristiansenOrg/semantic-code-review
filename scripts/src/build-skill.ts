@@ -63,16 +63,24 @@ const compilation = await build({
   logLevel: "info",
 });
 
-const markdownCompilation = await build({
-  entryPoints: [path.join(viewerSource, "markdown.js")],
+// The viewer ships as browser scripts; users unpack it with no install step.
+const viewerCompilation = await build({
+  entryPoints: {
+    app: path.join(viewerSource, "src", "app.ts"),
+    markdown: path.join(viewerSource, "src", "markdown.ts"),
+  },
+  outdir: viewerDestination,
   nodePaths: [path.join(scriptsRoot, "node_modules")],
+  // viewer/tsconfig.json maps packages for the type checker only; esbuild resolves
+  // them as packages (honouring "exports") through nodePaths.
+  tsconfigRaw: { compilerOptions: { strict: true } },
   bundle: true, platform: "browser", format: "iife", target: "es2022",
   minify: true, legalComments: "eof", metafile: true, write: false,
 });
 
 // Include the complete license texts of dependencies actually bundled at runtime.
 const dependencies = new Map<string, string>();
-for (const input of Object.keys({ ...compilation.metafile.inputs, ...markdownCompilation.metafile.inputs })) {
+for (const input of Object.keys({ ...compilation.metafile.inputs, ...viewerCompilation.metafile.inputs })) {
   if (!input.includes("node_modules/")) continue;
   let directory = path.dirname(path.resolve(input));
   while (!fs.existsSync(path.join(directory, "package.json"))) {
@@ -133,13 +141,13 @@ fs.copyFileSync(
 
 fs.rmSync(viewerDestination, { recursive: true, force: true });
 fs.mkdirSync(viewerDestination, { recursive: true });
-for (const file of ["index.html", "app.js", "styles.css", "favicon.svg"]) {
+for (const file of ["index.html", "styles.css", "favicon.svg"]) {
   fs.copyFileSync(
     path.join(viewerSource, file),
     path.join(viewerDestination, file),
   );
 }
 
-fs.writeFileSync(path.join(viewerDestination, "markdown.js"), markdownCompilation.outputFiles[0].contents);
+for (const output of viewerCompilation.outputFiles) fs.writeFileSync(output.path, output.contents);
 
 console.log(`Compiled semantic-flow skill at ${skillRoot}.`);
