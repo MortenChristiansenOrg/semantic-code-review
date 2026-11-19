@@ -175,7 +175,9 @@ function parseViewer(value: unknown): ViewerRecord | undefined {
 export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
   const invalid = () => new Error(`Review data at ${JSON.stringify(file)} is malformed. Reopen the review explicitly.`);
   if (!isRecord(value)) throw invalid();
-  const { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state, remote, viewer } = value;
+  const { id, generation, repositoryRoot, implementationId, createdAt, remote, viewer } = value;
+  // Older viewers could save a record without a title, lifecycle or state; those keep their defaults.
+  const { title = "", updatedAt = createdAt, completedAt = null, state = {} } = value;
   if (typeof id !== "string" || typeof generation !== "string" || typeof repositoryRoot !== "string" || typeof implementationId !== "string" ||
     typeof title !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string" ||
     (completedAt !== null && typeof completedAt !== "string") || !isRecord(state)) throw invalid();

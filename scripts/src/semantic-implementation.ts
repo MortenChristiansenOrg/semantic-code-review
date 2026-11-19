@@ -147,35 +147,32 @@ function compareOrdinal(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-/** Document IDs a not yet validated manifest lists; its own validation reports a malformed list. */
-function listedIds(manifest: unknown, key: "requirements" | "stages"): string[] {
-  const ids = isRecord(manifest) ? manifest[key] : undefined;
-  return isStringArray(ids) ? ids : [];
-}
-
 interface UnvalidatedDocument {
   id: string;
   file: string;
   value: unknown;
 }
 
-/** The artifact's documents as read, before schema validation. */
+/** The validated manifest and the documents it lists, before their schema validation. */
 interface UnvalidatedArtifact {
-  manifest: unknown;
+  manifest: ImplementationManifest;
   requirements: UnvalidatedDocument[];
   stages: UnvalidatedDocument[];
   workStages: UnvalidatedDocument[];
 }
 
-/** Reads every artifact document, failing on missing files and working stage ID mismatches. */
+/** Validates the manifest, then reads every document, failing on missing files
+ * and working stage ID mismatches. Only validated IDs name files. */
 function readArtifactDocuments(paths: ArtifactPaths, { includeWork = true }: { includeWork?: boolean } = {}): UnvalidatedArtifact {
   if (!fs.existsSync(paths.manifest)) {
     fail(`No semantic implementation manifest exists at ${paths.manifest}.`);
   }
 
-  const manifestValue = readJson(paths.manifest);
+  // Each document must carry its own kind's $schema; an unknown one keeps the
+  // "unsupported schema" message of the former dispatch by $schema.
+  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readJson(paths.manifest), paths.manifest);
   const requirementDocuments: UnvalidatedDocument[] = [];
-  for (const id of listedIds(manifestValue, "requirements")) {
+  for (const id of manifest.requirements) {
     const file = path.join(paths.requirements, `${id}.json`);
     if (!fs.existsSync(file)) {
       fail(`Manifest specification ${id} is missing ${file}.`);
@@ -184,7 +181,7 @@ function readArtifactDocuments(paths: ArtifactPaths, { includeWork = true }: { i
   }
 
   const stageDocuments: UnvalidatedDocument[] = [];
-  for (const id of listedIds(manifestValue, "stages")) {
+  for (const id of manifest.stages) {
     const file = path.join(paths.stages, `${id}.json`);
     if (!fs.existsSync(file)) {
       fail(`Manifest stage ${id} is missing ${file}.`);
@@ -211,17 +208,15 @@ function readArtifactDocuments(paths: ArtifactPaths, { includeWork = true }: { i
       workDocuments.push({ id: filenameId, file, value });
     }
   }
-  return { manifest: manifestValue, requirements: requirementDocuments, stages: stageDocuments, workStages: workDocuments };
+  return { manifest, requirements: requirementDocuments, stages: stageDocuments, workStages: workDocuments };
 }
 
-/** Loads the artifact and validates every document. Every file is located
- * before any is validated, so missing files and ID mismatches are reported
- * ahead of schema errors; the first invalid document fails. */
+/** Loads the artifact and validates every document. After the manifest, every
+ * file is located before any is validated, so missing files and ID mismatches
+ * are reported ahead of schema errors; the first invalid document fails. */
 function loadArtifact(paths: ArtifactPaths, options: { includeWork?: boolean } = {}): Artifact {
   const documents = readArtifactDocuments(paths, options);
-  // Each document must carry its own kind's $schema; an unknown one keeps the
-  // "unsupported schema" message of the former dispatch by $schema.
-  const manifest = parseDocument(MANIFEST_SCHEMA_ID, documents.manifest, paths.manifest);
+  const { manifest } = documents;
   const requirements = new Map<string, Specification>();
   for (const { id, file, value } of documents.requirements) {
     requirements.set(id, parseDocument(SPECIFICATION_SCHEMA_ID, value, file));
@@ -2677,12 +2672,19 @@ function buildMetadataCommit(paths: ArtifactPaths, parent: string, message: stri
 // Reuse expensive immutable validation, but re-read documents and refs before
 // each mutation in a combined workflow. A prior success never validates edits.
 function assertValidatedArtifactCurrent(paths: ArtifactPaths, artifact: Artifact, allowLandedTarget = false): void {
-  // Compared as read, so any edit (valid or not) reports a change.
-  const documents = readArtifactDocuments(paths);
+  const changed = "Semantic implementation changed during the workflow; retry after the current edit completes.";
+  // Compared as read, so any edit reports a change. The documents were valid
+  // when the workflow loaded them, so one that no longer reads has changed too.
+  let documents: UnvalidatedArtifact;
+  try {
+    documents = readArtifactDocuments(paths);
+  } catch {
+    fail(changed);
+  }
   const entries = (list: UnvalidatedDocument[]) => list.map(({ id, value }) => [id, value]);
   const current = JSON.stringify([documents.manifest, entries(documents.requirements), entries(documents.stages), entries(documents.workStages)]);
   const validated = JSON.stringify([artifact.manifest, [...artifact.requirements], [...artifact.stages], [...artifact.workStages]]);
-  if (current !== validated) fail("Semantic implementation changed during the workflow; retry after the current edit completes.");
+  if (current !== validated) fail(changed);
   const expected = new Map<string, string>([[artifact.manifest.targetBranch, artifact.manifest.baseRevision]]);
   for (const stage of artifact.stages.values()) expected.set(stage.change.branch, stage.change.headRevision);
   const refs = git(["for-each-ref", "--format=%(refname:strip=2) %(objectname)", ...[...expected.keys()].map((branch) => `refs/heads/${branch}`)], { cwd: paths.root });

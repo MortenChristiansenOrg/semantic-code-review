@@ -1015,3 +1015,20 @@ for (const kind of ['modified', 'deleted', 'renamed']) test(`legacy line snapsho
   const note = { kind: 'line', id: `l:implementation:old:1:${stage.files[0].path}`, snapshot: { base: stage.baseRevision, head: stage.headRevision } };
   assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
 });
+
+test("a feedback thread that fails its schema does not hide the other threads", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["valid", "damaged"]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-comment`, "--body", "Check this.",
+      "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  }
+  const file = repository.feedbackPath("threads", "damaged.json");
+  const damaged = repository.readAbsoluteJson(file);
+  damaged.createdAt = "not a date";
+  repository.writeAbsolute(file, JSON.stringify(damaged));
+
+  const data = JSON.parse(createImplementationDataScript(repository.root).match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  assert.deepEqual(data.feedback.map((thread) => thread.id), ["valid"]);
+  assert.equal(data.stages.length, 1);
+});

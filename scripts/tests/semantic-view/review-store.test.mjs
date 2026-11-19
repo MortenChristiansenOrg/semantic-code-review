@@ -258,3 +258,14 @@ test('a dead owner reaped at the deadline does not block acquiring the freed loc
   assert.equal(readReview(review.id).state.draft, 'Saved after reaping');
   assert.equal(fs.existsSync(lock), false);
 });
+
+test('records saved without a title or lifecycle fields stay readable and listed', (t) => {
+  const root = setup(t);
+  const review = registerReview(path.join(root, 'a'), 'legacy-id', 'Review');
+  const file = path.join(reviewDirectory(review.id), 'review.json');
+  const { title, completedAt, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  assert.equal(readReview(review.id).title, '');
+  assert.equal(readReview(review.id).completedAt, null);
+  assert.deepEqual(listReviews().map((record) => record.id), [review.id]);
+});

@@ -327,3 +327,20 @@ test("agent activity renews only its own round, so an abandoned round still expi
   repository.feedback("thread", "reply", "--id", "active", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Done.");
   assert.equal(abandonedActivity(), old);
 });
+
+test("a malformed optional field in agent state keeps the claim it belongs to", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "kept");
+  const round = flowJson(repository);
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].note = null;
+  fs.writeFileSync(file, JSON.stringify(state));
+
+  repository.feedback("agent", "progress", "--body", "Still working");
+  const claim = agentState(repository).claims[0];
+  assert.equal(claim.id, round.claim);
+  assert.deepEqual(claim.threads.map((thread) => thread.id), ["kept"]);
+  assert.equal(claim.note, "Still working");
+});

@@ -60,34 +60,59 @@ function agentFile(reviewId: string) {
 }
 
 const isString = (value: unknown): value is string => typeof value === "string";
-const isOptionalString = (value: unknown) => value === undefined || typeof value === "string";
-const isNullableString = (value: unknown) => value === null || typeof value === "string";
-const listOf = <T>(value: unknown, item: (entry: unknown) => entry is T): T[] =>
-  Array.isArray(value) ? value.filter(item) : [];
+const isNullableString = (value: unknown): value is string | null => value === null || typeof value === "string";
+/** An optional field; a value of the wrong type counts as absent, as it did when
+ * the state was read untyped, so it never costs the entry that holds it. */
+const optional = (value: unknown): string | undefined => (isString(value) ? value : undefined);
+/** The entries that parse; entries missing a required field are dropped. */
+function listOf<T>(value: unknown, parse: (entry: unknown) => T | undefined): T[] {
+  return Array.isArray(value) ? value.flatMap((entry: unknown) => {
+    const parsed = parse(entry);
+    return parsed === undefined ? [] : [parsed];
+  }) : [];
+}
 
-function isClaimedThread(value: unknown): value is ClaimedThread {
-  return isRecord(value) && isString(value.id) && isString(value.through) && isOptionalString(value.answeredAt);
+function parseClaimedThread(value: unknown): ClaimedThread | undefined {
+  if (!isRecord(value) || !isString(value.id) || !isString(value.through)) return undefined;
+  const answeredAt = optional(value.answeredAt);
+  return { id: value.id, through: value.through, ...(answeredAt === undefined ? {} : { answeredAt }) };
 }
-function isAgentClaim(value: unknown): value is AgentClaim {
-  return isRecord(value) && isString(value.id) && isNullableString(value.sessionId) && isString(value.startedAt) &&
-    isString(value.activityAt) && Array.isArray(value.threads) && value.threads.every(isClaimedThread) &&
-    isOptionalString(value.note) && isOptionalString(value.releasingAt);
+function parseAgentClaim(value: unknown): AgentClaim | undefined {
+  if (!isRecord(value) || !isString(value.id) || !isNullableString(value.sessionId) || !isString(value.startedAt) ||
+    !isString(value.activityAt) || !Array.isArray(value.threads)) return undefined;
+  const threads = listOf(value.threads, parseClaimedThread);
+  // A claim whose thread ownership cannot be read is not trusted to fence anything.
+  if (threads.length !== value.threads.length) return undefined;
+  const note = optional(value.note), releasingAt = optional(value.releasingAt);
+  return { id: value.id, sessionId: value.sessionId, startedAt: value.startedAt, activityAt: value.activityAt, threads,
+    ...(note === undefined ? {} : { note }), ...(releasingAt === undefined ? {} : { releasingAt }) };
 }
-function isRetiredThread(value: unknown): value is RetiredClaim["threads"][number] {
-  return isRecord(value) && isString(value.id) && isString(value.through);
+function parseRetiredThread(value: unknown): RetiredClaim["threads"][number] | undefined {
+  return isRecord(value) && isString(value.id) && isString(value.through) ? { id: value.id, through: value.through } : undefined;
 }
-function isRetiredClaim(value: unknown): value is RetiredClaim {
-  return isRecord(value) && isString(value.id) && Array.isArray(value.threads) && value.threads.every(isRetiredThread);
+function parseRetiredClaim(value: unknown): RetiredClaim | undefined {
+  if (!isRecord(value) || !isString(value.id) || !Array.isArray(value.threads)) return undefined;
+  const threads = listOf(value.threads, parseRetiredThread);
+  return threads.length === value.threads.length ? { id: value.id, threads } : undefined;
 }
-function isAgentRequest(value: unknown): value is AgentRequest {
-  return isRecord(value) && isString(value.id) && isNullableString(value.sessionId) && isString(value.body) &&
-    isStringArray(value.choices) && isString(value.createdAt) &&
-    (value.response === undefined || (isRecord(value.response) && isString(value.response.body) && isString(value.response.respondedAt)));
+function parseAgentRequest(value: unknown): AgentRequest | undefined {
+  if (!isRecord(value) || !isString(value.id) || !isNullableString(value.sessionId) || !isString(value.body) ||
+    !isString(value.createdAt)) return undefined;
+  const { response } = value;
+  const answered = isRecord(response) && isString(response.body) && isString(response.respondedAt)
+    ? { response: { body: response.body, respondedAt: response.respondedAt } } : {};
+  return { id: value.id, sessionId: value.sessionId, body: value.body, choices: isStringArray(value.choices) ? value.choices : [],
+    createdAt: value.createdAt, ...answered };
 }
-function isAgentSession(value: unknown): value is AgentSession {
-  return isRecord(value) && isString(value.id) && isString(value.startedAt) && isString(value.heartbeatAt) &&
-    isString(value.feedbackAt) && isOptionalString(value.stopRequestedAt) && isOptionalString(value.endedAt) &&
-    isOptionalString(value.endReason);
+function parseAgentSession(value: unknown): AgentSession | undefined {
+  if (!isRecord(value) || !isString(value.id) || !isString(value.startedAt) || !isString(value.heartbeatAt) ||
+    !isString(value.feedbackAt)) return undefined;
+  const session: AgentSession = { id: value.id, startedAt: value.startedAt, heartbeatAt: value.heartbeatAt, feedbackAt: value.feedbackAt };
+  const stopRequestedAt = optional(value.stopRequestedAt), endedAt = optional(value.endedAt), endReason = optional(value.endReason);
+  if (stopRequestedAt !== undefined) session.stopRequestedAt = stopRequestedAt;
+  if (endedAt !== undefined) session.endedAt = endedAt;
+  if (endReason !== undefined) session.endReason = endReason;
+  return session;
 }
 function isLastRound(value: unknown): value is NonNullable<AgentState["lastRound"]> {
   return isRecord(value) && isString(value.id) && isString(value.completedAt) && isStringArray(value.threadIds);
@@ -102,17 +127,18 @@ function sendsOf(value: unknown): Record<string, string> {
   return sends;
 }
 
-/** Missing or unreadable runtime state is treated as idle; malformed entries are dropped. */
+/** Missing or unreadable runtime state is treated as idle. Entries missing a
+ * required field are dropped; malformed optional fields count as absent. */
 export function readAgentState(reviewId: string): AgentState {
   let value: unknown = null;
   try { value = parseJson(fs.readFileSync(agentFile(reviewId), "utf8")); }
   catch { /* No agent has coordinated with this review yet. */ }
   const stored = isRecord(value) ? value : {};
   return {
-    session: isAgentSession(stored.session) ? stored.session : null,
-    claims: listOf(stored.claims, isAgentClaim),
-    retiredClaims: listOf(stored.retiredClaims, isRetiredClaim),
-    requests: listOf(stored.requests, isAgentRequest),
+    session: parseAgentSession(stored.session) ?? null,
+    claims: listOf(stored.claims, parseAgentClaim),
+    retiredClaims: listOf(stored.retiredClaims, parseRetiredClaim),
+    requests: listOf(stored.requests, parseAgentRequest),
     sends: sendsOf(stored.sends),
     ...(isLastRound(stored.lastRound) ? { lastRound: stored.lastRound } : {}),
     ...(isTargetRefresh(stored.targetRefresh) ? { targetRefresh: stored.targetRefresh } : {}),

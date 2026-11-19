@@ -1408,9 +1408,11 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
     if (!fs.existsSync(manifestFile)) return [];
     const manifest = readJson(manifestFile);
     if (!isDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest)) throw new Error("Invalid feedback manifest.");
-    return manifest.threads.map((id) => {
-      const file = path.join(feedbackRoot, "threads", `${id}.json`);
-      return parseDocument(THREAD_SCHEMA_ID, readJson(file), file);
+    // A thread that fails its schema is left out rather than hiding every other
+    // thread; feedback commands and validation still report it.
+    return manifest.threads.flatMap((id) => {
+      const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
+      return isDocument(THREAD_SCHEMA_ID, thread) ? [thread] : [];
     });
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
