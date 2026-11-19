@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { EvidenceAttachment, Stage, WorkStage } from "./documents.js";
 import { fail } from "./errors.js";
+import { errorMessage } from "./narrow.js";
 
 export const MAX_EVIDENCE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_EVIDENCE_TOTAL_BYTES = 100 * 1024 * 1024;
@@ -52,7 +54,7 @@ export function evidenceRange(header: string | undefined, length: number) {
   return start > end || !length ? "unsatisfiable" as const : { start, end };
 }
 
-export const evidenceMediaTypeMatches = (attachment) => MEDIA_TYPES[path.extname(attachment.path).slice(1)] === attachment.mediaType;
+export const evidenceMediaTypeMatches = (attachment: { path: string; mediaType: string }) => MEDIA_TYPES[path.extname(attachment.path).slice(1)] === attachment.mediaType;
 
 /**
  * Keeps Git from rewriting captures, so a published or archived file still matches its hash
@@ -70,15 +72,15 @@ export const sha256Hex = (bytes: Buffer) => createHash("sha256").update(bytes).d
  * Reports every way the stored attachments of one stage differ from its evidence entries.
  * Only full validation runs this: a lost or leaked capture must not block the edits that repair it.
  */
-export function evidenceAttachmentErrors(artifactRoot: string, stage) {
+export function evidenceAttachmentErrors(artifactRoot: string, stage: Pick<Stage | WorkStage, "id" | "evidence">) {
   const errors: string[] = [];
   let total = 0;
-  for (const item of stage.evidence ?? []) {
+  for (const item of stage.evidence) {
     for (const attachment of item.attachments ?? []) {
       const label = `Stage ${stage.id} evidence ${item.id} attachment ${attachment.path}`;
-      let resolved;
+      let resolved: { file: string; size: number };
       try { resolved = resolveEvidenceFile(artifactRoot, stage.id, attachment.path); }
-      catch (error) { errors.push(`${label}: ${(error as Error).message}`); continue; }
+      catch (error) { errors.push(`${label}: ${errorMessage(error)}`); continue; }
       if (resolved.size > MAX_EVIDENCE_ATTACHMENT_BYTES) errors.push(`${label} is larger than 25 MiB.`);
       total += resolved.size;
       if (path.basename(attachment.path, path.extname(attachment.path)) !== attachment.sha256) errors.push(`${label} is not named after its hash.`);
@@ -91,12 +93,12 @@ export function evidenceAttachmentErrors(artifactRoot: string, stage) {
 }
 
 /** Everything under evidence/ gets published, so each entry must belong to a recorded attachment. */
-export function evidenceTreeErrors(artifactRoot: string, stages) {
+export function evidenceTreeErrors(artifactRoot: string, stages: Pick<Stage | WorkStage, "evidence">[]) {
   const root = path.join(artifactRoot, "evidence");
   const stat = fs.lstatSync(root, { throwIfNoEntry: false });
   if (!stat) return [];
   if (!stat.isDirectory()) return ["evidence must be a real directory."];
-  const referenced = new Set(stages.flatMap((stage) => (stage.evidence ?? []).flatMap((item) => (item.attachments ?? []).map((attachment) => attachment.path))));
+  const referenced = new Set(stages.flatMap((stage) => stage.evidence.flatMap((item) => (item.attachments ?? []).map((attachment: EvidenceAttachment) => attachment.path))));
   const stray = (entry: string) => `Unreferenced evidence file ${entry}; remove it or record it.`;
   const errors: string[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -110,9 +112,9 @@ export function evidenceTreeErrors(artifactRoot: string, stages) {
 }
 
 /** Warnings never block: a stage may legitimately still be gathering evidence. */
-export function evidenceWarnings(stage) {
-  const hasBehavior = (stage.nodes ?? []).some((node) => (node.changes ?? []).some((file) => file.classification === "behavior"));
-  return hasBehavior && !stage.evidence?.length && !stage.noEvidenceReason
+export function evidenceWarnings(stage: Pick<Stage | WorkStage, "id" | "nodes" | "evidence" | "noEvidenceReason">) {
+  const hasBehavior = stage.nodes.some((node) => node.changes.some((file) => file.classification === "behavior"));
+  return hasBehavior && !stage.evidence.length && !stage.noEvidenceReason
     ? [`Stage ${stage.id} changes behavior but has no evidence. Run stage evidence, or stage no-evidence with the reason.`]
     : [];
 }

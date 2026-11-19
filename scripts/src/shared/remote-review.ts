@@ -3,13 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, hasPendingDeletion, readReview, reviewDirectory, reviewId, withReviewLock, type ReviewRecord } from "./review-store.js";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
-import commonSchema from "../../../standard/v0.1/schema/common.schema.json";
-import manifestSchema from "../../../standard/v0.1/schema/manifest.schema.json";
-import stageSchema from "../../../standard/v0.1/schema/stage.schema.json";
-import specificationSchema from "../../../standard/v0.1/schema/specification.schema.json";
+import { atomicJson, hasPendingDeletion, readReview, reviewDirectory, reviewId, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
+import { parseJson } from "./json.js";
+import { isDocument } from "./schema-validation.js";
 import { reviewEnvironment } from "./review-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { MAX_EVIDENCE_ATTACHMENT_BYTES, MAX_EVIDENCE_TOTAL_BYTES, sha256Hex } from "./evidence.js";
@@ -49,25 +46,17 @@ function stage(root: string, id: string, title: string, summary: string, base: s
     change: { branch, baseRevision: base, headRevision: head, files: changed },
     nodes: [{ id: "changes", description: title, changes: changed.map((file) => ({ path: file.path, classification: "behavior" })) }] };
 }
-let validator: Ajv2020;
-function valid(schema: { $id: string }, document: unknown) {
-  if (!validator) {
-    validator = new Ajv2020({ strict: true, strictRequired: false });
-    addFormats(validator);
-    for (const item of [commonSchema, manifestSchema, stageSchema, specificationSchema]) validator.addSchema(item);
-  }
-  return validator.validate(schema.$id, document);
-}
 function artifact(root: string, ref: string, head: string) {
   const text = optional(root, ["show", `${ref}:.semantic-review/manifest.json`]);
   if (!text) return null;
   try {
-    const manifest = JSON.parse(text);
-    if (!valid(manifestSchema, manifest) || !manifest.stages.length) return null;
-    let stages = manifest.stages.map((id) => JSON.parse(git(root, ["show", `${ref}:.semantic-review/stages/${id}.json`])));
-    if (!stages.every((s, index) => valid(stageSchema, s) && s.id === manifest.stages[index])) return null;
+    const manifest = parseJson(text);
+    if (!isDocument(MANIFEST_SCHEMA_ID, manifest) || !manifest.stages.length) return null;
+    let stages = manifest.stages.map((id) => parseJson(git(root, ["show", `${ref}:.semantic-review/stages/${id}.json`])))
+      .filter((s, index): s is Stage => isDocument(STAGE_SCHEMA_ID, s) && s.id === manifest.stages[index]);
+    if (stages.length !== manifest.stages.length) return null;
     // Only reuse metadata for this exact reviewed range, never unrelated or stale published work.
-    const end = stages.findIndex((s) => s.change?.headRevision === head);
+    const end = stages.findIndex((s) => s.change.headRevision === head);
     if (end < 0) return null;
     stages = stages.slice(0, end + 1);
     manifest.stages = manifest.stages.slice(0, end + 1);
@@ -77,14 +66,15 @@ function artifact(root: string, ref: string, head: string) {
       }
       if (optional(root, ["merge-base", "--is-ancestor", s.change.headRevision, head]) === null) return null;
     }
-    const requirements = (manifest.requirements || []).map((id) => JSON.parse(git(root, ["show", `${ref}:.semantic-review/requirements/${id}.json`])));
-    if (!requirements.every((r, index) => valid(specificationSchema, r) && r.id === manifest.requirements[index])) return null;
+    const requirements = manifest.requirements.map((id) => parseJson(git(root, ["show", `${ref}:.semantic-review/requirements/${id}.json`])))
+      .filter((r, index): r is Specification => isDocument(SPECIFICATION_SCHEMA_ID, r) && r.id === manifest.requirements[index]);
+    if (requirements.length !== manifest.requirements.length) return null;
     return { manifest, stages, requirements, ref };
   } catch { return null; }
 }
 // Unusable attachments stay listed but aren't extracted, so the viewer reports them as unavailable.
 // Remote metadata is untrusted, so only an inventory is built here: each file is read once, within a budget.
-function projectEvidence(root: string, ref: string, stageId: string, item, evidenceFiles: Map<string, EvidenceFile>) {
+function projectEvidence(root: string, ref: string, stageId: string, item: Linked<Evidence>, evidenceFiles: Map<string, EvidenceFile>): Linked<Evidence> {
   if (!item.attachments) return item;
   const prefix = `evidence/${stageId}/`;
   const attachments = item.attachments.map((attachment) => {
@@ -101,8 +91,8 @@ function projectEvidence(root: string, ref: string, stageId: string, item, evide
   });
   return { ...item, attachments };
 }
-function projection(record: ReviewRecord, head: string) {
-  const root = record.repositoryRoot, remote = record.remote!;
+function projection(record: ReviewRecord, remote: RemoteReview, head: string) {
+  const root = record.repositoryRoot;
   let semantic = artifact(root, head, head);
   if (!semantic) {
     // Publication lives on a sibling metadata branch. Match by recorded stage head,
@@ -111,10 +101,11 @@ function projection(record: ReviewRecord, head: string) {
     for (const ref of refs) { semantic = artifact(root, ref, head); if (semantic) break; }
   }
   if (semantic) {
+    const { ref } = semantic;
     // Keep authored and reconstructed stage identities separate across refreshes.
     const evidenceFiles = new Map<string, EvidenceFile>();
     const stages = semantic.stages.map((s) => ({ ...s, id: `semantic-${s.id}`, dependsOn: s.dependsOn.map((id) => `semantic-${id}`),
-      evidence: s.evidence.map((item) => projectEvidence(root, semantic.ref, s.id, item, evidenceFiles)) }));
+      evidence: s.evidence.map((item) => projectEvidence(root, ref, s.id, item, evidenceFiles)) }));
     return { ...semantic, stages, evidenceFiles, manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: stages.map((s) => s.id) } };
   }
   const target = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.targetBranch}^{commit}`]);
@@ -129,11 +120,11 @@ function projection(record: ReviewRecord, head: string) {
   return { manifest: { formatVersion: "0.1", implementationId: record.implementationId, title: remote.branch,
     summary: "Remote branch review. Personal notes and approvals stay on this computer.", targetBranch: remote.targetBranch, baseRevision: base, requirements: [], stages: stages.map((s) => s.id) }, stages, requirements: [], evidenceFiles: new Map<string, EvidenceFile>() };
 }
-function refresh(record: ReviewRecord) {
-  const root = record.repositoryRoot, remote = record.remote!;
+function refresh(record: ReviewRecord, remote: RemoteReview) {
+  const root = record.repositoryRoot;
   git(root, ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
   const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
-  const projected = projection(record, head); // Complete all fallible discovery before replacing the visible artifact.
+  const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
   const next = path.join(reviewDirectory(record.id), ".artifact-next");
   fs.rmSync(next, { recursive: true, force: true });
   for (const child of ["stages", "requirements"]) fs.mkdirSync(path.join(next, child), { recursive: true });
@@ -171,7 +162,7 @@ export function refreshRemoteReview(id: string, generation: string) {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("The remote review was replaced. Reopen it.");
     if (!record.remote) throw new Error("Only remote reviews can fetch branch updates.");
-    return refresh(record);
+    return refresh(record, record.remote);
   });
 }
 export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
@@ -203,9 +194,10 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
       branchName(root, targetBranch);
       const now = new Date().toISOString();
       for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child));
+      const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch };
       const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: fs.realpathSync(root), implementationId: key,
-        title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, remote: { sourceRoot, remoteName, branch, targetBranch } };
-      return refresh(record);
+        title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, remote };
+      return refresh(record, remote);
     } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
   });
 }

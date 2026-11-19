@@ -3,12 +3,31 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, attachmentIds, isReviewId, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
+import { atomicJson, attachmentIds, isReviewId, parseReviewRecord, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
+import { parseJson } from "./json.js";
+import { errorCode, isRecord, stringField, type JsonRecord } from "./narrow.js";
 
 const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 type Entry = { name: string; size: number; modified: number; directory: boolean; link: boolean; hash?: string };
-type Ticket = { review: Omit<ReviewRecord, "state" | "viewer">; preview: any; requestedAt: string; error?: string };
+type Category = { label: string; detail: string; bytes: number };
+/** The storage inspection shown before deletion; the ticket keeps it for display while removal is pending. */
+type TicketPreview = JsonRecord & { categories: Category[] };
+type Ticket = { review: Omit<ReviewRecord, "state" | "viewer">; preview: TicketPreview; requestedAt: string; error?: string };
+function isCategory(value: unknown): value is Category {
+  return isRecord(value) && typeof value.label === "string" && typeof value.detail === "string" && typeof value.bytes === "number";
+}
+/** Tickets are written by this module; anything else in their place is damage. */
+function parseTicket(value: unknown, file: string): Ticket {
+  const damaged = new Error(`Pending review deletion record ${JSON.stringify(file)} is damaged.`);
+  if (!isRecord(value) || !isRecord(value.review) || !isRecord(value.preview) || typeof value.requestedAt !== "string" ||
+    (value.error !== undefined && typeof value.error !== "string")) throw damaged;
+  const { categories } = value.preview;
+  if (!Array.isArray(categories) || !categories.every(isCategory)) throw damaged;
+  // The identity has the record's fields without its state; parse it with an empty one.
+  const { state: ignoredState, viewer: ignoredViewer, ...review } = parseReviewRecord({ ...value.review, state: {} }, file);
+  return { review, preview: { ...value.preview, categories }, requestedAt: value.requestedAt, error: stringField(value, "error") };
+}
 function trashDirectory(id: string, generation: string) {
   reviewDeletionPath(id, generation); return path.join(reviewHome(), "trash", `${id}.${generation}`);
 }
@@ -28,7 +47,7 @@ function inventory(directory: string, hashContents = true): Entry[] {
 }
 function rawTicket(id: string, generation: string): Ticket | null {
   const file = reviewDeletionPath(id, generation);
-  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+  return fs.existsSync(file) ? parseTicket(parseJson(fs.readFileSync(file, "utf8")), file) : null;
 }
 export function pendingReviewDeletions() {
   const directory = path.join(reviewHome(), "deletions");
@@ -37,7 +56,7 @@ export function pendingReviewDeletions() {
     const parts = /^(.+)\.([a-f0-9-]{36})\.json$/.exec(file);
     return parts && isReviewId(parts[1]);
   }).map((file) => {
-    const ticket: Ticket = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8"));
+    const ticket = parseTicket(parseJson(fs.readFileSync(path.join(directory, file), "utf8")), path.join(directory, file));
     if (path.basename(reviewDeletionPath(ticket.review.id, ticket.review.generation)) !== file) throw new Error("Invalid pending deletion identity.");
     return { ...ticket.review, available: false, deletionPending: true, unavailableReason: ticket.error || "File removal is pending." };
   });
@@ -58,7 +77,8 @@ function inspect(id: string, generation: string) {
     }
     const ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
     const categories = ticket.preview.categories.map((category) => {
-      const prefix = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/", "Remote checkout": "checkout/" }[category.label];
+      const prefixes: Record<string, string> = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/", "Remote checkout": "checkout/" };
+      const prefix = prefixes[category.label];
       const matches = (entry: Entry) => category.label === "Review state" ? entry.name === "review.json"
         : prefix ? entry.name.startsWith(prefix) : entry.name !== "review.json" && !/^(feedback|attachments|snapshots|checkout)\//.test(entry.name);
       return { label: category.label, detail: "Pending removal", bytes: entries.filter(matches).reduce((sum, entry) => sum + entry.size, 0) };
@@ -70,13 +90,13 @@ function inspect(id: string, generation: string) {
   const review = readReview(id);
   if (review.generation !== generation) throw new Error("The selected review was replaced. Refresh Saved reviews.");
   const directory = reviewDirectory(id), entries = inventory(directory), state = review.state;
-  const refs = attachmentIds(state), snapshots = new Set(Object.values(state.approvals || {}).map((value: any) => value?.snapshotId));
+  const refs = attachmentIds(state), snapshots = new Set(Object.values(isRecord(state.approvals) ? state.approvals : {}).map((value) => stringField(value, "snapshotId")));
   let feedbackThreads = 0, unresolved = 0, referenceError = "";
   for (const entry of entries.filter((item) => item.name.startsWith("feedback/threads/") && item.name.endsWith(".json"))) {
     try {
       if (entry.link) throw new Error("Feedback is a symbolic link.");
-      const thread = JSON.parse(fs.readFileSync(path.join(directory, entry.name), "utf8"));
-      if (!Array.isArray(thread.comments)) throw new Error("Invalid feedback comments.");
+      const thread = parseJson(fs.readFileSync(path.join(directory, entry.name), "utf8"));
+      if (!isRecord(thread) || !Array.isArray(thread.comments)) throw new Error("Invalid feedback comments.");
       feedbackThreads++; if (thread.status !== "resolved") unresolved++;
       for (const id of attachmentIds(thread)) refs.add(id);
     } catch { referenceError = "Some feedback cannot be read. Unused-file cleanup is disabled to preserve its attachments."; }
@@ -88,22 +108,29 @@ function inspect(id: string, generation: string) {
     const attachment = /^attachments\/([a-f0-9]{64})$/.exec(entry.name);
     const snapshot = /^snapshots\/([a-f0-9]{32})\.json$/.exec(entry.name);
     if (attachment && entry.directory && !refs.has(attachment[1])) {
-      try { lastUse = Date.parse(JSON.parse(fs.readFileSync(path.join(directory, entry.name, "metadata.json"), "utf8")).uploadedAt); eligible = Number.isFinite(lastUse); }
+      try { lastUse = Date.parse(stringField(parseJson(fs.readFileSync(path.join(directory, entry.name, "metadata.json"), "utf8")), "uploadedAt") ?? ""); eligible = Number.isFinite(lastUse); }
       catch { eligible = false; }
     } else if (snapshot && !snapshots.has(snapshot[1])) eligible = true;
     else if (/^(attachments\/\.upload-|snapshots\/\.compare-)[a-zA-Z0-9-]+$/.test(entry.name)) eligible = true;
     if (retired || eligible && Date.now() - lastUse >= GRACE_MS) unused.push({ path: entry.name, bytes: entries.filter((item) => item.name === entry.name || item.name.startsWith(entry.name + "/")).reduce((sum, item) => sum + item.size, 0) });
   }
   const notes = Array.isArray(state.comments) ? state.comments : [], replies = Array.isArray(state.replyDrafts) ? state.replyDrafts : [];
-  const hasMessage = (value: any) => Boolean(value?.body?.trim() || value?.attachments?.length);
-  const drafts = notes.filter((note) => note.mode === "feedback" && !note.exported).length + replies.length + Number(hasMessage(state.editor?.compose)) + Number(Boolean(state.editor?.replyTo && (state.editor.replyDraft?.trim() || state.editor.replyAttachments?.length)));
-  const categories = [
-    { label: "Review state", bytes: entries.filter((item) => item.name === "review.json").reduce((sum, item) => sum + item.size, 0), detail: `${drafts} unsent draft${drafts === 1 ? "" : "s"} · ${notes.filter((note) => note.mode !== "feedback").length} personal notes · ${Object.keys(state.approvals || {}).length} approvals` },
-    { label: "Submitted feedback", prefix: "feedback/", detail: `${feedbackThreads} threads · ${unresolved} unresolved` },
-    { label: "Attachments", prefix: "attachments/", detail: `${entries.filter((item) => /^attachments\/[a-f0-9]{64}\/content\.bin$/.test(item.name)).length} files` },
-    ...(review.remote ? [{ label: "Remote checkout", prefix: "checkout/", detail: `${review.remote.branch} · Includes Git objects and checked-out code` }] : []),
-    { label: "Approved snapshots", prefix: "snapshots/", detail: `${entries.filter((item) => /^snapshots\/[a-f0-9]{32}\.json$/.test(item.name)).length} snapshots` },
-  ].map((category) => ({ label: category.label, detail: category.detail, bytes: category.bytes ?? entries.filter((item) => item.name.startsWith(category.prefix)).reduce((sum, item) => sum + item.size, 0) }));
+  const hasText = (value: unknown) => typeof value === "string" && Boolean(value.trim());
+  const hasItems = (value: unknown) => Array.isArray(value) && value.length > 0;
+  const editor = isRecord(state.editor) ? state.editor : {};
+  const compose = isRecord(editor.compose) ? editor.compose : {};
+  const isFeedbackNote = (note: unknown) => isRecord(note) && note.mode === "feedback";
+  const drafts = notes.filter((note) => isFeedbackNote(note) && isRecord(note) && !note.exported).length + replies.length +
+    Number(hasText(compose.body) || hasItems(compose.attachments)) + Number(Boolean(editor.replyTo && (hasText(editor.replyDraft) || hasItems(editor.replyAttachments))));
+  const sizeOf = (matches: (item: Entry) => boolean) => entries.filter(matches).reduce((sum, item) => sum + item.size, 0);
+  const underPrefix = (prefix: string) => sizeOf((item) => item.name.startsWith(prefix));
+  const categories: Category[] = [
+    { label: "Review state", bytes: sizeOf((item) => item.name === "review.json"), detail: `${drafts} unsent draft${drafts === 1 ? "" : "s"} · ${notes.filter((note) => !isFeedbackNote(note)).length} personal notes · ${Object.keys(isRecord(state.approvals) ? state.approvals : {}).length} approvals` },
+    { label: "Submitted feedback", bytes: underPrefix("feedback/"), detail: `${feedbackThreads} threads · ${unresolved} unresolved` },
+    { label: "Attachments", bytes: underPrefix("attachments/"), detail: `${entries.filter((item) => /^attachments\/[a-f0-9]{64}\/content\.bin$/.test(item.name)).length} files` },
+    ...(review.remote ? [{ label: "Remote checkout", bytes: underPrefix("checkout/"), detail: `${review.remote.branch} · Includes Git objects and checked-out code` }] : []),
+    { label: "Approved snapshots", bytes: underPrefix("snapshots/"), detail: `${entries.filter((item) => /^snapshots\/[a-f0-9]{32}\.json$/.test(item.name)).length} snapshots` },
+  ];
   const bytes = entries.reduce((sum, item) => sum + item.size, 0), knownBytes = categories.reduce((sum, item) => sum + item.bytes, 0);
   if (bytes > knownBytes) categories.push({ label: "Other owned files", bytes: bytes - knownBytes, detail: "Temporary and auxiliary review files" });
   const { state: ignoredState, viewer: ignoredViewer, ...identity } = review;
@@ -113,7 +140,7 @@ function inspect(id: string, generation: string) {
 function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T): T {
   try { return withReviewLock(id, operation); }
   catch (error) {
-    if (!["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(error.code)) throw error;
+    if (!["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(errorCode(error) ?? "")) throw error;
     throw new Error(cleanupFailure(error, reviewDirectory(id), retry));
   }
 }
@@ -135,8 +162,8 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
     let failedPath = live;
     try {
       if (fs.existsSync(live)) {
-        const record = JSON.parse(fs.readFileSync(path.join(live, "review.json"), "utf8"));
-        if (record.generation !== generation) throw new Error("A newer review session exists; it will not be removed.");
+        const record = parseJson(fs.readFileSync(path.join(live, "review.json"), "utf8"));
+        if (stringField(record, "generation") !== generation) throw new Error("A newer review session exists; it will not be removed.");
         fs.mkdirSync(path.dirname(trash), { recursive: true, mode: 0o700 }); fs.renameSync(live, trash);
       }
       failedPath = trash;

@@ -8,6 +8,7 @@ import {
   type ParseError,
 } from "jsonc-parser/lib/esm/main.js";
 import { fail } from "./errors.js";
+import { errorMessage } from "./narrow.js";
 
 function findDuplicateKeys(
   node: JsonNode | undefined,
@@ -34,12 +35,12 @@ function findDuplicateKeys(
   }
 }
 
-export function readJson(file: string): any {
+export function readJson(file: string): unknown {
   let text: string;
   try {
     text = fs.readFileSync(file, "utf8");
   } catch (error) {
-    fail(`Cannot read ${file}: ${(error as Error).message}`);
+    fail(`Cannot read ${file}: ${errorMessage(error)}`);
   }
 
   if (text.charCodeAt(0) === 0xfeff) {
@@ -92,4 +93,10 @@ export function listJsonFiles(directory: string): string[] {
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
     .map((entry) => path.join(directory, entry.name))
     .sort();
+}
+
+/** Parses JSON text from a file, Git object or another process. The result is
+ * unvalidated: narrow it or validate it against its schema before use. */
+export function parseJson(text: string): unknown {
+  return JSON.parse(text);
 }

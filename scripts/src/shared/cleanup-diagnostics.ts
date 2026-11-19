@@ -2,6 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import childProcess from "node:child_process";
+import { parseJson } from "./json.js";
+import { capturedOutput, exitStatus, isRecord, stringField } from "./narrow.js";
 
 type FileUser = { pid: number; name: string; path: string };
 
@@ -69,8 +71,9 @@ while ($users.Count -gt 0 -and $paths.Count -gt 1) {
 
 function candidateFiles(root: string): string[] {
   const files: string[] = [], pending = [root];
-  for (let visited = 0; pending.length && files.length < 256 && visited < 1024; visited++) {
+  for (let visited = 0; files.length < 256 && visited < 1024; visited++) {
     const file = pending.pop();
+    if (file === undefined) break;
     try {
       const stat = fs.lstatSync(file);
       if (stat.isSymbolicLink()) continue;
@@ -96,16 +99,19 @@ export function fileUsers(file: string): FileUser[] {
       if (!files.length) return [];
       // Pathnames travel as JSON on stdin, never as executable PowerShell text.
       const output = childProcess.execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsLookup], { ...options, input: JSON.stringify(files) });
-      const parsed = output.trim() ? JSON.parse(output) : [];
-      users = Array.isArray(parsed) ? parsed : [parsed];
+      const parsed = output.trim() ? parseJson(output) : [];
+      users = (Array.isArray(parsed) ? parsed : [parsed]).flatMap((user: unknown) =>
+        isRecord(user) && typeof user.pid === "number" && typeof user.name === "string" && typeof user.path === "string"
+          ? [{ pid: user.pid, name: user.name, path: user.path }] : []);
     } else {
       const directory = fs.lstatSync(file).isDirectory();
       let output: string;
       try { output = childProcess.execFileSync("lsof", ["-Fpcn", ...(directory ? ["+D", file] : ["--", file])], options); }
       catch (error) {
         // A directory query can return matches and exit 1 for unmatched files.
-        if (error.status !== 1 || typeof error.stdout !== "string") throw error;
-        output = error.stdout;
+        const stdout = capturedOutput(error, "stdout");
+        if (exitStatus(error) !== 1 || typeof stdout !== "string") throw error;
+        output = stdout;
       }
       users = []; let pid = 0, name = "";
       for (const line of output.split("\n")) {
@@ -114,17 +120,19 @@ export function fileUsers(file: string): FileUser[] {
         else if (line.startsWith("n") && pid) users.push({ pid, name, path: line.slice(1) });
       }
     }
-    return users.filter((user) => Number.isInteger(user.pid) && user.pid > 0 && typeof user.name === "string" && typeof user.path === "string")
+    return users.filter((user) => Number.isInteger(user.pid) && user.pid > 0)
       .filter((user, index, all) => all.findIndex((other) => other.pid === user.pid && other.path === user.path) === index).slice(0, 8);
   } catch { return []; } // Missing tools, permissions, and lookup timeouts are normal.
 }
 
-export function cleanupFailure(error: NodeJS.ErrnoException, fallback: string, retry: string): string {
-  const file = typeof error.path === "string" ? error.path : fallback;
-  const code = error.code ? ` (${error.code})` : "";
-  const users = ["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(error.code) ? fileUsers(file) : [];
+export function cleanupFailure(error: unknown, fallback: string, retry: string): string {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  const file = stringField(failure, "path") ?? fallback;
+  const errorCode = stringField(failure, "code");
+  const code = errorCode ? ` (${errorCode})` : "";
+  const users = errorCode && ["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(errorCode) ? fileUsers(file) : [];
   const owners = users.length
     ? ` Processes using these files: ${users.map((user) => `${user.name || "Process"} (PID ${user.pid}): ${JSON.stringify(user.path)}`).join("; ")}.`
     : " No holding process could be identified; the path may be locked or inaccessible.";
-  return `Could not clean ${JSON.stringify(file)}${code}: ${error.message}.${owners} Close applications or terminals using this location, or release the lock and check access permissions. ${retry} Do not delete review files manually.`;
+  return `Could not clean ${JSON.stringify(file)}${code}: ${failure.message}.${owners} Close applications or terminals using this location, or release the lock and check access permissions. ${retry} Do not delete review files manually.`;
 }

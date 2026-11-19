@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { parseJson } from "./json.js";
+import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 
 export function reviewHome() {
   const configured = process.env.SEMANTIC_FLOW_HOME;
@@ -49,7 +51,8 @@ export function feedbackDirectory(root: string, implementationId?: string) {
   if (implementationId === undefined) {
     const file = path.join(root, ".semantic-review", "manifest.json");
     if (!fs.existsSync(file)) throw new Error("No active .semantic-review artifact exists.");
-    implementationId = JSON.parse(fs.readFileSync(file, "utf8")).implementationId;
+    implementationId = stringField(parseJson(fs.readFileSync(file, "utf8")), "implementationId");
+    if (implementationId === undefined) throw new Error("The active .semantic-review manifest has no implementation ID.");
   }
   return path.join(reviewDirectory(reviewId(root, implementationId)), "feedback");
 }
@@ -74,7 +77,7 @@ function retireLock(lock: string) {
   for (let attempt = 0; ; attempt++) {
     try { fs.renameSync(lock, retired); break; }
     catch (error) {
-      if (attempt >= 10 || !["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(error.code)) throw error;
+      if (attempt >= 10 || !["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"].includes(errorCode(error) ?? "")) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
     }
   }
@@ -109,19 +112,19 @@ function acquireReviewLock<T>(id: string, operation: () => T): T {
       catch (error) {
         // The owner can retire the destination after a contended rename. Its
         // absence here is a reason to retry, not evidence of a fatal error.
-        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
-        let blockingPid: number;
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(errorCode(error) ?? "")) throw error;
+        let blockingPid: number | undefined;
         try {
           const entries = fs.readdirSync(lock);
           if (!entries.length) { fs.rmdirSync(lock); continue; } // A reaper died after removing its owner marker.
           else if (entries.length === 1 && /^owner-[a-f0-9-]{36}\.json$/.test(entries[0])) {
             const marker = path.join(lock, entries[0]);
-            const { pid } = JSON.parse(fs.readFileSync(marker, "utf8"));
-            if (Number.isInteger(pid) && pid > 0) {
+            const pid = numberField(parseJson(fs.readFileSync(marker, "utf8")), "pid");
+            if (pid !== undefined && Number.isInteger(pid) && pid > 0) {
               blockingPid = pid;
               try { process.kill(pid, 0); }
               catch (error) {
-                if (error.code === "ESRCH") {
+                if (errorCode(error) === "ESRCH") {
                   blockingPid = undefined;
                   // A unique marker prevents a delayed reaper from removing a
                   // replacement owner. rmdir can only remove an empty directory.
@@ -142,13 +145,53 @@ function acquireReviewLock<T>(id: string, operation: () => T): T {
   try { return operation(); }
   finally { retireLock(lock); }
 }
+export type RemoteReview = { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
+export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string };
 export type ReviewRecord = {
   id: string; generation: string; repositoryRoot: string; implementationId: string;
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
-  state: Record<string, any>;
-  remote?: { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
-  viewer?: { port: number; processId: number; viewerVersion: string; skillDirectory: string };
+  /** The viewer's saved review state. The browser owns its shape; read it by narrowing. */
+  state: JsonRecord;
+  remote?: RemoteReview;
+  viewer?: ViewerRecord;
 };
+function optionalString(value: JsonRecord, key: string): boolean {
+  return value[key] === undefined || typeof value[key] === "string";
+}
+function parseRemote(value: unknown): RemoteReview | undefined {
+  if (!isRecord(value)) return undefined;
+  const { sourceRoot, remoteName, branch, targetBranch } = value;
+  if (typeof sourceRoot !== "string" || typeof remoteName !== "string" || typeof branch !== "string" || typeof targetBranch !== "string" ||
+    !optionalString(value, "headRevision") || !optionalString(value, "refreshedAt")) return undefined;
+  return { sourceRoot, remoteName, branch, targetBranch, headRevision: stringField(value, "headRevision"), refreshedAt: stringField(value, "refreshedAt") };
+}
+function parseViewer(value: unknown): ViewerRecord | undefined {
+  if (!isRecord(value)) return undefined;
+  const { port, processId, viewerVersion, skillDirectory } = value;
+  if (typeof port !== "number" || typeof processId !== "number" || typeof viewerVersion !== "string" || typeof skillDirectory !== "string") return undefined;
+  return { port, processId, viewerVersion, skillDirectory };
+}
+/** Narrows a stored review.json record; fails when a required field is missing or malformed. */
+export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
+  const invalid = () => new Error(`Review data at ${JSON.stringify(file)} is malformed. Reopen the review explicitly.`);
+  if (!isRecord(value)) throw invalid();
+  const { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state, remote, viewer } = value;
+  if (typeof id !== "string" || typeof generation !== "string" || typeof repositoryRoot !== "string" || typeof implementationId !== "string" ||
+    typeof title !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string" ||
+    (completedAt !== null && typeof completedAt !== "string") || !isRecord(state)) throw invalid();
+  const record: ReviewRecord = { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state };
+  if (remote !== undefined) {
+    const parsed = parseRemote(remote);
+    if (!parsed) throw invalid();
+    record.remote = parsed;
+  }
+  if (viewer !== undefined) {
+    const parsed = parseViewer(viewer);
+    if (!parsed) throw invalid();
+    record.viewer = parsed;
+  }
+  return record;
+}
 export function reviewDeletionPath(id: string, generation: string) {
   reviewDirectory(id);
   if (typeof generation !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(generation)) throw new Error("Invalid review generation.");
@@ -158,22 +201,23 @@ export function hasPendingDeletion(id: string) {
   const directory = path.join(reviewHome(), "deletions");
   return fs.existsSync(directory) && fs.readdirSync(directory).some((file) => file.startsWith(id + ".") && file.endsWith(".json"));
 }
-export function attachmentIds(state: any): Set<string> {
+export function attachmentIds(state: unknown): Set<string> {
   const ids = new Set<string>();
-  function visit(value: any) {
+  function visit(value: unknown) {
     if (!value || typeof value !== "object") return;
-    if (typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id) && value.path === `attachments/${value.id}/content.bin`) ids.add(value.id);
+    if (isRecord(value) && typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id) && value.path === `attachments/${value.id}/content.bin`) ids.add(value.id);
     for (const item of Object.values(value)) visit(item);
   }
   visit(state); return ids;
 }
 export function readReview(id: string): ReviewRecord {
   try {
-    const record = JSON.parse(fs.readFileSync(path.join(reviewDirectory(id), "review.json"), "utf8"));
+    const file = path.join(reviewDirectory(id), "review.json");
+    const record = parseReviewRecord(parseJson(fs.readFileSync(file, "utf8")), file);
     if (fs.existsSync(reviewDeletionPath(id, record.generation))) throw Object.assign(new Error("Review data was deleted; file cleanup is pending. Retry deletion from Saved reviews."), { code: "REVIEW_UNAVAILABLE" });
     return record;
   }
-  catch (error) { if (error.code === "ENOENT") throw Object.assign(new Error("Review data is unavailable or was deleted. Reopen the review explicitly."), { code: "REVIEW_UNAVAILABLE" }); throw error; }
+  catch (error) { if (errorCode(error) === "ENOENT") throw Object.assign(new Error("Review data is unavailable or was deleted. Reopen the review explicitly."), { code: "REVIEW_UNAVAILABLE" }); throw error; }
 }
 export function registerReview(root: string, implementationId: string, title: string): ReviewRecord {
   root = fs.realpathSync(root);
@@ -193,7 +237,7 @@ export function registerReview(root: string, implementationId: string, title: st
     return record;
   });
 }
-type Value = { present: boolean; value?: any };
+type Value = { present: boolean; value?: unknown };
 export type StateChange = { path: string[]; before: Value; after: Value };
 function validateValue(value: Value) {
   if (!value || typeof value.present !== "boolean" || (value.present && !Object.hasOwn(value, "value"))) throw new Error("Invalid state change value.");
@@ -212,10 +256,11 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       let target = record.state;
       for (const key of change.path.slice(0, -1)) {
         if (!Object.hasOwn(target, key)) target[key] = {};
-        if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
-        target = target[key];
+        const next = target[key];
+        if (!isRecord(next)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
+        target = next;
       }
-      const key = change.path.at(-1)!;
+      const key = change.path[change.path.length - 1];
       const current: Value = Object.hasOwn(target, key) ? { present: true, value: target[key] } : { present: false };
       // Exact retries are harmless even if the original response was lost.
       if (isDeepStrictEqual(current, change.after)) continue;
@@ -223,8 +268,10 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (change.after.present) Object.defineProperty(target, key, { value: change.after.value, enumerable: true, configurable: true, writable: true });
       else delete target[key];
     }
-    if (record.remote && ((record.state.comments || []).some((note) => note.mode === "feedback") ||
-      record.state.replyDrafts?.length || record.state.editor?.compose?.mode === "feedback" || record.state.editor?.replyTo)) {
+    const { comments, replyDrafts, editor } = record.state;
+    const compose = isRecord(editor) ? editor.compose : undefined;
+    if (record.remote && ((Array.isArray(comments) && comments.some((note) => isRecord(note) && note.mode === "feedback")) ||
+      (Array.isArray(replyDrafts) && replyDrafts.length) || (isRecord(compose) && compose.mode === "feedback") || (isRecord(editor) && editor.replyTo))) {
       throw new Error("Remote reviews support personal notes only.");
     }
     for (const attachmentId of attachmentIds(record.state)) {
@@ -247,8 +294,9 @@ export function patchReviewState(id: string, generation: string, changes: StateC
     return record;
   });
 }
-function approvalSnapshotIds(state: Record<string, any>): Set<string> {
-  return new Set(Object.values(state.approvals || {}).map((record: any) => record?.snapshotId).filter((id) => typeof id === "string" && /^[a-f0-9]{32}$/.test(id)));
+function approvalSnapshotIds(state: JsonRecord): Set<string> {
+  const approvals = isRecord(state.approvals) ? Object.values(state.approvals) : [];
+  return new Set(approvals.map((record) => stringField(record, "snapshotId")).filter((id): id is string => id !== undefined && /^[a-f0-9]{32}$/.test(id)));
 }
 
 /** Runtime location is discoverable without changing the user's edit timestamp. */
@@ -274,10 +322,12 @@ export function listReviews(): ReviewRecord[] {
 }
 
 /** View preferences and opening an empty editor do not count as review edits. */
-function reviewActivity(state: Record<string, any>) {
+function reviewActivity(state: JsonRecord) {
+  const editor = isRecord(state.editor) ? state.editor : {};
+  const compose = isRecord(editor.compose) ? editor.compose : {};
   return { approvals: state.approvals || {}, insightReviews: state.insightReviews || {}, comments: state.comments || [], replyDrafts: state.replyDrafts || [],
-    message: state.editor?.compose?.body || "", reply: state.editor?.replyDraft || "",
-    messageAttachments: state.editor?.compose?.attachments || [], replyAttachments: state.editor?.replyAttachments || [] };
+    message: compose.body || "", reply: editor.replyDraft || "",
+    messageAttachments: compose.attachments || [], replyAttachments: editor.replyAttachments || [] };
 }
 export function setReviewCompleted(id: string, generation: string, completed: boolean, expectedCompletedAt: string | null) {
   if (typeof completed !== "boolean" || (expectedCompletedAt !== null && typeof expectedCompletedAt !== "string")) throw new Error("Invalid review lifecycle change.");

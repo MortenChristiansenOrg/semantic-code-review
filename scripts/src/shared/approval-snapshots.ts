@@ -5,13 +5,37 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { assertReviewContext, runReviewCommand, type ReviewContext } from "./review-context.js";
 import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
+import { parseJson } from "./json.js";
+import { capturedOutput, exitStatus, isRecord, isStringArray, stringField, type JsonRecord } from "./narrow.js";
 
 export type FileEndpoint = {
   stageId: string; nodeId: string; path: string; previousPath?: string; previousPaths?: string[];
-  baseRevision: string; headRevision: string; fileRevision: string; ownership: any;
+  baseRevision: string; headRevision: string; fileRevision: string;
+  /** The node membership the viewer showed; only compared for equality. */
+  ownership: unknown;
 };
 type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string | null };
 type Snapshot = { id: string; endpoint: FileEndpoint; createdAt: string; baseIdentity?: string; content: Content };
+const isOptional = (value: unknown, check: (item: unknown) => boolean) => value === undefined || check(value);
+const isString = (value: unknown) => typeof value === "string";
+const isNullableString = (value: unknown) => value === null || typeof value === "string";
+function isEndpoint(value: unknown): value is FileEndpoint {
+  return isRecord(value) && ["stageId", "nodeId", "path", "baseRevision", "headRevision", "fileRevision"].every((key) => isString(value[key])) &&
+    isOptional(value.previousPath, isString) && isOptional(value.previousPaths, isStringArray) && "ownership" in value;
+}
+function isContent(value: unknown): value is Content {
+  return isRecord(value) && typeof value.exists === "boolean" && typeof value.binary === "boolean" && typeof value.size === "number" &&
+    isString(value.unsupported) && isString(value.bytes) && [value.mode, value.objectId, value.sha256].every(isNullableString);
+}
+/** Snapshots are written by this module; anything else in their place is damage. */
+function parseSnapshot(value: unknown): Snapshot {
+  const damaged = new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
+  if (!isRecord(value)) throw damaged;
+  const { id, createdAt, baseIdentity, endpoint, content } = value;
+  if (typeof id !== "string" || typeof createdAt !== "string" || (baseIdentity !== undefined && typeof baseIdentity !== "string") ||
+    !isEndpoint(endpoint) || !isContent(content)) throw damaged;
+  return { id, createdAt, baseIdentity, endpoint, content };
+}
 const MAX_APPROVED_BYTES = 20 * 1024 * 1024;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 export function approvalSnapshotPath(reviewId: string, snapshotId: string) {
@@ -84,16 +108,17 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
     assertReviewContext(context);
     const file = approvalSnapshotPath(context.reviewId, snapshotId);
     if (!fs.existsSync(file)) throw new Error("Approved content is unavailable. Re-approve the current file to capture a new snapshot.");
-    const snapshot: Snapshot = JSON.parse(fs.readFileSync(file, "utf8"));
+    const snapshot = parseSnapshot(parseJson(fs.readFileSync(file, "utf8")));
     // A persisted reference carries identity through rename edges observed in earlier revisions.
     const review = readReview(context.reviewId);
-    const approvals = review.state.approvals || {};
+    const approvals: JsonRecord = isRecord(review.state.approvals) ? review.state.approvals : {};
+    const approvedSnapshot = (key: string) => stringField(approvals[key], "snapshotId");
     const retained = [current.path, current.previousPath].filter(Boolean).some((filePath) =>
-      approvals[`m:${JSON.stringify([current.stageId, current.nodeId, filePath])}`]?.snapshotId === snapshotId);
+      approvedSnapshot(`m:${JSON.stringify([current.stageId, current.nodeId, filePath])}`) === snapshotId);
     const originalKey = `m:${JSON.stringify([snapshot.endpoint.stageId, snapshot.endpoint.nodeId, snapshot.endpoint.path])}`;
     const remotePrevious = review.remote && /^commit-[a-f0-9]{40,64}$/.test(current.stageId) && /^commit-[a-f0-9]{40,64}$/.test(snapshot.endpoint.stageId) &&
       current.nodeId === "changes" && snapshot.endpoint.nodeId === "changes" &&
-      [current.path, current.previousPath, ...(current.previousPaths || [])].includes(snapshot.endpoint.path) && approvals[originalKey]?.snapshotId === snapshotId;
+      [current.path, current.previousPath, ...(current.previousPaths || [])].includes(snapshot.endpoint.path) && approvedSnapshot(originalKey) === snapshotId;
     if (!remotePrevious && (snapshot.endpoint.stageId !== current.stageId || snapshot.endpoint.nodeId !== current.nodeId || (!retained && ![current.path, current.previousPath].includes(snapshot.endpoint.path)))) throw new Error("The approved snapshot belongs to another file review.");
     const before = snapshot.content, after = readContent(context, current);
     if (snapshot.id !== snapshotId || (before.sha256 === null ? !before.unsupported || before.bytes !== "" : digest(Buffer.from(before.bytes, "base64")) !== before.sha256)) throw new Error("The approved snapshot is damaged. Re-approve the current file to capture a new snapshot.");
@@ -116,7 +141,7 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       const separated = previousBase && currentBase ? approvedOnCurrentBase(context, approvedBytes, previousBase, currentBase, temporary) : null;
       // Comparing with the approved file moved onto the current base attributes base changes away from the stage.
       const baseChanges = !baseChanged ? "none" : !separated ? "mixed" : scope === "all" ? "included" : "excluded";
-      const comparedBytes = baseChanges === "excluded" ? separated! : approvedBytes;
+      const comparedBytes = baseChanges === "excluded" && separated ? separated : approvedBytes;
       if (mode === "full" && comparedBytes.equals(currentBytes)) {
         const text = currentBytes.toString("utf8");
         const content = text ? text.split("\n") : [];
@@ -128,7 +153,11 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       fs.writeFileSync(oldFile, comparedBytes); fs.writeFileSync(newFile, currentBytes);
       let patch: string;
       try { patch = git(context, ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile]).toString("utf8"); }
-      catch (error) { if (error.status !== 1 || !error.stdout) throw error; patch = error.stdout.toString("utf8"); }
+      catch (error) {
+        const stdout = capturedOutput(error, "stdout");
+        if (exitStatus(error) !== 1 || !stdout) throw error;
+        patch = stdout.toString("utf8");
+      }
       const lines: Array<{ t: string; o?: number; n?: number; s: string }> = [];
       let oldNo = 0, newNo = 0, started = false, count = 0, more = false;
       for (const line of patch.split("\n")) {
