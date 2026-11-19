@@ -2708,6 +2708,54 @@ test('interactive review shows agent presence, round progress, unread replies, a
   await expect(page.locator('.agent-pill.is-offline')).toHaveText('No agent listening');
 });
 
+test('interactive reviews can send feedback notes and replies automatically when saved', async ({ page }) => {
+  const now = new Date().toISOString();
+  const data = { ...fixture(), feedback: [thread('existing')],
+    agent: { session: false, listening: false, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now } };
+  await mount(page, data);
+  const exports = [];
+  await page.route('**/api/feedback/export*', (route) => {
+    const input = route.request().postDataJSON(); exports.push(input);
+    return route.fulfill({ json: { ok: true, skipped: [],
+      exported: input.notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })),
+      replied: input.replies.map((reply) => ({ ref: reply.ref, threadId: reply.threadId, comment: { id: `c-${reply.ref}`, author: 'user', body: reply.body, createdAt: now } })) } });
+  });
+  await showNotes(page);
+  const autoSend = page.getByRole('checkbox', { name: 'Send automatically' });
+  await expect(autoSend).toHaveCount(0);
+
+  data.agent = { ...data.agent, session: true, listening: true }; data.viewerRevision = 'listening';
+  await expect(autoSend).toBeVisible();
+  await expect(autoSend).not.toBeChecked();
+  await autoSend.check();
+  await expect(page.locator('.notes-export-hint')).toContainText('go to the listening agent when you save them');
+
+  await page.locator('.side.notes [data-action="thread-reply"]').click();
+  await page.locator('textarea[name="reply-body"]').fill('Please also cover the edge case.');
+  await page.getByRole('button', { name: 'Save reply', exact: true }).click();
+  await expect.poll(() => exports.length).toBe(1);
+  expect(exports[0].replies.map((reply) => reply.body)).toEqual(['Please also cover the edge case.']);
+  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveText('Prepare feedback');
+
+  await page.locator('.side.notes [data-action="toggle-notes"]').click();
+  await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Personal' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Just for me');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await page.locator('.file-notes .thread-add').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Rename this file');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  await expect.poll(() => exports.length).toBe(2);
+  expect(exports[1].notes.map((note) => note.body)).toEqual(['Rename this file']);
+
+  await page.reload(); await showNotes(page);
+  await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toBeChecked();
+  data.agent = { ...data.agent, session: false, listening: false }; data.viewerRevision = 'offline';
+  await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toHaveCount(0);
+  expect(exports).toHaveLength(2);
+});
+
 test('showing an answered round opens the active thread, not a resolved one with an unread reply', async ({ page }) => {
   const now = new Date().toISOString();
   const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });

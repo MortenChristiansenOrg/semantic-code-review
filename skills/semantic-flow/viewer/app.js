@@ -58,6 +58,24 @@
   // Questions the reviewer minimized; a new question opens the overlay again.
   const minimizedAgentQuestions = new Set();
   const AGENT_COMMAND = "/semantic-flow review -i";
+  // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
+  const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
+  let autoSendPreferred = false;
+  try { autoSendPreferred = localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { /* storage unavailable */ }
+  let autoSendQueued = false;
+  function setAutoSendPreferred(on) {
+    autoSendPreferred = on;
+    try { localStorage.setItem(AUTO_SEND_KEY, String(on)); } catch { /* storage unavailable */ }
+  }
+  // Offered only while an interactive session can take feedback as it arrives.
+  const agentTakesFeedback = () => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
+  const autoSendActive = () => autoSendPreferred && agentTakesFeedback();
+  // Send saved feedback at once; a save during a send goes out when that send finishes.
+  function autoSendFeedback() {
+    if (!autoSendActive() || !pendingFeedbackCount()) return;
+    if (exportState.phase === "working") { autoSendQueued = true; return; }
+    void exportFeedback();
+  }
   const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
@@ -2921,12 +2939,20 @@
     const pending = pendingFeedbackCount();
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
+    const autoSend = agentTakesFeedback()
+      ? `<label class="notes-auto-send" title="Send each feedback note and reply to the listening agent when you save it. Personal notes stay local."><input type="checkbox" name="auto-send" ${autoSendPreferred ? "checked" : ""}><span>Send automatically</span></label>` : "";
+    const idleHint = autoSendActive()
+      ? "Feedback notes and replies go to the listening agent when you save them. Personal notes stay local."
+      : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically.";
     const foot = data.remote ? `<div class="notes-foot"><p>Personal notes stay on this computer.</p></div>` : `<div class="notes-foot">
-        <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
-          ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
-        </button>
+        <div class="notes-export-row">
+          <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
+            ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
+          </button>
+          ${autoSend}
+        </div>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically."}</p>`}
+          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : idleHint}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -3627,6 +3653,7 @@
     replyDirty = false;
     persist();
     render();
+    autoSendFeedback();
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
@@ -3764,6 +3791,7 @@
       } catch (err) {
         persist();
         exportState = { phase: "error", message: err.message || "Export failed.", skips };
+        autoSendQueued = false;
         render();
         return;
       }
@@ -3781,6 +3809,7 @@
       skips
     };
     render();
+    if (autoSendQueued) { autoSendQueued = false; autoSendFeedback(); }
   }
 
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
@@ -3974,6 +4003,11 @@
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
+    if (t.matches('.notes-auto-send input[name="auto-send"]')) {
+      setAutoSendPreferred(t.checked);
+      render();
+      return;
+    }
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
@@ -4003,6 +4037,7 @@
       compose = null;
       persist();
       render();
+      if (mode === "feedback") autoSendFeedback();
       return;
     }
     if (e.target.matches("[data-agent-answer]")) {
