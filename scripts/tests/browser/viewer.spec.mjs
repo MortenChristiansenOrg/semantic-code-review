@@ -621,6 +621,17 @@ test('valid changed and renamed file approvals remain stale', async ({ page }) =
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
 });
 
+test('loading the viewer moves approvals to renamed files and revokes unfinished stage approvals', async ({ page }) => {
+  const data = fixture();
+  Object.assign(data.stages[0].files[0], { kind: 'renamed', previousPath: 'old.js' });
+  const previous = approvalKey('first', 'first-one', 'old.js');
+  // No snapshot is adopted after loading, as the revision stays the same.
+  await saveAction(page, () => mount(page, data, { approvals: { [previous]: { rev: 'previous', at: 1 }, first: { rev: null, at: 1 } } }),
+    (state) => !state.approvals[previous] && !state.approvals.first && state.approvals[approvalKey('first', 'first-one')]?.rev === 'previous');
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await expect(page.locator('.stage[data-stage="first"]')).not.toHaveClass(/is-approved/);
+});
+
 
 test('unfinished message text survives a reload and failed saves stay visible', async ({ page }) => {
   await mount(page);

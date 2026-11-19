@@ -389,6 +389,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     requirements.splice(0, requirements.length, ...(data.requirements || []));
     allAcceptance.splice(0, allAcceptance.length, ...requirements.flatMap((r) => (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` }))));
     artifactThreads.splice(0, artifactThreads.length, ...(data.feedback || []));
+    reconcileApprovals();
   }
 
   const INSIGHT = {
@@ -1025,10 +1026,17 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
           }
         }
       } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
-      finally { approvalOps.delete(id); render(); }
+      finally { approvalOps.delete(id); reconcileApprovals(); render(); }
     });
     approvalOps.set(id, operation); render();
     return operation;
+  }
+  // Approvals follow the implementation they were given for. Run whenever the
+  // implementation or the approvals change: when the viewer starts, adopts a
+  // snapshot, or finishes an approval change.
+  function reconcileApprovals() {
+    retainApprovalRenames();
+    revokeInvalidStageApprovals();
   }
   // Retain each observed rename edge by moving the reference, never the captured endpoint.
   function retainApprovalRenames() {
@@ -3860,8 +3868,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
     const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-    retainApprovalRenames();
-    revokeInvalidStageApprovals();
     const open = captureOpen();
     // Preserve scroll so a re-render never yanks the reviewer's position.
     const winScroll = { left: window.scrollX, top: window.scrollY };
@@ -3938,6 +3944,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       .map((comment) => String(comment.createdAt || "")).sort().at(-1) || "";
     persist();
   }
+  reconcileApprovals();
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
   // Follow the preference across tabs only once the viewer is ready to render.
