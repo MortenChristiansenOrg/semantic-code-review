@@ -54,6 +54,15 @@ export function extractArchive(tar, archive, destination, cwd, env) {
     return run([tar, '-xf', file, '-C', destination], cwd, env);
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
+// Builds before the single executable shipped each command group as its own executable.
+const groupExecutables = { implementation: 'semantic-implementation.mjs', feedback: 'review-feedback.mjs' };
+/** The command line that runs `semantic-flow.mjs <args>` in the skill's build, whichever executable layout it has. */
+function cliCommand(node, skill, args) {
+  const [group, command] = args;
+  const grouped = group === 'implementation' || (group === 'feedback' && command !== undefined && !command.startsWith('--'));
+  const separate = grouped && path.join(skill, 'scripts', groupExecutables[group]);
+  return separate && fs.existsSync(separate) ? [node, separate, ...args.slice(1)] : [node, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+}
 function toolPins(capabilities) {
   for (const tool of Object.values(capabilities.tools)) if (hash(fs.readFileSync(tool.path)) !== tool.sha256) throw new Error(`Pinned evaluator executable changed: ${tool.path}`);
 }
@@ -146,7 +155,7 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   const checks = new Map(checkIds.map(id => [id, { id, passed: false, evidence: 'Prerequisite checks did not pass' }])), evidence = {};
   const add = (id, passed, detail) => checks.set(id, { id, passed: Boolean(passed), evidence: detail });
   const invoke = (label, command, cwd = fixture.repo, settings) => { const result = run(command, cwd, env, settings); evidence[label] = result; return result; };
-  const cli = (...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+  const cli = (...args) => cliCommand(capabilities.tools.node.path, skill, args);
   const git = (...args) => invoke(`git:${args.join(' ')}`, [capabilities.tools.git.path, ...args]);
   const done = () => ({ checks: [...checks.values()], evidence });
   const listed = git('worktree', 'list', '--porcelain', '-z');

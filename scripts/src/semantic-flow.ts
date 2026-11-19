@@ -51,8 +51,12 @@ import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } 
 import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
-import { nextFeedbackAt, validateFeedbackAt, withCheckedFeedback, type CompactThread, type FeedbackGroup, type PendingFeedback } from "./review-feedback.js";
-import { implementationWorkflow, restackOntoTarget, validateImplementation, validateSyncStack, type RestackSummary } from "./semantic-implementation.js";
+import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
+import type { RestackSummary } from "./semantic-implementation.js";
+
+/** The implementation and feedback services load only for the commands that use them. */
+const implementationService = () => import("./semantic-implementation.js");
+const feedbackService = () => import("./review-feedback.js");
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
@@ -208,10 +212,10 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
 
 /** Narrows a candidate for commands that act on the implementation. A manifest
  * without these fields is invalid, so report it as the validation failure. */
-function activeCandidate(candidate: ArtifactCandidate): ActiveCandidate {
+async function activeCandidate(candidate: ArtifactCandidate): Promise<ActiveCandidate> {
   const { title, targetBranch, baseRevision } = candidate;
   if (title === undefined || targetBranch === undefined || baseRevision === undefined) {
-    validateArtifactForFeedback(candidate);
+    await validateArtifactForFeedback(candidate);
     fail(`The semantic implementation manifest in ${candidate.worktree} is incomplete.`);
   }
   return { ...candidate, title, targetBranch, baseRevision };
@@ -332,17 +336,22 @@ function captureValidation(validate: () => string): CapturedValidation {
   }
 }
 
-function implementationValidationOutput(root: string): string {
-  const { message, warnings } = validateImplementation(root);
-  return [message, ...warnings.map((warning) => `Warning: ${warning}`)].join("\n");
+async function checkImplementation(root: string): Promise<CapturedValidation> {
+  const { validateImplementation } = await implementationService();
+  return captureValidation(() => {
+    const { message, warnings } = validateImplementation(root);
+    return [message, ...warnings.map((warning) => `Warning: ${warning}`)].join("\n");
+  });
 }
 
-function validate(options: Options): void {
-  runWorkflow(options, "validate");
+async function checkFeedback(root: string): Promise<CapturedValidation> {
+  const { validateFeedbackAt } = await feedbackService();
+  return captureValidation(() => validateFeedbackAt(root));
 }
 
-function runWorkflow(options: Options, mode: "validate" | "prepare" | "archive"): void {
+async function runWorkflow(options: Options, mode: "validate" | "prepare" | "archive"): Promise<void> {
   const candidate = resolveSingle(options, mode);
+  const [{ implementationWorkflow }, { withCheckedFeedback }] = await Promise.all([implementationService(), feedbackService()]);
   const result = withValidationContext(() => withCheckedFeedback(
     candidate.worktree,
     mode !== "validate" || flag(options, "publish"),
@@ -378,7 +387,7 @@ function arrayField(value: unknown, key: string): unknown[] {
   return Array.isArray(field) ? field : [];
 }
 
-function status(options: Options): void {
+async function status(options: Options): Promise<void> {
   const candidate = resolveSingle(options, "status");
   const artifact = path.join(candidate.worktree, ".semantic-review");
   // Status reports on possibly invalid artifacts; the validation below reports their errors.
@@ -428,9 +437,9 @@ function status(options: Options): void {
     };
   }
 
-  const artifactValidation = captureValidation(() => implementationValidationOutput(candidate.worktree));
+  const artifactValidation = await checkImplementation(candidate.worktree);
   const feedbackValidation = candidate.feedbackExists
-    ? captureValidation(() => validateFeedbackAt(candidate.worktree))
+    ? await checkFeedback(candidate.worktree)
     : null;
   const metadataBranch = `${stringField(manifest, "branchPrefix")}/metadata`;
   const metadataPublished = Boolean(
@@ -554,13 +563,22 @@ async function review(options: Options): Promise<void> {
   await launchViewer(candidate.worktree);
 }
 
+/** Arguments that start the viewer of the installation now on disk. A downgrade
+ * can install an older release, which ships the viewer as its own executable. */
+function viewerCommand(worktree: string): string[] {
+  const separateViewer = path.join(scriptDirectory, "semantic-view.mjs");
+  return fs.existsSync(separateViewer)
+    ? [separateViewer, "review", worktree]
+    : [cliScript, "viewer", "serve", worktree];
+}
+
 async function launchViewer(
   worktree: string,
   { openBrowser = true, replaceExisting = true } = {},
 ): Promise<void> {
   const child = spawn(
     process.execPath,
-    [cliScript, "viewer", "serve", worktree],
+    viewerCommand(worktree),
     {
       cwd: worktree,
       detached: true,
@@ -631,10 +649,10 @@ async function launchViewer(
   console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
 }
 
-function refreshAdvancedTarget(candidate: ActiveCandidate): {
+async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   candidate: ActiveCandidate;
   targetRestack: TargetRestack | null;
-} {
+}> {
   const targetHead = git(
     ["rev-parse", "--verify", `refs/heads/${candidate.targetBranch}^{commit}`],
     { cwd: candidate.worktree },
@@ -748,6 +766,7 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
     git(["switch", "--detach"], { cwd: candidate.worktree });
   }
 
+  const { restackOntoTarget } = await implementationService();
   let restackSummary: RestackSummary;
   try {
     restackSummary = restackOntoTarget(candidate.worktree, candidate.targetBranch);
@@ -783,7 +802,7 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
   if (!found) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
   }
-  const refreshed = activeCandidate(found);
+  const refreshed = await activeCandidate(found);
   try {
     // The reviewer learns of the refresh in the viewer even when no agent reports it.
     updateAgentState(reviewId(candidate.worktree, candidate.implementationId), (state, now) => {
@@ -807,8 +826,8 @@ function refreshAdvancedTarget(candidate: ActiveCandidate): {
   };
 }
 
-function validateArtifactForFeedback(candidate: ArtifactCandidate) {
-  const artifactValidation = captureValidation(() => implementationValidationOutput(candidate.worktree));
+async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<void> {
+  const artifactValidation = await checkImplementation(candidate.worktree);
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
@@ -816,8 +835,8 @@ function validateArtifactForFeedback(candidate: ArtifactCandidate) {
 }
 
 /** Claiming marks the returned threads as one round so no other run answers them. */
-function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
-  validateArtifactForFeedback(candidate);
+async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
+  await validateArtifactForFeedback(candidate);
 
   const worktreeStatus =
     git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
@@ -838,6 +857,7 @@ function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRes
   let claimId: string | null = null;
   let claimedElsewhere = 0;
   if (candidate.feedbackExists) {
+    const { nextFeedbackAt } = await feedbackService();
     let pending: PendingFeedback<CompactThread>;
     try {
       pending = nextFeedbackAt(candidate.worktree, claim);
@@ -896,16 +916,16 @@ async function waitForFeedback(options: Options): Promise<void> {
   const seconds = timeout === undefined ? DEFAULT_WAIT_SECONDS : Number(timeout);
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 86_400) fail("--timeout must be a whole number of seconds from 1 to 86400.");
   const requested = option(options, "session");
-  const candidate = activeCandidate(resolveSingle(options, "feedback"));
+  const candidate = await activeCandidate(resolveSingle(options, "feedback"));
   const review = reviewId(candidate.worktree, candidate.implementationId);
   registerReview(candidate.worktree, candidate.implementationId, candidate.title);
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
   // Continuing a session first checks the round just completed. A round still waiting
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
-    validateArtifactForFeedback(candidate);
+    await validateArtifactForFeedback(candidate);
     if (candidate.feedbackExists) {
-      const feedbackValidation = captureValidation(() => validateFeedbackAt(candidate.worktree));
+      const feedbackValidation = await checkFeedback(candidate.worktree);
       if (!feedbackValidation.passed) {
         if (feedbackValidation.output) console.error(feedbackValidation.output);
         fail("Feedback validation failed.");
@@ -964,8 +984,8 @@ async function waitForFeedback(options: Options): Promise<void> {
       if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
       if (step.responses) { print({ session, responses: step.responses }); return; }
       if (step.pending) {
-        const { candidate: current, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
-        const result = feedbackSnapshot(current, targetRestack, { session });
+        const { candidate: current, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")));
+        const result = await feedbackSnapshot(current, targetRestack, { session });
         if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
         // Another run claimed the threads first; keep listening.
       }
@@ -991,8 +1011,8 @@ async function waitForFeedback(options: Options): Promise<void> {
 async function feedback(options: Options): Promise<void> {
   if (flag(options, "wait")) return waitForFeedback(options);
   if (options.has("session") || options.has("timeout")) fail("--session and --timeout require --wait.");
-  const { candidate, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
-  const result = feedbackSnapshot(candidate, targetRestack, { session: null });
+  const { candidate, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")));
+  const result = await feedbackSnapshot(candidate, targetRestack, { session: null });
   const { worktreeChanges, stages } = result;
   if (flag(options, "json")) {
     console.log(JSON.stringify(result));
@@ -1147,7 +1167,7 @@ function refreshTarget(options: Options): void {
   }
 }
 
-function sync(options: Options): void {
+async function sync(options: Options): Promise<void> {
   const found = resolveSingle(options, "sync");
   const local = flag(options, "local");
   const json = flag(options, "json");
@@ -1157,8 +1177,9 @@ function sync(options: Options): void {
     git(["merge-base", "--is-ancestor", base, head], { cwd: root, allowFailure: true }) !== null;
 
   requireCleanSyncWorktree(root);
+  const [{ validateSyncStack }, { withCheckedFeedback }] = await Promise.all([implementationService(), feedbackService()]);
   withCheckedFeedback(root, false, () => validateSyncStack(root));
-  const candidate = activeCandidate(found);
+  const candidate = await activeCandidate(found);
   const targetRef = `refs/heads/${candidate.targetBranch}`;
   if (candidate.workingStageIds.length || !candidate.finalizedStageIds.length) {
     fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
@@ -1245,8 +1266,8 @@ function sync(options: Options): void {
 
   try {
     if (revision(targetRef) !== targetRevision) fail("Target branch moved before restacking; retry from its current head.");
-    const { candidate: refreshed, targetRestack } = refreshAdvancedTarget(candidate);
-    const snapshot = feedbackSnapshot(refreshed, targetRestack);
+    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate);
+    const snapshot = await feedbackSnapshot(refreshed, targetRestack);
     const result = {
       ...snapshot,
       targetBranch: candidate.targetBranch,
@@ -1675,16 +1696,12 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
     printInspection(inspect(options), json);
     return;
   }
-  if (command === "validate") {
-    validate(options);
-    return;
-  }
-  if (command === "prepare" || command === "archive") {
-    runWorkflow(options, command);
+  if (command === "validate" || command === "prepare" || command === "archive") {
+    await runWorkflow(options, command);
     return;
   }
   if (command === "status") {
-    status(options);
+    await status(options);
     return;
   }
   if (command === "review") {
@@ -1696,7 +1713,7 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
     return;
   }
   if (command === "sync") {
-    sync(options);
+    await sync(options);
     return;
   }
   if (command === "refresh-target") {

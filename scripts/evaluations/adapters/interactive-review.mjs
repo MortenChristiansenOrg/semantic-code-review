@@ -60,6 +60,15 @@ function checked(command, cwd, env, settings) {
   if (result.exitCode !== 0 || result.error) throw new Error(`${command.join(' ')}: ${result.stderr || result.error || result.stdout}`);
   return result.stdout.trim();
 }
+// Builds before the single executable shipped each command group as its own executable.
+const groupExecutables = { implementation: 'semantic-implementation.mjs', feedback: 'review-feedback.mjs' };
+/** The command line that runs `semantic-flow.mjs <args>` in the skill's build, whichever executable layout it has. */
+function cliCommand(node, skill, args) {
+  const [group, command] = args;
+  const grouped = group === 'implementation' || (group === 'feedback' && command !== undefined && !command.startsWith('--'));
+  const separate = grouped && path.join(skill, 'scripts', groupExecutables[group]);
+  return separate && fs.existsSync(separate) ? [node, separate, ...args.slice(1)] : [node, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+}
 function toolPins(capabilities) {
   for (const tool of Object.values(capabilities.tools)) if (hash(fs.readFileSync(tool.path)) !== tool.sha256) throw new Error(`Pinned evaluator executable changed: ${tool.path}`);
 }
@@ -121,7 +130,7 @@ export async function prepare({ root, skill, env, capabilities }) {
   const repo = path.join(root, 'project'); fs.mkdirSync(repo);
   const dated = { ...env, GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z' };
   const git = (...args) => checked([capabilities.tools.git.path, ...args], repo, dated);
-  const cli = (...args) => checked([capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args], repo, dated);
+  const cli = (...args) => checked(cliCommand(capabilities.tools.node.path, skill, args), repo, dated);
   const commit = (file, content, message) => {
     fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
     fs.writeFileSync(path.join(repo, file), content); git('add', '--', file); git('commit', '-qm', message);
@@ -308,7 +317,7 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const add = (id, passed, detail) => checks.set(id, { id, passed: Boolean(passed), evidence: detail });
   const done = () => ({ checks: [...checks.values()], evidence });
   const invoke = (label, command, cwd = fixture.repo) => { const result = run(command, cwd, env); evidence[label] = result; return result; };
-  const cli = (...args) => [capabilities.tools.node.path, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+  const cli = (...args) => cliCommand(capabilities.tools.node.path, skill, args);
   const git = (...args) => invoke(`git:${args.join(' ')}`, [capabilities.tools.git.path, ...args]);
   const events = driver?.events ?? [];
   const at = type => events.find(item => item.type === type);

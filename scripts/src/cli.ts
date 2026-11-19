@@ -3,14 +3,20 @@
  * implementation, feedback and viewer groups load their module on first use. */
 import process from "node:process";
 import { isMainThread } from "node:worker_threads";
+import { parseArguments } from "./shared/arguments.js";
 import { errorMessage } from "./shared/narrow.js";
 
-/** The group a command line selects. A bare `feedback` is the workflow command
- * that collects pending feedback; `feedback <command>` is the feedback group. */
+/** The group a command line selects. `feedback` with only options, such as
+ * `feedback --wait --json`, is the workflow command that collects pending
+ * feedback; `feedback <command>` is the feedback group, wherever its options
+ * stand. Both parse their arguments this way, so they agree on the positionals. */
 function commandGroup(argv: readonly string[]): "implementation" | "feedback" | "viewer" | null {
-  const [first, second] = argv;
+  const [first, ...rest] = argv;
   if (first === "implementation" || first === "viewer") return first;
-  if (first === "feedback" && second !== undefined && (second === "--help" || !second.startsWith("--"))) return "feedback";
+  if (first === "feedback") {
+    const { positionals, options } = parseArguments(rest);
+    if (positionals.length > 0 || options.has("help")) return "feedback";
+  }
   return null;
 }
 

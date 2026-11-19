@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
+import { cliCommand, execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
 
 const pricesRequest = '/semantic-flow implement Add an optional percentage discount to total(items), defaulting to zero. Preserve item price × quantity totals; accept 0 through 100 inclusive, including fractional discounts, and reject negative, over-100, and non-finite numeric discounts. Add tests.';
 const scenario = (request, transcriptCriteria, extra = {}) => ({ request, transcriptCriteria, transcriptChecks: Object.keys(transcriptCriteria), ...extra });
@@ -70,7 +70,7 @@ export function prepareFixture(root, skill, scenario, env) {
       initialize(r, 'Discount totals'); begin(r, 'discount', 'Apply discounts');
       r.commit('prices.js', 'export function total(items, discount=0) { if (!Number.isFinite(discount) || discount < 0 || discount > 100) throw new RangeError("Discount must be between 0 and 100"); return items.reduce((sum, item) => sum + item.price * item.quantity, 0) * (1-discount/100); }\n', 'Support validated discounts');
       const args = ['stage', 'record', '--kind', 'decision', '--item-id', 'module-boundary', '--category', 'architecture', '--summary', 'Keep discount calculation in prices.js', '--rationale', 'There is only one caller, so a separate module adds indirection without reuse.'];
-      const failure = execute([process.execPath, path.join(skill, 'scripts/semantic-flow.mjs'), 'implementation', ...args], repo, env);
+      const failure = execute(cliCommand(skill, ['implementation', ...args]), repo, env);
       if (failure.exitCode === 0 || !/category.*allowed values/s.test(failure.stderr)) throw new Error(`Category injection failed: ${failure.stderr}`);
       request += '\nObserved decision: keep the module boundary because there is only one caller. The previous recording call failed:\n' + args.join(' ') + '\n' + failure.stderr;
     }
@@ -140,7 +140,7 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
   add('one-artifact', artifacts.length === 1, artifacts);
   if (artifacts.length !== 1) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   const repo = artifacts[0];
-  const cli = (...args) => [process.execPath, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+  const cli = (...args) => cliCommand(skill, args);
   const validation = run('artifact-publication', cli('implementation', 'validate', '--publish'), repo);
   if (validation.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   run('stack', cli('implementation', 'validate-stack', '--json'), repo);

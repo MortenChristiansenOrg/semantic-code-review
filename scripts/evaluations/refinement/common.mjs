@@ -80,9 +80,20 @@ export function environment(root) {
   env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
 }
+// Builds before the single executable shipped each command group as its own executable.
+const groupExecutables = { implementation: 'semantic-implementation.mjs', feedback: 'review-feedback.mjs' };
+/** The command line that runs `semantic-flow.mjs <args>`, such as `implementation init`,
+ * in the skill's build, whichever executable layout that build has. */
+export function cliCommand(skill, args, node = process.execPath) {
+  const [group, command] = args;
+  // A feedback call with only options is the workflow command, as in the CLI.
+  const grouped = group === 'implementation' || (group === 'feedback' && command !== undefined && !command.startsWith('--'));
+  const separate = grouped && path.join(skill, 'scripts', groupExecutables[group]);
+  return separate && fs.existsSync(separate) ? [node, separate, ...args.slice(1)] : [node, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args];
+}
 export function repository(root, skill, env) {
   const git = (...args) => checked(['git', ...args], root, env);
-  const cli = (...args) => checked([process.execPath, path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args], root, env);
+  const cli = (...args) => checked(cliCommand(skill, args), root, env);
   const write = (file, content) => {
     const destination = path.resolve(root, file);
     if (!inside(root, destination)) throw new Error('Fixture file escapes repository');

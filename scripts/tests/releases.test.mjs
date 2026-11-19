@@ -27,9 +27,10 @@ function temp(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
-function distribution(version = '0.2.0') {
+function distribution(version = '0.2.0', extraFiles = {}) {
   const root = path.resolve(scriptsDirectory, '..');
   const files = new Map(skillFiles(root).map((name) => [name, fs.readFileSync(path.join(root, name))]));
+  for (const [name, content] of Object.entries(extraFiles)) files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
   const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: 20,
@@ -181,7 +182,7 @@ async function updateFixture(t, options = {}) {
   const installed = path.join(root, 'installed');
   fs.cpSync(path.resolve(scriptsDirectory, '..'), installed, { recursive: true });
   fs.writeFileSync(path.join(installed, 'VERSION'), `${options.previous || '0.1.0'}\n`);
-  const zip = await archive(distribution());
+  const zip = await archive(distribution('0.2.0', options.files));
   fs.writeFileSync(path.join(root, 'asset.zip'), options.corrupt ? Buffer.from('corrupt') : zip);
   const responses = [release('0.2.0'), release('0.1.5')];
   if (options.missing) responses[0].assets = [];
@@ -273,6 +274,34 @@ test('release update restarts the matching viewer and preserves repository artif
   assert.notEqual(before.processId, after.processId);
   assert.equal(after.skillDirectory, fixture.installed);
   assert.equal(beforeArtifact, fixture.repository.read('.semantic-review/manifest.json'));
+});
+
+test('release downgrade restarts the viewer with the executable the older release ships', async (t) => {
+  let port;
+  t.after(async () => {
+    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+  });
+  // Releases before the single executable started their viewer with `semantic-view.mjs review <path>`.
+  const olderViewer = `import fs from 'node:fs';
+fs.writeFileSync(process.env.SEMANTIC_FLOW_TEST_VIEWER_ARGS, JSON.stringify(process.argv.slice(2)));
+process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: process.argv[3], processId: process.pid, implementation: { stageCount: 0, fileCount: 0 } }, () => process.disconnect());
+`;
+  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer } });
+  initializeImplementation(fixture.repository);
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  port = server.address().port; server.close(); await once(server, 'close');
+  const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' };
+  const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(launch.status, 0, launch.stderr);
+  const viewerArgs = path.join(fixture.root, 'viewer-args.json');
+  const result = await fixture.run(['--version', '0.2.0', '--allow-downgrade'], { ...env, SEMANTIC_FLOW_TEST_VIEWER_ARGS: viewerArgs });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Updated semantic-flow 0.3.0 -> 0.2.0/);
+  const [command, worktree, ...rest] = JSON.parse(fs.readFileSync(viewerArgs, 'utf8'));
+  assert.equal(command, 'review');
+  assert.equal(fs.realpathSync.native(worktree), fs.realpathSync.native(fixture.repository.root));
+  assert.deepEqual(rest, []);
 });
 
 test('publication rehearses draft upload/download, retries failures, and protects published versions and latest selection', async (t) => {

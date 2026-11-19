@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
+  createImplementationWithStages,
   flowCli,
   scriptsDirectory,
   semanticCli,
@@ -137,6 +138,28 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
   const viewerUnknownOption = spawnSync(process.execPath, [flowCli, "viewer", "serve", "--unknown"], { encoding: "utf8" });
   assert.notEqual(viewerUnknownOption.status, 0);
   assert.match(viewerUnknownOption.stderr, /Unknown option --unknown/);
+});
+
+test("feedback selects its group by a command, wherever the options stand", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "routing", "--comment-id", "routing-comment", "--body", "Check the routing.",
+    "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  const run = (args, input) => spawnSync(process.execPath, [flowCli, ...args], { cwd: repository.root, input, encoding: "utf8" });
+  const commandFirst = run(["feedback", "next", "--input", "-"], '{"json": true}');
+  assert.equal(commandFirst.status, 0, commandFirst.stderr);
+  const optionsFirst = run(["feedback", "--input", "-", "next"], '{"json": true}');
+  assert.equal(optionsFirst.status, 0, optionsFirst.stderr);
+  assert.deepEqual(JSON.parse(optionsFirst.stdout), JSON.parse(commandFirst.stdout));
+  assert.equal(JSON.parse(optionsFirst.stdout)[0].threads[0].id, "routing");
+
+  // Without a command, feedback is the workflow command that collects pending feedback.
+  const workflow = run(["feedback", "--json"]);
+  assert.equal(workflow.status, 0, workflow.stderr);
+  assert.equal(JSON.parse(workflow.stdout).stages[0].threads[0].id, "routing");
+  const listening = run(["feedback", "--wait", "--json", "--session", "unknown-session", "--timeout", "1"]);
+  assert.equal(listening.status, 0, listening.stderr);
+  assert.deepEqual(JSON.parse(listening.stdout), { session: "unknown-session", stopped: true, reason: "superseded" });
 });
 
 test("CLI subprocess launches hide Windows console windows", () => {

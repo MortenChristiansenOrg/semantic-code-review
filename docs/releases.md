@@ -63,6 +63,14 @@ instructions can alternatively use an explicitly authorized local build of this
 release once, followed by normal release updates. Do not replace this repository's
 source skill with a release archive.
 
+Releases that ship four executables (`semantic-flow.mjs`,
+`semantic-implementation.mjs`, `review-feedback.mjs`, and `semantic-view.mjs`)
+contain an updater that rejects releases with the single `semantic-flow.mjs`
+(“Release is missing scripts/semantic-implementation.mjs”) and keeps the old
+installation. Move from such a release once by hand: download and verify the
+archive as described above, then stop the viewer and replace the skill folder as
+for a source-based installation. Later updates use `/semantic-flow update` again.
+
 After installation, ask for `/semantic-flow update`. It displays release notes,
 including skipped versions, verifies the download and all file digests, and then
 replaces the installed directory. A matching viewer is stopped only after
@@ -120,11 +128,14 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    technical terms, and omit internal churn and empty optional sections. Keep
    Overview, Breaking changes (write “None” when appropriate), and Updating.
    Make specific breaking changes and upgrade actions prominent; include the
-   experimental note during `0.x`. Generated GitHub notes are research input,
-   not the finished changelog. The publisher removes only the leading version/date
-   heading (and following blank space) from the committed file because GitHub
-   already displays the version as the release title. All note sections remain
-   intact, and publication verifies this exact rendered body.
+   experimental note during `0.x`. The first release that ships only
+   `semantic-flow.mjs` must say prominently under Breaking changes and Updating
+   that earlier updaters reject it and that the skill folder is replaced once by
+   hand, as described in “Installing and updating”. Generated GitHub notes are
+   research input, not the finished changelog. The publisher removes only the
+   leading version/date heading (and following blank space) from the committed
+   file because GitHub already displays the version as the release title. All
+   note sections remain intact, and publication verifies this exact rendered body.
 4. Run `npm ci --prefix scripts`, `npm test --prefix scripts`, install Chromium
    with `npm exec --prefix scripts -- playwright install chromium`, and run
    `npm run test:browser --prefix scripts`. Commit the version, notes, and built
