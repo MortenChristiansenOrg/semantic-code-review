@@ -80,11 +80,8 @@ export interface LineSpan {
   end: number;
 }
 
-/** At least one of `old` and `new` is present. */
-export interface LineRange {
-  old?: LineSpan;
-  new?: LineSpan;
-}
+/** Lines on the old side, the new side, or both; never neither. */
+export type LineRange = { old: LineSpan; new?: LineSpan } | { old?: LineSpan; new: LineSpan };
 
 /** A node's ownership of one changed file: the whole file, selected hunks, or line ranges. */
 export interface FileMembership {
@@ -371,7 +368,10 @@ export interface ApprovalEndpoint {
 /** `ReviewState.approvals` values. Keys are a stage ID (stage approvals, `rev: null`)
  * or `m:` followed by the JSON array `[stageId, nodeId, path]` (file approvals). */
 export interface ApprovalRecord extends Partial<ApprovalEndpoint> {
-  /** File approvals: JSON of [file revision, classification, hunks, lineRanges]. */
+  /** File approvals: JSON of [file revision, classification, hunks, lineRanges].
+   * Older viewers saved [file revision, base revision, classification, hunks,
+   * lineRanges]; the viewer drops the base revision before comparing, so compare
+   * through that normalisation rather than directly. */
   rev: string | null;
   /** Epoch milliseconds. */
   at: number;

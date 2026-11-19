@@ -2245,7 +2245,7 @@ import { esc, formatCommentBody } from "./html";
   function markdownMode(entry) { return isMarkdown(entry) && Boolean(state.markdownPreview[entry.id]); }
   function markdownUrl(entry, target, image = false) {
     const query = { stage: entry.stage.id, path: entry.file.path, base: fileBaseRevision(entry), head: entry.stage.headRevision };
-    if (target == null) return api.fileContentUrl(query);
+    if (target == null) return api.fileContentJsonUrl(query);
     const filePath = entry.file.kind === "deleted" ? entry.file.previousPath || entry.file.path : entry.file.path;
     try {
       const root = new URL("https://repository.invalid/");

@@ -114,8 +114,16 @@ export function fileContentUrl(query: FileContentQuery, hash = ""): string {
   return url.href;
 }
 
-/** Loads a URL from fileContentUrl without a target. */
-export const getFileContent = (url: string) => request(url) as Promise<JsonResponse<FileContentResponse>>;
+/** A `/api/file-content` URL that answers with JSON: no target and not raw. */
+export type FileContentJsonUrl = string & { readonly fileContentJson: true };
+
+/** URL of a file's complete content as JSON; also the key of its cached preview. */
+export function fileContentJsonUrl(query: Pick<FileContentQuery, "stage" | "path" | "base" | "head">): FileContentJsonUrl {
+  return fileContentUrl(query) as FileContentJsonUrl;
+}
+
+/** Loads a file's complete content as JSON. */
+export const getFileContent = (url: FileContentJsonUrl) => request(url) as Promise<JsonResponse<FileContentResponse>>;
 
 /* ---- approvals --------------------------------------------------------- */
 export const captureApprovalSnapshot = (body: ApprovalEndpoint) => postJson<ApprovalSnapshotResponse>("/api/approval-snapshots", body);

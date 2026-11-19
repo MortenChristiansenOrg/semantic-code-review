@@ -660,8 +660,15 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.doesNotMatch(api, /\/api\/feedback\/reply-batch/);
   assert.match(app, /api\.getImplementation\(\)/);
   // One module issues every server request.
-  for (const file of fs.readdirSync(viewerSources).filter((name) => name.endsWith(".ts") && name !== "api.ts")) {
-    assert.doesNotMatch(fs.readFileSync(new URL(file, viewerSources), "utf8"), /\bfetch\(|XMLHttpRequest|sendBeacon|EventSource/, file);
+  const directRequest = /\bfetch\s*\(|XMLHttpRequest|sendBeacon|EventSource/;
+  assert.match("fetch (url)", directRequest);
+  assert.match("window.fetch(url)", directRequest);
+  const modules = fs.readdirSync(viewerSources, { recursive: true })
+    .map((name) => String(name).replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts");
+  assert.ok(modules.includes("app.ts"));
+  for (const file of modules) {
+    assert.doesNotMatch(fs.readFileSync(new URL(file, viewerSources), "utf8"), directRequest, file);
   }
   assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);
