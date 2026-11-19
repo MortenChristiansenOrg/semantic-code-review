@@ -85,7 +85,7 @@ export function environment(root) {
 function hasCommand(args) {
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index];
-    if (value === '--help') return true;
+    if (value === '--help' || value.startsWith('--help=')) return true;
     if (!value.startsWith('--')) return true;
     if (!value.includes('=', 3) && args[index + 1] !== undefined && !args[index + 1].startsWith('--')) index += 1;
   }

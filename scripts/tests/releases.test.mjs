@@ -304,6 +304,28 @@ process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: proces
   assert.deepEqual(rest, []);
 });
 
+test('a viewer file left over from an older release does not start the viewer', async (t) => {
+  let port;
+  t.after(async () => {
+    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+  });
+  const fixture = await updateFixture(t);
+  // Copying a single-executable release over a four-executable folder keeps the old viewer file.
+  const leftover = path.join(fixture.root, 'leftover-args.json');
+  fs.writeFileSync(path.join(fixture.installed, 'scripts', 'semantic-view.mjs'),
+    `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(leftover)}, '[]'); process.exit(1);\n`);
+  const files = Object.fromEntries(skillFiles(fixture.installed).filter((name) => name !== 'RELEASE.json' && name !== 'scripts/semantic-view.mjs').map((name) => [name, 'x']));
+  fs.writeFileSync(path.join(fixture.installed, 'RELEASE.json'), JSON.stringify({ repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version: '0.1.0', minimumNodeMajor: 20, files }));
+  initializeImplementation(fixture.repository);
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  port = server.address().port; server.close(); await once(server, 'close');
+  const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' }, encoding: 'utf8' });
+  assert.equal(launch.status, 0, launch.stderr);
+  assert.match(launch.stdout, /Semantic review viewer: /);
+  assert.equal(fs.existsSync(leftover), false);
+});
+
 test('publication rehearses draft upload/download, retries failures, and protects published versions and latest selection', async (t) => {
   const { publishRelease } = await import('../src/release.ts');
   const root = temp(t), notesFile = new URL('../../releases/0.2.0.md', import.meta.url);

@@ -100,7 +100,7 @@ export function smokeTestInstallation(extracted: string, workspace: string, vers
   for (const group of [[], ["implementation"], ["feedback"]]) run(...group, "--help");
   // The viewer group is a server, not a help-style command. Loading it in a
   // repository without an artifact must stop at the missing manifest.
-  const viewer = spawnSync(process.execPath, [cli, "viewer", "serve"], { cwd: workspace, windowsHide: true, encoding: "utf8" });
+  const viewer = spawnSync(process.execPath, [cli, "viewer", "serve", workspace], { cwd: workspace, windowsHide: true, encoding: "utf8", timeout: 60_000 });
   if (viewer.status === 0 || !viewer.stderr.includes("no .semantic-review/manifest.json found")) throw new Error(`The viewer group did not load: ${viewer.stderr}`);
 }
 

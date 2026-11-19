@@ -567,9 +567,20 @@ async function review(options: Options): Promise<void> {
  * can install an older release, which ships the viewer as its own executable. */
 function viewerCommand(worktree: string): string[] {
   const separateViewer = path.join(scriptDirectory, "semantic-view.mjs");
-  return fs.existsSync(separateViewer)
+  return fs.existsSync(separateViewer) && releaseShips("scripts/semantic-view.mjs")
     ? [separateViewer, "review", worktree]
     : [cliScript, "viewer", "serve", worktree];
+}
+
+/** Whether the installed release lists `file`. A folder updated by copying a
+ * newer release over an older one keeps files the newer release dropped. A
+ * source build has no release file list, so every file on disk counts. */
+function releaseShips(file: string): boolean {
+  const metadata = path.join(skillDirectory, "RELEASE.json");
+  if (!fs.existsSync(metadata)) return true;
+  const release = readJson(metadata);
+  const files = isRecord(release) ? release.files : undefined;
+  return !isRecord(files) || Object.hasOwn(files, file);
 }
 
 async function launchViewer(
