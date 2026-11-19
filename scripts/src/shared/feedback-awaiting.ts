@@ -3,7 +3,12 @@
  * User comments after the latest watermark still await the agent. */
 import type { Comment, Thread } from "./documents.js";
 
-export function answeredThrough(comments: readonly Comment[]): number {
+/** The parts of a comment that reply tracking reads. Validated comments
+ * qualify, and so do comments narrowed from a thread that may be mid-write. */
+export type TrackedComment = Pick<Comment, "id" | "respondsTo"> & { author: string };
+export type TrackedThread = { status?: string; comments: readonly TrackedComment[] };
+
+export function answeredThrough(comments: readonly TrackedComment[]): number {
   let through = -1;
   comments.forEach((comment, index) => {
     if (comment.author !== "agent") return;
@@ -13,12 +18,12 @@ export function answeredThrough(comments: readonly Comment[]): number {
   return through;
 }
 
-export function awaitsAgentReply(thread: Thread): boolean {
+export function awaitsAgentReply(thread: TrackedThread): boolean {
   if (thread.status !== "open") return false;
   const through = answeredThrough(thread.comments);
   return thread.comments.some((comment, index) => index > through && comment.author === "user");
 }
 
-export function latestUserCommentId(thread: Thread): string | undefined {
+export function latestUserCommentId(thread: Pick<Thread, "comments">): string | undefined {
   return thread.comments.findLast((comment) => comment.author === "user")?.id;
 }

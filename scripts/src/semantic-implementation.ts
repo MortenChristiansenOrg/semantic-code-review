@@ -44,7 +44,7 @@ import {
   type WorkStage,
 } from "./shared/documents.js";
 import { fail } from "./shared/errors.js";
-import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { listJsonFiles, parseJson, readJson, writeJson } from "./shared/json.js";
@@ -52,6 +52,11 @@ import { errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared
 import { parseDocument } from "./shared/schema-validation.js";
 import { reviewId, withReviewLock } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
+
+const commitFacts = factCache<string>();
+const linearRangeFacts = factCache<void>();
+const changedFileFacts = factCache<FileChange[]>();
+const changeShapeFacts = factCache<DiffChangeShape>();
 
 // Validation and inventory errors list item collections in this order.
 const STAGE_ITEM_COLLECTIONS: readonly InsightCollection[] = [
@@ -295,7 +300,7 @@ function reachable(
 
 function commitObject(root: string, revision: string): string {
   if (/^[0-9a-f]{40}$/.test(revision)) {
-    return immutableFact(JSON.stringify(["commit", root, revision]), () => resolveCommitObject(root, revision));
+    return commitFacts(JSON.stringify([root, revision]), () => resolveCommitObject(root, revision));
   }
   return resolveCommitObject(root, revision);
 }
@@ -354,7 +359,7 @@ function isAncestor(root: string, ancestor: string, descendant: string): boolean
 }
 
 function assertLinearRange(root: string, base: string, head: string, label: string): void {
-  immutableFact(JSON.stringify(["linear", root, base, head]), () => checkLinearRange(root, base, head, label));
+  linearRangeFacts(JSON.stringify([root, base, head]), () => checkLinearRange(root, base, head, label));
 }
 
 function checkLinearRange(root: string, base: string, head: string, label: string): void {
@@ -374,7 +379,7 @@ function stageBranchName(manifest: ImplementationManifest, index: number, id: st
 }
 
 function changedFiles(root: string, parent: string, commit: string): FileChange[] {
-  return immutableFact(JSON.stringify(["files", root, parent, commit]), () => readChangedFiles(root, parent, commit));
+  return changedFileFacts(JSON.stringify([root, parent, commit]), () => readChangedFiles(root, parent, commit));
 }
 
 /** Format 0.1 kind of a non-rename Git name-status code. */
@@ -467,7 +472,7 @@ interface DiffChangeShape {
 }
 
 function diffChangeShape(root: string, parent: string, commit: string, file: FileChange): DiffChangeShape {
-  return immutableFact(JSON.stringify(["shape", root, parent, commit, file]), () => readDiffChangeShape(root, parent, commit, file));
+  return changeShapeFacts(JSON.stringify([root, parent, commit, file]), () => readDiffChangeShape(root, parent, commit, file));
 }
 
 function readDiffChangeShape(root: string, parent: string, commit: string, file: FileChange): DiffChangeShape {

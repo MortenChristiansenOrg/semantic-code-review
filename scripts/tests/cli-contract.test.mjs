@@ -488,3 +488,23 @@ test("implementation and continuation distinguish recoverable CLI errors from us
   assert.match(runtime, /inspect current state before retrying/);
   assert.match(runtime, /genuine product or design ambiguity, conflicting/);
 });
+
+test("sources narrow values instead of casting, asserting, or parsing JSON outside the typed boundary", () => {
+  const sourceRoot = path.join(scriptsDirectory, "..", "..", "..", "scripts", "src");
+  const files = fs.readdirSync(sourceRoot, { recursive: true }).filter((file) => file.endsWith(".ts")).map((file) => path.join(sourceRoot, file));
+  const findings = [];
+  for (const file of files) {
+    const relative = path.relative(sourceRoot, file).split(path.sep).join("/");
+    const source = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
+    const report = (node, reason) => findings.push(`${relative}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${reason}`);
+    const visit = (node) => {
+      if ((ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) && !(ts.isTypeReferenceNode(node.type) && node.type.typeName.getText(source) === "const")) report(node, "type assertion");
+      if (ts.isNonNullExpression(node)) report(node, "non-null assertion");
+      if (node.kind === ts.SyntaxKind.AnyKeyword) report(node, "any type");
+      if (ts.isCallExpression(node) && node.expression.getText(source) === "JSON.parse" && relative !== "shared/json.ts") report(node, "JSON.parse outside shared/json.ts; use parseJson or readJson");
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  assert.deepEqual(findings, []);
+});

@@ -38,7 +38,7 @@ import {
   type Thread,
 } from "./shared/documents.js";
 import { fail } from "./shared/errors.js";
-import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray, stringField } from "./shared/narrow.js";
@@ -49,6 +49,10 @@ import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
 import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundThrough, sendInProgress, touchAgent, updateAgentState, type ClaimedThread } from "./shared/agent-session.js";
+
+const renamedPathFacts = factCache<string | null>();
+const renameMapFacts = factCache<string | null>();
+const lineCountFacts = factCache<number>();
 
 /** Locations of one review's artifact and feedback state. */
 interface FeedbackPaths {
@@ -212,11 +216,11 @@ function changedFileAt(stage: Stage, repositoryPath: string): FileChange | undef
 }
 
 function renamedPathBetween(root: string, fromRevision: string, toRevision: string, repositoryPath: string): string | null {
-  return immutableFact(JSON.stringify(["rename", root, fromRevision, toRevision, repositoryPath]), () => readRenamedPath(root, fromRevision, toRevision, repositoryPath));
+  return renamedPathFacts(JSON.stringify([root, fromRevision, toRevision, repositoryPath]), () => readRenamedPath(root, fromRevision, toRevision, repositoryPath));
 }
 
 function readRenamedPath(root: string, fromRevision: string, toRevision: string, repositoryPath: string): string | null {
-  const raw = immutableFact(JSON.stringify(["rename-map", root, fromRevision, toRevision]), (): string | null => {
+  const raw = renameMapFacts(JSON.stringify([root, fromRevision, toRevision]), (): string | null => {
     const output: unknown = git([
       "--no-pager",
       "diff",
@@ -249,7 +253,7 @@ function readRenamedPath(root: string, fromRevision: string, toRevision: string,
 }
 
 function lineCountAtRevision(root: string, revision: string, repositoryPath: string): number {
-  return immutableFact(JSON.stringify(["lines", root, revision, repositoryPath]), () => readLineCount(root, revision, repositoryPath));
+  return lineCountFacts(JSON.stringify([root, revision, repositoryPath]), () => readLineCount(root, revision, repositoryPath));
 }
 
 function readLineCount(root: string, revision: string, repositoryPath: string): number {

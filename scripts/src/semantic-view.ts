@@ -21,7 +21,7 @@ import http from "node:http";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { immutableFact, withValidationContext } from "./shared/validation-context.js";
+import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import {
   probeViewer,
@@ -56,6 +56,10 @@ import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { StateChange } from "./shared/review-store.js";
+
+const pathExistsFacts = factCache<boolean>();
+const renameFacts = factCache<string>();
+const stageStatsFacts = factCache<Map<string, FileStats>>();
 
 const MAX_ROWS = 900; // rows per page; all later rows remain available
 
@@ -117,7 +121,7 @@ function gitCapture(cwd: string, args: string[]): string {
 type GitCapture = typeof gitCapture;
 
 function gitPathExists(repoRoot: string, revision: string, filePath: string): boolean {
-  return immutableFact(JSON.stringify(["viewer-path", repoRoot, revision, filePath]), () => checkGitPathExists(repoRoot, revision, filePath));
+  return pathExistsFacts(JSON.stringify([repoRoot, revision, filePath]), () => checkGitPathExists(repoRoot, revision, filePath));
 }
 
 function checkGitPathExists(repoRoot: string, revision: string, filePath: string) {
@@ -132,7 +136,7 @@ function checkGitPathExists(repoRoot: string, revision: string, filePath: string
 function renamedPathBetween(repoRoot: string, fromRevision: string, toRevision: string, filePath: string): string | null {
   let raw: string;
   try {
-    raw = immutableFact(JSON.stringify(["viewer-renames", repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
+    raw = renameFacts(JSON.stringify([repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
       "--no-pager",
       "diff",
       "--name-status",
@@ -1664,7 +1668,7 @@ export function resolveLineDraftSnapshots(repoRoot: string, notes: unknown): unk
     if (!match || typeof base !== "string" || typeof head !== "string" || ![base, head].every(rev => /^[a-f0-9]{40,64}$/.test(rev))) return note;
     try {
       const stage = { change: { baseRevision: base, headRevision: head } };
-      const stats = immutableFact(JSON.stringify(["draft-stats", repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
+      const stats = stageStatsFacts(JSON.stringify([repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
       const fileStats = stats.get(match[4]);
       if (!fileStats) return note;
       const revision = fileRevision(stage, { path: match[4], previousPath: fileStats.previousPath }, fileStats);
