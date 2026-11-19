@@ -209,6 +209,38 @@ test('a failed retirement leaves files intact and an unreadable pending tree sti
   assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
 });
 
+test('an uninspectable pending deletion shows only the known fields of valid stored categories', (t) => {
+  const { review } = setup(t), original = preview(review), live = reviewDirectory(review.id);
+  const rename = fs.renameSync;
+  const locked = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from) === live) throw Object.assign(new Error('File is open'), { code: 'EBUSY', path: live });
+    return rename(from, to);
+  });
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, true);
+  const stat = fs.lstatSync;
+  const unreadable = t.mock.method(fs, 'lstatSync', (file, ...args) => {
+    if (String(file) === live) throw Object.assign(new Error('Access denied'), { code: 'EACCES', path: live });
+    return stat(file, ...args);
+  });
+  const ticket = path.join(process.env.SEMANTIC_FLOW_HOME, 'deletions', `${review.id}.${review.generation}.json`);
+  const record = JSON.parse(fs.readFileSync(ticket, 'utf8'));
+  record.preview.categories[0].nested = { label: { toString: 1 } };
+  fs.writeFileSync(ticket, JSON.stringify(record));
+  const pending = preview(review);
+  assert.ok(pending.categories.length > 0);
+  for (const category of pending.categories) assert.deepEqual(Object.keys(category).sort(), ['bytes', 'detail', 'label']);
+  assert.equal(pending.categories.reduce((sum, item) => sum + item.bytes, 0), pending.bytes);
+
+  // A size that is no safe integer marks the stored preview damaged, so no category is shown and the total stays a number.
+  record.preview.categories[0].bytes = 'HUGE';
+  fs.writeFileSync(ticket, JSON.stringify(record).replace('"HUGE"', '1e400'));
+  const damaged = JSON.parse(JSON.stringify(preview(review)));
+  assert.deepEqual(damaged.categories, []);
+  assert.equal(damaged.bytes, 0);
+  unreadable.mock.restore(); locked.mock.restore();
+  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
+});
+
 test('unused cleanup reports the retired file and leaves saved state unchanged until retry', (t) => {
   const { review } = setup(t), unused = oldAttachment(review, 'unused');
   patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);

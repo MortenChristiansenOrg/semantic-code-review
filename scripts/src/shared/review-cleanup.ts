@@ -15,7 +15,7 @@ type Category = { label: string; detail: string; bytes: number };
  * removal never depends on it, so it stays unvalidated and is narrowed where shown. */
 type Ticket = { review: Omit<ReviewRecord, "state" | "viewer">; preview: unknown; requestedAt: string; error?: string };
 function isCategory(value: unknown): value is Category {
-  return isRecord(value) && typeof value.label === "string" && typeof value.detail === "string" && typeof value.bytes === "number";
+  return isRecord(value) && typeof value.label === "string" && typeof value.detail === "string" && typeof value.bytes === "number" && Number.isSafeInteger(value.bytes) && value.bytes >= 0;
 }
 /** The categories of a ticket's preview, or undefined when the preview is damaged. */
 function previewCategories(preview: unknown): Category[] | undefined {
@@ -78,7 +78,8 @@ function inspect(id: string, generation: string) {
     let entries: Entry[];
     try { entries = inventory(location, false); }
     catch (error) {
-      const categories = (known ?? []).map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" }));
+      // Built from the known fields only, so nothing else stored in the preview reaches the browser.
+      const categories = (known ?? []).map(({ label, bytes }) => ({ label, detail: "Last known size; current inspection unavailable", bytes }));
       return { ...pending, error: ticket.error || cleanupFailure(error, location, "Use Retry file removal after releasing it."),
         categories, bytes: categories.reduce((sum, category) => sum + category.bytes, 0) };
     }

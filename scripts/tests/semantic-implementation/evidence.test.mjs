@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { buildFeedbackTargetData, createViewerDataSource, evidenceRange, exportFeedback, readFeedbackThread } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
-import { beginStage, createRepository, feedbackCli, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
+import { beginStage, createRepository, feedbackCli, implementationFromScript, initializeImplementation, organizeStage, semanticCli } from "../helpers/repository.mjs";
 
 const cli = (repo, ...args) => repo.result(process.execPath, [semanticCli, ...args]);
 
@@ -206,7 +206,7 @@ test("publication and the viewer carry the evidence", t => {
 
   const source = createViewerDataSource(repo.root);
   const script = source.implementationDataScript();
-  const data = JSON.parse(script.slice(script.indexOf("{"), script.lastIndexOf("}") + 1));
+  const data = implementationFromScript(script);
   const insight = data.stages[0].insights.find(item => item.collection === "evidence");
   assert.equal("stale" in insight.evidence, false);
   assert.equal(insight.evidence.attachments[0].mediaType, "image/png");

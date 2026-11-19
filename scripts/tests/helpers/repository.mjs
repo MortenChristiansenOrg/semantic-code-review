@@ -4,6 +4,7 @@ import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const testReviewHome = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-test-user-data-"));
@@ -29,6 +30,13 @@ export const feedbackCli = path.join(
   "review-feedback.mjs",
 );
 export const flowCli = path.join(scriptsDirectory, "semantic-flow.mjs");
+
+/** The data the viewer page sees after running an implementation data script. */
+export function implementationFromScript(script) {
+  const window = {};
+  vm.runInNewContext(script, { window, JSON });
+  return window.SEMANTIC_IMPLEMENTATION;
+}
 
 function commandFailure(command, args, result) {
   return [

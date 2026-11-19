@@ -13,6 +13,7 @@ import {
   createImplementationWithStages,
   createRepository,
   flowCli,
+  implementationFromScript,
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
@@ -565,7 +566,7 @@ test("viewer serves its installed release version and replaces an older running 
   assert.equal(payload.implementation.viewerReleaseVersion, "9.9.9");
   assert.equal(payload.implementation.skillVersion, "0.2.0");
   const script = await fetch(`http://127.0.0.1:${port}/implementation-data.js`).then(response => response.text());
-  assert.match(script, /"viewerReleaseVersion":"9.9.9"/);
+  assert.equal(implementationFromScript(script).viewerReleaseVersion, "9.9.9");
   assert.equal(fs.readFileSync(manifestPath, "utf8"), original);
 });
 

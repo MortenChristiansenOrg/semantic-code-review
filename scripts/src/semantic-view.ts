@@ -192,7 +192,7 @@ interface ViewerSpecification {
   id?: string;
   title?: string;
   summary?: string;
-  source: unknown;
+  source?: { kind?: string; reference?: string; url?: string };
   acceptanceCriteria: unknown[];
 }
 
@@ -263,7 +263,8 @@ function readSpecification(file: string): ViewerSpecification {
   const value = fieldsOf(readJson(file));
   return {
     id: stringField(value, "id"), title: stringField(value, "title"), summary: stringField(value, "summary"),
-    source: value.source, acceptanceCriteria: isList(value.acceptanceCriteria) ? value.acceptanceCriteria : [],
+    source: isRecord(value.source) ? { kind: stringField(value.source, "kind"), reference: stringField(value.source, "reference"), url: stringField(value.source, "url") } : undefined,
+    acceptanceCriteria: isList(value.acceptanceCriteria) ? value.acceptanceCriteria : [],
   };
 }
 
@@ -320,10 +321,10 @@ function manifestImplementationId(value: unknown): string {
   return implementationId;
 }
 
-/** A file's text, or undefined when it does not exist. */
-function readOptionalText(file: string): string | undefined {
+/** A file's bytes, or undefined when it does not exist. */
+function readOptionalFile(file: string): Buffer | undefined {
   try {
-    return fs.readFileSync(file, "utf8");
+    return fs.readFileSync(file);
   } catch (error) {
     if (errorCode(error) === "ENOENT") return undefined;
     throw error;
@@ -343,8 +344,8 @@ function parseStoredThread(text: string): unknown {
 /** A stored thread file, or undefined when it is missing or not JSON. The
  * viewer skips such a thread like one that fails its schema. */
 function readStoredThread(file: string): unknown {
-  const text = readOptionalText(file);
-  return text === undefined ? undefined : parseStoredThread(text);
+  const bytes = readOptionalFile(file);
+  return bytes === undefined ? undefined : parseStoredThread(bytes.toString("utf8"));
 }
 
 /** The viewer lists and counts a stored thread only when it passes its schema,
@@ -392,23 +393,26 @@ function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerR
     ...listJsonFiles(path.join(semanticRoot, "stages")),
   ];
   const feedbackManifestPath = path.join(feedbackRoot, "manifest.json");
+  // Threads are hashed from the bytes they were counted from, so one removed meanwhile cannot fail the poll.
+  const threadBytes = new Map<string, Buffer>();
   let awaitingAgentReplies = 0;
   if (fs.existsSync(feedbackManifestPath)) {
     files.push(feedbackManifestPath);
     for (const threadId of listedThreadIds(readJson(feedbackManifestPath))) {
       const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
-      const text = readOptionalText(file);
+      const bytes = readOptionalFile(file);
       // A missing thread leaves the hashed files, so restoring it changes the revision.
-      if (text === undefined) continue;
+      if (bytes === undefined) continue;
       files.push(file);
-      if (threadAwaitsAgent(parseStoredThread(text))) awaitingAgentReplies += 1;
+      threadBytes.set(file, bytes);
+      if (threadAwaitsAgent(parseStoredThread(bytes.toString("utf8")))) awaitingAgentReplies += 1;
     }
   }
   const hash = createHash("sha256");
   for (const file of files.sort()) {
     hash.update(path.relative(repoRoot, file));
     hash.update("\0");
-    hash.update(fs.readFileSync(file));
+    hash.update(threadBytes.get(file) ?? fs.readFileSync(file));
     hash.update("\0");
   }
   return {
@@ -451,9 +455,19 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
       }
       const stamp = `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
       const cached = documents.get(file);
+      if (!scan && cached && cached.stamp === stamp) {
+        seen.add(file);
+        return cached.value;
+      }
+      let text: string;
+      try {
+        text = readFile(file);
+      } catch (error) {
+        // Removed after the stat: it leaves the hashed files like one missing before it.
+        if (thread && errorCode(error) === "ENOENT") return undefined;
+        throw error;
+      }
       seen.add(file);
-      if (!scan && cached && cached.stamp === stamp) return cached.value;
-      const text = readFile(file);
       if (!cached || cached.text !== text) changed = true;
       const document = { stamp, text, value: thread ? parseStoredThread(text) : parseJson(text) };
       nextDocuments.set(file, document);
@@ -1336,7 +1350,7 @@ export function createViewerDataSource(
         captureGit,
       ));
       cachedData = data;
-      cachedScript = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(data)};\n`;
+      cachedScript = implementationScript(data);
       cachedRevision = snapshot.revision;
       snapshot = snapshotReader(true);
     }
@@ -1430,6 +1444,22 @@ export function createViewerDataSource(
       return page;
     },
   };
+}
+
+const IMPLEMENTATION_SCRIPT_PREFIX = "window.SEMANTIC_IMPLEMENTATION = JSON.parse(";
+
+/** The page parses the data as JSON, because in an object literal a stored
+ * "__proto__" key would set the prototype instead of staying an ordinary key.
+ * Escaping "<" keeps the script inert even inside an HTML script element. */
+function implementationScript(data: unknown): string {
+  return `${IMPLEMENTATION_SCRIPT_PREFIX}${JSON.stringify(JSON.stringify(data)).replaceAll("<", "\\u003c")});\n`;
+}
+
+/** The data an implementation script carries. */
+function implementationFromScript(script: string): unknown {
+  const text = script.startsWith(IMPLEMENTATION_SCRIPT_PREFIX) ? parseJson(script.slice(IMPLEMENTATION_SCRIPT_PREFIX.length).replace(/\);\n$/, "")) : undefined;
+  if (typeof text !== "string") throw new Error("The implementation data script is invalid.");
+  return parseJson(text);
 }
 
 export function createImplementationDataScript(repoRoot: string) {
@@ -2511,8 +2541,7 @@ function serveViewer({
     if (request.method === "GET" && pathname === "/api/implementation") {
       try {
         const script = workerText(await dataSource.call("implementationDataScript", []));
-        const payload = parseJson(script.slice("window.SEMANTIC_IMPLEMENTATION = ".length).trim().replace(/;$/, ""));
-        sendJson(response, 200, { ok: true, implementation: payload });
+        sendJson(response, 200, { ok: true, implementation: implementationFromScript(script) });
       } catch (error) { sendJson(response, 500, { ok: false, error: cliErrorMessage(error) }); }
       return;
     }
