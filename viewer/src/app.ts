@@ -257,9 +257,13 @@ import { renderPage } from "./views/page";
   const draftSnapshots = new WeakMap();
 
   let lastHiddenPoll = 0;
-  // The server revision whose feedback a code selection last adopted on its own (see below).
+  // The latest server revision a poll handled while a code selection deferred the
+  // full implementation (see below); null once the page shows data.viewerRevision.
   let selectionRevision = null;
   const codeSelected = () => Boolean(window.getSelection()?.toString()) && !document.activeElement?.matches("input, textarea");
+  // Feedback anchors to stage revisions, so it may only join a diff from the same revisions.
+  const diffRevisions = (implementation) => JSON.stringify((implementation.stages || []).map((stage) =>
+    [stage.id, stage.baseRevision, stage.headRevision, (stage.files || []).map((file) => [file.path, file.baseRevision || null])]));
   async function pollViewerRevision() {
     if (reviewDeleted || polling) return;
     // Hidden tabs keep checking slowly while an agent listens or works, so a finished round can notify.
@@ -275,7 +279,9 @@ import { renderPage } from "./views/page";
       }
       const snapshot = await response.json();
       if (!snapshot.ok) return;
-      if (snapshot.revision === data.viewerRevision || snapshot.revision === selectionRevision && codeSelected()) { adoptAgentStatus(snapshot.agent); return; }
+      // Once the selection clears, a deferred implementation is adopted whatever the revision now is.
+      const handled = selectionRevision === null ? snapshot.revision === data.viewerRevision : snapshot.revision === selectionRevision && codeSelected();
+      if (handled) { adoptAgentStatus(snapshot.agent); return; }
       // Let local feedback writes finish before adopting a server snapshot.
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       const nextResponse = await api.getImplementation();
@@ -285,7 +291,8 @@ import { renderPage } from "./views/page";
       if (approvalOps.size || exportState.phase === "working" || Object.values(threadOps).some((op) => op.busy)) return;
       // A code selection must not prevent an open conversation from refreshing.
       // Keep metadata aligned with the visible diff until the selection clears:
-      // adopt only the threads, so rendering leaves the selected code rows alone.
+      // adopt only the threads, so rendering leaves the selected code rows alone,
+      // and only while the stage revisions match the shown diff (a restack waits).
       // Leave viewerRevision unchanged so the first poll after it still adopts the
       // full snapshot; until then this revision is not fetched again, and only
       // changed feedback renders, as each render closes an open tooltip.
@@ -293,7 +300,7 @@ import { renderPage } from "./views/page";
       const feedback = payload.implementation.feedback || [];
       if (codeSelected()) {
         selectionRevision = snapshot.revision;
-        if (JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
+        if (diffRevisions(payload.implementation) === diffRevisions(data) && JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
           artifactThreads.splice(0, artifactThreads.length, ...feedback);
           if (!roundNotice) refreshNotice = "Review updated";
           render();
@@ -1143,10 +1150,15 @@ import { renderPage } from "./views/page";
   // Local notes still worth showing: drafts, plus exported notes whose artifact
   // thread has not been reloaded yet. Once the artifact thread is present the
   // local marker is hidden so a sent note is never rendered twice. A list the
-  // selection holds (`list`) keeps a sent note until it shows the note's thread.
+  // selection holds (`list`: its key, held `threads` and `latest` threads) keeps a
+  // sent note while the hold keeps out its thread, which the list would show
+  // otherwise; a thread shown elsewhere, such as among resolved notes, replaces it.
   function sentNoteWaiting(c, list) {
-    if (!c.exported) return true;
-    return list && selectedThreadLists.has(list.key) ? !list.threads.some((t) => t.id === c.threadId) : !artifactThreadById(c.threadId);
+    if (!c.exported || !artifactThreadById(c.threadId)) return true;
+    const has = (threads) => threads.some((t) => t.id === c.threadId);
+    if (!list || !selectedThreadLists.has(list.key) || !has(list.latest) || has(list.threads)) return false;
+    heldThreadLists.add(list.key);
+    return true;
   }
   function localVisibleForElement(id, nodeId = elementNodeId(id.startsWith("l:") ? "line" : "file", id), kind = null, stageId, list = null) {
     return elementNotes(id).filter(
@@ -1857,8 +1869,9 @@ import { renderPage } from "./views/page";
       matchesNodeContext(compose, elementNodeId(kind, id)) && compose.editIndex == null;
     if (!state.openThreads[threadStateKey(kind, id, stageId)] && !composingNew) return null;
     const listKey = threadListKey(kind, stageId || "", id);
-    const threads = heldThreads(listKey, artifactThreadsForElement(kind, id, stageId));
-    const entries = threadListEntries(threads, localVisibleForElement(id, elementNodeId(kind, id), kind, stageId, { key: listKey, threads }));
+    const latest = artifactThreadsForElement(kind, id, stageId);
+    const threads = heldThreads(listKey, latest);
+    const entries = threadListEntries(threads, localVisibleForElement(id, elementNodeId(kind, id), kind, stageId, { key: listKey, threads, latest }));
     if (!entries.length && !composingNew) return null;
     return { id, kind, stageId: stageId || "", listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
@@ -1896,8 +1909,9 @@ import { renderPage } from "./views/page";
   function fileNotesModel(id) {
     const composingNew = compose && compose.id === id && matchesNodeContext(compose, elementNodeId("file", id)) && compose.editIndex == null;
     const listKey = threadListKey("file", elementNodeId("file", id), id);
-    const threads = state.openThreads[id] === false ? [] : heldThreads(listKey, artifactThreadsForElement("file", id));
-    const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads }));
+    const latest = artifactThreadsForElement("file", id);
+    const threads = state.openThreads[id] === false ? [] : heldThreads(listKey, latest);
+    const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads, latest }));
     return { id, kind: "file", stageId: null, listKey, entries, composer: composingNew ? composerModel(compose) : null };
   }
   // A group's unapproved or stale file approvals that can be captured now.
@@ -2026,8 +2040,9 @@ import { renderPage } from "./views/page";
       compose && compose.kind === "line" && compose.id === lineId && matchesNodeContext(compose, elementNodeId("line", lineId)) && compose.editIndex == null;
     if (!state.openLineThreads[lineId] && !composingNew) return null;
     const key = lineListKey(lineId);
-    const arts = heldThreads(key, artifactThreadsForElement("line", lineId));
-    const locals = localVisibleForElement(lineId, undefined, null, undefined, { key, threads: arts });
+    const latest = artifactThreadsForElement("line", lineId);
+    const arts = heldThreads(key, latest);
+    const locals = localVisibleForElement(lineId, undefined, null, undefined, { key, threads: arts, latest });
     if (!arts.length && !locals.length && !composingNew) return null;
     return { arts, locals, composingNew };
   }
@@ -2679,7 +2694,8 @@ import { renderPage } from "./views/page";
   }
   function notesPanelModel() {
     // Each column is held on its own; the reviewer's own resolve or reopen still moves a held thread.
-    const activeThreads = heldThreads("notes:active", artifactThreads.filter((t) => t.status !== "resolved")).filter((t) => t.status !== "resolved");
+    const latestActive = artifactThreads.filter((t) => t.status !== "resolved");
+    const activeThreads = heldThreads("notes:active", latestActive).filter((t) => t.status !== "resolved");
     const resolvedThreads = heldThreads("notes:resolved", artifactThreads.filter((t) => t.status === "resolved")).filter((t) => t.status === "resolved");
     const groups = (threads, locals) => noteGroupsModel([...threads.map((thread) => ({ c: threadNote(thread), thread })), ...locals]);
     const activeCount = activeNoteCount();
@@ -2692,7 +2708,7 @@ import { renderPage } from "./views/page";
       open: Boolean(state.notesOpen), remote: Boolean(data.remote),
       filter: state.notesFilter === "resolved" ? "resolved" : "active",
       activeCount, resolvedCount: resolvedThreads.length,
-      active: groups(activeThreads, visibleLocalNotes({ key: "notes:active", threads: activeThreads })), resolved: groups(resolvedThreads, []),
+      active: groups(activeThreads, visibleLocalNotes({ key: "notes:active", threads: activeThreads, latest: latestActive })), resolved: groups(resolvedThreads, []),
       export: data.remote ? null : {
         pending, working: exportState.phase === "working",
         outcome: exportState.phase === "error" ? "error" : exportState.phase === "done" ? "done" : "",
@@ -3488,8 +3504,9 @@ import { renderPage } from "./views/page";
             const thread = artifactThreadById(entry.threadId);
             if (!thread) return;
             // Held copies show the sent reply in place of its draft; a copy shared by several lists gets it once.
+            // A retried send whose earlier response was lost returns a comment a poll may already have loaded.
             for (const copy of new Set([thread, ...heldThreadCopies(entry.threadId)])) {
-              if (entry.comment) copy.comments.push(entry.comment);
+              if (entry.comment && !copy.comments.some((comment) => entry.comment.id != null && comment.id === entry.comment.id)) copy.comments.push(entry.comment);
               if (entry.status) copy.status = entry.status;
               if ("resolvedAt" in entry) copy.resolvedAt = entry.resolvedAt;
             }

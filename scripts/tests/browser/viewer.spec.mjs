@@ -4012,3 +4012,92 @@ test('a reply sent while a selection holds an earlier copy of its thread shows o
   await expect(lineThread.locator('.tmsg', { hasText: 'My reply' })).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+test('feedback restored to the adopted revision during a selection shows once the selection clears', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('kept'), thread('restored')];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' } });
+  await openFile(page);
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(1);
+  await selectAcrossLineThread(page);
+  const original = data.feedback;
+  data.feedback = [original[0]];
+  data.viewerRevision = 'without-restored';
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(0);
+  // The server returns to the revision the page adopted in full before the selection.
+  data.feedback = original;
+  data.viewerRevision = 'initial';
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(panel.locator('[data-thread-id="restored"]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('feedback for restacked stages waits for a code selection to clear before it shows', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const selected = await selectAcrossLineThread(page);
+  data.stages[0].headRevision = 'c'.repeat(40);
+  data.feedback = [{ ...thread('restacked', 'open', lineTarget), comments: [{ author: 'agent', body: 'About the restacked line', createdAt: '2026-09-08T10:01:00Z' }] }];
+  data.viewerRevision = 'restacked';
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
+  // The shown diff is from the earlier stage head, so the new line thread does not join it yet.
+  await expect(panel.locator('[data-thread-id="restacked"]')).toHaveCount(0);
+  await expect(page.locator('[data-thread-id="restacked"]')).toHaveCount(0);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(panel.locator('[data-thread-id="restacked"]')).toContainText('About the restacked line');
+  await expect(page.locator(`.line-thread[data-thread="${lineId}"] [data-thread-id="restacked"]`)).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a reply a poll already loaded before its send response shows once', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('t')];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'My reply', attachments: [], createdAt: 2 }] });
+  await showNotes(page);
+  const panelThread = page.locator('.side.notes [data-thread-id="t"]');
+  await expect(panelThread.locator('.tmsg-draft')).toContainText('My reply');
+  // An earlier send saved the reply, but its response was lost; a poll loads the saved comment.
+  const saved = { id: 'c-2', author: 'user', body: 'My reply', createdAt: '2026-09-08T10:02:00Z' };
+  data.feedback[0].comments.push(saved);
+  data.viewerRevision = 'reply-saved';
+  await expect(panelThread.locator('.tmsg:not(.tmsg-draft)', { hasText: 'My reply' })).toHaveCount(1);
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(1);
+  // The retry returns the same comment.
+  await page.route('**/api/feedback/export*', (route) => route.fulfill({ json: { ok: true, exported: [], skipped: [],
+    replied: [{ ref: 'rd-1', threadId: 't', comment: saved }] } }));
+  const prepare = page.locator('.notes-export');
+  await prepare.focus();
+  await prepare.press('Enter');
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 reply');
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(0);
+  await expect(panelThread.locator('.tmsg', { hasText: 'My reply' })).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('a selection in the Active column does not bring back a sent note whose thread is resolved', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('other'), { ...thread('sent', 'resolved'), comments: [{ author: 'user', body: 'Sent stage note', createdAt: '2026-09-08T10:00:00Z' }] }];
+  const errors = await mount(page, data, { comments: [{ kind: 'stage', id: 'first', body: 'Sent stage note', mode: 'feedback', exported: true, threadId: 'sent', createdAt: 1 }] });
+  await showNotes(page);
+  const panel = page.locator('.side.notes');
+  const active = panel.locator('.notes-col-active');
+  const activeFilter = panel.locator('[data-action="notes-filter"][data-filter="active"]');
+  await expect(active.locator('.tthread')).toHaveCount(1);
+  await expect(active.locator('.tnote')).toHaveCount(0);
+  await expect(activeFilter.locator('b')).toHaveText('1');
+  await selectBetween(page, '.side.notes .notes-col-active .tthread .comment-body', '.side.notes .notes-col-active .tthread .comment-body');
+  // A review update renders the page while the Active column is held.
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during the selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'reply-during-selection';
+  await expect(page.locator('.review-update')).toHaveText('Review updated');
+  await expect(active.locator('.tnote')).toHaveCount(0);
+  await expect(activeFilter.locator('b')).toHaveText('1');
+  expect(errors).toEqual([]);
+});
