@@ -96,29 +96,13 @@ function isInsightCollection(value: string): value is InsightCollection {
   return STAGE_ITEM_COLLECTIONS.some((collection) => collection === value);
 }
 
-/** Output of a Git command that succeeded; git() fails on any error. */
-function gitText(args: string[], options: GitOptions = {}): string {
-  const output: unknown = git(args, options);
-  if (typeof output !== "string") fail(`git ${args.join(" ")} produced no text output.`);
-  return output;
-}
-
 /** Output of a Git command that may fail; undefined when it does. */
-function gitOptional(args: string[], options: GitOptions = {}): string | undefined {
-  const output: unknown = git(args, { ...options, allowFailure: true });
-  return typeof output === "string" ? output : undefined;
+function gitOptional(args: string[], options: { cwd?: string } = {}): string | undefined {
+  return git(args, { ...options, allowFailure: true }) ?? undefined;
 }
 
-function gitRawText(args: string[], options: GitRawOptions = {}): string {
-  const output: unknown = gitRaw(args, options);
-  if (typeof output !== "string") fail(`git ${args.join(" ")} produced no text output.`);
-  return output;
-}
-
-function gitRawBuffer(args: string[], options: GitRawOptions = {}): Buffer {
-  const output: unknown = gitRaw(args, { ...options, encoding: "buffer" });
-  if (!Buffer.isBuffer(output)) fail(`git ${args.join(" ")} produced no binary output.`);
-  return output;
+function gitRawBuffer(args: string[], options: Omit<GitRawOptions, "encoding" | "allowFailure"> = {}): Buffer {
+  return gitRaw(args, { ...options, encoding: "buffer" });
 }
 
 /** A required option's value; option() itself fails when it is missing. */
@@ -137,7 +121,7 @@ function explicitStageId(requested: string | undefined, optionName: string): str
 }
 
 function repositoryRoot(): string {
-  const root = gitText(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
+  const root = git(["rev-parse", "--show-toplevel"], { cwd: process.cwd() });
   if (!root) {
     fail("Run this command inside a Git repository.");
   }
@@ -324,7 +308,7 @@ function commitObject(root: string, revision: string): string {
 }
 
 function resolveCommitObject(root: string, revision: string): string {
-  const commit = gitText(["rev-parse", "--verify", `${revision}^{commit}`], {
+  const commit = git(["rev-parse", "--verify", `${revision}^{commit}`], {
     cwd: root,
   });
   if (!/^[0-9a-f]{40}$/.test(commit)) {
@@ -334,7 +318,7 @@ function resolveCommitObject(root: string, revision: string): string {
 }
 
 function assertCleanWorkingTree(root: string, action: string): void {
-  const status = gitText(
+  const status = git(
     ["status", "--porcelain=v1", "--untracked-files=all"],
     { cwd: root },
   );
@@ -346,7 +330,7 @@ function assertCleanWorkingTree(root: string, action: string): void {
 }
 
 function commitParents(root: string, commit: string): string[] {
-  const output = gitText(["show", "-s", "--format=%P", commit], { cwd: root });
+  const output = git(["show", "-s", "--format=%P", commit], { cwd: root });
   return output ? output.split(/\s+/) : [];
 }
 
@@ -361,7 +345,7 @@ function currentBranch(root: string): string | undefined {
 }
 
 function checkedOutBranches(root: string): Set<string> {
-  const output = gitText(["worktree", "list", "--porcelain"], { cwd: root });
+  const output = git(["worktree", "list", "--porcelain"], { cwd: root });
   return new Set(
     output
       .split(/\r?\n/)
@@ -384,7 +368,7 @@ function checkLinearRange(root: string, base: string, head: string, label: strin
   if (!isAncestor(root, base, head)) {
     fail(`${label} head ${head} must descend from ${base}.`);
   }
-  const merges = gitText(["rev-list", "--merges", `${base}..${head}`], {
+  const merges = git(["rev-list", "--merges", `${base}..${head}`], {
     cwd: root,
   });
   if (merges) {
@@ -495,7 +479,7 @@ function diffChangeShape(root: string, parent: string, commit: string, file: Fil
 
 function readDiffChangeShape(root: string, parent: string, commit: string, file: FileChange): DiffChangeShape {
   const paths = [...new Set([file.previousPath, file.path].filter((value): value is string => Boolean(value)))];
-  const patch = gitRawText(
+  const patch = gitRaw(
     [
       "-c",
       "core.quotePath=false",
@@ -1048,7 +1032,7 @@ function reportEvidenceWarnings(stages: Iterable<Stage>): void {
 }
 
 function ensureArtifactExcluded(root: string): void {
-  const exclude = gitText(["rev-parse", "--git-path", "info/exclude"], {
+  const exclude = git(["rev-parse", "--git-path", "info/exclude"], {
     cwd: root,
   });
   const resolvedExclude = path.isAbsolute(exclude)
@@ -1211,7 +1195,7 @@ function beginStage(paths: ArtifactPaths, options: Options): void {
   const branch = stageBranchName(artifact.manifest, artifact.manifest.stages.length, id);
   const ordinalPrefix = branch.slice(0, branch.lastIndexOf("/") + 1)
     + `${String(artifact.manifest.stages.length + 1).padStart(2, "0")}-`;
-  const ordinalRefs = gitText(["for-each-ref", "--format=%(refname:short)", `refs/heads/${artifact.manifest.branchPrefix}/`], { cwd: paths.root });
+  const ordinalRefs = git(["for-each-ref", "--format=%(refname:short)", `refs/heads/${artifact.manifest.branchPrefix}/`], { cwd: paths.root });
   const collision = ordinalRefs.split(/\r?\n/).find((ref) => ref.startsWith(ordinalPrefix));
   if (collision) fail(`Stage ordinal already exists on branch ${collision}; resolve it before beginning another stage.`);
   git(["check-ref-format", "--branch", branch], { cwd: paths.root });
@@ -2136,7 +2120,7 @@ function commitMetadata(root: string, commit: string): CommitMetadata {
     committerEmail,
     committerDate,
     message,
-  ] = gitRawText(
+  ] = gitRaw(
     [
       "show",
       "-s",
@@ -2203,15 +2187,15 @@ function applyCommitPatch({
       encoding: "buffer",
     });
   } catch (error) {
-    const unmerged = gitRawText(["ls-files", "-u"], { cwd: root, env });
+    const unmerged = gitRaw(["ls-files", "-u"], { cwd: root, env });
     if (unmerged) {
       throw new PatchConflictError(errorMessage(error));
     }
     throw error;
   }
-  const tree = gitRawText(["write-tree"], { cwd: root, env });
+  const tree = gitRaw(["write-tree"], { cwd: root, env });
   const metadata = commitMetadata(root, metadataCommit);
-  return gitRawText(["commit-tree", tree, "-p", newParent], {
+  return gitRaw(["commit-tree", tree, "-p", newParent], {
     cwd: root,
     input: metadata.message,
     env: {
@@ -2594,7 +2578,7 @@ function repairArtifact(paths: ArtifactPaths, options: Options): void {
 }
 
 function changedPathNames(root: string, from: string, to: string): string[] {
-  const output = gitText(["diff", "--name-only", from, to, "--"], { cwd: root });
+  const output = git(["diff", "--name-only", from, to, "--"], { cwd: root });
   return output ? output.split(/\r?\n/).filter(Boolean) : [];
 }
 
@@ -2628,7 +2612,7 @@ interface PreparedBinding {
 
 function preparedBranchBinding(root: string, artifact: Artifact): PreparedBinding | undefined {
   const prefix = preparedBranchRefPrefix(artifact);
-  const output = gitText(
+  const output = git(
     ["for-each-ref", "--format=%(refname) %(objectname)", prefix],
     { cwd: root },
   );
@@ -2677,7 +2661,7 @@ function buildMetadataTree(paths: ArtifactPaths, parent: string): string {
       cwd: paths.root,
       env,
     });
-    return gitRawText(["write-tree"], { cwd: paths.root, env });
+    return gitRaw(["write-tree"], { cwd: paths.root, env });
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
@@ -2685,7 +2669,7 @@ function buildMetadataTree(paths: ArtifactPaths, parent: string): string {
 
 function buildMetadataCommit(paths: ArtifactPaths, parent: string, message: string): { commit: string; tree: string } {
   const tree = buildMetadataTree(paths, parent);
-  const commit = gitRawText(["commit-tree", tree, "-p", parent], {
+  const commit = gitRaw(["commit-tree", tree, "-p", parent], {
     cwd: paths.root,
     input: `${message}\n`,
   });
@@ -2703,7 +2687,7 @@ function assertValidatedArtifactCurrent(paths: ArtifactPaths, artifact: Artifact
   if (current !== validated) fail("Semantic implementation changed during the workflow; retry after the current edit completes.");
   const expected = new Map<string, string>([[artifact.manifest.targetBranch, artifact.manifest.baseRevision]]);
   for (const stage of artifact.stages.values()) expected.set(stage.change.branch, stage.change.headRevision);
-  const refs = gitText(["for-each-ref", "--format=%(refname:strip=2) %(objectname)", ...[...expected.keys()].map((branch) => `refs/heads/${branch}`)], { cwd: paths.root });
+  const refs = git(["for-each-ref", "--format=%(refname:strip=2) %(objectname)", ...[...expected.keys()].map((branch) => `refs/heads/${branch}`)], { cwd: paths.root });
   // Branch names contain no spaces, so the first space separates name and object.
   const actual = new Map(refs.split("\n").filter(Boolean).map((line): [string, string] => {
     const [name = "", object = ""] = line.split(" ");
@@ -2732,7 +2716,7 @@ function metadataPublicationPlan(paths: ArtifactPaths, artifact: Artifact, messa
     cwd: paths.root,
   });
   if (existing) {
-    const existingTree = gitText(["show", "-s", "--format=%T", existing], {
+    const existingTree = git(["show", "-s", "--format=%T", existing], {
       cwd: paths.root,
     });
     const parents = commitParents(paths.root, existing);
@@ -3045,7 +3029,7 @@ function archiveImplementation(
     fail(`Archive requires published metadata branch ${publicationBranch}.`);
   }
   const publicationParents = commitParents(paths.root, publicationHead);
-  const publicationTree = gitText(
+  const publicationTree = git(
     ["show", "-s", "--format=%T", publicationHead],
     { cwd: paths.root },
   );
@@ -3089,7 +3073,7 @@ function archiveImplementation(
       path.relative(paths.root, destination),
     );
     git(["add", "-f", "--", relativeDestination], { cwd: paths.root });
-    const staged = gitText(["diff", "--cached", "--name-only"], {
+    const staged = git(["diff", "--cached", "--name-only"], {
       cwd: paths.root,
     })
       .split(/\r?\n/)
