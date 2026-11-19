@@ -3,32 +3,27 @@
 import { html, nothing, render, type TemplateResult } from "lit-html";
 import { agentBarView, type AgentBarView } from "./agent-bar";
 import { coverageView, type CoverageView } from "./coverage";
-import { legacyHtml, type LegacyPrepare } from "./legacy-html";
+import { legacyHtml } from "./legacy-html";
 import { noticesView, type NoticesView } from "./notices";
 import { scrimView } from "./scrim";
+import { storyView, type StoryView } from "./story";
 import { topbarView, type TopbarView } from "./topbar";
-
-export interface LegacyRegion {
-  markup: string;
-  prepare?: LegacyPrepare;
-}
 
 export interface PageView {
   topbar: TopbarView;
   /** Absent for remote reviews and before the agent status is known. */
   agentBar: AgentBarView | null;
   notices: NoticesView;
-  /** The contents of the story column. */
-  story: LegacyRegion;
+  story: StoryView;
   coverage: CoverageView;
-  /** The notes side panel. */
-  notes: LegacyRegion;
+  /** The notes side panel, as legacy HTML. */
+  notes: string;
 }
 
 export function pageView(view: PageView): TemplateResult {
   return html`${topbarView(view.topbar)}${view.agentBar ? agentBarView(view.agentBar) : nothing}${noticesView(view.notices)}
-      <main class="shell v-cinema">${legacyHtml(view.story.markup, view.story.prepare)}</main>
-      ${coverageView(view.coverage)}${legacyHtml(view.notes.markup, view.notes.prepare)}
+      <main class="shell v-cinema">${storyView(view.story)}</main>
+      ${coverageView(view.coverage)}${legacyHtml(view.notes)}
       ${scrimView(view.coverage.open || view.topbar.notesOpen)}`;
 }
 

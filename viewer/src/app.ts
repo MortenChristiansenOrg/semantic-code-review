@@ -1185,7 +1185,7 @@ import { renderPage } from "./views/page";
   function stageAcceptanceRefs(stage) {
     return (stage.specificationRefs || []).filter(Boolean);
   }
-  function acChip(ref) {
+  function acceptanceChipModel(ref) {
     const ac = allAcceptance.find((a) => a.ref === ref);
     const acId = ac ? ac.id : String(ref).split("#").pop();
     const st = acceptanceStatus(ref);
@@ -1196,24 +1196,13 @@ import { renderPage } from "./views/page";
     };
     const m = map[st.key] || map.pending;
     const stages = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
-    return `<button class="ac-chip tag-face" type="button" data-tagpop="1"
-      data-type="acceptance" data-vstat="${esc(m.vstat)}"
-      data-glyph="${esc(m.glyph)}" data-label="${esc(m.label)}" data-meta="${esc(`${acId} · ${stages}`)}"
-      data-title="${esc(ac ? ac.text : acId)}" data-body=""
-      aria-haspopup="true"><span class="ac-chip-id">${esc(acId)}</span><span class="ac-chip-stat vstat-${m.vstat}">${esc(m.glyph)}</span></button>`;
+    return { id: acId, vstat: m.vstat, glyph: m.glyph, label: m.label, meta: `${acId} · ${stages}`, text: ac ? ac.text : acId };
   }
   function bubble() {
     return `<svg class="bub" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
   }
   function bubblePlus() {
     return `<svg class="bub" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 8v5M9.5 10.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
-  }
-  // A personal (browser-local) note — distinct from a feedback conversation.
-  function noteGlyph() {
-    return `<svg class="tico" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M7 3.5h7l4 4v13H7z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M13.5 3.5V8h4.5M9.5 12.5h6M9.5 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  }
-  function doubleCheck() {
-    return `<svg class="tico" viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true"><path d="M2.5 12.5l4.5 4.5 9-10M11.5 16l1 1 9-10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
   }
   function arrowRight() {
     return `<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
@@ -1316,14 +1305,12 @@ import { renderPage } from "./views/page";
       : type === "analysis" ? "Analysis"
       : "";
   }
-  function codeInsightButton(stage, ins, label = "View code", inline = false) {
+  // An insight linked to a line of an open diff; it opens beside the code.
+  function inlineCodeInsightButton(stage, ins) {
     const target = ins.codeTarget;
     if (!target) return "";
     const info = vstatus(ins) || INSIGHT[ins.type] || INSIGHT.decision;
-    const content = inline
-      ? `<b class="inline-insight-icon" role="img" aria-label="${esc(info.label)}">${esc(info.glyph)}</b><span class="inline-insight-text">${esc(label)}</span>`
-      : esc(label);
-    return `<button type="button" class="code-insight-link ${inline ? `type-${esc(ins.type)}` : ""} ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}">${content}${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
+    return `<button type="button" class="code-insight-link type-${esc(ins.type)} ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}"><b class="inline-insight-icon" role="img" aria-label="${esc(info.label)}">${esc(info.glyph)}</b><span class="inline-insight-text">${esc(ins.title)}</span>${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
   }
   function codeContextHtml(target) {
     return `<div class="insight-code-block" tabindex="0" aria-label="Code context">${target.context.map((line, index) => {
@@ -1474,79 +1461,60 @@ import { renderPage } from "./views/page";
     reviewed: { mark: "✓", text: "Reviewed", tooltip: "Reviewed – click to mark as not reviewed" },
     changed: { mark: "!", text: "Changed since reviewed", tooltip: "Changed since reviewed – click to mark as reviewed" }
   };
-  function insightReviewToggle(stage, ins) {
-    const review = insightReviewState(stage, ins), info = INSIGHT_REVIEW[review];
-    return `<button class="insight-review" type="button" data-action="toggle-insight-review" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}"
-        aria-pressed="${review === "reviewed"}" aria-label="${esc(`${review === "changed" ? "Reviewed before it changed" : "Reviewed"}: ${ins.title}`)}" data-tooltip="${esc(info.tooltip)}"><span aria-hidden="true">${info.mark}</span></button>`;
-  }
   // Evidence linked to several nodes hosts its one thread under the first of them.
   const hostsEvidenceThread = (ins, node) => ins.evidence && ins.nodeRefs?.[0] === node.id;
-  function reasoningChip(stage, ins, node) {
+  function insightTagModel(stage, ins, node) {
     const info = INSIGHT[ins.type] || INSIGHT.decision;
     const vs = vstatus(ins);
-    const glyph = vs ? vs.glyph : info.glyph;
-    const label = vs ? vs.label : info.label;
     // For validation, the status is already carried by the glyph, so the free
     // meta slot instead surfaces the evidence type (automated/manual/analysis)
     // without displacing the pass/fail signal.
     const vtype = ins.type === "validation" ? validationTypeLabel(ins.validationType) : "";
-    const meta = vs ? vtype : ins.evidence ? (EVIDENCE_KIND[ins.meta] || ins.meta) : (ins.meta || "");
-    const kindText = vtype ? `${info.label} · ${vtype}` : info.label;
-    const review = insightReviewState(stage, ins);
+    const review = insightReviewState(stage, ins), reviewInfo = INSIGHT_REVIEW[review];
     const key = insightKey(stage.id, ins.collection, ins.id);
-    const evidenceButton = ins.evidence
-      ? `<button type="button" class="code-insight-link" data-action="view-evidence" data-stage="${esc(stage.id)}" data-item="${esc(ins.id)}">View evidence</button>${hostsEvidenceThread(ins, node) ? notesToggle("insight", key) : ""}`
-      : "";
-    return `<span class="tag ${ins.codeTarget || ins.evidence ? "has-code" : ""} type-${ins.type} ${vs ? `vstat-${vs.key}` : ""} review-${review}" data-insight="${esc(insightKey(stage.id, ins.collection, ins.id))}">
-      ${insightReviewToggle(stage, ins)}<button class="tag-face" type="button" data-tagpop="1"
-        data-type="${esc(ins.type)}" data-vstat="${esc(vs ? vs.key : "")}"
-        data-glyph="${esc(glyph)}" data-label="${esc(label)}" data-meta="${esc(meta)}" data-review="${esc(INSIGHT_REVIEW[review].text)}"
-        data-title="${esc(ins.title)}" data-body="${esc(ins.body || "")}"
-        aria-haspopup="true">
-        <b>${glyph}</b><span class="tag-kind">${esc(kindText)}</span><span class="tag-gist">${esc(ins.title)}</span>
-      </button>${evidenceButton}${codeInsightButton(stage, ins)}
-    </span>`;
+    return {
+      key, stageId: stage.id, collection: ins.collection, itemId: ins.id, type: ins.type,
+      vstat: vs ? vs.key : "", glyph: vs ? vs.glyph : info.glyph, label: vs ? vs.label : info.label,
+      kindText: vtype ? `${info.label} · ${vtype}` : info.label,
+      meta: (vs ? vtype : ins.evidence ? (EVIDENCE_KIND[ins.meta] || ins.meta) : ins.meta) || "",
+      title: ins.title, body: ins.body || "",
+      review, reviewMark: reviewInfo.mark, reviewText: reviewInfo.text, reviewTooltip: reviewInfo.tooltip,
+      evidence: ins.evidence ? { notes: hostsEvidenceThread(ins, node) ? notesToggleModel("insight", key) : null } : null,
+      code: ins.codeTarget ? { stageId: stage.id, collection: ins.collection, itemId: ins.id, needsReview: ins.codeTarget.status === "needs-review" } : null,
+    };
   }
-  function reasoningSummary(stage, node) {
-    const insights = stage.insights.filter((i) => (i.nodeRefs || []).includes(node.id));
-    if (!insights.length) return "";
-    const counts = INSIGHT_ORDER
-      .map((t) => ({ t, c: insights.filter((i) => i.type === t).length }))
-      .filter((x) => x.c);
-    const legend = counts.map((x) => `<button type="button" class="rk type-${x.t}" data-action="focus-reasoning" data-type="${esc(x.t)}" aria-label="${INSIGHT[x.t].label}: ${x.c}"><b aria-hidden="true">${INSIGHT[x.t].glyph}</b>${x.c}</button>`).join("");
-    const failed = insights.filter((i) => { const v = vstatus(i); return v && v.key !== "passed"; }).length;
-    const alert = failed ? `<button type="button" class="rk rk-alert" data-action="focus-reasoning" data-type="not-passed" aria-label="Checks not passed: ${failed}"><b aria-hidden="true">✕</b>${failed}</button>` : "";
-    return `<div class="reasoning-summary"><span class="eyebrow">Reasoning</span><div class="reasoning-key">${legend}${alert}</div></div>`;
-  }
-  function nodeReasoning(stage, node) {
-    const list = insightSort(stage.insights.filter((i) => (i.nodeRefs || []).includes(node.id)));
-    if (!list.length) return "";
-    return `<div class="node-reasoning">
-      <span class="eyebrow">Reasoning</span>
-      <div class="tag-row">${list.map((ins) => reasoningChip(stage, ins, node)).join("")}</div>
-      ${list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join("")}
-    </div>`;
+  function reasoningLegendModel(insights) {
+    if (!insights.length) return null;
+    return {
+      entries: INSIGHT_ORDER
+        .map((type) => ({ type, glyph: INSIGHT[type].glyph, label: INSIGHT[type].label, count: insights.filter((i) => i.type === type).length }))
+        .filter((entry) => entry.count),
+      notPassed: insights.filter((i) => { const v = vstatus(i); return v && v.key !== "passed"; }).length,
+    };
   }
 
   /* ---- approvals / comments UI ----------------------------------------- */
-  // `subject` names the target in the button text, e.g. "stage 01".
-  function approveBtn(kind, id, size = "", subject = "") {
-    const stage = kind === "stage" ? stageById.get(id) : null;
-    const blocked = approvalOps.has(id) || (stage ? !stageNodesApproved(stage) : !revisionFor(id));
-    const st = stage ? stageApprovalState(stage) : approvalState(id);
-    const of = subject ? ` ${esc(subject)}` : "";
-    const label = stage ? ` aria-label="${esc(`${st === "stale" && !blocked ? "Re-approve" : st === "approved" && !blocked ? "Approved" : "Approve"} stage ${stageNumber(stage)}: ${stage.title}`)}"` : "";
+  function approveBtn(kind, id, size = "") {
+    const blocked = approvalOps.has(id) || !revisionFor(id);
+    const st = approvalState(id);
     if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} disabled title="${stage ? "Approve every step before approving the stage" : "File revision is unavailable"}">
-        <span class="check"></span>Approve${of}</button>`;
+      return `<button class="approve ${size}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="File revision is unavailable">
+        <span class="check"></span>Approve</button>`;
     }
     if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false"${label} title="Changed since you approved it — click to re-approve">
-        <span class="check">!</span>Re-approve${of}</button>`;
+      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
+        <span class="check">!</span>Re-approve</button>`;
     }
     const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="${on}"${label}>
-      <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}${of}</button>`;
+    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="${on}">
+      <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
+  }
+  function stageApproveModel(stage) {
+    const blocked = approvalOps.has(stage.id) || !stageNodesApproved(stage);
+    const st = stageApprovalState(stage);
+    const verb = blocked ? "Approve" : st === "stale" ? "Re-approve" : st === "approved" ? "Approved" : "Approve";
+    return { kind: "stage", id: stage.id, state: st, blocked: blocked ? "Approve every step before approving the stage" : "",
+      label: `${verb} stage ${stageNumber(stage)}: ${stage.title}` };
   }
   function stageNumber(stage) { return String(data.stages.indexOf(stage) + 1).padStart(2, "0"); }
   function commentBtn(kind, id, stageId) {
@@ -1555,18 +1523,10 @@ import { renderPage } from "./views/page";
   function threadStateKey(kind, id, stageId) {
     return kind === "node" ? `n:${stageId}:${id}` : id;
   }
-  function notesToggle(kind, id, stageId) {
-    const { total, open: openCount } = threadToggleCounts(kind, id, stageId);
-    if (!total) return "";
-    const open = Boolean(state.openThreads[threadStateKey(kind, id, stageId)]);
-    return `<button class="notes-toggle ${open ? "is-open" : ""} ${openCount ? "" : "all-resolved"}" data-action="toggle-thread" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button" aria-expanded="${open}" title="${total} thread${total === 1 ? "" : "s"}${openCount ? `, ${openCount} open` : ", all resolved"}">
-      ${bubble()}<b>${total}</b>${openCount ? '<i class="nt-dot"></i>' : ""}</button>`;
-  }
-  function noteCluster(kind, id, stageId) {
-    return `<div class="note-cluster">${commentBtn(kind, id, stageId)}${notesToggle(kind, id, stageId)}</div>`;
-  }
-  function stageNoteCluster(id) {
-    return `<div class="note-cluster">${notesToggle("stage", id)}${commentBtn("stage", id)}</div>`;
+  function notesToggleModel(kind, id, stageId) {
+    const { total, open } = threadToggleCounts(kind, id, stageId);
+    if (!total) return null;
+    return { kind, id, stageId: stageId || "", total, open, expanded: Boolean(state.openThreads[threadStateKey(kind, id, stageId)]) };
   }
   // Notes list: show only the filename for file targets, keep the full path on hover.
   function threadTargetDisplay(t) {
@@ -1928,56 +1888,33 @@ import { renderPage } from "./views/page";
   }
 
   /* ---- file rows -------------------------------------------------------- */
-  function classBadge(cls) {
-    return `<span class="cls cls-${esc(cls)}">${esc(CLASS_LABEL[cls] || cls)}</span>`;
-  }
   function fileMetrics(file) {
     return `<span class="metrics"><i class="add">+${file.additions}</i><i class="del">−${file.deletions}</i></span>`;
   }
-  function fileRow(stage, node, file) {
+  function fileRowModel(stage, node, file) {
     const id = fileKey(stage.id, file.path);
     const approvalId = fileApprovalKey(stage.id, node.id, file.path);
     const cls = classificationFor(file, node.id);
-    const { name } = splitPath(file.path);
-    const dir = dirShort(splitPath(file.path).dir);
-    const shared = (file.memberships || []).length > 1;
-    const hint = shared ? ownershipHint(file, node.id) : "";
-    const sharedChip = hint
-      ? `<span class="cls cls-shared" title="Split across steps — this step owns ${esc(hint)}.">shared</span>`
-      : "";
-    const st = approvalState(approvalId);
-    const isOn = st === "approved";
-    const isStale = st === "stale";
-    const isActive = activeFileNodeId(id) === node.id;
+    const { dir, name } = splitPath(file.path);
+    const renamed = file.kind === "renamed" && file.previousPath;
+    const entry = fileById.get(id);
+    // Each open file's diff and notes follow its row in the step it was opened in.
+    const open = activeFileNodeId(id) === node.id;
     const counts = fileNoteCounts(id, node.id);
-    const threadN = counts.file;
-    const lineN = counts.line;
-    const noteN = counts.personal;
-    const openAttrs = `data-action="open-file" data-id="${esc(id)}" data-node-id="${esc(node.id)}" type="button" aria-expanded="${isActive}"`;
-    const notesOpen = isActive && state.openThreads[id] !== false;
-    const combinedLabel = `${threadN} file comment${threadN === 1 ? "" : "s"}, ${noteN} personal note${noteN === 1 ? "" : "s"}`;
-    const threadBadge = threadN || noteN
-      ? `<button class="mini-count mini-threads ${notesOpen ? "is-open" : ""}" data-action="toggle-file-notes" data-id="${esc(id)}" data-node-id="${esc(node.id)}" type="button" aria-expanded="${notesOpen}" title="${esc(combinedLabel)}" aria-label="${esc(combinedLabel)}">${bubble()}<b>${threadN}</b>${noteGlyph()}<b>${noteN}</b></button>`
-      : "";
-    const lineBadge = lineN
-      ? `<button class="mini-count mini-lines" ${openAttrs} title="${lineN} line comments" aria-label="${lineN} line comments">${bubble()}<b>${lineN}</b><small>lines</small></button>`
-      : "";
-    return `<div data-render-key="${esc(id)}" class="frow-wrap ${isActive ? "is-open-wrap" : ""}">
-      <div class="frow ${isOn ? "is-approved" : ""} ${isStale ? "is-stale" : ""} ${isActive ? "is-active" : ""}" data-file="${esc(id)}">
-        <div class="frow-open" data-action="open-file" data-id="${esc(id)}" data-node-id="${esc(node.id)}" role="button" tabindex="0" title="${esc(file.path)}">
-          ${fileKind(file.kind)}
-          <span class="fp"><small>${esc(dir)}</small><strong class="fp-name">${esc(name)}</strong>${renameFrom(file)}</span>
-          ${classBadge(cls)}${sharedChip}
-          ${fileMetrics(file)}
-        </div>
-        <div class="frow-act">
-          ${(fileOccurrenceCounts.get(file.path) || 0) > 1 ? `<button class="file-occurrences" data-action="file-search" data-path="${esc(file.path)}" data-stage-id="${esc(stage.id)}" data-node-id="${esc(node.id)}" type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${esc(file.path)}">↗ ${fileOccurrenceCounts.get(file.path)}</button>` : ""}
-          ${fileCodeInsights(stage, file.path).length ? `<button class="code-insight-link" type="button" data-action="file-insights" data-stage="${esc(stage.id)}" data-path="${esc(file.path)}">Insights · ${fileCodeInsights(stage, file.path).length}</button>` : ""}
-          ${threadBadge}${lineBadge}
-          <button class="mini-approve ${isOn ? "is-on" : ""} ${isStale ? "is-stale" : ""}" data-action="approve" data-id="${esc(approvalId)}" ${approvalOps.has(approvalId) || !revisionFor(approvalId) ? "disabled" : ""} type="button" aria-pressed="${isOn}" title="${isStale ? "Changed since approval — re-approve" : isOn ? "Approved" : "Approve file"}"><span>${isStale ? "!" : isOn ? "✓" : ""}</span></button>
-        </div>
-      </div>
-    </div>`;
+    return {
+      id, stageId: stage.id, nodeId: node.id, path: file.path, dir: dirShort(dir), name,
+      kind: file.kind, kindLabel: kindLabel(file.kind), kindGlyph: kindGlyph(file.kind),
+      previousPath: renamed ? file.previousPath : "", previousShort: renamed ? shortPath(file.previousPath) : "",
+      classification: cls, classificationLabel: CLASS_LABEL[cls] || cls,
+      sharedHint: (file.memberships || []).length > 1 ? ownershipHint(file, node.id) : "",
+      additions: file.additions, deletions: file.deletions,
+      approvalId, approval: approvalState(approvalId), approvalDisabled: approvalOps.has(approvalId) || !revisionFor(approvalId),
+      occurrences: fileOccurrenceCounts.get(file.path) || 0,
+      insights: fileCodeInsights(stage, file.path).length,
+      notes: counts.file || counts.personal ? { threads: counts.file, personal: counts.personal, expanded: open && state.openThreads[id] !== false } : null,
+      lineComments: counts.line,
+      open: open && entry ? { diff: diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: node.id }), notes: fileNotesBlock(id) } : null,
+    };
   }
   // File notes can be hidden independently of the open diff.
   function fileNotesBlock(id) {
@@ -2003,11 +1940,9 @@ import { renderPage } from "./views/page";
     const files = nodeFileList(stage, node).filter((f) => (f.project || "Other") === group);
     return Promise.all(groupPendingApprovals(stage, node, files).map((id) => changeApproval(id, "file")));
   }
-  function nodeFilesPanel(stage, node) {
+  function nodeFilesModel(stage, node) {
     const files = nodeFileList(stage, node);
-    const total = files.length;
-    const done = files.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
-
+    const fileApproved = (f) => approved(fileApprovalKey(stage.id, node.id, f.path));
     // Group by owning .NET project (convention-based) for a quick overview.
     const groups = new Map();
     files.forEach((f) => {
@@ -2015,28 +1950,15 @@ import { renderPage } from "./views/page";
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(f);
     });
-    const groupHtml = [...groups.entries()].map(([proj, gfiles]) => {
-      const gd = gfiles.filter((f) => approved(fileApprovalKey(stage.id, node.id, f.path))).length;
-      const allDone = gd === gfiles.length;
-      const pending = groupPendingApprovals(stage, node, gfiles);
-      const busy = gfiles.some((f) => approvalOps.has(fileApprovalKey(stage.id, node.id, f.path)));
-      const label = allDone ? `All files in ${proj} approved` : `Approve all files in ${proj}`;
-      const rows = gfiles.map((f) => fileRow(stage, node, f)).join("");
-      return `<div class="fgroup ${allDone ? "all-done" : ""}">
-        <div class="fgroup-h">
-          <span class="fg-name">${esc(proj)}</span>
-          <span class="fg-done" aria-label="${gd} of ${gfiles.length} files approved">${allDone ? "✓ " : ""}${gd}/${gfiles.length}</span>
-          <button class="fg-approve ${allDone ? "is-on" : ""}" data-action="approve-group" data-stage="${esc(stage.id)}" data-node-id="${esc(node.id)}" data-group="${esc(proj)}" type="button" ${busy || !pending.length ? "disabled" : ""} title="${esc(label)}" aria-label="${esc(label)}">${doubleCheck()}</button>
-        </div>
-        <div class="flist">${rows}</div>
-      </div>`;
-    }).join("");
-
-    // Files are always visible — there are very few cases where a node is
-    // worth opening without also inspecting its files.
-    return `<div class="payload ${done === total ? "all-done" : ""}" data-node-files="${esc(node.id)}">
-      <div class="fgroups">${groupHtml}</div>
-    </div>`;
+    return {
+      stageId: stage.id, nodeId: node.id, allApproved: files.every(fileApproved),
+      groups: [...groups.entries()].map(([name, gfiles]) => ({
+        name,
+        approved: gfiles.filter(fileApproved).length,
+        canApprove: !gfiles.some((f) => approvalOps.has(fileApprovalKey(stage.id, node.id, f.path))) && groupPendingApprovals(stage, node, gfiles).length > 0,
+        files: gfiles.map((f) => fileRowModel(stage, node, f)),
+      })),
+    };
   }
 
   /* ---- diff renderer (shared, big view) --------------------------------- */
@@ -2177,7 +2099,7 @@ import { renderPage } from "./views/page";
     const row = `<div data-line-id="${esc(lineId)}" class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
     const stage = stageById.get(ctx.stageId);
     const linked = side === "new" && stage ? stage.insights.filter(ins => ins.codeTarget?.status !== "needs-review" && ins.codeTarget?.path === ctx.path && ins.codeTarget.startLine === lineNo) : [];
-    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => codeInsightButton(stage, ins, ins.title, true)).join("")}</div>` : "";
+    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => inlineCodeInsightButton(stage, ins)).join("")}</div>` : "";
     return ownershipNotice + insights + row + lineThreadRow(lineId);
   }
   function drowHtml(r, lang, ctx) {
@@ -2615,25 +2537,6 @@ import { renderPage } from "./views/page";
     finally { reviewListBusy = false; updateReviewList(); }
   }
 
-  function hero() {
-    const totalFiles = data.stages.reduce((a, s) => a + s.files.length, 0);
-    const totalNodes = data.stages.reduce((a, s) => a + s.nodes.length, 0);
-    return `<section class="hero">
-      <h1>${esc(data.title)}</h1>
-      <p class="hero-sum">${esc(data.summary)}</p>
-      <div class="hero-line">
-        <span><b>${data.stages.length}</b> stages</span>
-        <span><b>${totalNodes}</b> steps</span>
-        <span><b>${totalFiles}</b> files</span>
-        <span class="hero-skill-version">Viewer version: ${esc(data.viewerReleaseVersion || "Unknown")}</span>
-        <span class="hero-target">${esc(data.targetBranch)} ← ${esc(data.baseRevision.slice(0, 7))}</span>
-      </div>
-    </section>`;
-  }
-
-  function specificationPanel() {
-    return requirements.map(renderSpecification).join("");
-  }
   const SOURCE_LABEL = {
     "azure-devops": "Azure DevOps", github: "GitHub", url: "Link", local: "Local",
   };
@@ -2646,132 +2549,74 @@ import { renderPage } from "./views/page";
       return u.protocol === "http:" || u.protocol === "https:" ? u.href : "";
     } catch { return ""; }
   }
-  function renderSource(source) {
-    if (!source || !source.kind) return "";
+  function sourceModel(source) {
+    if (!source || !source.kind) return null;
     const label = SOURCE_LABEL[source.kind] || source.kind;
-    const ref = source.reference || "";
-    const href = safeHref(source.url);
-    const text = ref || label;
-    const inner = href
-      ? `<a class="req-src-ref" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="${esc(href)}">${esc(text)}</a>`
-      : `<span class="req-src-ref" data-tooltip-focus title="${esc(text)}">${esc(text)}</span>`;
-    return `<p class="req-source"><span class="req-src-kind">${esc(label)}</span>${inner}</p>`;
+    return { label, text: source.reference || label, href: safeHref(source.url) };
   }
-  function renderSpecification(req) {
-    const open = Boolean(state.specificationOpen && state.specificationOpen[req.id]);
-    return `<details class="specification" ${open ? "open" : ""} data-req data-req-id="${esc(req.id)}">
-      <summary>
-        <span class="req-mark">✦</span>
-        <div><span class="eyebrow">Specification · ${esc(req.id)}</span><h2>${esc(req.title)}</h2></div>
-        <span class="req-more">${req.acceptance.length} acceptance criteria</span>
-      </summary>
-      <div class="req-body">
-        <p>${esc(req.summary)}</p>
-        ${renderSource(req.source)}
-        <ol class="ac-list">${req.acceptance.map((a) => {
-      const st = acceptanceStatus(`${req.id}#${a.id}`);
-      const label = st.key === "approved" ? "Approved" : st.key === "uncovered" ? "Not covered" : "In review";
-      const meta = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
-      return `<li class="ac-item ac-${st.key}" data-ac="${esc(`${req.id}#${a.id}`)}"><span class="ac-id">${esc(a.id)}</span><span class="ac-text">${esc(a.text)}</span><span class="ac-status" data-tooltip-focus title="${esc(meta)}">${label}</span></li>`;
-    }).join("")}</ol>
-      </div>
-    </details>`;
+  function specificationModel(req) {
+    return {
+      id: req.id, title: req.title, summary: req.summary,
+      open: Boolean(state.specificationOpen && state.specificationOpen[req.id]),
+      source: sourceModel(req.source),
+      criteria: req.acceptance.map((a) => {
+        const ref = `${req.id}#${a.id}`, st = acceptanceStatus(ref);
+        return { id: a.id, ref, text: a.text, status: st.key,
+          stages: st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage" };
+      }),
+    };
   }
 
-  function stageNode(stage, node, nodeIndex, stageIndex) {
-    const approval = nodeApprovalState(stage, node);
-    const done = approval === "approved";
-    const stale = approval === "stale";
-    return `<details class="node ${done ? "is-approved" : ""} ${stale ? "is-stale" : ""}" data-node="${esc(node.id)}">
-      <summary>
-        <span class="node-check" title="${stale ? "One or more file approvals are stale" : ""}">${stale ? "!" : done ? "✓" : ""}</span>
-        <span class="node-ix">${stageIndex + 1}.${nodeIndex + 1}</span>
-        <div class="node-head">
-          <h3>${esc(node.title)}</h3>
-          <p>${esc(node.description)}</p>
-          ${reasoningSummary(stage, node)}
-        </div>
-        <span class="node-caret">${caret()}</span>
-      </summary>
-      <div class="node-body">
-        ${nodeReasoning(stage, node)}
-        ${nodeFilesPanel(stage, node)}
-        <div class="node-foot">${noteCluster("node", node.id, stage.id)}</div>
-        ${threadInline(node.id, "node", stage.id)}
-      </div>
-    </details>`;
+  function nodeModel(stage, node, nodeIndex, stageIndex) {
+    const linked = stage.insights.filter((i) => (i.nodeRefs || []).includes(node.id));
+    const list = insightSort(linked);
+    return {
+      id: node.id, stageId: stage.id, index: `${stageIndex + 1}.${nodeIndex + 1}`,
+      title: node.title, description: node.description,
+      approval: nodeApprovalState(stage, node),
+      legend: reasoningLegendModel(linked),
+      insights: list.map((ins) => insightTagModel(stage, ins, node)),
+      insightThreads: list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => threadInline(insightKey(stage.id, ins.collection, ins.id), "insight")).join(""),
+      files: nodeFilesModel(stage, node),
+      notes: notesToggleModel("node", node.id, stage.id),
+      thread: threadInline(node.id, "node", stage.id),
+    };
   }
 
-  function stageSection(stage, i) {
-    const open = Boolean(state.openStages[stage.id]);
+  function stageModel(stage, i) {
     const fileApprovals = stageFileApprovals(stage);
-    const filesDone = fileApprovals.filter(approved).length;
-    const nodesDone = stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length;
-    const done = stageApproved(stage);
-    const acIds = stageAcceptanceRefs(stage);
     const deps = (stage.dependsOn || []).map((depId) => {
       const s = stageById.get(depId);
-      return {
-        id: depId,
-        number: stageNumberById.get(depId),
-        title: s ? s.title : depId,
-      };
+      return { id: depId, number: stageNumberById.get(depId), title: s ? s.title : depId };
     });
-    const depsMeta = deps.length
-      ? `<span class="sm-deps" data-tooltip-focus title="Depends on ${esc(deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "))}"><span class="sm-deps-label">Depends on</span>${deps.map((d) => `<span class="dep-chip" title="${esc(d.title)}">${d.number ? String(d.number).padStart(2, "0") : esc(d.id)}</span>`).join("")}</span>`
-      : "";
-    const number = String(i + 1).padStart(2, "0");
-    return `<section class="stage ${done ? "is-approved" : ""} ${open ? "is-open" : ""}" data-stage="${esc(stage.id)}" aria-labelledby="stage-title-${esc(stage.id)}">
-      <div class="stage-card">
-      <div class="stage-bar">
-        <button class="stop ${done ? "is-approved" : ""}" data-action="toggle-stage" data-id="${esc(stage.id)}" type="button" aria-expanded="${open}">
-          <span class="stop-num">${done ? "✓" : number}</span>
-        </button>
-        <div class="stage-head">
-          <button class="stage-title" data-action="toggle-stage" data-id="${esc(stage.id)}" type="button" aria-expanded="${open}">
-            <span class="stage-kicker">Stage ${number}</span>
-            <h2 id="stage-title-${esc(stage.id)}">${esc(stage.title)}</h2>
-          </button>
-          <p class="stage-sum">${esc(stage.summary)}</p>
-          <p class="rationale"><span class="rationale-label" data-tooltip-focus title="${esc(stage.rationale)}">Why this stage</span></p>
-          <div class="stage-meta">
-            <span>${nodesDone}/${stage.nodes.length} steps</span>
-            <span>${filesDone}/${fileApprovals.length} file reviews</span>
-            ${stage.insights.length ? `<span>${stage.insights.filter((ins) => insightReviewState(stage, ins) === "reviewed").length}/${stage.insights.length} insights reviewed</span>` : ""}
-            ${depsMeta}
-            ${acIds.length ? `<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${acIds.map(acChip).join("")}</span>` : ""}
-          </div>
-        </div>
-        <div class="stage-approve">${stageNoteCluster(stage.id)}${approveBtn("stage", stage.id, "sm")}</div>
-      </div>
-      ${threadInline(stage.id, "stage")}
-      <div class="stage-body" ${open ? "" : "inert"}>
-        <div class="stage-children-head">
-          <span class="eyebrow">Steps in stage ${number}</span>
-          <span class="stage-children-count">${nodesDone}/${stage.nodes.length} approved</span>
-        </div>
-        <div class="nodes">${stage.nodes.map((n, ni) => stageNode(stage, n, ni, i)).join("")}</div>
-        <div class="stage-foot">
-          <span class="stage-foot-label">End of stage ${number}</span>
-          ${approveBtn("stage", stage.id, "", `stage ${number}`)}
-        </div>
-      </div>
-      </div>
-    </section>`;
+    return {
+      id: stage.id, number: String(i + 1).padStart(2, "0"), title: stage.title, summary: stage.summary, rationale: stage.rationale,
+      open: Boolean(state.openStages[stage.id]), approved: stageApproved(stage),
+      nodesApproved: stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length, nodeCount: stage.nodes.length,
+      filesApproved: fileApprovals.filter(approved).length, fileCount: fileApprovals.length,
+      insightsReviewed: stage.insights.filter((ins) => insightReviewState(stage, ins) === "reviewed").length, insightCount: stage.insights.length,
+      dependencies: deps.map((d) => ({ text: d.number ? String(d.number).padStart(2, "0") : d.id, title: d.title })),
+      dependencySummary: deps.map((d) => d.number ? `Stage ${String(d.number).padStart(2, "0")}: ${d.title}` : d.title).join(", "),
+      acceptance: stageAcceptanceRefs(stage).map(acceptanceChipModel),
+      notes: notesToggleModel("stage", stage.id),
+      approve: stageApproveModel(stage),
+      thread: threadInline(stage.id, "stage"),
+      nodes: stage.nodes.map((n, ni) => nodeModel(stage, n, ni, i)),
+    };
   }
 
-  function storyColumn() {
-    return `<div class="story">
-      ${hero()}
-      ${specificationPanel()}
-      <div class="spine">
-        ${data.stages.map((s, i) => stageSection(s, i)).join("")}
-      </div>
-      <footer class="story-end">
-        <span class="eyebrow">End of review</span>
-        <p>${approvedCount() === reviewable() ? "Every stage, step, and file review has your approval." : `${reviewable() - approvedCount()} of ${reviewable()} items still await your review.`}</p>
-      </footer>
-    </div>`;
+  function storyModel() {
+    return {
+      hero: {
+        title: data.title, summary: data.summary, stages: data.stages.length,
+        steps: data.stages.reduce((a, s) => a + s.nodes.length, 0),
+        files: data.stages.reduce((a, s) => a + s.files.length, 0),
+        viewerVersion: data.viewerReleaseVersion || "Unknown", targetBranch: data.targetBranch, baseRevision: data.baseRevision.slice(0, 7),
+      },
+      specifications: requirements.map(specificationModel),
+      stages: data.stages.map(stageModel),
+      approved: approvedCount(), reviewable: reviewable(),
+    };
   }
 
   /* ---- side panels ------------------------------------------------------ */
@@ -2933,19 +2778,6 @@ import { renderPage } from "./views/page";
     return { text: t, title: t };
   }
   /* ---- render ----------------------------------------------------------- */
-  // Each open file's diff follows its row in the story column.
-  function injectOpenDiffs(root) {
-    for (const id of Object.keys(state.activeFiles)) {
-      const nodeId = activeFileNodeId(id), entry = fileById.get(id);
-      const row = nodeId && fileRowElement(id, nodeId, root);
-      if (!row || !entry) continue;
-      row.classList.add("is-open");
-      const holder = document.createElement("div");
-      holder.className = "cinema-diff";
-      holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: nodeId }) + fileNotesBlock(id);
-      row.after(holder);
-    }
-  }
   function render() {
     if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
     renderPage(app, {
@@ -2956,9 +2788,9 @@ import { renderPage } from "./views/page";
         roundCount: roundNotice ? roundNotice.count : null,
         refresh: refreshNotice,
       },
-      story: { markup: storyColumn(), prepare: injectOpenDiffs },
+      story: storyModel(),
       coverage: coverageModel(),
-      notes: { markup: notesPanel() },
+      notes: notesPanel(),
     });
     enhance();
     if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
@@ -3766,9 +3598,7 @@ import { renderPage } from "./views/page";
     persist();
     const stageEl = app.querySelector(`.stage[data-stage="${cssEsc(id)}"]`);
     const body = stageEl && stageEl.querySelector(".stage-body");
-    if (!stageEl) { render(); return; }
-    stageEl.querySelectorAll('[data-action="toggle-stage"]').forEach((b) => b.setAttribute("aria-expanded", String(open)));
-    if (motionReduced() || !body) { render(); return; }
+    if (!stageEl || !body || motionReduced()) { render(); return; }
     const start = body.getBoundingClientRect().height;
     render();
     const end = body.getBoundingClientRect().height;
@@ -4119,7 +3949,6 @@ import { renderPage } from "./views/page";
       const row = fileRowElement(fid);
       const entry = fileById.get(fid);
       if (row && entry) {
-        row.classList.add("is-open");
         const holder = cinemaHolder(fid);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
           pendingDiffs.push(entry);

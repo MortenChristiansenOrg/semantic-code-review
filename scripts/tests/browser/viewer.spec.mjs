@@ -2987,3 +2987,180 @@ test('agent questions keep the draft, focus and caret across live updates and sh
   await page.locator('[data-action="show-agent-questions"]').click();
   await expect(answer).toHaveValue('Draft answer');
 });
+
+test('steps keep their disclosure, focus and open diff across live updates that add and reorder steps', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const data = fixture();
+  const errors = await mount(page, data, { openStages: { first: true } });
+  await openFile(page, 'first-one');
+  const stage = page.locator('.stage[data-stage="first"]');
+  const one = page.locator('details[data-node="first-one"]');
+  const two = page.locator('details[data-node="first-two"]');
+  const settled = (details) => expect.poll(() => details.evaluate((el) => el.dataset.animating ?? null)).toBeNull();
+  await settled(one);
+  await expect(two).toHaveJSProperty('open', false);
+  await page.evaluate(() => { window.retained = [...document.querySelectorAll('.stage, details.node, .cinema-diff, .diff-grid')]; });
+  await two.locator('summary').focus();
+  // A new step arrives before the existing ones while another is renamed.
+  data.stages[0].nodes.unshift({ id: 'first-zero', title: 'Step zero', description: 'A new step' });
+  data.stages[0].nodes[1].title = 'Step one, renamed';
+  data.viewerRevision = 'reordered';
+  await expect(one.locator('h3')).toHaveText('Step one, renamed');
+  await expect(stage.locator('details.node')).toHaveCount(3);
+  await expect(stage.locator('details.node').first()).toHaveAttribute('data-node', 'first-zero');
+  await expect(page.locator('details[data-node="first-zero"]')).toHaveJSProperty('open', false);
+  await expect(one).toHaveJSProperty('open', true);
+  await expect(two).toHaveJSProperty('open', false);
+  await expect(one.locator('.node-ix')).toHaveText('1.2');
+  await expect(two.locator('summary')).toBeFocused();
+  await expect(one.locator('.cinema-diff')).toBeVisible();
+  await expect(one.locator('.frow')).toHaveClass(/is-open/);
+  expect(await page.evaluate(() => window.retained.every((el) => el.isConnected))).toBe(true);
+
+  // Opening and closing animate, and the result survives the next update.
+  expect(await two.locator('summary').evaluate((summary) => { summary.click(); return summary.parentElement.getAnimations().filter((animation) => animation.constructor === Animation).length; })).toBe(1);
+  await expect(two).toHaveJSProperty('open', true);
+  await settled(two);
+  expect(await one.locator('summary').evaluate((summary) => { summary.click(); return summary.parentElement.getAnimations().filter((animation) => animation.constructor === Animation).length; })).toBe(1);
+  await settled(one);
+  await expect(one).toHaveJSProperty('open', false);
+  data.stages[0].nodes[2].title = 'Step two, renamed';
+  data.viewerRevision = 'toggled';
+  await expect(two.locator('h3')).toHaveText('Step two, renamed');
+  await expect(one).toHaveJSProperty('open', false);
+  await expect(two).toHaveJSProperty('open', true);
+  await expect(one.locator('.cinema-diff')).toHaveCount(1);
+
+  // Closing the stage keeps its steps' disclosures for when it opens again.
+  await page.locator('.stage-title[data-id="first"]').click();
+  await expect(stage).not.toHaveClass(/is-open/);
+  await expect(stage.locator('.stage-body')).toHaveAttribute('inert', '');
+  for (const toggle of await stage.locator('[data-action="toggle-stage"]').all()) await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  data.title = 'Review fixes, updated';
+  data.viewerRevision = 'collapsed';
+  await expect(page.locator('.hero h1')).toHaveText('Review fixes, updated');
+  await saveAction(page, () => page.locator('.stop[data-id="first"]').click(), (state) => state.openStages?.first === true);
+  await expect(stage).toHaveClass(/is-open/);
+  await expect(stage.locator('.stage-body')).not.toHaveAttribute('inert');
+  for (const toggle of await stage.locator('[data-action="toggle-stage"]').all()) await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(two).toHaveJSProperty('open', true);
+  await expect(one).toHaveJSProperty('open', false);
+  expect(errors).toEqual([]);
+});
+
+test('an open file shows its diff and notes after its own row and keeps them across updates', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data, { openStages: { first: true } });
+  await openFile(page, 'first-one');
+  const one = page.locator('details[data-node="first-one"]');
+  const two = page.locator('details[data-node="first-two"]');
+  expect(await one.locator('.frow-wrap').evaluate((wrap) => [...wrap.children].map((el) => el.classList[0]))).toEqual(['frow', 'cinema-diff']);
+  await expect(one.locator('.frow-wrap')).toHaveClass(/is-open-wrap/);
+  await expect(one.locator('.cinema-diff > .file-notes')).toHaveCount(1);
+  await expect(two.locator('.cinema-diff')).toHaveCount(0);
+  // A shared file opens in the step it was clicked from, and only there.
+  await two.locator('summary').click();
+  await expect(two.locator('.frow-open')).toHaveAttribute('data-node-id', 'first-two');
+  await two.locator('.frow-open').click();
+  await expect(two.locator('.cinema-diff')).toBeVisible();
+  await expect(one.locator('.cinema-diff')).toHaveCount(0);
+  await expect(one.locator('.frow')).not.toHaveClass(/is-open|is-active/);
+  await expect(two.locator('.frow')).toHaveClass(/is-open/);
+  await expect(two.locator('.frow')).toHaveClass(/is-active/);
+  await two.locator('.file-notes .thread-add').click();
+  const editor = two.locator('.file-notes textarea[name="nc-body"]');
+  await editor.fill('A draft beside the diff');
+  await page.evaluate(() => { window.grid = document.querySelector('.cinema-diff .diff-grid'); });
+  data.stages[0].nodes[1].title = 'Step two, renamed';
+  data.viewerRevision = 'renamed';
+  await expect(two.locator('h3')).toHaveText('Step two, renamed');
+  expect(await page.evaluate(() => window.grid.isConnected && window.grid === document.querySelector('.cinema-diff .diff-grid'))).toBe(true);
+  await expect(editor).toHaveValue('A draft beside the diff');
+  await expect(editor).toBeFocused();
+  await page.locator('.note-compose [data-action="compose-cancel"]').click();
+  await two.locator('.frow-open').click();
+  await expect(two.locator('.cinema-diff')).toHaveCount(0);
+  await expect(two.locator('.frow')).not.toHaveClass(/is-open|is-active/);
+  await expect(two.locator('.frow-wrap')).not.toHaveClass(/is-open-wrap/);
+  expect(errors).toEqual([]);
+});
+
+test('artifact text stays text in the header, specifications, stages, steps, insights and file groups', async ({ page }) => {
+  const evil = '"><img src=x onerror="window.injected=1"><b>bold</b>\r';
+  const data = fixture();
+  data.title = `Title ${evil}`;
+  data.summary = `Summary ${evil}`;
+  data.requirements = [{ id: 'story', title: `Spec ${evil}`, summary: `Spec summary ${evil}`,
+    source: { kind: 'url', reference: `Ref ${evil}`, url: 'javascript:window.injected=1' }, acceptance: [{ id: 'ac-1', text: `Criterion ${evil}` }] }];
+  const [first, second] = data.stages;
+  Object.assign(first, { title: `Stage ${evil}`, summary: `Stage summary ${evil}`, rationale: `Why ${evil}`, specificationRefs: ['story#ac-1'] });
+  second.dependsOn = ['first', `missing ${evil}`];
+  Object.assign(first.nodes[0], { title: `Step ${evil}`, description: `Description ${evil}` });
+  first.files[0].project = `Project ${evil}`;
+  first.insights = [{ id: 'decision-1', collection: 'insights', type: 'decision', title: `Insight ${evil}`, body: `Body ${evil}`, meta: `Meta ${evil}`, nodeRefs: ['first-one'] }];
+  const errors = await mount(page, data, { openStages: { first: true, second: true } });
+  await page.locator('.specification summary').click();
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  const normalized = (text) => text.replace(/\s+/g, ' ').trim();
+  await expect(page.locator('.hero h1')).toHaveText(normalized(`Title ${evil}`));
+  await expect(page.locator('.hero-sum')).toHaveText(normalized(`Summary ${evil}`));
+  await expect(page.locator('.specification h2')).toHaveText(normalized(`Spec ${evil}`));
+  await expect(page.locator('.req-src-ref')).toHaveText(normalized(`Ref ${evil}`));
+  await expect(page.locator('a.req-src-ref, a[href^="javascript"]')).toHaveCount(0);
+  await expect(page.locator('.ac-text')).toHaveText(normalized(`Criterion ${evil}`));
+  await expect(page.locator('.stage[data-stage="first"] .stage-title h2')).toHaveText(normalized(`Stage ${evil}`));
+  await expect(page.locator('.stage[data-stage="first"] .stage-sum')).toHaveText(normalized(`Stage summary ${evil}`));
+  await expect(page.locator('.stage[data-stage="first"] .rationale-label')).toHaveAttribute('data-tooltip', `Why ${evil}`);
+  await expect(page.locator('.stage[data-stage="first"] .ac-chip')).toHaveAttribute('data-title', `Criterion ${evil}`);
+  await expect(page.locator('.stage[data-stage="second"] .dep-chip')).toHaveText(['01', normalized(`missing ${evil}`)]);
+  await expect(one.locator('h3')).toHaveText(normalized(`Step ${evil}`));
+  await expect(one.locator('.node-head p')).toHaveText(normalized(`Description ${evil}`));
+  await expect(one.locator('.tag-gist')).toHaveText(normalized(`Insight ${evil}`));
+  await expect(one.locator('.tag-face')).toHaveAttribute('data-body', `Body ${evil}`);
+  await expect(one.locator('.tag-face')).toHaveAttribute('data-meta', `Meta ${evil}`);
+  await expect(one.locator('.insight-review')).toHaveAccessibleName(normalized(`Reviewed: Insight ${evil}`));
+  await expect(one.locator('.fg-name')).toHaveText(normalized(`Project ${evil}`));
+  await expect(one.locator('.fg-approve')).toHaveAttribute('data-group', `Project ${evil}`);
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('#app b', { hasText: 'bold' })).toHaveCount(0);
+  await saveAction(page, () => one.locator('.fg-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+test('note controls keep their order and tooltips follow approval changes', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('stage-thread'), thread('node-thread', 'open', { kind: 'node', stageId: 'first', nodeId: 'first-one', label: 'Step one' })];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const stage = page.locator('.stage[data-stage="first"]');
+  const one = page.locator('details[data-node="first-one"]');
+  const two = page.locator('details[data-node="first-two"]');
+  // The stage's notes toggle comes before adding a note, and both before its approval.
+  expect(await stage.locator('.stage-approve').evaluate((el) => [...el.querySelectorAll('.notes-toggle, .comment, .approve')].map((child) => child.classList[0]))).toEqual(['notes-toggle', 'comment', 'approve']);
+  // A step offers adding a note before its notes toggle.
+  expect(await one.locator('.node-foot .note-cluster').evaluate((el) => [...el.children].map((child) => child.classList[0]))).toEqual(['comment', 'notes-toggle']);
+  const stageApproval = stage.locator('.stage-approve .approve');
+  await expect(stageApproval).toHaveAttribute('data-tooltip', 'Approve every step before approving the stage');
+  await one.locator('summary').click();
+  await two.locator('summary').click();
+  for (const details of [one, two]) await saveAction(page, () => details.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', details === one ? 'first-one' : 'first-two')]);
+  await expect(stageApproval).toBeEnabled();
+  await expect(stageApproval).not.toHaveAttribute('data-tooltip');
+  await expect(one.locator('summary')).not.toHaveAttribute('data-tooltip');
+  // The file changes, so the step's approval turns stale and says so.
+  data.stages[0].files[0].revision = 'changed-revision';
+  data.viewerRevision = 'changed-file';
+  await expect(one).toHaveClass(/is-stale/);
+  await expect(one.locator('summary')).toHaveAttribute('data-tooltip', 'One or more file approvals are stale');
+  await expect(one.locator('.node-check')).toHaveAttribute('data-tooltip', 'One or more file approvals are stale');
+  await expect(stageApproval).toHaveAttribute('data-tooltip', 'Approve every step before approving the stage');
+  await one.locator('summary').hover();
+  await expect(page.locator('[role="tooltip"]')).toContainText('One or more file approvals are stale');
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => state.approvals?.[approvalKey('first', 'first-one')]?.rev?.includes('changed-revision'));
+  await expect(one).not.toHaveClass(/is-stale/);
+  await expect(one.locator('summary')).not.toHaveAttribute('data-tooltip');
+  await expect(one.locator('.node-check')).not.toHaveAttribute('data-tooltip');
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});

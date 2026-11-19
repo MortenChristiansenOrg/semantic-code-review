@@ -671,14 +671,6 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 1);
   assert.match(
     app,
-    /<div class="stage-approve">\$\{stageNoteCluster\(stage\.id\)\}\$\{approveBtn\("stage", stage\.id, "sm"\)\}<\/div>/,
-  );
-  assert.match(
-    app,
-    /<div class="note-cluster">\$\{notesToggle\("stage", id\)\}\$\{commentBtn\("stage", id\)\}<\/div>/,
-  );
-  assert.match(
-    app,
     /t\.target\.nodeId === id && t\.target\.stageId === stageId/,
   );
   assert.match(
