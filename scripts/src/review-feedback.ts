@@ -24,6 +24,7 @@ import {
   SPECIFICATION_SCHEMA_ID,
   STAGE_SCHEMA_ID,
   THREAD_SCHEMA_ID,
+  isFeedbackId,
   type Comment,
   type CommentAuthor,
   type FeedbackManifest,
@@ -1042,12 +1043,10 @@ function recordReplies(paths: FeedbackPaths, replies: AgentReply[]): void {
   if (replies.length) updateAgentState(paths.reviewId, (state, now) => recordAgentReplies(state, now, replies));
 }
 
-const ID_PATTERN = /^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
 /** Shows a question that is not about one thread in the viewer; its answer returns through `feedback`. */
 function askReviewer(paths: FeedbackPaths, options: Options): void {
   const id = requiredOption(options, "id");
-  if (id.length > 80 || !ID_PATTERN.test(id)) fail("--id must be a lowercase hyphenated identifier of at most 80 characters.");
+  if (!isFeedbackId(id)) fail("--id must be a lowercase hyphenated identifier of at most 80 characters.");
   const body = requiredOption(options, "body").trim();
   if (!body || body.length > 4000) fail("--body must contain 1 to 4000 characters.");
   const choices = repeatedOption(options, "choice").map((choice) => choice.trim());

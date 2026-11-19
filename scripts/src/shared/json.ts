@@ -45,8 +45,11 @@ export function readJson(file: string): unknown {
     fail(`${file}: UTF-8 byte-order marks are not allowed.`);
   }
 
+  // jsonc-parser checks the syntax and finds duplicate keys. It builds objects
+  // by assignment, which drops "__proto__" keys, so the value comes from the
+  // native parser: schema validation must see every property.
   const parseErrors: ParseError[] = [];
-  const value: unknown = jsonc.parse(text, parseErrors, {
+  const tree = jsonc.parseTree(text, parseErrors, {
     allowTrailingComma: false,
     disallowComments: true,
   });
@@ -61,18 +64,15 @@ export function readJson(file: string): unknown {
   }
 
   const duplicateErrors: string[] = [];
-  findDuplicateKeys(
-    jsonc.parseTree(text, [], {
-      allowTrailingComma: false,
-      disallowComments: true,
-    }),
-    file,
-    duplicateErrors,
-  );
+  findDuplicateKeys(tree, file, duplicateErrors);
   if (duplicateErrors.length > 0) {
     fail(duplicateErrors.join("\n"));
   }
-  return value;
+  try {
+    return parseJson(text);
+  } catch (error) {
+    fail(`${file}: invalid JSON: ${errorMessage(error)}.`);
+  }
 }
 
 export function writeJson(file: string, value: unknown): void {

@@ -51,7 +51,7 @@ export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.j
 import { refreshRemoteReview } from "./shared/remote-review.js";
 import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
-import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
+import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
@@ -320,9 +320,31 @@ function manifestImplementationId(value: unknown): string {
   return implementationId;
 }
 
-/** A stored thread file, parsed like the revision snapshot parses it. */
+/** A file's text, or undefined when it does not exist. */
+function readOptionalText(file: string): string | undefined {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/** Stored thread text parsed like the revision snapshot parses it, or
+ * undefined when it is not JSON (for example while it is being repaired). */
+function parseStoredThread(text: string): unknown {
+  try {
+    return parseJson(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A stored thread file, or undefined when it is missing or not JSON. The
+ * viewer skips such a thread like one that fails its schema. */
 function readStoredThread(file: string): unknown {
-  return parseJson(fs.readFileSync(file, "utf8"));
+  const text = readOptionalText(file);
+  return text === undefined ? undefined : parseStoredThread(text);
 }
 
 /** The viewer lists and counts a stored thread only when it passes its schema,
@@ -338,10 +360,11 @@ function threadAwaitsAgent(value: unknown): boolean {
   return thread !== undefined && awaitsAgentReply(thread);
 }
 
-/** Thread IDs listed by a feedback manifest that may be mid-write. */
+/** Thread IDs listed by a feedback manifest that may be mid-write. IDs name
+ * thread files, so an ID that breaks the feedback ID rules is skipped. */
 function listedThreadIds(manifest: unknown): string[] {
   const threads = fieldsOf(manifest).threads;
-  return isStringArray(threads) ? threads : [];
+  return isStringArray(threads) ? threads.filter(isFeedbackId) : [];
 }
 
 /** What the browser polls to notice artifact or feedback changes. */
@@ -374,8 +397,11 @@ function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerR
     files.push(feedbackManifestPath);
     for (const threadId of listedThreadIds(readJson(feedbackManifestPath))) {
       const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
+      const text = readOptionalText(file);
+      // A missing thread leaves the hashed files, so restoring it changes the revision.
+      if (text === undefined) continue;
       files.push(file);
-      if (threadAwaitsAgent(readStoredThread(file))) awaitingAgentReplies += 1;
+      if (threadAwaitsAgent(parseStoredThread(text))) awaitingAgentReplies += 1;
     }
   }
   const hash = createHash("sha256");
@@ -412,15 +438,24 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
     const scan = force || now() - lastScan >= 10_000;
     const seen = new Set<string>();
     let changed = false;
-    const read = (file: string): unknown => {
-      const stat = fs.statSync(file, { bigint: true });
+    // A thread may be missing or not JSON; it reads as undefined. A missing file
+    // leaves the hashed files and unparsable text is still hashed, so restoring
+    // or repairing either changes the revision.
+    const read = (file: string, thread = false): unknown => {
+      let stat: fs.BigIntStats;
+      try {
+        stat = fs.statSync(file, { bigint: true });
+      } catch (error) {
+        if (thread && errorCode(error) === "ENOENT") return undefined;
+        throw error;
+      }
       const stamp = `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
       const cached = documents.get(file);
       seen.add(file);
       if (!scan && cached && cached.stamp === stamp) return cached.value;
       const text = readFile(file);
       if (!cached || cached.text !== text) changed = true;
-      const document = { stamp, text, value: parseJson(text) };
+      const document = { stamp, text, value: thread ? parseStoredThread(text) : parseJson(text) };
       nextDocuments.set(file, document);
       return document.value;
     };
@@ -434,7 +469,7 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
       for (const file of [...listJsonFiles(path.join(semantic, "requirements")), ...listJsonFiles(path.join(semantic, "stages"))]) read(file);
       if (fs.existsSync(path.join(feedback, "manifest.json"))) {
         for (const id of listedThreadIds(read(path.join(feedback, "manifest.json")))) {
-          if (threadAwaitsAgent(read(path.join(feedback, "threads", `${id}.json`)))) awaitingAgentReplies++;
+          if (threadAwaitsAgent(read(path.join(feedback, "threads", `${id}.json`), true))) awaitingAgentReplies++;
         }
       }
     });

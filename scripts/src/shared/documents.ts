@@ -12,6 +12,14 @@ export const STAGE_ORGANIZATION_SCHEMA_ID = "https://semantic-code-review.dev/sk
 export const FEEDBACK_MANIFEST_SCHEMA_ID = "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
 export const THREAD_SCHEMA_ID = "https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json";
 
+const FEEDBACK_ID_PATTERN = /^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** The feedback schema's identifier rule (feedback common.schema.json $defs/id).
+ * Thread IDs name files, so check one before building a path from it. */
+export function isFeedbackId(id: string): boolean {
+  return id.length <= 80 && FEEDBACK_ID_PATTERN.test(id);
+}
+
 // --- Implementation artifact (standard/v0.1/schema) ---
 
 export interface ImplementationManifest {

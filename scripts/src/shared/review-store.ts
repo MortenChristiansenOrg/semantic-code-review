@@ -168,7 +168,9 @@ function parseRemote(value: unknown): RemoteReview | undefined {
 function parseViewer(value: unknown): ViewerRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { port, processId, viewerVersion, skillDirectory } = value;
-  if (typeof port !== "number" || typeof processId !== "number" || typeof viewerVersion !== "string" || typeof skillDirectory !== "string") return undefined;
+  // An out-of-range port would abort viewer startup instead of letting it choose one.
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535 ||
+    typeof processId !== "number" || typeof viewerVersion !== "string" || typeof skillDirectory !== "string") return undefined;
   return { port, processId, viewerVersion, skillDirectory };
 }
 /** Narrows a stored review.json record; fails when a required field is missing or malformed. */

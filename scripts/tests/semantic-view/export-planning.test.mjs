@@ -22,6 +22,7 @@ const moduleUrl = pathToFileURL(
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
+  createSnapshotReader,
   createViewerDataSource,
   exportFeedback,
   exportFeedbackReplies,
@@ -1039,4 +1040,58 @@ test("a feedback thread that fails its schema does not hide the other threads", 
   const repaired = implementationData();
   assert.deepEqual(repaired.feedback.map((thread) => thread.id), ["valid", "damaged"]);
   assert.equal(repaired.awaitingAgentReplies, 2);
+});
+
+test("a missing or truncated feedback thread does not take down the viewer and is noticed once restored", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  for (const id of ["valid", "damaged"]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-comment`, "--body", "Check this.",
+      "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  }
+  const file = repository.feedbackPath("threads", "damaged.json");
+  const original = fs.readFileSync(file, "utf8");
+  const dataSource = createViewerDataSource(repository.root);
+  const implementationData = () => JSON.parse(dataSource.implementationDataScript().match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const reader = createSnapshotReader(repository.root);
+  const snapshots = () => {
+    const [polled, read] = [viewerSnapshot(repository.root), reader()];
+    assert.equal(polled.awaitingAgentReplies, read.awaitingAgentReplies);
+    return { polled, read };
+  };
+  const healthy = snapshots();
+  assert.equal(healthy.polled.awaitingAgentReplies, 2);
+
+  for (const damage of [() => repository.writeAbsolute(file, "{"), () => fs.rmSync(file)]) {
+    damage();
+    const data = implementationData();
+    assert.deepEqual(data.feedback.map((thread) => thread.id), ["valid"]);
+    assert.equal(data.awaitingAgentReplies, 1);
+    assert.equal(data.stages.length, 1);
+    const damaged = snapshots();
+    assert.equal(damaged.polled.awaitingAgentReplies, 1);
+    assert.notEqual(damaged.polled.revision, healthy.polled.revision);
+    assert.notEqual(damaged.read.revision, healthy.read.revision);
+
+    repository.writeAbsolute(file, original);
+    const restored = snapshots();
+    assert.equal(restored.polled.revision, healthy.polled.revision);
+    assert.equal(restored.read.revision, healthy.read.revision);
+    assert.deepEqual(implementationData().feedback.map((thread) => thread.id), ["valid", "damaged"]);
+  }
+});
+
+test("viewer snapshots skip listed thread IDs that are not feedback IDs", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "valid", "--comment-id", "valid-comment", "--body", "Check this.",
+    "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  // A thread outside the threads directory, reachable only through a path in the ID.
+  fs.copyFileSync(repository.feedbackPath("threads", "valid.json"), repository.feedbackPath("outside.json"));
+  const manifestFile = repository.feedbackPath("manifest.json");
+  const manifest = repository.readAbsoluteJson(manifestFile);
+  repository.writeAbsolute(manifestFile, JSON.stringify({ ...manifest, threads: ["valid", "../outside", "../missing", "Valid"] }));
+
+  assert.equal(viewerSnapshot(repository.root).awaitingAgentReplies, 1);
+  assert.equal(createSnapshotReader(repository.root)().awaitingAgentReplies, 1);
 });

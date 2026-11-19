@@ -495,18 +495,25 @@ function typedBoundaryViolations(relative, text) {
   const findings = [];
   const report = (node, reason) => findings.push(`${relative}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${reason}`);
   const unwrap = (node) => ts.isParenthesizedExpression(node) ? unwrap(node.expression) : node;
-  const isJsonParse = (node) => {
-    const callee = unwrap(node);
-    const member = ts.isPropertyAccessExpression(callee) ? callee.name.text
-      : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : undefined;
-    const receiver = member === "parse" ? unwrap(callee.expression) : undefined;
-    return receiver !== undefined && ts.isIdentifier(receiver) && receiver.text === "JSON";
+  const memberName = (node) => ts.isPropertyAccessExpression(node) ? node.name.text
+    : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : undefined;
+  // JSON itself or a qualified reference to it such as globalThis.JSON or window["JSON"].
+  const isJson = (node) => {
+    const expression = unwrap(node);
+    return ts.isIdentifier(expression) ? expression.text === "JSON" : memberName(expression) === "JSON";
   };
+  // Any reference to JSON's parse member, called or not, or destructured from JSON.
+  const isJsonParse = (node) => (memberName(node) === "parse" && isJson(node.expression)) ||
+    (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer !== undefined && isJson(node.initializer) &&
+      node.name.elements.some(({ propertyName, name }) => {
+        const key = propertyName ?? name;
+        return (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) && key.text === "parse";
+      }));
   const visit = (node) => {
     if ((ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) && !(ts.isTypeReferenceNode(node.type) && node.type.typeName.getText(source) === "const")) report(node, "type assertion");
     if (ts.isNonNullExpression(node)) report(node, "non-null assertion");
     if (node.kind === ts.SyntaxKind.AnyKeyword) report(node, "any type");
-    if (ts.isCallExpression(node) && isJsonParse(node.expression) && relative !== "shared/json.ts") report(node, "JSON.parse outside shared/json.ts; use parseJson or readJson");
+    if (isJsonParse(node) && relative !== "shared/json.ts") report(node, "JSON.parse outside shared/json.ts; use parseJson or readJson");
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -522,8 +529,11 @@ test("sources narrow values instead of casting, asserting, or parsing JSON outsi
 });
 
 test("the typed boundary check finds JSON.parse however it is accessed", () => {
-  const calls = ["JSON.parse(text);", 'JSON["parse"](text);', "JSON['parse'](text);", "(JSON).parse(text);", "(JSON.parse)(text);", "JSON?.parse(text);"];
-  for (const call of calls) assert.equal(typedBoundaryViolations("example.ts", call).length, 1, call);
-  assert.deepEqual(typedBoundaryViolations("shared/json.ts", 'JSON["parse"](text);'), []);
-  assert.deepEqual(typedBoundaryViolations("example.ts", "parseJson(text); JSON.stringify(value); other.parse(text);"), []);
+  const references = ["JSON.parse(text);", 'JSON["parse"](text);', "JSON['parse'](text);", "(JSON).parse(text);", "(JSON.parse)(text);", "JSON?.parse(text);",
+    "globalThis.JSON.parse(text);", 'window["JSON"].parse(text);', "self.JSON?.parse(text);", "const parse = JSON.parse;", "lines.map(JSON.parse);",
+    "const { parse } = JSON;", "const { parse: decode } = globalThis.JSON;", 'const { "parse": decode } = JSON;'];
+  for (const reference of references) assert.equal(typedBoundaryViolations("example.ts", reference).length, 1, reference);
+  assert.deepEqual(typedBoundaryViolations("shared/json.ts", 'JSON["parse"](text); const parse = globalThis.JSON.parse;'), []);
+  assert.deepEqual(typedBoundaryViolations("example.ts",
+    "parseJson(text); JSON.stringify(value); other.parse(text); const { stringify } = JSON; const { parse } = other; JSON.parsed;"), []);
 });

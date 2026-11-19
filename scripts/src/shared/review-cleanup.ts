@@ -68,16 +68,19 @@ function inspect(id: string, generation: string) {
   const ticket = rawTicket(id, generation);
   if (ticket) {
     const trash = trashDirectory(id, generation), location = fs.existsSync(trash) ? trash : reviewDirectory(id);
-    const preview = isRecord(ticket.preview) ? ticket.preview : {}, known = previewCategories(ticket.preview);
+    const known = previewCategories(ticket.preview);
+    // The stored preview is display data; only narrowed fields reach the browser.
+    const pending = { review: ticket.review, storageDirectory: location, deletionPending: true,
+      referenceError: stringField(ticket.preview, "referenceError") ?? "", fingerprint: stringField(ticket.preview, "fingerprint") ?? "",
+      drafts: 0, unresolved: 0, unused: [], unusedBytes: 0 };
     // Pending deletion needs no content hashes. Even unreadable files must not
     // prevent the user from retrying removal through the viewer.
     let entries: Entry[];
     try { entries = inventory(location, false); }
     catch (error) {
-      return { ...preview, storageDirectory: location, deletionPending: true,
-        error: ticket.error || cleanupFailure(error, location, "Use Retry file removal after releasing it."),
-        categories: (known ?? []).map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" })),
-        drafts: 0, unresolved: 0, unused: [], unusedBytes: 0 };
+      const categories = (known ?? []).map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" }));
+      return { ...pending, error: ticket.error || cleanupFailure(error, location, "Use Retry file removal after releasing it."),
+        categories, bytes: categories.reduce((sum, category) => sum + category.bytes, 0) };
     }
     const ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
     const unavailable = { label: "Pending removal", detail: "Earlier preview unavailable", bytes: entries.reduce((sum, entry) => sum + entry.size, 0) };
@@ -89,8 +92,7 @@ function inspect(id: string, generation: string) {
       return { label: category.label, detail: "Pending removal", bytes: entries.filter(matches).reduce((sum, entry) => sum + entry.size, 0) };
     });
     categories.push({ label: "Deletion record", detail: "Removed when cleanup finishes", bytes: ticketBytes });
-    return { ...preview, storageDirectory: location, deletionPending: true, error: ticket.error, categories, drafts: 0, unresolved: 0,
-      bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + ticketBytes, unused: [], unusedBytes: 0 };
+    return { ...pending, error: ticket.error, categories, bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + ticketBytes };
   }
   const review = readReview(id);
   if (review.generation !== generation) throw new Error("The selected review was replaced. Refresh Saved reviews.");

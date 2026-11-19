@@ -281,6 +281,8 @@ test('a damaged deletion preview still lists the review and allows retry', (t) =
   const ticket = path.join(process.env.SEMANTIC_FLOW_HOME, 'deletions', `${review.id}.${review.generation}.json`);
   const record = JSON.parse(fs.readFileSync(ticket, 'utf8'));
   record.preview.categories[0].bytes = 'damaged';
+  // The browser renders these with String(); objects without callable conversions would throw.
+  Object.assign(record.preview, { referenceError: { toString: 1, valueOf: 1 }, storageDirectory: { toString: 1 }, review: { title: { toString: 1 } }, extra: 'kept out' });
   fs.writeFileSync(ticket, JSON.stringify(record));
 
   assert.equal(registeredReviews().find((entry) => entry.id === review.id).deletionPending, true);
@@ -288,6 +290,10 @@ test('a damaged deletion preview still lists the review and allows retry', (t) =
   assert.equal(pending.deletionPending, true);
   assert.equal(pending.categories[0].detail, 'Earlier preview unavailable');
   assert.equal(pending.categories.reduce((sum, item) => sum + item.bytes, 0), pending.bytes);
+  assert.equal(pending.referenceError, '');
+  assert.equal(typeof pending.storageDirectory, 'string');
+  assert.equal(pending.review.title, 'Review');
+  assert.deepEqual(Object.keys(pending).sort(), ['bytes', 'categories', 'deletionPending', 'drafts', 'error', 'fingerprint', 'referenceError', 'review', 'storageDirectory', 'unresolved', 'unused', 'unusedBytes']);
   mock.mock.restore();
   assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, false);
   assert.equal(registeredReviews().some((entry) => entry.id === review.id), false);

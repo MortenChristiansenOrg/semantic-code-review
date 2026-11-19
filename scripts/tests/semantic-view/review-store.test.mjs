@@ -279,4 +279,11 @@ test('damaged viewer metadata counts as absent and keeps the review listed', (t)
   fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { port: 1, processId: 2, viewerVersion: 'v' } }));
   assert.equal(readReview(review.id).viewer, undefined);
   assert.equal(listReviews().length, 2);
+  const viewer = { port: 29180, processId: 2, viewerVersion: 'v', skillDirectory: root };
+  fs.writeFileSync(file, JSON.stringify({ ...record, viewer }));
+  assert.deepEqual(readReview(review.id).viewer, viewer);
+  for (const port of [0, 70000, 1.5]) {
+    fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { ...viewer, port } }));
+    assert.equal(readReview(review.id).viewer, undefined, `port ${port}`);
+  }
 });
