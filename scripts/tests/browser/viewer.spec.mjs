@@ -3228,3 +3228,59 @@ test('note controls keep their order and tooltips follow approval changes', asyn
   await expect(page.locator('#app [title]')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('a specification toggled without animation keeps its state across reloads', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const data = fixture();
+  data.requirements = [{ id: 'story', title: 'Spec', summary: 'Spec summary', acceptance: [{ id: 'ac-1', text: 'Criterion' }] }];
+  const errors = await mount(page, data);
+  const spec = page.locator('details.specification');
+  await expect(spec).toHaveJSProperty('open', false);
+  await saveAction(page, () => spec.locator('summary h2').click(), (state) => state.specificationOpen?.story === true);
+  await expect(spec).toHaveJSProperty('open', true);
+  await reload(page);
+  await expect(spec).toHaveJSProperty('open', true);
+  await saveAction(page, () => spec.locator('summary h2').click(), (state) => state.specificationOpen?.story === false);
+  await expect(spec).toHaveJSProperty('open', false);
+  await reload(page);
+  await expect(spec).toHaveJSProperty('open', false);
+  expect(errors).toEqual([]);
+});
+
+test('a kept file row drops the tooltip of a hint that is no longer rendered', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  const row = one.locator('.frow-open');
+  await expect(one.locator('.cls-shared')).toHaveCount(1);
+  await expect(row).toHaveAttribute('data-tooltip', /Split across steps/);
+  await row.evaluate((el) => { window.keptRow = el; });
+  // The file leaves the other step, so it is no longer shared.
+  data.stages[0].files[0].memberships.pop();
+  data.viewerRevision = 'unshared';
+  await expect(one.locator('.cls-shared')).toHaveCount(0);
+  expect(await row.evaluate((el) => el === window.keptRow)).toBe(true);
+  await expect(row).toHaveAttribute('data-tooltip', 'Modified');
+  expect(errors).toEqual([]);
+});
+
+test('a focused file button whose file moves to another group never moves focus to another file', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].files[0].project = 'web';
+  data.stages[0].files.push({ path: 'other.js', project: 'web', kind: 'added', revision: 'other-rev', additions: 1, deletions: 0,
+    memberships: [{ nodeId: 'first-one', classification: 'behavior' }, { nodeId: 'first-two', classification: 'behavior' }],
+    lines: [{ t: 'add', n: 1, s: 'const other = 1;' }] });
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  const search = (path) => one.locator(`.file-occurrences[data-path="${path}"]`);
+  await expect(search('shared.js')).toHaveCount(1);
+  await search('other.js').focus();
+  data.stages[0].files[1].project = 'zeta';
+  data.viewerRevision = 'moved-group';
+  await expect(one.locator('.fg-name')).toHaveText(['web', 'zeta']);
+  await expect(search('shared.js')).not.toBeFocused();
+  await expect(search('other.js')).toBeFocused();
+  expect(errors).toEqual([]);
+});

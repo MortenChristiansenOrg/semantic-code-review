@@ -2811,6 +2811,11 @@ import { renderPage } from "./views/page";
   /* ---- animated <details> ---------------------------------------------- */
   const reduced = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const animatedSummaries = new WeakSet();
+  // A specification also opens and closes natively (reduced motion skips the
+  // animation), so its saved state follows every toggle.
+  app.addEventListener("toggle", (e) => {
+    if (e.target instanceof HTMLDetailsElement && e.target.matches(".specification")) syncReqState(e.target);
+  }, true);
   function animateDetails() {
     app.querySelectorAll("details > summary").forEach((summary) => {
       if (animatedSummaries.has(summary)) return;
@@ -2850,21 +2855,34 @@ import { renderPage } from "./views/page";
 
   /* ---- reasoning popover (portal, escapes clipped containers) ----------- */
   let popEl = null, popSticky = false, popOwner = null, popTimer = null;
+  const tooltipOwner = 'button, a, summary, [role="button"], [data-tooltip-focus]';
   function enhanceTooltips(root = app) {
+    const owners = new Set(root.querySelectorAll("[data-tooltip-hints]"));
     root.querySelectorAll("[title]").forEach((el) => {
       const title = el.getAttribute("title");
       el.removeAttribute("title");
       delete el.dataset.tooltip;
+      delete el.dataset.tooltipTitle;
       if (!title) return;
       const normalized = (value) => value.replace(/\s+/g, " ").trim();
       const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
       if (labels.some((label) => normalized(title) === normalized(label.textContent) && label.scrollWidth <= label.clientWidth)) return;
       el.dataset.tooltip = title;
-      const owner = el.parentElement?.closest('button, a, summary, [role="button"], [data-tooltip-focus]');
-      if (owner) {
-        // Decorative hints share their existing control's keyboard stop.
-        owner.dataset.tooltip = [...new Set([owner.dataset.tooltip, title].filter(Boolean))].join(" · ");
-      } else if (el.hasAttribute("data-tooltip-focus")) el.tabIndex = 0;
+      el.dataset.tooltipTitle = title;
+      const owner = el.parentElement?.closest(tooltipOwner);
+      if (owner) { owner.dataset.tooltipHints = ""; owners.add(owner); }
+      else if (el.hasAttribute("data-tooltip-focus")) el.tabIndex = 0;
+    });
+    // Decorative hints share their existing control's keyboard stop. A kept
+    // control may have lost or changed a hint, so its tooltip is rebuilt from
+    // the hints it holds now.
+    owners.forEach((owner) => {
+      const hints = [...owner.querySelectorAll("[data-tooltip-title]")]
+        .filter((hint) => hint.parentElement?.closest(tooltipOwner) === owner)
+        .map((hint) => hint.dataset.tooltipTitle);
+      const tooltip = [...new Set([owner.dataset.tooltipTitle, ...hints].filter(Boolean))].join(" · ");
+      if (tooltip) owner.dataset.tooltip = tooltip;
+      else delete owner.dataset.tooltip;
     });
   }
   function clearPopDescription() {
@@ -3915,11 +3933,12 @@ import { renderPage } from "./views/page";
   render = function () {
     forceHidePop();
     const focused = document.activeElement;
-    const focusName = focused?.getAttribute("name");
-    const focusRadioValue = focused?.matches('input[type="radio"]') ? focused.value : null;
-    const focusAction = focused?.getAttribute("data-action");
-    const focusSelector = focusAction
-      ? ["data-action", "data-id", "data-kind", "data-stage", "data-node-id", "data-group", "data-mode", "data-filter"].filter((key) => focused.hasAttribute(key)).map((key) => `[${key}="${cssEsc(focused.getAttribute(key))}"]`).join("")
+    // A replaced control is found again by everything that identifies it.
+    const focusField = Boolean(focused?.matches?.("textarea[name], input[name]"));
+    const focusSelector = focused?.matches?.("[data-action], textarea[name], input[name]")
+      ? [...focused.attributes]
+        .filter(({ name }) => (name === "name" || name === "value" || name.startsWith("data-")) && !name.startsWith("data-tooltip"))
+        .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
@@ -3976,9 +3995,9 @@ import { renderPage } from "./views/page";
     if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
       focused.focus({ preventScroll: true });
       if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
-    } else if (!focused?.isConnected && (focusName || focusSelector)) {
-      const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
-      const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
+    } else if (!focused?.isConnected && focusSelector) {
+      const focusRoot = focusField && state.notesOpen ? app.querySelector(".side.notes") : app;
+      const replacement = focusRoot?.querySelector(focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
     pendingDiffs.forEach((entry) => ensureFileDiff(entry));
