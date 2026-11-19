@@ -66,7 +66,10 @@ export function patchElement(node: Element, next: Element): void {
   const snapshot = renderSnapshot(next);
   if (previous?.markup === snapshot.markup) return;
   for (const name of (previous?.attributes || renderSnapshot(node).attributes).keys()) {
-    if (!next.hasAttribute(name)) node.removeAttribute(name);
+    if (next.hasAttribute(name)) continue;
+    node.removeAttribute(name);
+    // The tooltip enhancer moves a title into these; they go with it.
+    if (name === "title") { node.removeAttribute("data-tooltip"); node.removeAttribute("data-tooltip-title"); }
   }
   for (const attr of next.attributes) {
     if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);

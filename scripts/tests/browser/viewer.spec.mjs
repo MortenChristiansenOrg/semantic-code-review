@@ -3247,6 +3247,25 @@ test('a specification toggled without animation keeps its state across reloads',
   expect(errors).toEqual([]);
 });
 
+test('a specification named like an object property starts closed and never sends a state path the store refuses', async ({ page }) => {
+  const data = fixture();
+  data.requirements = [{ id: 'constructor', title: 'Spec', summary: 'Spec summary', acceptance: [{ id: 'ac-1', text: 'Criterion' }] }];
+  const paths = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') paths.push(...request.postDataJSON().changes.map((change) => change.path));
+  });
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const spec = page.locator('details.specification');
+  await expect(spec).toHaveJSProperty('open', false);
+  await spec.locator('summary h2').click();
+  await expect(spec).toHaveJSProperty('open', true);
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  await saveAction(page, () => one.locator('.frow .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'shared.js')]);
+  expect(paths.flat().filter((key) => ['__proto__', 'constructor', 'prototype'].includes(key))).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('a kept file row drops the tooltip of a hint that is no longer rendered', async ({ page }) => {
   const data = fixture();
   const errors = await mount(page, data, { openStages: { first: true } });

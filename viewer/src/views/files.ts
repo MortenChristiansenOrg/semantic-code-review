@@ -94,7 +94,7 @@ function fileRow(row: FileRowView): TemplateResult {
         </div>
         <div class="frow-act">
           ${row.occurrences > 1 ? html`<button class="file-occurrences" data-action="file-search" data-path=${row.path} data-stage-id=${row.stageId} data-node-id=${row.nodeId} type="button" title="Find all occurrences of this file" aria-label="Find occurrences of ${row.path}">↗ ${row.occurrences}</button>` : nothing}
-          ${row.insights ? html`<button class="code-insight-link" type="button" data-action="file-insights" data-stage=${row.stageId} data-path=${row.path}>Insights · ${row.insights}</button>` : nothing}
+          ${row.insights ? html`<button class="code-insight-link" type="button" data-action="file-insights" data-stage=${row.stageId} data-node-id=${row.nodeId} data-path=${row.path}>Insights · ${row.insights}</button>` : nothing}
           ${row.notes ? noteBadge(row, row.notes) : nothing}${row.lineComments
             ? html`<button class="mini-count mini-lines" data-action="open-file" data-id=${row.id} data-node-id=${row.nodeId} type="button" aria-expanded=${String(active)} title=${lines} aria-label=${lines}>${bubbleIcon}<b>${row.lineComments}</b><small>lines</small></button>`
             : nothing}

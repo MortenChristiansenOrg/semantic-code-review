@@ -2557,7 +2557,7 @@ import { renderPage } from "./views/page";
   function specificationModel(req) {
     return {
       id: req.id, title: req.title, summary: req.summary,
-      open: Boolean(state.specificationOpen && state.specificationOpen[req.id]),
+      open: specificationIsOpen(req.id),
       source: sourceModel(req.source),
       criteria: req.acceptance.map((a) => {
         const ref = `${req.id}#${a.id}`, st = acceptanceStatus(ref);
@@ -2844,11 +2844,21 @@ import { renderPage } from "./views/page";
     });
   }
   function syncReqState(det) {
-    if (det.matches(".specification")) {
-      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
-      state.specificationOpen[det.dataset.reqId] = det.open;
-      persist();
-    }
+    if (det.matches(".specification") && setSpecificationOpen(det.dataset.reqId, det.open)) persist();
+  }
+  // Specification IDs come from the artifact, so only own keys count, and the
+  // names the review store refuses as state paths are never saved.
+  function specificationIsOpen(id) {
+    const open = state.specificationOpen;
+    return Boolean(open && typeof open === "object" && Object.hasOwn(open, id) && open[id]);
+  }
+  /** Records whether a specification is open; returns whether that changed. */
+  function setSpecificationOpen(id, open) {
+    if (typeof id !== "string" || ["__proto__", "constructor", "prototype"].includes(id)) return false;
+    if (specificationIsOpen(id) === open) return false;
+    if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
+    state.specificationOpen[id] = open;
+    return true;
   }
 
   function cssEsc(v) { return (window.CSS && CSS.escape) ? CSS.escape(v) : v.replace(/["\\]/g, "\\$&"); }
@@ -3309,11 +3319,9 @@ import { renderPage } from "./views/page";
     } else if (kind === "node") {
       if (stageId) state.openStages[stageId] = true;
     } else if (kind === "specification") {
-      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
-      state.specificationOpen[id] = true;
+      setSpecificationOpen(id, true);
     } else if (kind === "criterion") {
-      if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
-      state.specificationOpen[String(id).split("#")[0]] = true;
+      setSpecificationOpen(String(id).split("#")[0], true);
     } else if (kind === "insight") {
       const stageOfInsight = parseInsightKey(id)?.stageId;
       if (stageOfInsight) state.openStages[stageOfInsight] = true;
