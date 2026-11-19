@@ -61,7 +61,9 @@
   // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
   const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
   // Null when storage is unavailable, so the in-page choice still applies.
-  const readAutoSendPreferred = () => { try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return null; } };
+  // After a failed write the stored value is stale, so this tab keeps its own choice.
+  let autoSendStoreFailed = false;
+  const readAutoSendPreferred = () => { if (autoSendStoreFailed) return null; try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return null; } };
   let autoSendPreferred = readAutoSendPreferred() ?? false;
   // Saved notes (objects) and reply draft IDs waiting for an automatic send.
   const autoSendQueue = { notes: new Set(), replies: new Set() };
@@ -74,7 +76,7 @@
   }
   function setAutoSendPreferred(on) {
     adoptAutoSendPreferred(on);
-    try { localStorage.setItem(AUTO_SEND_KEY, String(on)); } catch { /* storage unavailable */ }
+    try { localStorage.setItem(AUTO_SEND_KEY, String(on)); autoSendStoreFailed = false; } catch { autoSendStoreFailed = true; }
   }
   // Offered only while an interactive session can take feedback as it arrives.
   const agentTakesFeedback = () => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
