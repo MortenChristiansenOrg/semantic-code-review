@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { compileApiModules } from "./api-contract-check.js";
 import { cliApis } from "./command-api.js";
+import { parseJson } from "./shared/json.js";
+import { stringField } from "./shared/narrow.js";
 
 const scriptsRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -15,22 +17,18 @@ const outputDirectory = path.join(skillRoot, "scripts");
 const referencesDirectory = path.join(skillRoot, "references");
 const viewerSource = path.join(repositoryRoot, "viewer");
 const viewerDestination = path.join(skillRoot, "viewer");
-const packageManifest: unknown = JSON.parse(
-  fs.readFileSync(path.join(scriptsRoot, "package.json"), "utf8"),
+const packageVersion = stringField(
+  parseJson(fs.readFileSync(path.join(scriptsRoot, "package.json"), "utf8")),
+  "version",
 );
 
-if (
-  typeof packageManifest !== "object" ||
-  packageManifest === null ||
-  !("version" in packageManifest) ||
-  typeof packageManifest.version !== "string"
-) {
+if (packageVersion === undefined) {
   throw new Error("scripts/package.json must declare a string version.");
 }
 
 fs.writeFileSync(
   path.join(skillRoot, "VERSION"),
-  `${packageManifest.version}\n`,
+  `${packageVersion}\n`,
   "utf8",
 );
 
@@ -80,10 +78,11 @@ for (const input of Object.keys({ ...compilation.metafile.inputs, ...markdownCom
     if (parent === directory) throw new Error(`Cannot identify bundled dependency ${input}.`);
     directory = parent;
   }
-  const pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+  const pkg = parseJson(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+  const pkgName = stringField(pkg, "name"), pkgVersion = stringField(pkg, "version");
   const licenses = fs.readdirSync(directory).filter((name) => /^(licen[cs]e|copying|notice)(\.|$)/i.test(name));
-  if (!licenses.length) throw new Error(`Bundled dependency ${pkg.name} has no license file.`);
-  dependencies.set(`${pkg.name}@${pkg.version}`, licenses.map((name) => fs.readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n")).join("\n"));
+  if (!licenses.length) throw new Error(`Bundled dependency ${pkgName} has no license file.`);
+  dependencies.set(`${pkgName}@${pkgVersion}`, licenses.map((name) => fs.readFileSync(path.join(directory, name), "utf8").replace(/\r\n/g, "\n")).join("\n"));
 }
 fs.writeFileSync(path.join(skillRoot, "THIRD-PARTY-NOTICES.txt"), [...dependencies].sort(([a], [b]) => a.localeCompare(b))
   .map(([name, license]) => `${name}\n${"=".repeat(name.length)}\n${license}`).join("\n\n"));

@@ -1,16 +1,35 @@
 import { assetName, compareVersions, parseVersion, RELEASE_REPOSITORY } from "./release-version.js";
 import { MAX_ARCHIVE_BYTES, sha256 } from "./distribution.js";
+import { parseJson } from "./json.js";
+import { isRecord, stringField } from "./narrow.js";
 
 const API = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
-export interface ReleaseAsset { name: string; url: string; size: number; }
+export interface ReleaseAsset { name: string; url: string; }
+/** The fields of a GitHub release that updates use. */
 export interface GithubRelease {
-  id: number;
+  /** Empty when GitHub reported no tag; such a release is never eligible. */
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
-  html_url: string;
-  body: string;
-  assets: ReleaseAsset[];
+  body: string | null;
+  /** Null when GitHub reported no asset list; such a release cannot be installed. */
+  assets: ReleaseAsset[] | null;
+}
+
+/** Keeps a malformed asset as an unnamed entry, so it never matches but still counts as listed. */
+function parseAsset(value: unknown): ReleaseAsset {
+  return { name: stringField(value, "name") ?? "", url: stringField(value, "url") ?? "" };
+}
+
+function parseRelease(value: unknown): GithubRelease {
+  if (!isRecord(value)) throw new Error("Invalid GitHub release list.");
+  return {
+    tag_name: stringField(value, "tag_name") ?? "",
+    draft: Boolean(value.draft),
+    prerelease: Boolean(value.prerelease),
+    body: stringField(value, "body") ?? null,
+    assets: Array.isArray(value.assets) ? value.assets.map(parseAsset) : null,
+  };
 }
 
 export async function githubBytes(url: string, limit: number, asset = false): Promise<Buffer> {
@@ -51,9 +70,9 @@ export async function githubBytes(url: string, limit: number, asset = false): Pr
 export async function listReleases(): Promise<GithubRelease[]> {
   const releases: GithubRelease[] = [];
   for (let page = 1; ; page++) {
-    const result = JSON.parse((await githubBytes(`${API}/releases?per_page=100&page=${page}`, 8 * 1024 * 1024)).toString());
+    const result = parseJson((await githubBytes(`${API}/releases?per_page=100&page=${page}`, 8 * 1024 * 1024)).toString());
     if (!Array.isArray(result)) throw new Error("Invalid GitHub release list.");
-    releases.push(...result);
+    releases.push(...result.map(parseRelease));
     if (result.length < 100) break;
     if (page >= 100) throw new Error("Too many releases to resolve safely.");
   }
@@ -65,23 +84,31 @@ export function releaseVersion(release: GithubRelease): string | null {
   try { parseVersion(release.tag_name.slice(1)); return release.tag_name.slice(1); } catch { return null; }
 }
 
+/** Releases eligible for installation with their versions, newest first. */
+function eligibleReleases(releases: GithubRelease[]): Array<{ release: GithubRelease; version: string }> {
+  return releases.flatMap((release) => {
+    const version = releaseVersion(release);
+    return version === null ? [] : [{ release, version }];
+  }).sort((a, b) => compareVersions(b.version, a.version));
+}
+
 export function selectRelease(releases: GithubRelease[], requested?: string): GithubRelease {
   if (requested) parseVersion(requested);
-  const eligible = releases.filter((release) => releaseVersion(release) !== null)
-    .sort((a, b) => compareVersions(releaseVersion(b)!, releaseVersion(a)!));
-  const selected = requested ? eligible.find((release) => releaseVersion(release) === requested) : eligible[0];
+  const eligible = eligibleReleases(releases);
+  const selected = requested ? eligible.find(({ version }) => version === requested) : eligible[0];
   if (!selected) throw new Error(requested ? `No published release v${requested} exists.` : "No published release is available.");
   // A malformed newest release is an error, not permission to install older code.
-  releaseAssets(selected);
-  return selected;
+  releaseAssets(selected.release);
+  return selected.release;
 }
 
 export function releaseAssets(release: GithubRelease): { archive: ReleaseAsset; checksum: ReleaseAsset } {
   const version = releaseVersion(release);
-  if (!version || !Array.isArray(release.assets)) throw new Error("Invalid published release.");
+  const assets = release.assets;
+  if (!version || !Array.isArray(assets)) throw new Error("Invalid published release.");
   const name = assetName(version);
   const find = (expected: string) => {
-    const matches = release.assets.filter((asset) => asset.name === expected);
+    const matches = assets.filter((asset) => asset.name === expected);
     if (matches.length !== 1 || !matches[0].url.startsWith(`${API}/releases/assets/`)) throw new Error(`Release ${release.tag_name} is missing a unique valid ${expected} asset.`);
     return matches[0];
   };
@@ -101,10 +128,9 @@ export async function downloadRelease(release: GithubRelease): Promise<Buffer> {
 export function upgradeNotes(releases: GithubRelease[], previous: string, target: string): string {
   let known = true;
   try { parseVersion(previous); } catch { known = false; }
-  return releases.filter((release) => {
-    const v = releaseVersion(release);
-    return v && compareVersions(v, target) <= 0 && (!known || compareVersions(v, previous) > 0 || v === target);
-  }).sort((a, b) => compareVersions(releaseVersion(a)!, releaseVersion(b)!))
-    .map((release) => `${release.tag_name}: https://github.com/${RELEASE_REPOSITORY}/releases/tag/${release.tag_name}\n${release.body || "Release notes are missing; review this release before updating."}`)
+  return eligibleReleases(releases).filter(({ version: v }) =>
+    compareVersions(v, target) <= 0 && (!known || compareVersions(v, previous) > 0 || v === target),
+  ).sort((a, b) => compareVersions(a.version, b.version))
+    .map(({ release }) => `${release.tag_name}: https://github.com/${RELEASE_REPOSITORY}/releases/tag/${release.tag_name}\n${release.body || "Release notes are missing; review this release before updating."}`)
     .join("\n\n");
 }

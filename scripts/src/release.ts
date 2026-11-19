@@ -8,10 +8,31 @@ import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
 import { assetName, compareVersions, nextVersion, parseVersion, RELEASE_REPOSITORY } from "./shared/release-version.js";
 import { sha256, skillFiles, unpackDistribution, type ReleaseMetadata } from "./shared/distribution.js";
+import { parseJson } from "./shared/json.js";
+import { errorMessage, isRecord, stringField, type JsonRecord } from "./shared/narrow.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const manifestFile = path.join(root, "scripts/package.json");
-const json = (file: string) => JSON.parse(fs.readFileSync(file, "utf8"));
+/** A repository JSON file that must contain an object, such as package.json. */
+function jsonObject(file: string): JsonRecord {
+  const value = parseJson(fs.readFileSync(file, "utf8"));
+  if (!isRecord(value)) throw new Error(`${path.relative(root, file)} must contain a JSON object.`);
+  return value;
+}
+/** The version field as text; parseVersion rejects anything that is not a release version. */
+const versionOf = (record: JsonRecord): string => String(record.version);
+/** The lockfile entry describing the scripts package itself. */
+function lockRootPackage(lock: JsonRecord): JsonRecord {
+  const rootPackage = isRecord(lock.packages) ? lock.packages[""] : undefined;
+  if (!isRecord(rootPackage)) throw new Error("scripts/package-lock.json does not describe its root package.");
+  return rootPackage;
+}
+/** The `object` a GitHub ref or tag response points to. */
+function gitObject(response: string): { type?: string; sha?: string } {
+  const value = parseJson(response);
+  const object = isRecord(value) ? value.object : undefined;
+  return { type: stringField(object, "type"), sha: stringField(object, "sha") };
+}
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, windowsHide: true, encoding: "utf8" }).trim();
 const gh = (...args: string[]) => execFileSync("gh", args, { cwd: root, windowsHide: true, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -32,13 +53,13 @@ export function releaseBody(notes: string, version: string): string {
 
 export async function packageRelease(output: string): Promise<{ archive: string; checksum: string; version: string; sourceCommit: string }> {
   if (git("status", "--porcelain", "--untracked-files=normal")) throw new Error("Commit the release changes before packaging; the worktree must be clean.");
-  const pkg = json(manifestFile), version = pkg.version;
+  const version = versionOf(jsonObject(manifestFile));
   parseVersion(version);
   const sourceCommit = git("rev-parse", "HEAD");
   const skill = path.join(root, "skills/semantic-flow");
   if (fs.readFileSync(path.join(skill, "VERSION"), "utf8").trim() !== version) throw new Error("Build the skill after changing its version.");
-  const lock = json(path.join(root, "scripts/package-lock.json"));
-  if (lock.version !== version || lock.packages[""].version !== version) throw new Error("Package and lockfile versions differ.");
+  const lock = jsonObject(path.join(root, "scripts/package-lock.json"));
+  if (lock.version !== version || lockRootPackage(lock).version !== version) throw new Error("Package and lockfile versions differ.");
   validateNotes(fs.readFileSync(path.join(root, `releases/${version}.md`), "utf8"), version);
   const files = skillFiles(skill);
   if (files.includes("RELEASE.json")) throw new Error("Source skill contains stale release metadata; remove it and rebuild.");
@@ -65,8 +86,8 @@ export async function packageRelease(output: string): Promise<{ archive: string;
     const run = (name: string, ...args: string[]) => execFileSync(process.execPath, [path.join(extracted, "scripts", `${name}.mjs`), ...args], { cwd: temporary, windowsHide: true, encoding: "utf8" });
     // Runtime commands operate in a user's Git repository, never the build checkout.
     execFileSync("git", ["init", "-b", "main"], { cwd: temporary, windowsHide: true, stdio: "ignore" });
-    const installed = JSON.parse(run("semantic-flow", "version", "--json"));
-    if (installed.skillVersion !== version || installed.sourceCommit !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
+    const installed = parseJson(run("semantic-flow", "version", "--json"));
+    if (stringField(installed, "skillVersion") !== version || stringField(installed, "sourceCommit") !== sourceCommit) throw new Error("Extracted skill reports incorrect release provenance.");
     for (const name of ["semantic-flow", "semantic-implementation", "review-feedback"]) run(name, "--help");
     // The viewer is a server entrypoint, not a help-style CLI. Load its module
     // without starting a background process; release tests cover serving it.
@@ -86,18 +107,19 @@ export async function publishRelease(
   parseVersion(version);
   const notes = fs.readFileSync(notesFile, "utf8");
   const body = releaseBody(notes, version);
-  const ref = JSON.parse(github("api", `repos/${RELEASE_REPOSITORY}/git/ref/tags/${tag}`));
-  let object = ref.object;
+  let object = gitObject(github("api", `repos/${RELEASE_REPOSITORY}/git/ref/tags/${tag}`));
   // Annotated tags point to a tag object; lightweight tags point straight to a commit.
-  for (let depth = 0; object?.type === "tag" && depth < 10; depth++) {
-    object = JSON.parse(github("api", `repos/${RELEASE_REPOSITORY}/git/tags/${object.sha}`)).object;
+  for (let depth = 0; object.type === "tag" && depth < 10; depth++) {
+    object = gitObject(github("api", `repos/${RELEASE_REPOSITORY}/git/tags/${object.sha}`));
   }
-  if (object?.type !== "commit" || object.sha !== sourceCommit) throw new Error("Remote release tag does not identify the tested source commit.");
-  const releases = JSON.parse(github("api", "--paginate", "--slurp", `repos/${RELEASE_REPOSITORY}/releases?per_page=100`)).flat();
+  if (object.type !== "commit" || object.sha !== sourceCommit) throw new Error("Remote release tag does not identify the tested source commit.");
+  const pages = parseJson(github("api", "--paginate", "--slurp", `repos/${RELEASE_REPOSITORY}/releases?per_page=100`));
+  if (!Array.isArray(pages)) throw new Error("Invalid GitHub release list.");
+  const releases = pages.flat().filter(isRecord);
   const existing = releases.find((release) => release.tag_name === tag);
   if (existing && !existing.draft) throw new Error(`${tag} is already published; published versions are never replaced.`);
   const newer = releases.some((release) => {
-    if (release.draft || release.prerelease) return false;
+    if (release.draft || release.prerelease || typeof release.tag_name !== "string") return false;
     try { return compareVersions(release.tag_name.replace(/^v/, ""), version) > 0; } catch { return false; }
   });
   const downloaded = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-published-"));
@@ -112,12 +134,14 @@ export async function publishRelease(
     for (const file of [artifact.archive, artifact.checksum]) {
       if (sha256(fs.readFileSync(file)) !== sha256(fs.readFileSync(path.join(downloaded, path.basename(file))))) throw new Error("Uploaded release bytes differ from the tested package.");
     }
-    const draft = JSON.parse(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "body,isDraft"));
-    if (!draft.isDraft || draft.body !== body) throw new Error("Draft release notes do not match the reviewed changelog.");
+    const draft = parseJson(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "body,isDraft"));
+    if (!isRecord(draft) || !draft.isDraft || draft.body !== body) throw new Error("Draft release notes do not match the reviewed changelog.");
     github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--draft=false", `--latest=${!newer}`);
-    const published = JSON.parse(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,isPrerelease,url"));
-    if (published.isDraft || published.isPrerelease) throw new Error("Release did not become eligible for updates.");
-    return published.url;
+    const published = parseJson(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,isPrerelease,url"));
+    const url = stringField(published, "url");
+    if (!isRecord(published) || published.isDraft || published.isPrerelease) throw new Error("Release did not become eligible for updates.");
+    if (url === undefined) throw new Error("GitHub did not report the published release URL.");
+    return url;
   } finally { fs.rmSync(downloaded, { recursive: true, force: true }); }
 }
 
@@ -125,12 +149,12 @@ async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "next" || command === "bump") {
     if (args.length > 2 || (args[1] && args[1] !== "--stable")) throw new Error("Usage: release next|bump breaking|feature|fix|none [--stable]");
-    const pkg = json(manifestFile);
-    const next = nextVersion(pkg.version, args[0] as "breaking" | "feature" | "fix" | "none", args[1] === "--stable");
+    const pkg = jsonObject(manifestFile);
+    const next = nextVersion(versionOf(pkg), args[0], args[1] === "--stable");
     if (command === "bump") {
       if (git("tag", "--list", `v${next}`)) throw new Error(`Tag v${next} already exists.`);
-      const lockFile = path.join(root, "scripts/package-lock.json"), lock = json(lockFile);
-      pkg.version = next; lock.version = next; lock.packages[""].version = next;
+      const lockFile = path.join(root, "scripts/package-lock.json"), lock = jsonObject(lockFile);
+      pkg.version = next; lock.version = next; lockRootPackage(lock).version = next;
       fs.writeFileSync(manifestFile, `${JSON.stringify(pkg, null, 2)}\n`);
       fs.writeFileSync(lockFile, `${JSON.stringify(lock, null, 2)}\n`);
       fs.writeFileSync(path.join(root, "skills/semantic-flow/VERSION"), `${next}\n`);
@@ -141,7 +165,7 @@ async function main(): Promise<void> {
     const output = path.resolve(args[0] || path.join(root, "dist"));
     if (command === "package") console.log(JSON.stringify(await packageRelease(output), null, 2));
     else {
-      const version = json(manifestFile).version;
+      const version = versionOf(jsonObject(manifestFile));
       parseVersion(version);
       if (git("rev-parse", `refs/tags/v${version}^{commit}`) !== git("rev-parse", "HEAD")) throw new Error(`Check out the exact v${version} tag before publishing.`);
       console.log(await publishRelease(await packageRelease(output), path.join(root, `releases/${version}.md`)));
@@ -150,5 +174,5 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => { console.error(error.message); process.exitCode = 1; });
+  main().catch((error: unknown) => { console.error(errorMessage(error)); process.exitCode = 1; });
 }
