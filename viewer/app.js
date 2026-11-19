@@ -876,7 +876,7 @@
   window.addEventListener("beforeunload", (event) => {
     if (reviewDeleted) return;
     captureEditor();
-    if (uploadOps.size || approvalOps.size || savingState || saveError || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
+    if (uploadOps.size || approvalOps.size || savingState || saveError || exportState.phase === "working" || saveTimer && stateChanges(persistedState, JSON.parse(JSON.stringify(state))).length) { event.preventDefault(); event.returnValue = ""; }
   });
 
   /* ---- helpers ---------------------------------------------------------- */

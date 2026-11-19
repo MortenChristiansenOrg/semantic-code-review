@@ -2621,9 +2621,8 @@ test('new line drafts retain their file snapshot across live restacks and reload
   await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
   const editor = page.locator('textarea[name="nc-body"]'); await editor.fill('Check this line');
   await saveAction(page, () => editor.press('Control+Enter'), state => state.comments?.[0]?.snapshot?.fileRevision === 'rev');
-  const refreshed = page.waitForResponse(r => new URL(r.url()).pathname === '/api/implementation');
   data.stages[0].baseRevision = 'c'.repeat(40); data.stages[0].headRevision = 'd'.repeat(40); data.viewerRevision = 'restacked';
-  await refreshed;
+  await expect(page.locator('.review-update')).toHaveText('Review updated');
   await showNotes(page);
   await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
   await reload(page); await showNotes(page);
@@ -2773,6 +2772,7 @@ test('interactive reviews can send feedback notes and replies automatically when
   await page.locator('textarea[name="nc-body"]').press('Control+Enter');
   await expect.poll(() => exports.length).toBe(2);
   expect(exports[1].notes.map((note) => note.body)).toEqual(['Rename this file']);
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 feedback thread.');
 
   await reload(page); await showNotes(page);
   await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toBeChecked();
