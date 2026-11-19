@@ -4066,7 +4066,7 @@ import { renderPage } from "./views/page";
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
-    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
     retainApprovalRenames();
     revokeInvalidStageApprovals();
     const open = captureOpen();

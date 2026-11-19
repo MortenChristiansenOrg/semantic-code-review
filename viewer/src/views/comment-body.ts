@@ -5,6 +5,6 @@ import { html, type TemplateResult } from "lit-html";
 export function commentBody(value: unknown): Array<string | TemplateResult> {
   // Splitting on a capture group puts the code spans at the odd indices.
   // Stored agent questions are not validated, so a missing body renders as empty.
-  return String(value ?? "").replace(/\r\n?/g, "\n").split(/`([^`\n]+)`/)
+  return (typeof value === "string" ? value : "").replace(/\r\n?/g, "\n").split(/`([^`\n]+)`/)
     .map((part, index) => index % 2 ? html`<code>${part}</code>` : part);
 }

@@ -2931,12 +2931,12 @@ test('coverage, progress and the scrim follow approvals under a policy that bloc
   expect(await page.evaluate(() => window.styleViolations)).toEqual([]);
 });
 
-test('a stored agent question without a body does not stop page updates', async ({ page }) => {
+test('a stored agent question without a text body does not stop page updates', async ({ page }) => {
   const now = new Date().toISOString();
   const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
-    requests: [{ id: 'q1', choices: [], createdAt: now }] } };
+    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [], createdAt: now }] } };
   await mount(page, data);
-  await expect(page.locator('.agent-question')).toHaveCount(1);
+  await expect(page.locator('.agent-question')).toHaveCount(2);
   await page.locator('.tb-btn[data-action="toggle-coverage"]').click();
   await expect(page.locator('.side.coverage')).toHaveClass(/is-open/);
 });
