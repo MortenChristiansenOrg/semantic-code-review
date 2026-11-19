@@ -154,6 +154,31 @@ for (const skillVersion of ['0.2.0', undefined]) {
   });
 }
 
+test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {
+  const name = '"><img src=x onerror="window.injected=1">\r.js';
+  const path = `src/${name}`;
+  const data = fixture();
+  for (const stage of data.stages) stage.files[0].path = path;
+  await mount(page, data);
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await expect(node.locator('.frow')).toHaveAttribute('data-file', `f:first:${path}`);
+  await expect(node.locator('.fp-name')).toHaveText(name);
+  await expect(node.locator('.frow-open')).toHaveAttribute('data-id', `f:first:${path}`);
+  await node.locator('.cinema-diff .lact').first().click();
+  await expect(node.locator('.lact').first()).toHaveAttribute('data-id', `l:first:new:1:${path}`);
+  await page.locator('.nc-opt').filter({ hasText: 'Personal' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Line note');
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').press('Control+Enter'), (state) => state.comments?.[0]?.id === `l:first:new:1:${path}`);
+  await node.locator('.file-notes .thread-add').click();
+  await page.locator('textarea[name="nc-body"]').fill('File note');
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').press('Control+Enter'), (state) => state.comments?.some((note) => note.kind === 'file' && note.id === `f:first:${path}`));
+  await saveAction(page, () => node.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', path)]);
+  await expect(node.locator('.frow')).toHaveClass(/is-approved/);
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+});
+
 test('long acceptance identifiers stay separate from descriptions at supported widths', async ({ page }) => {
   const data = fixture();
   data.requirements = [{ id: 'story', title: 'Requirements', summary: 'Summary', acceptance: [

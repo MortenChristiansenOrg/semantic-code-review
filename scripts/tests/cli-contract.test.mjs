@@ -417,7 +417,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
   assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
   assert.doesNotMatch(viewerApp, /approveBtn\("node"/);
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
-  assert.match(viewerApp, /data-node-id="\$\{node\.id\}"/);
+  assert.match(viewerApp, /data-node-id="\$\{esc\(node\.id\)\}"/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);
   const selectedNodeStart = viewerApp.indexOf("function selectedNodeForFile(activeValue, file)");
   const selectedNodeEnd = viewerApp.indexOf("\n  function activeFileNodeId", selectedNodeStart);
@@ -460,6 +460,7 @@ test("repository metadata and maintainer guidance preserve portability", () => {
     formatCommentBody("<script>\n`<b>`"),
     "&lt;script&gt;\n<code>&lt;b&gt;</code>",
   );
+  assert.equal(formatCommentBody("one\r\ntwo\r`three`"), "one\ntwo\n<code>three</code>");
   assert.match(viewerApp, /stage\.nodes\.every\(\(node\) => nodeApprovalState\(stage, node\) === "approved"\)/);
   assert.match(viewerApp, /delete state\.approvals\[stage\.id\]/);
   assert.match(viewerApp, /Approve every step before approving the stage/);
