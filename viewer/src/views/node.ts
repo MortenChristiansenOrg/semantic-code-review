@@ -1,10 +1,11 @@
 // A change node ("step"): a disclosure with its reasoning, files and notes.
 import { html, nothing, type TemplateResult } from "lit-html";
+import { repeat } from "lit-html/directives/repeat.js";
 import { addNoteButton, notesToggle, type ApprovalState, type NotesToggleView } from "./controls";
 import { nodeFiles, type NodeFilesView } from "./files";
 import { caretIcon } from "./icons";
 import { insightTags, reasoningLegend, type InsightTagView, type ReasoningLegendView } from "./insights";
-import { legacyHtml } from "./legacy-html";
+import { inlineThread, type ThreadListView } from "./thread";
 
 export interface NodeView {
   id: string;
@@ -16,12 +17,12 @@ export interface NodeView {
   approval: ApprovalState;
   legend: ReasoningLegendView | null;
   insights: readonly InsightTagView[];
-  /** Threads on evidence this step hosts, as legacy HTML. */
-  insightThreads: string;
+  /** Threads on evidence this step hosts, while they are shown. */
+  insightThreads: readonly ThreadListView[];
   files: NodeFilesView;
   notes: NotesToggleView | null;
-  /** The step's own thread, as legacy HTML. */
-  thread: string;
+  /** The step's own thread, while it is shown. */
+  thread: ThreadListView | null;
 }
 
 const STALE = "One or more file approvals are stale";
@@ -47,11 +48,11 @@ export function nodeView(node: NodeView): TemplateResult {
         ${node.insights.length ? html`<div class="node-reasoning">
           <span class="eyebrow">Reasoning</span>
           <div class="tag-row">${insightTags(node.insights)}</div>
-          ${legacyHtml(node.insightThreads)}
+          ${repeat(node.insightThreads, (thread) => thread.id, inlineThread)}
         </div>` : nothing}
         ${nodeFiles(node.files)}
         <div class="node-foot"><div class="note-cluster">${addNoteButton({ kind: "node", id: node.id, stageId: node.stageId })}${notesToggle(node.notes)}</div></div>
-        ${legacyHtml(node.thread)}
+        ${inlineThread(node.thread)}
       </div>
     </details>`;
 }

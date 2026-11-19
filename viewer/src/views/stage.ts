@@ -2,8 +2,8 @@
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
 import { acceptanceChip, addNoteButton, approveButton, notesToggle, type AcceptanceChipView, type ApproveButtonView, type NotesToggleView } from "./controls";
-import { legacyHtml } from "./legacy-html";
 import { nodeView, type NodeView } from "./node";
+import { inlineThread, type ThreadListView } from "./thread";
 
 export interface StageDependencyView {
   /** The chip text: the stage number, or the ID of an unknown stage. */
@@ -32,8 +32,8 @@ export interface StageView {
   acceptance: readonly AcceptanceChipView[];
   notes: NotesToggleView | null;
   approve: ApproveButtonView;
-  /** The stage's thread, as legacy HTML. */
-  thread: string;
+  /** The stage's thread, while it is shown. */
+  thread: ThreadListView | null;
   nodes: readonly NodeView[];
 }
 
@@ -67,7 +67,7 @@ export function stageView(stage: StageView): TemplateResult {
         </div>
         <div class="stage-approve"><div class="note-cluster">${notesToggle(stage.notes)}${addNoteButton(target)}</div>${approveButton(stage.approve, "sm")}</div>
       </div>
-      ${legacyHtml(stage.thread)}
+      ${inlineThread(stage.thread)}
       <div class="stage-body" ?inert=${!stage.open}>
         <div class="stage-children-head">
           <span class="eyebrow">Steps in stage ${stage.number}</span>

@@ -10,10 +10,10 @@ interface RenderSnapshot {
 }
 
 // Keep the last requested markup separate from the live DOM. Unchanged
-// subtrees retain scroll, selection, image state and running animations;
-// browser-managed details/form state is not overwritten by unrelated edits.
+// subtrees retain scroll, selection, image state and running animations.
 const renderedNodes = new WeakMap<Element, RenderSnapshot>();
-const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "data-reply-key", "name", "value"];
+// The attributes that identify an element of the legacy diff panel.
+const identity = ["data-render-key", "id", "data-stage", "data-action", "data-id", "data-kind", "data-node-id", "data-mode"];
 
 function renderKey(node: Node): string {
   if (!(node instanceof Element)) return String(node.nodeType);
@@ -33,6 +33,11 @@ function nodesBetween(parent: Node, start: Node | null, end: Node | null): Node[
   for (let node = start ? start.nextSibling : parent.firstChild; node && node !== end; node = node.nextSibling) nodes.push(node);
   return nodes;
 }
+
+/** Marks an empty element in legacy markup whose content lit renders. The
+ * reconciler keeps such an element's children; give it a `data-render-key` so
+ * it is never reused for another element. */
+export const LIT_ISLAND = "data-lit-island";
 
 /** Makes the children of `parent` between `start` and `end` (both exclusive;
  * null means the parent's edge) match the children of `next`, reusing nodes
@@ -74,17 +79,8 @@ export function patchElement(node: Element, next: Element): void {
   for (const attr of next.attributes) {
     if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
   }
-  if (node instanceof HTMLTextAreaElement) {
-    const value = (next as HTMLTextAreaElement).value;
-    if (node.value !== value) node.value = value;
-  } else {
-    patchChildren(node, next);
-    if (node instanceof HTMLInputElement && node.type !== "file") {
-      const desired = next as HTMLInputElement;
-      if (node.value !== desired.value) node.value = desired.value;
-      node.checked = desired.checked;
-    }
-  }
+  // lit renders an island's content; its key keeps it the same island.
+  if (!next.hasAttribute(LIT_ISLAND)) patchChildren(node, next);
   renderedNodes.set(node, snapshot);
 }
 
