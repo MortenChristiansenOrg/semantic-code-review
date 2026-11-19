@@ -421,11 +421,14 @@ function status(options: Options): void {
   const workingStages = candidate.workingStageIds.map((id) =>
     readJson(path.join(artifact, ".work", "stages", `${id}.json`)),
   );
-  const allCriteria = requirements.flatMap((specification) =>
-    arrayField(specification, "acceptanceCriteria").map(
-      (criterion) => `${stringField(specification, "id")}#${stringField(criterion, "id")}`,
-    ),
-  );
+  // Criteria without string IDs are left out here; validation reports them.
+  const allCriteria = requirements.flatMap((specification) => {
+    const specificationId = stringField(specification, "id");
+    if (specificationId === undefined) return [];
+    return strings(
+      arrayField(specification, "acceptanceCriteria").map((criterion) => stringField(criterion, "id")),
+    ).map((criterionId) => `${specificationId}#${criterionId}`);
+  });
   const finalizedCoverage = new Set(
     finalizedStages.flatMap((stage) => strings(arrayField(stage, "specificationRefs"))),
   );
@@ -545,7 +548,8 @@ interface ViewerLaunchMessage {
   repositoryRoot?: string;
   processId?: number;
   implementation?: {
-    title: string;
+    implementationId?: string;
+    title?: string;
     stageCount: number;
     fileCount: number;
   };
@@ -556,7 +560,6 @@ interface ViewerLaunchMessage {
 function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
   if (!isRecord(value) || (value.type !== "ready" && value.type !== "error")) return undefined;
   const implementation = value.implementation;
-  const title = stringField(implementation, "title");
   const stageCount = numberField(implementation, "stageCount");
   const fileCount = numberField(implementation, "fileCount");
   return {
@@ -565,8 +568,14 @@ function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
     url: stringField(value, "url"),
     repositoryRoot: stringField(value, "repositoryRoot"),
     processId: numberField(value, "processId"),
-    implementation: title !== undefined && stageCount !== undefined && fileCount !== undefined
-      ? { title, stageCount, fileCount }
+    // The viewer starts on artifacts that miss optional fields such as the title.
+    implementation: stageCount !== undefined && fileCount !== undefined
+      ? {
+          implementationId: stringField(implementation, "implementationId"),
+          title: stringField(implementation, "title"),
+          stageCount,
+          fileCount,
+        }
       : undefined,
     feedbackEnabled: booleanField(value, "feedbackEnabled"),
   };
@@ -656,7 +665,7 @@ async function launchViewer(
   console.log(`Semantic review viewer: ${launch.url}`);
   console.log(`Project: ${launch.repositoryRoot}`);
   console.log(
-    `Implementation: ${launch.implementation.title} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
+    `Implementation: ${launch.implementation.title ?? launch.implementation.implementationId ?? "(untitled)"} — ${launch.implementation.stageCount} stages, ${launch.implementation.fileCount} files`,
   );
   if (!launch.feedbackEnabled) {
     console.log(
@@ -1040,51 +1049,66 @@ async function waitForFeedback(options: Options): Promise<void> {
   const session = start.session;
   const deadline = Date.now() + seconds * 1000;
   let heartbeat = Date.now();
-  while (true) {
-    const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean; released?: string[] } => {
-      const live = liveSession(state);
-      if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
-      if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
-      const end = (reason: string) => { endSession(state, now, reason); return { stop: reason }; };
-      const idle = now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS;
-      // Answers come first: stopping must never discard a decision the reviewer already made.
-      const responses = takeResponses(state, session);
-      if (responses.length) {
-        live.feedbackAt = new Date(now).toISOString();
-        renewSessionClaims(state, now, session);
-        return { responses };
+  try {
+    while (true) {
+      const step = updateAgentState(review, (state, now): { stop?: string; responses?: unknown[]; pending?: boolean; released?: string[] } => {
+        const live = liveSession(state);
+        if (live?.id !== session) return { stop: state.session?.id === session ? state.session.endReason || "stopped" : "superseded" };
+        if (now - heartbeat >= HEARTBEAT_MS) { live.heartbeatAt = new Date(now).toISOString(); heartbeat = now; }
+        const end = (reason: string) => { endSession(state, now, reason); return { stop: reason }; };
+        const idle = now - Date.parse(live.feedbackAt) >= IDLE_LIMIT_MS;
+        // Answers come first: stopping must never discard a decision the reviewer already made.
+        const responses = takeResponses(state, session);
+        if (responses.length) {
+          live.feedbackAt = new Date(now).toISOString();
+          renewSessionClaims(state, now, session);
+          return { responses };
+        }
+        if (roundAwaitingAnswer(state, now, session)) {
+          // The round keeps its threads while the reviewer decides; Stop applies once it finishes.
+          if (readReview(review).completedAt) return end("completed");
+          if (idle) return end("idle");
+          renewSessionClaims(state, now, session);
+          return {};
+        }
+        // Threads a finished round left unanswered return to the queue after a short
+        // grace, so a reply posted alongside this wait is not reissued as a new round.
+        // Stop and idle apply once the round settles, like after any other round.
+        const { settling, released } = settleSessionClaims(state, now, session);
+        const step = (() => {
+          if (live.stopRequestedAt) return settling ? {} : end("stopped");
+          if (readReview(review).completedAt) return end("completed");
+          if (sendInProgress(state, now)) return {};
+          if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
+          return idle && !settling ? end("idle") : {};
+        })();
+        return released.length ? { ...step, released } : step;
+      });
+      if (step.released) console.error(`The previous round ended without replies to ${step.released.join(", ")}; returned to the queue. Post every reply before waiting again.`);
+      if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
+      if (step.responses) { print({ session, responses: step.responses }); return; }
+      if (step.pending) {
+        const { candidate: current, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
+        const result = feedbackSnapshot(current, targetRestack, { session });
+        if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
+        // Another run claimed the threads first; keep listening.
       }
-      if (roundAwaitingAnswer(state, now, session)) {
-        // The round keeps its threads while the reviewer decides; Stop applies once it finishes.
-        if (readReview(review).completedAt) return end("completed");
-        if (idle) return end("idle");
-        renewSessionClaims(state, now, session);
-        return {};
-      }
-      // Threads a finished round left unanswered return to the queue after a short
-      // grace, so a reply posted alongside this wait is not reissued as a new round.
-      // Stop and idle apply once the round settles, like after any other round.
-      const { settling, released } = settleSessionClaims(state, now, session);
-      const step = (() => {
-        if (live.stopRequestedAt) return settling ? {} : end("stopped");
-        if (readReview(review).completedAt) return end("completed");
-        if (sendInProgress(state, now)) return {};
-        if (unclaimedFeedbackWaiting(candidate, claimedThreadIds(state, now))) return { pending: true };
-        return idle && !settling ? end("idle") : {};
-      })();
-      return released.length ? { ...step, released } : step;
-    });
-    if (step.released) console.error(`The previous round ended without replies to ${step.released.join(", ")}; returned to the queue. Post every reply before waiting again.`);
-    if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
-    if (step.responses) { print({ session, responses: step.responses }); return; }
-    if (step.pending) {
-      const { candidate: current, targetRestack } = refreshAdvancedTarget(activeCandidate(resolveSingle(options, "feedback")));
-      const result = feedbackSnapshot(current, targetRestack, { session });
-      if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
-      // Another run claimed the threads first; keep listening.
+      if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
+      await delay(WAIT_POLL_MS);
     }
-    if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
-    await delay(WAIT_POLL_MS);
+  } catch (error) {
+    // A first wait that fails has not reported its session, so no later wait can
+    // resume it. End it so the viewer does not show an agent that is listening.
+    if (!requested) {
+      try {
+        updateAgentState(review, (state, now) => {
+          if (liveSession(state)?.id === session) endSession(state, now, "failed");
+        });
+      } catch {
+        // Report the original failure.
+      }
+    }
+    throw error;
   }
 }
 

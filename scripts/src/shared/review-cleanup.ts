@@ -5,28 +5,31 @@ import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicJson, attachmentIds, isReviewId, parseReviewRecord, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
 import { parseJson } from "./json.js";
-import { errorCode, isRecord, stringField, type JsonRecord } from "./narrow.js";
+import { errorCode, isRecord, stringField } from "./narrow.js";
 
 const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 type Entry = { name: string; size: number; modified: number; directory: boolean; link: boolean; hash?: string };
 type Category = { label: string; detail: string; bytes: number };
-/** The storage inspection shown before deletion; the ticket keeps it for display while removal is pending. */
-type TicketPreview = JsonRecord & { categories: Category[] };
-type Ticket = { review: Omit<ReviewRecord, "state" | "viewer">; preview: TicketPreview; requestedAt: string; error?: string };
+/** The ticket keeps the storage inspection shown before deletion for display only;
+ * removal never depends on it, so it stays unvalidated and is narrowed where shown. */
+type Ticket = { review: Omit<ReviewRecord, "state" | "viewer">; preview: unknown; requestedAt: string; error?: string };
 function isCategory(value: unknown): value is Category {
   return isRecord(value) && typeof value.label === "string" && typeof value.detail === "string" && typeof value.bytes === "number";
+}
+/** The categories of a ticket's preview, or undefined when the preview is damaged. */
+function previewCategories(preview: unknown): Category[] | undefined {
+  const categories = isRecord(preview) ? preview.categories : undefined;
+  return Array.isArray(categories) && categories.every(isCategory) ? categories : undefined;
 }
 /** Tickets are written by this module; anything else in their place is damage. */
 function parseTicket(value: unknown, file: string): Ticket {
   const damaged = new Error(`Pending review deletion record ${JSON.stringify(file)} is damaged.`);
-  if (!isRecord(value) || !isRecord(value.review) || !isRecord(value.preview) || typeof value.requestedAt !== "string" ||
+  if (!isRecord(value) || !isRecord(value.review) || typeof value.requestedAt !== "string" ||
     (value.error !== undefined && typeof value.error !== "string")) throw damaged;
-  const { categories } = value.preview;
-  if (!Array.isArray(categories) || !categories.every(isCategory)) throw damaged;
   // The identity has the record's fields without its state; parse it with an empty one.
   const { state: ignoredState, viewer: ignoredViewer, ...review } = parseReviewRecord({ ...value.review, state: {} }, file);
-  return { review, preview: { ...value.preview, categories }, requestedAt: value.requestedAt, error: stringField(value, "error") };
+  return { review, preview: value.preview, requestedAt: value.requestedAt, error: stringField(value, "error") };
 }
 function trashDirectory(id: string, generation: string) {
   reviewDeletionPath(id, generation); return path.join(reviewHome(), "trash", `${id}.${generation}`);
@@ -65,18 +68,20 @@ function inspect(id: string, generation: string) {
   const ticket = rawTicket(id, generation);
   if (ticket) {
     const trash = trashDirectory(id, generation), location = fs.existsSync(trash) ? trash : reviewDirectory(id);
+    const preview = isRecord(ticket.preview) ? ticket.preview : {}, known = previewCategories(ticket.preview);
     // Pending deletion needs no content hashes. Even unreadable files must not
     // prevent the user from retrying removal through the viewer.
     let entries: Entry[];
     try { entries = inventory(location, false); }
     catch (error) {
-      return { ...ticket.preview, storageDirectory: location, deletionPending: true,
+      return { ...preview, storageDirectory: location, deletionPending: true,
         error: ticket.error || cleanupFailure(error, location, "Use Retry file removal after releasing it."),
-        categories: ticket.preview.categories.map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" })),
+        categories: (known ?? []).map((category) => ({ ...category, detail: "Last known size; current inspection unavailable" })),
         drafts: 0, unresolved: 0, unused: [], unusedBytes: 0 };
     }
     const ticketBytes = fs.statSync(reviewDeletionPath(id, generation)).size;
-    const categories = ticket.preview.categories.map((category) => {
+    const unavailable = { label: "Pending removal", detail: "Earlier preview unavailable", bytes: entries.reduce((sum, entry) => sum + entry.size, 0) };
+    const categories = !known ? [unavailable] : known.map((category) => {
       const prefixes: Record<string, string> = { "Submitted feedback": "feedback/", Attachments: "attachments/", "Approved snapshots": "snapshots/", "Remote checkout": "checkout/" };
       const prefix = prefixes[category.label];
       const matches = (entry: Entry) => category.label === "Review state" ? entry.name === "review.json"
@@ -84,7 +89,7 @@ function inspect(id: string, generation: string) {
       return { label: category.label, detail: "Pending removal", bytes: entries.filter(matches).reduce((sum, entry) => sum + entry.size, 0) };
     });
     categories.push({ label: "Deletion record", detail: "Removed when cleanup finishes", bytes: ticketBytes });
-    return { ...ticket.preview, storageDirectory: location, deletionPending: true, error: ticket.error, categories, drafts: 0, unresolved: 0,
+    return { ...preview, storageDirectory: location, deletionPending: true, error: ticket.error, categories, drafts: 0, unresolved: 0,
       bytes: entries.reduce((sum, entry) => sum + entry.size, 0) + ticketBytes, unused: [], unusedBytes: 0 };
   }
   const review = readReview(id);

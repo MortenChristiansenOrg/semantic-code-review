@@ -344,3 +344,18 @@ test("a malformed optional field in agent state keeps the claim it belongs to", 
   assert.deepEqual(claim.threads.map((thread) => thread.id), ["kept"]);
   assert.equal(claim.note, "Still working");
 });
+
+test("a first wait that fails on invalid feedback does not stay listening", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "invalid");
+  const file = repository.feedbackPath("threads", "invalid.json");
+  const thread = repository.readAbsoluteJson(file);
+  thread.status = "resolved";
+  repository.writeAbsolute(file, JSON.stringify(thread));
+
+  await assert.rejects(waitAsync(repository, "--timeout", "5"), /invalid\.json/);
+  const { session } = agentState(repository);
+  assert.ok(session.endedAt);
+  assert.equal(session.endReason, "failed");
+});

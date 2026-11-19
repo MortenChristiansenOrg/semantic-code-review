@@ -1024,11 +1024,19 @@ test("a feedback thread that fails its schema does not hide the other threads", 
       "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
   }
   const file = repository.feedbackPath("threads", "damaged.json");
-  const damaged = repository.readAbsoluteJson(file);
-  damaged.createdAt = "not a date";
-  repository.writeAbsolute(file, JSON.stringify(damaged));
+  const original = repository.readAbsoluteJson(file);
+  repository.writeAbsolute(file, JSON.stringify({ ...original, createdAt: "not a date" }));
+  const implementationData = () => JSON.parse(createImplementationDataScript(repository.root).match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
 
-  const data = JSON.parse(createImplementationDataScript(repository.root).match(/^window\.SEMANTIC_IMPLEMENTATION = (.*);\n$/s)[1]);
+  const data = implementationData();
   assert.deepEqual(data.feedback.map((thread) => thread.id), ["valid"]);
+  assert.equal(data.awaitingAgentReplies, 1);
   assert.equal(data.stages.length, 1);
+
+  // A duplicate key is a strict-validation error; the viewer reads the thread as before.
+  const text = JSON.stringify(original);
+  repository.writeAbsolute(file, `{"createdAt":"not a date",${text.slice(1)}`);
+  const repaired = implementationData();
+  assert.deepEqual(repaired.feedback.map((thread) => thread.id), ["valid", "damaged"]);
+  assert.equal(repaired.awaitingAgentReplies, 2);
 });

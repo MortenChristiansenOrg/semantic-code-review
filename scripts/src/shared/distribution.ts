@@ -68,13 +68,12 @@ export function validateDistribution(files: Map<string, Buffer>, expectedVersion
     throw new Error(`This release requires Node.js ${String(minimumNodeMajor)} or newer.`);
   }
   if (!isRecord(checksums) || Object.keys(checksums).length !== files.size - 1) throw new Error("Invalid release file manifest.");
-  const verified: Record<string, string> = {};
-  for (const [name, bytes] of files) {
-    if (name === "RELEASE.json") continue;
+  // Entries become own properties even for names such as __proto__.
+  const verified = Object.fromEntries([...files].filter(([name]) => name !== "RELEASE.json").map(([name, bytes]): [string, string] => {
     const digest = sha256(bytes);
     if (!Object.hasOwn(checksums, name) || checksums[name] !== digest) throw new Error(`Release file checksum mismatch: ${name}.`);
-    verified[name] = digest;
-  }
+    return [name, digest];
+  }));
   return { version: expectedVersion, sourceCommit, repository, minimumNodeMajor, files: verified };
 }
 

@@ -320,16 +320,22 @@ function manifestImplementationId(value: unknown): string {
   return implementationId;
 }
 
-/** Whether a stored thread waits for the agent. Revision polling tolerates
- * documents that are being rewritten, so the thread is narrowed, not validated. */
+/** A stored thread file, parsed like the revision snapshot parses it. */
+function readStoredThread(file: string): unknown {
+  return parseJson(fs.readFileSync(file, "utf8"));
+}
+
+/** The viewer lists and counts a stored thread only when it passes its schema,
+ * so one broken thread does not hide the others. Feedback commands and
+ * validation still report it. */
+function viewerThread(value: unknown): Thread | undefined {
+  return isDocument(THREAD_SCHEMA_ID, value) ? value : undefined;
+}
+
+/** Whether a stored thread that the viewer lists waits for the agent. */
 function threadAwaitsAgent(value: unknown): boolean {
-  const comments = fieldsOf(value).comments;
-  return awaitsAgentReply({
-    status: stringField(value, "status"),
-    comments: (isList(comments) ? comments : []).map((comment) => ({
-      id: stringField(comment, "id") ?? "", author: stringField(comment, "author") ?? "", respondsTo: stringField(comment, "respondsTo"),
-    })),
-  });
+  const thread = viewerThread(value);
+  return thread !== undefined && awaitsAgentReply(thread);
 }
 
 /** Thread IDs listed by a feedback manifest that may be mid-write. */
@@ -369,7 +375,7 @@ function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerR
     for (const threadId of listedThreadIds(readJson(feedbackManifestPath))) {
       const file = path.join(feedbackRoot, "threads", `${threadId}.json`);
       files.push(file);
-      if (threadAwaitsAgent(readJson(file))) awaitingAgentReplies += 1;
+      if (threadAwaitsAgent(readStoredThread(file))) awaitingAgentReplies += 1;
     }
   }
   const hash = createHash("sha256");
@@ -1408,12 +1414,7 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
     if (!fs.existsSync(manifestFile)) return [];
     const manifest = readJson(manifestFile);
     if (!isDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest)) throw new Error("Invalid feedback manifest.");
-    // A thread that fails its schema is left out rather than hiding every other
-    // thread; feedback commands and validation still report it.
-    return manifest.threads.flatMap((id) => {
-      const thread = readJson(path.join(feedbackRoot, "threads", `${id}.json`));
-      return isDocument(THREAD_SCHEMA_ID, thread) ? [thread] : [];
-    });
+    return manifest.threads.flatMap((id) => viewerThread(readStoredThread(path.join(feedbackRoot, "threads", `${id}.json`))) ?? []);
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
   return storedThreads.map((thread) => {
@@ -2661,10 +2662,12 @@ function runManagementJob(method: unknown, args: unknown[]) {
 
 async function runViewerJob(root: string, context: ReviewContext, source: ReturnType<typeof createViewerDataSource>, feedbackCli: string, method: unknown, args: unknown[]): Promise<unknown> {
   const localState = method === "readReview" || method === "patchReviewState";
-  if (localState) {
-    if (args[1] !== context.reviewId || readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+  // A state read returns the same record whose generation it checked.
+  const record = localState ? readReview(context.reviewId) : undefined;
+  if (record) {
+    if (args[1] !== context.reviewId || record.generation !== context.generation) throw new Error("The review session was replaced or deleted.");
   } else assertReviewContext(context); // Includes queued repository reads and commands.
-  if (method === "readReview") return readReview(context.reviewId);
+  if (method === "readReview") return record;
   if (method === "patchReviewState") return patchReviewState(context.reviewId, textArg(args, 2), parseStateChanges(args[3]));
   if (method === "snapshot") return { ...source.snapshot(args[0] === true), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
   if (method === "fileDiff") {

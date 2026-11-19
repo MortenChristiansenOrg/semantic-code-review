@@ -489,22 +489,41 @@ test("implementation and continuation distinguish recoverable CLI errors from us
   assert.match(runtime, /genuine product or design ambiguity, conflicting/);
 });
 
+/** Where a source breaks the typed JSON boundary: casts, assertions, `any`, or JSON.parse outside shared/json.ts. */
+function typedBoundaryViolations(relative, text) {
+  const source = ts.createSourceFile(relative, text, ts.ScriptTarget.Latest, true);
+  const findings = [];
+  const report = (node, reason) => findings.push(`${relative}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${reason}`);
+  const unwrap = (node) => ts.isParenthesizedExpression(node) ? unwrap(node.expression) : node;
+  const isJsonParse = (node) => {
+    const callee = unwrap(node);
+    const member = ts.isPropertyAccessExpression(callee) ? callee.name.text
+      : ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) ? callee.argumentExpression.text : undefined;
+    const receiver = member === "parse" ? unwrap(callee.expression) : undefined;
+    return receiver !== undefined && ts.isIdentifier(receiver) && receiver.text === "JSON";
+  };
+  const visit = (node) => {
+    if ((ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) && !(ts.isTypeReferenceNode(node.type) && node.type.typeName.getText(source) === "const")) report(node, "type assertion");
+    if (ts.isNonNullExpression(node)) report(node, "non-null assertion");
+    if (node.kind === ts.SyntaxKind.AnyKeyword) report(node, "any type");
+    if (ts.isCallExpression(node) && isJsonParse(node.expression) && relative !== "shared/json.ts") report(node, "JSON.parse outside shared/json.ts; use parseJson or readJson");
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return findings;
+}
+
 test("sources narrow values instead of casting, asserting, or parsing JSON outside the typed boundary", () => {
   const sourceRoot = path.join(scriptsDirectory, "..", "..", "..", "scripts", "src");
   const files = fs.readdirSync(sourceRoot, { recursive: true }).filter((file) => file.endsWith(".ts")).map((file) => path.join(sourceRoot, file));
-  const findings = [];
-  for (const file of files) {
-    const relative = path.relative(sourceRoot, file).split(path.sep).join("/");
-    const source = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
-    const report = (node, reason) => findings.push(`${relative}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${reason}`);
-    const visit = (node) => {
-      if ((ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) && !(ts.isTypeReferenceNode(node.type) && node.type.typeName.getText(source) === "const")) report(node, "type assertion");
-      if (ts.isNonNullExpression(node)) report(node, "non-null assertion");
-      if (node.kind === ts.SyntaxKind.AnyKeyword) report(node, "any type");
-      if (ts.isCallExpression(node) && node.expression.getText(source) === "JSON.parse" && relative !== "shared/json.ts") report(node, "JSON.parse outside shared/json.ts; use parseJson or readJson");
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
+  const findings = files.flatMap((file) =>
+    typedBoundaryViolations(path.relative(sourceRoot, file).split(path.sep).join("/"), fs.readFileSync(file, "utf8")));
   assert.deepEqual(findings, []);
+});
+
+test("the typed boundary check finds JSON.parse however it is accessed", () => {
+  const calls = ["JSON.parse(text);", 'JSON["parse"](text);', "JSON['parse'](text);", "(JSON).parse(text);", "(JSON.parse)(text);", "JSON?.parse(text);"];
+  for (const call of calls) assert.equal(typedBoundaryViolations("example.ts", call).length, 1, call);
+  assert.deepEqual(typedBoundaryViolations("shared/json.ts", 'JSON["parse"](text);'), []);
+  assert.deepEqual(typedBoundaryViolations("example.ts", "parseJson(text); JSON.stringify(value); other.parse(text);"), []);
 });

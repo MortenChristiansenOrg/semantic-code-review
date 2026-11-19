@@ -269,3 +269,14 @@ test('records saved without a title or lifecycle fields stay readable and listed
   assert.equal(readReview(review.id).completedAt, null);
   assert.deepEqual(listReviews().map((record) => record.id), [review.id]);
 });
+
+test('damaged viewer metadata counts as absent and keeps the review listed', (t) => {
+  const root = setup(t);
+  const review = registerReview(path.join(root, 'a'), 'viewer-id', 'Review');
+  registerReview(path.join(root, 'b'), 'other-id', 'Other');
+  const file = path.join(reviewDirectory(review.id), 'review.json');
+  const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { port: 1, processId: 2, viewerVersion: 'v' } }));
+  assert.equal(readReview(review.id).viewer, undefined);
+  assert.equal(listReviews().length, 2);
+});

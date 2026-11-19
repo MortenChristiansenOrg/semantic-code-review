@@ -270,3 +270,25 @@ test('a file locked during preflight reports recovery without retiring the revie
   assert.equal(preview(review).deletionPending, false);
   assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
 });
+
+test('a damaged deletion preview still lists the review and allows retry', (t) => {
+  const { review } = setup(t), before = preview(review), remove = fs.rmSync;
+  const mock = t.mock.method(fs, 'rmSync', (file, options) => {
+    if (String(file).includes(path.join('data', 'trash'))) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
+    return remove(file, options);
+  });
+  assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, true);
+  const ticket = path.join(process.env.SEMANTIC_FLOW_HOME, 'deletions', `${review.id}.${review.generation}.json`);
+  const record = JSON.parse(fs.readFileSync(ticket, 'utf8'));
+  record.preview.categories[0].bytes = 'damaged';
+  fs.writeFileSync(ticket, JSON.stringify(record));
+
+  assert.equal(registeredReviews().find((entry) => entry.id === review.id).deletionPending, true);
+  const pending = preview(review);
+  assert.equal(pending.deletionPending, true);
+  assert.equal(pending.categories[0].detail, 'Earlier preview unavailable');
+  assert.equal(pending.categories.reduce((sum, item) => sum + item.bytes, 0), pending.bytes);
+  mock.mock.restore();
+  assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, false);
+  assert.equal(registeredReviews().some((entry) => entry.id === review.id), false);
+});

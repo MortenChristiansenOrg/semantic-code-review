@@ -187,11 +187,9 @@ export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
     if (!parsed) throw invalid();
     record.remote = parsed;
   }
-  if (viewer !== undefined) {
-    const parsed = parseViewer(viewer);
-    if (!parsed) throw invalid();
-    record.viewer = parsed;
-  }
+  // Viewer metadata only locates a running viewer; damaged metadata counts as absent.
+  const parsedViewer = parseViewer(viewer);
+  if (parsedViewer) record.viewer = parsedViewer;
   return record;
 }
 export function reviewDeletionPath(id: string, generation: string) {
