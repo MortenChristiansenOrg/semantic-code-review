@@ -663,7 +663,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.doesNotMatch(app, /window\.location\.reload/);
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);
-  assert.match(app, /Notes <b>\$\{activeNoteCount\(\)\}<\/b>/);
+  assert.match(app, /activeNotes: activeNoteCount\(\)/);
   assert.match(app, /base: fileBaseRevision\(entry\)/);
   assert.match(app, /head: entry\.stage\.headRevision/);
   assert.match(app, /pendingLazyJump = null;\s+state\.notesOpen = false/);

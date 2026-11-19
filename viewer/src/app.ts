@@ -8,6 +8,8 @@ import * as api from "./api";
 import { aggregateApprovalState } from "./approvals";
 import { selectedNodeForFile } from "./files";
 import { esc, formatCommentBody } from "./html";
+import { patchElement } from "./views/legacy-html";
+import { renderPage } from "./views/page";
 
 (async function () {
   "use strict";
@@ -102,8 +104,33 @@ import { esc, formatCommentBody } from "./html";
   const agentMinutes = (status) => status?.working
     ? Math.max(0, Math.floor((Date.parse(status.serverTime) - Date.parse(status.working.startedAt)) / 60000)) : 0;
   const agentView = (status) => status && JSON.stringify({ ...status, serverTime: null, minutes: agentMinutes(status) });
+  // The agent's session files are read from disk unvalidated. Keep only what the
+  // page can show, so a malformed entry cannot stop rendering. Questions keep
+  // their first occurrence per ID, so buttons and handlers index the same choices.
+  const isText = (value) => typeof value === "string";
+  const record = (value) => value && typeof value === "object" ? value : null;
+  function agentRequests(requests) {
+    const seen = new Set();
+    return (Array.isArray(requests) ? requests : [])
+      .filter((request) => record(request) && isText(request.id) && !seen.has(request.id) && seen.add(request.id))
+      .map((request) => ({ ...request, body: isText(request.body) ? request.body : "",
+        choices: Array.isArray(request.choices) ? request.choices.filter(isText) : [] }));
+  }
+  function agentWorking(working) {
+    if (!record(working)) return null;
+    const threads = (Array.isArray(working.threads) ? working.threads : []).filter((thread) => record(thread) && isText(thread.id));
+    return { ...working, threads, note: isText(working.note) ? working.note : undefined };
+  }
+  function agentStatus(next) {
+    const round = record(next.lastRound) && isText(next.lastRound.id) ? next.lastRound : null;
+    const refresh = record(next.targetRefresh);
+    return { ...next, requests: agentRequests(next.requests), working: agentWorking(next.working),
+      lastRound: round && { ...round, threadIds: Array.isArray(round.threadIds) ? round.threadIds.filter(isText) : [] },
+      targetRefresh: refresh && ["at", "targetBranch", "previousBaseRevision", "baseRevision"].every((key) => isText(refresh[key])) ? refresh : null };
+  }
   function adoptAgentStatus(next) {
     if (!next || typeof next !== "object" || data.remote) return;
+    next = agentStatus(next);
     const previous = agent;
     agent = next;
     for (const id of minimizedAgentQuestions) if (!next.requests?.some((request) => request.id === id)) minimizedAgentQuestions.delete(id);
@@ -2401,83 +2428,32 @@ import { esc, formatCommentBody } from "./html";
   }
 
   /* ---- chrome ----------------------------------------------------------- */
-  function topbar() {
-    return `<div class="topbar-wrap">
-      <header class="topbar">
-        <div class="lockup">
-          <span class="vindex">◆</span>
-          <div><strong>${data.remote ? "Remote review" : "Implementation"}</strong><span>${esc(data.remote?.branch || data.implementationId)}</span></div>
-        </div>
-        <div class="tb-actions">
-          ${agentPill()}
-          <button class="tb-btn" data-action="file-search" type="button" aria-keyshortcuts="t" title="Find file (T)">Find file <kbd aria-hidden="true">T</kbd></button>
-          ${data.remote ? `<button class="tb-btn" data-action="refresh-remote" type="button" ${refreshingRemote ? "disabled" : ""}>${refreshingRemote ? "Refreshing…" : "Refresh branch"}</button>` : ""}
-          <button class="tb-btn" data-action="toggle-reviews" type="button" aria-expanded="${reviewsOpen}" aria-controls="review-list">Reviews</button>
-          <button class="tb-btn ${state.coverageOpen ? "is-on" : ""}" data-action="toggle-coverage" type="button" aria-expanded="${state.coverageOpen}">Coverage <b>${approvedCount()}/${reviewable()}</b></button>
-          <button class="tb-btn ${state.notesOpen ? "is-on" : ""}" data-action="toggle-notes" type="button" aria-expanded="${state.notesOpen}">Notes <b>${activeNoteCount()}</b></button>
-        </div>
-      </header>
-      <div class="progressbar" aria-hidden="true"><span style="width:${pct()}%"></span></div>
-    </div>`;
+  function topbarModel() {
+    const presence = !agent ? null : agent.stopRequested ? "stopping" : agent.working ? "working" : agent.listening ? "listening" : "offline";
+    return {
+      remote: Boolean(data.remote), subject: data.remote?.branch || data.implementationId,
+      agent: data.remote || !presence ? null : { presence, canStop: Boolean(agent.session && !agent.stopRequested), command: AGENT_COMMAND, commandCopied: agentCommandCopied },
+      refreshingRemote, reviewsOpen: Boolean(reviewsOpen), coverageOpen: Boolean(state.coverageOpen), notesOpen: Boolean(state.notesOpen),
+      approved: approvedCount(), reviewable: reviewable(), percent: pct(), activeNotes: activeNoteCount(),
+    };
   }
-
-  // Always-visible agent presence; stopping is offered while a session runs.
-  function agentPill() {
-    if (data.remote || !agent) return "";
-    const stop = agent.session && !agent.stopRequested
-      ? `<button class="tb-btn agent-stop" data-action="stop-agent" type="button" title="The agent finishes its current round, then stops listening">Stop agent</button>` : "";
-    if (agent.stopRequested) return `<span class="agent-pill is-stopping" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent stopping</span>`;
-    if (agent.working) return `<span class="agent-pill is-working" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent working</span>${stop}`;
-    if (agent.listening) return `<span class="agent-pill is-listening" role="status"><span class="agent-dot" aria-hidden="true"></span>Agent listening</span>${stop}`;
-    return `<button class="tb-btn agent-pill is-offline" data-action="copy-agent-command" type="button" title="No agent is listening. Copy ${AGENT_COMMAND} and run it in your agent."><span class="agent-dot" aria-hidden="true"></span>${agentCommandCopied ? "Command copied" : "No agent listening"}</button>`;
-  }
-  // Round progress, an offline prompt when feedback waits, and the agent's questions.
-  function targetRefreshBar() {
-    const refresh = agent?.targetRefresh;
-    if (!refresh || state.dismissedTargetRefresh === refresh.at) return "";
-    return `<div class="agent-bar is-refreshed" role="status"><strong>Moved onto the latest ${esc(refresh.targetBranch)}</strong>
-      <span>The implementation was restacked from ${esc(refresh.previousBaseRevision.slice(0, 12))} to ${esc(refresh.baseRevision.slice(0, 12))}. Files the target branch changed may show stale approvals, but those edits are not review corrections.</span>
-      <button class="tb-btn" data-action="dismiss-target-refresh" type="button">Dismiss</button></div>`;
-  }
-  function agentBar() {
-    if (data.remote || !agent) return "";
+  function agentBarModel() {
+    if (data.remote || !agent) return null;
     const queued = artifactThreads.filter((thread) => awaitsAgent(thread) && !agentWorkingOn(thread.id)).length;
-    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
-    let status = "";
-    if (agent.working) {
-      const total = agent.working.threads.length, answered = agent.working.threads.filter((thread) => thread.answered).length;
-      const minutes = agentMinutes(agent);
-      const parts = [`${answered} of ${total} answered`, agent.working.note ? esc(agent.working.note) : "",
-        minutes ? `${minutes} min` : "", queued ? `${queued} queued for the next round` : ""].filter(Boolean);
-      status = `<div class="agent-bar is-working" role="status"><strong>Agent working on ${plural(total, "thread")}</strong><span>${parts.join(" · ")}</span>${agent.stopRequested ? "<span>Stops after this round</span>" : ""}</div>`;
-    } else if (queued && !agent.listening) {
-      status = `<div class="agent-bar is-offline" role="status"><strong>${plural(queued, "thread")} waiting for an agent</strong>
-        <span>Run <code>${AGENT_COMMAND}</code> in your agent to have feedback handled as you send it.</span>
-        <button class="tb-btn" data-action="copy-agent-command" type="button">${agentCommandCopied ? "Copied" : "Copy command"}</button></div>`;
-    }
-    return status + targetRefreshBar() + agentQuestions();
-  }
-  function agentQuestions() {
-    const count = agent.requests.length;
-    if (!count) return "";
-    if (agent.requests.every((request) => minimizedAgentQuestions.has(request.id)))
-      return `<button class="agent-questions-show" data-action="show-agent-questions" type="button">The agent needs your answer${count > 1 ? ` (${count})` : ""} · Show</button>`;
-    return `<div class="agent-questions" role="region" aria-label="Questions from the agent">
-      <div class="agent-questions-h"><p class="agent-question-h">The agent needs your answer${count > 1 ? ` (${count})` : ""}</p>
-        <button class="tb-btn" data-action="minimize-agent-questions" type="button" title="Hide the question to read the review. It stays waiting for your answer.">Minimize</button></div>
-      ${agent.requests.map(agentQuestion).join("")}</div>`;
-  }
-  function agentQuestion(request) {
-    const op = agentAnswerOps.get(request.id) || {};
-    return `<section class="agent-question" data-render-key="agent-question-${esc(request.id)}" aria-label="Question from the agent">
-      <p class="comment-body">${formatCommentBody(request.body)}</p>
-      ${request.choices.length ? `<div class="agent-choices">${request.choices.map((choice, index) => `<button class="tb-btn" type="button" data-action="agent-choice" data-id="${esc(request.id)}" data-choice="${index}" ${op.busy ? "disabled" : ""}>${esc(choice)}</button>`).join("")}</div>` : ""}
-      <form class="agent-answer" data-agent-answer data-id="${esc(request.id)}">
-        <textarea name="agent-answer-${esc(request.id)}" rows="3" placeholder="${request.choices.length ? "Or write a different answer…" : "Write your answer…"}" ${op.busy ? "disabled" : ""}>${esc(agentAnswers.get(request.id) || "")}</textarea>
-        <div class="nc-actions"><button class="nc-save" type="submit" ${op.busy ? "disabled" : ""}>${op.busy ? "Sending…" : "Send answer"}</button></div>
-      </form>
-      ${op.error ? `<p class="tthread-err">${esc(op.error)}</p>` : ""}
-    </section>`;
+    const status = agent.working
+      ? { kind: "working", total: agent.working.threads.length, answered: agent.working.threads.filter((thread) => thread.answered).length,
+        note: agent.working.note || "", minutes: agentMinutes(agent) || 0, queued, stopRequested: Boolean(agent.stopRequested) }
+      : queued && !agent.listening ? { kind: "waiting", queued, command: AGENT_COMMAND, commandCopied: agentCommandCopied } : null;
+    const refresh = agent.targetRefresh;
+    return {
+      status,
+      targetRefresh: refresh && state.dismissedTargetRefresh !== refresh.at ? refresh : null,
+      questions: agent.requests.map((request) => {
+        const op = agentAnswerOps.get(request.id) || {};
+        return { id: request.id, body: request.body, choices: request.choices, answer: agentAnswers.get(request.id) || "", busy: Boolean(op.busy), error: op.error || "" };
+      }),
+      questionsMinimized: agent.requests.every((request) => minimizedAgentQuestions.has(request.id)),
+    };
   }
 
   function markReviewDeleted(external = false) {
@@ -2799,27 +2775,16 @@ import { esc, formatCommentBody } from "./html";
   }
 
   /* ---- side panels ------------------------------------------------------ */
-  function coveragePanel() {
-    const rows = data.stages.map((s, i) => {
-      const nd = s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length;
-      const fileApprovals = stageFileApprovals(s);
-      const fd = fileApprovals.filter(approved).length;
-      const stageDone = stageApproved(s);
-      return `<div class="cov-stage ${stageDone ? "is-approved" : ""}">
-        <div class="cov-h"><span>${stageDone ? "✓" : String(i + 1).padStart(2, "0")}</span><strong>${esc(s.title)}</strong></div>
-        <div class="cov-bars">
-          <span class="cov-bar" title="${nd}/${s.nodes.length} steps"><i style="width:${Math.round(nd / s.nodes.length * 100)}%"></i></span>
-          <span class="cov-bar files" title="${fd}/${fileApprovals.length} file reviews"><i style="width:${Math.round(fd / fileApprovals.length * 100)}%"></i></span>
-        </div>
-        <small>${stageDone ? "Stage approved" : "Stage approval pending"} · ${nd}/${s.nodes.length} steps · ${fd}/${fileApprovals.length} file reviews</small>
-      </div>`;
-    }).join("");
-    return `<aside class="side coverage ${state.coverageOpen ? "is-open" : ""}" aria-hidden="${!state.coverageOpen}" ${state.coverageOpen ? "" : "inert"}>
-      <div class="side-head"><div><span class="eyebrow">At a glance</span><h2>Review coverage</h2></div><button data-action="toggle-coverage" aria-label="Close" type="button">×</button></div>
-      <div class="cov-score"><strong>${pct()}%</strong><span>${approvedCount()} of ${reviewable()} approved</span><div class="mini-bar"><i style="width:${pct()}%"></i></div></div>
-      <div class="cov-list">${rows}</div>
-      <div class="cov-key"><span><i class="steps"></i>Steps</span><span><i class="files"></i>File reviews</span></div>
-    </aside>`;
+  function coverageModel() {
+    return {
+      open: Boolean(state.coverageOpen), approved: approvedCount(), reviewable: reviewable(), percent: pct(),
+      stages: data.stages.map((s, i) => {
+        const fileApprovals = stageFileApprovals(s);
+        return { id: s.id, number: String(i + 1).padStart(2, "0"), title: s.title, approved: stageApproved(s),
+          nodesApproved: s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length, nodes: s.nodes.length,
+          filesApproved: fileApprovals.filter(approved).length, files: fileApprovals.length };
+      }),
+    };
   }
   function localNoteRef(c) {
     if (c.kind === "stage") return stageById.has(c.id) ? c : null;
@@ -2968,81 +2933,11 @@ import { esc, formatCommentBody } from "./html";
     return { text: t, title: t };
   }
   /* ---- render ----------------------------------------------------------- */
-  // Keep the last requested markup separate from the live DOM. Unchanged
-  // subtrees retain scroll, selection, image state and running animations;
-  // browser-managed details/form state is not overwritten by unrelated edits.
-  const renderedNodes = new WeakMap();
-  function renderKey(node) {
-    if (node.nodeType !== Node.ELEMENT_NODE) return String(node.nodeType);
-    const identity = ["data-render-key", "id", "data-stage", "data-node", "data-file", "data-thread", "data-thread-id", "data-req-id", "data-node-files", "data-action", "data-id", "data-kind", "data-node-id", "data-mode", "data-filter", "data-reply-id", "data-reply-key", "name", "value"];
-    return JSON.stringify([node.tagName, (node.getAttribute("class") || "").split(/\s+/)[0], ...identity.map((key) => node.getAttribute(key))]);
-  }
-  function rememberRendered(node, template) {
-    if (node.nodeType === Node.ELEMENT_NODE) renderedNodes.set(node, renderSnapshot(template));
-    Array.from(node.childNodes).forEach((child, index) => rememberRendered(child, template.childNodes[index]));
-  }
-  function renderSnapshot(node) {
-    // Store values, not detached nodes whose parent links would keep entire
-    // obsolete page trees alive for every independently updated component.
-    return { markup: node.outerHTML, attributes: new Map(Array.from(node.attributes, attr => [attr.name, attr.value])) };
-  }
-  function patchChildren(parent, next) {
-    const available = new Map();
-    for (const node of parent.childNodes) {
-      const key = renderKey(node);
-      if (!available.has(key)) available.set(key, []);
-      available.get(key).push(node);
-    }
-    const matches = Array.from(next.childNodes, desired => ({ desired, existing: available.get(renderKey(desired))?.shift() }));
-    // Remove obsolete siblings first: otherwise their surviving neighbours
-    // would be needlessly moved, restarting animations and losing focus.
-    for (const nodes of available.values()) for (const node of nodes) node.remove();
-    let cursor = parent.firstChild;
-    for (const { desired, existing } of matches) {
-      const node = existing || desired.cloneNode(true);
-      if (!existing) rememberRendered(node, desired);
-      else if (node.nodeType === Node.ELEMENT_NODE) patchElement(node, desired);
-      else if (node.nodeValue !== desired.nodeValue) node.nodeValue = desired.nodeValue;
-      if (node !== cursor) parent.insertBefore(node, cursor);
-      cursor = node.nextSibling;
-    }
-  }
-  function patchElement(node, next) {
-    const previous = renderedNodes.get(node);
-    const snapshot = renderSnapshot(next);
-    if (previous?.markup === snapshot.markup) return;
-    for (const name of (previous?.attributes || renderSnapshot(node).attributes).keys()) {
-      if (!next.hasAttribute(name)) node.removeAttribute(name);
-    }
-    for (const attr of next.attributes) {
-      if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
-    }
-    if (node instanceof HTMLTextAreaElement) {
-      if (node.value !== next.value) node.value = next.value;
-    } else {
-      patchChildren(node, next);
-      if (node instanceof HTMLInputElement && node.type !== "file") {
-        if (node.value !== next.value) node.value = next.value;
-        node.checked = next.checked;
-      }
-    }
-    renderedNodes.set(node, snapshot);
-  }
-  function render() {
-    if (reviewDeleted) { app.innerHTML = ""; setReviewsOpen(true); updateReviewList(); return; }
-    const next = document.createElement("div");
-    const roundMessage = roundNotice
-      ? `<div class="review-update agent-round" role="status"><span>Agent replied to ${roundNotice.count} thread${roundNotice.count === 1 ? "" : "s"}</span><button type="button" data-action="show-unread">Show</button><button type="button" data-action="dismiss-round" aria-label="Dismiss">×</button></div>`
-      : refreshNotice ? `<div class="review-update" role="status">${esc(refreshNotice)}</div>` : "";
-    next.innerHTML = `${topbar()}${agentBar()}${[...approvalErrors.values()].map((error) => `<div class="review-update" role="alert">Approval was not saved: ${esc(error)}</div>`).join("")}${roundMessage}
-      <main class="shell v-cinema">
-        ${storyColumn()}
-      </main>
-      ${coveragePanel()}${notesPanel()}
-      <div class="scrim ${state.coverageOpen || state.notesOpen ? "is-on" : ""}" data-action="close-panels"></div>`;
+  // Each open file's diff follows its row in the story column.
+  function injectOpenDiffs(root) {
     for (const id of Object.keys(state.activeFiles)) {
       const nodeId = activeFileNodeId(id), entry = fileById.get(id);
-      const row = nodeId && fileRowElement(id, nodeId, next);
+      const row = nodeId && fileRowElement(id, nodeId, root);
       if (!row || !entry) continue;
       row.classList.add("is-open");
       const holder = document.createElement("div");
@@ -3050,7 +2945,21 @@ import { esc, formatCommentBody } from "./html";
       holder.innerHTML = diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: nodeId }) + fileNotesBlock(id);
       row.after(holder);
     }
-    patchChildren(app, next);
+  }
+  function render() {
+    if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
+    renderPage(app, {
+      topbar: topbarModel(),
+      agentBar: agentBarModel(),
+      notices: {
+        approvalErrors: [...approvalErrors].map(([id, message]) => ({ id, message })),
+        roundCount: roundNotice ? roundNotice.count : null,
+        refresh: refreshNotice,
+      },
+      story: { markup: storyColumn(), prepare: injectOpenDiffs },
+      coverage: coverageModel(),
+      notes: { markup: notesPanel() },
+    });
     enhance();
     if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
@@ -4182,7 +4091,7 @@ import { esc, formatCommentBody } from "./html";
       : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
-    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd] : null;
+    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
     retainApprovalRenames();
     revokeInvalidStageApprovals();
     const open = captureOpen();
@@ -4226,7 +4135,12 @@ import { esc, formatCommentBody } from "./html";
     document.body.classList.toggle("no-scroll", state.notesOpen);
     if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
       restoreWindowScroll(winScroll.left, winScroll.top);
-    if (!focused?.isConnected && (focusName || focusSelector)) {
+    // Moving a node, as a keyed list does when it reorders, blurs it although it survives.
+    const focusLost = !document.activeElement || document.activeElement === document.body;
+    if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
+      focused.focus({ preventScroll: true });
+      if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
+    } else if (!focused?.isConnected && (focusName || focusSelector)) {
       const focusRoot = focusName && state.notesOpen ? app.querySelector(".side.notes") : app;
       const replacement = focusRoot?.querySelector(focusName ? `[name="${cssEsc(focusName)}"]${focusRadioValue === null ? "" : `[value="${cssEsc(focusRadioValue)}"]`}` : focusSelector);
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }

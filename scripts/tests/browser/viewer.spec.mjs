@@ -27,7 +27,7 @@ function fixture() {
 function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first', label: 'Stage first' }) {
   return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
-async function mount(page, data = fixture(), saved = {}, other = []) {
+async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {}) {
   const allData = [data, ...other];
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
@@ -106,7 +106,7 @@ async function mount(page, data = fixture(), saved = {}, other = []) {
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
   });
   await page.goto('http://localhost/');
   await expect(page.locator('.stage')).toHaveCount(2);
@@ -2886,4 +2886,104 @@ test('unread replies persist from an empty start, are tracked per thread, and lo
   await page.locator('.side.notes [data-reply-key=\'["one","answer"]\']').evaluate((element) => element.scrollIntoView({ block: 'start' }));
   await expect.poll(() => page.title(), { timeout: 8000 }).toMatch(/^\(1\)/);
   await expect(page.locator('.side.notes [data-reply-key=\'["two","answer"]\']')).toHaveClass(/is-unread/);
+});
+
+test('coverage, progress and the scrim follow approvals under a policy that blocks style attributes', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.styleViolations = [];
+    document.addEventListener('securitypolicyviolation', (event) => window.styleViolations.push(event.effectiveDirective));
+  });
+  await mount(page, fixture(), {}, [], { csp: "style-src-attr 'none'" });
+  const share = (bar) => bar.evaluate((el) => Math.round(el.getBoundingClientRect().width / el.parentElement.getBoundingClientRect().width * 100));
+  const toggle = page.locator('.tb-btn[data-action="toggle-coverage"]'), panel = page.locator('.side.coverage'), scrim = page.locator('.scrim');
+  await expect(panel).toHaveAttribute('aria-hidden', 'true');
+  await expect(panel).toHaveAttribute('inert', '');
+  await expect(scrim).not.toHaveClass(/is-on/);
+  expect(await share(page.locator('.progressbar span'))).toBe(0);
+
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await expect(toggle).toContainText('2/10');
+  await expect.poll(() => share(page.locator('.progressbar span'))).toBe(20);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toHaveClass(/is-on/);
+  await expect(panel).toHaveAttribute('aria-hidden', 'false');
+  await expect(panel).not.toHaveAttribute('inert');
+  await expect(scrim).toHaveClass(/is-on/);
+  await expect(panel.locator('.cov-score')).toContainText('20%2 of 10 approved');
+  await expect.poll(() => share(panel.locator('.mini-bar i'))).toBe(20);
+  const [first, second] = [panel.locator('.cov-stage').nth(0), panel.locator('.cov-stage').nth(1)];
+  await expect(first).toContainText('Stage approval pending · 1/2 steps · 1/2 file reviews');
+  await expect(first.locator('.cov-h span')).toHaveText('01');
+  await expect(first.locator('.cov-bar').first()).toHaveAttribute('data-tooltip', '1/2 steps');
+  await expect.poll(() => share(first.locator('.cov-bar i').first())).toBe(50);
+  await expect.poll(() => share(first.locator('.cov-bar.files i'))).toBe(50);
+  await expect.poll(() => share(second.locator('.cov-bar.files i'))).toBe(0);
+
+  await scrim.click({ position: { x: 10, y: 300 } });
+  await expect(panel).toHaveAttribute('aria-hidden', 'true');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(scrim).not.toHaveClass(/is-on/);
+  expect(await page.evaluate(() => window.styleViolations)).toEqual([]);
+});
+
+test('stored agent questions with malformed bodies or choices do not stop page updates', async ({ page }) => {
+  const now = new Date().toISOString();
+  const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [{ nodeType: 1 }, 'Keep'], createdAt: now },
+      { id: 'q2', body: 'Duplicate', choices: ['Other'], createdAt: now }, null],
+    working: { startedAt: now, note: { toString: null }, threads: null },
+    lastRound: { id: 'round-1', completedAt: now },
+    targetRefresh: { at: now, targetBranch: { nodeType: 1 }, previousBaseRevision: 1, baseRevision: 2 } } };
+  await mount(page, data);
+  await expect(page.locator('.agent-question')).toHaveCount(2);
+  await expect(page.locator('[data-action="agent-choice"]')).toHaveText(['Keep']);
+  await expect(page.locator('.agent-bar.is-refreshed')).toHaveCount(0);
+  await page.locator('.tb-btn[data-action="toggle-coverage"]').click();
+  await expect(page.locator('.side.coverage')).toHaveClass(/is-open/);
+});
+
+test('agent questions keep the draft, focus and caret across live updates and show their text literally', async ({ page }) => {
+  const now = new Date().toISOString();
+  const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'q1', body: 'Use `<b>bold</b>` or <i>this</i>?\r\nSecond line', choices: ['<b>Yes</b>'], createdAt: now }] } };
+  await mount(page, data);
+  const first = page.locator('.agent-question').first();
+  await expect(first.locator('.comment-body code')).toHaveText('<b>bold</b>');
+  // toHaveText normalises whitespace; the line break must survive exactly.
+  await expect(first.locator('.comment-body')).toHaveJSProperty('textContent', 'Use <b>bold</b> or <i>this</i>?\nSecond line');
+  await expect(first.locator('.comment-body b, .comment-body i')).toHaveCount(0);
+  await expect(first.locator('[data-action="agent-choice"]')).toHaveText('<b>Yes</b>');
+
+  const answer = page.locator('textarea[name="agent-answer-q1"]');
+  await answer.fill('Draft answer');
+  await answer.evaluate((el) => { el.setSelectionRange(2, 5); el.dataset.marker = 'kept'; });
+  data.agent = { ...data.agent, working: { startedAt: now, threads: [] },
+    requests: [...data.agent.requests, { id: 'q2', body: 'Another question?', choices: [], createdAt: now }] };
+  data.viewerRevision = 'second-question';
+  await expect(page.locator('.agent-question')).toHaveCount(2);
+  await expect(page.locator('.agent-questions-h')).toContainText('The agent needs your answer (2)');
+  await expect(page.locator('.agent-bar.is-working')).toBeVisible();
+  await expect(answer).toHaveValue('Draft answer');
+  await expect(answer).toBeFocused();
+  await expect(answer).toHaveAttribute('data-marker', 'kept');
+  expect(await answer.evaluate((el) => [el.selectionStart, el.selectionEnd])).toEqual([2, 5]);
+
+  // Swapping the questions moves the focused answer; it keeps its focus and a backward selection.
+  await answer.evaluate((el) => el.setSelectionRange(1, 4, 'backward'));
+  data.agent = { ...data.agent, requests: [...data.agent.requests].reverse() };
+  data.viewerRevision = 'swapped-questions';
+  await expect(page.locator('.agent-question').first().locator('textarea')).toHaveAttribute('name', 'agent-answer-q2');
+  await expect(answer).toHaveAttribute('data-marker', 'kept');
+  await expect(answer).toBeFocused();
+  expect(await answer.evaluate((el) => [el.selectionStart, el.selectionEnd, el.selectionDirection])).toEqual([1, 4, 'backward']);
+
+  await page.locator('[data-action="minimize-agent-questions"]').click();
+  await expect(page.locator('.agent-question')).toHaveCount(0);
+  await page.locator('[data-action="show-agent-questions"]').click();
+  await expect(answer).toHaveValue('Draft answer');
 });
