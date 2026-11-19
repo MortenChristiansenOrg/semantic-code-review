@@ -67,7 +67,43 @@ test('independent tab edits merge, retries are idempotent, conflicts are atomic'
   assert.deepEqual(readReview(review.id).state.approvals, { one: { rev: 'a' }, two: { rev: 'b' } });
   assert.throws(() => write([change(['draft'], 'keep'), change(['approvals', 'one'], { rev: 'wrong' })]), /another tab/);
   assert.equal(readReview(review.id).state.draft, undefined);
-  assert.throws(() => write([change(['__proto__', 'polluted'], true)]), /Invalid/);
+  assert.throws(() => write([{ path: ['draft', 1], before: { present: false }, after: { present: true, value: true } }]), /Invalid/);
+});
+
+test('state under keys named __proto__, constructor and prototype is saved, restored and never pollutes prototypes', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  const write = (changes) => patchReviewState(review.id, review.generation, changes);
+  const names = ['__proto__', 'constructor', 'prototype'];
+  write([
+    ...names.map((name) => change(['approvals', name], { rev: name, polluted: true })),
+    ...names.map((name) => change(['openStages', name], true)),
+    ...names.map((name) => change([name, 'polluted'], true)),
+    ...names.map((name) => change(['nested', name, name, 'polluted'], name)),
+  ]);
+  assert.equal({}.polluted, undefined);
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.equal(Object.getPrototypeOf(Object.prototype), null);
+  const state = readReview(review.id).state;
+  for (const name of names) {
+    for (const map of [state, state.approvals, state.openStages, state.nested, state.nested[name]]) {
+      assert.ok(Object.hasOwn(map, name), `${name} is an own key`);
+      assert.equal(Object.getPrototypeOf(map), Object.prototype);
+    }
+    assert.deepEqual({ ...state.approvals[name] }, { rev: name, polluted: true });
+    assert.equal(state.openStages[name], true);
+    assert.equal(state[name].polluted, true);
+    assert.equal(state.nested[name][name].polluted, name);
+  }
+  // Exact retries stay idempotent; changes and removals compare own values only.
+  write(names.map((name) => change(['openStages', name], true)));
+  write(names.map((name) => change(['openStages', name], false, true)));
+  write(names.map((name) => ({ path: ['approvals', name], before: { present: true, value: { rev: name, polluted: true } }, after: { present: false } })));
+  assert.throws(() => write([change(['openStages', 'constructor'], true, true)]), /another tab/);
+  const updated = readReview(review.id).state;
+  for (const name of names) {
+    assert.equal(updated.openStages[name], false);
+    assert.equal(Object.hasOwn(updated.approvals, name), false);
+  }
   assert.equal({}.polluted, undefined);
 });
 

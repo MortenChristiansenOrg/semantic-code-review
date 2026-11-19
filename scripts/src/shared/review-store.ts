@@ -244,6 +244,13 @@ export type StateChange = { path: string[]; before: Value; after: Value };
 function validateValue(value: Value) {
   if (!value || typeof value.present !== "boolean" || (value.present && !Object.hasOwn(value, "value"))) throw new Error("Invalid state change value.");
 }
+/** Artifact IDs name state keys, so any key, including "__proto__", "constructor"
+ * and "prototype", is an ordinary own property. Defining it, rather than assigning,
+ * never reaches a prototype setter; reads check own properties only, and JSON keeps
+ * such keys as own properties in both directions. */
+function defineOwn(target: JsonRecord, key: string, value: unknown) {
+  Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+}
 export function patchReviewState(id: string, generation: string, changes: StateChange[]) {
   if (!Array.isArray(changes) || changes.length > 10000) throw new Error("Invalid state changes.");
   return withReviewLock(id, () => {
@@ -253,11 +260,11 @@ export function patchReviewState(id: string, generation: string, changes: StateC
     const previousSnapshots = approvalSnapshotIds(record.state);
     const previousAttachments = attachmentIds(record.state);
     for (const change of changes) {
-      if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string" || ["__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid state change path.");
+      if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string")) throw new Error("Invalid state change path.");
       validateValue(change.before); validateValue(change.after);
       let target = record.state;
       for (const key of change.path.slice(0, -1)) {
-        if (!Object.hasOwn(target, key)) target[key] = {};
+        if (!Object.hasOwn(target, key)) defineOwn(target, key, {});
         const next = target[key];
         if (!isRecord(next)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
         target = next;
@@ -267,7 +274,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       // Exact retries are harmless even if the original response was lost.
       if (isDeepStrictEqual(current, change.after)) continue;
       if (!isDeepStrictEqual(current, change.before)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
-      if (change.after.present) Object.defineProperty(target, key, { value: change.after.value, enumerable: true, configurable: true, writable: true });
+      if (change.after.present) defineOwn(target, key, change.after.value);
       else delete target[key];
     }
     const { comments, replyDrafts, editor } = record.state;

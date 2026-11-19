@@ -2651,8 +2651,8 @@ function stateValue(value: unknown): StateChange["before"] {
   return Object.hasOwn(value, "value") ? { present: value.present, value: value.value } : { present: value.present };
 }
 
-/** Review state changes from the browser. patchReviewState checks their limits
- * and keys; this establishes their shape, with the same messages. */
+/** Review state changes from the browser. patchReviewState checks their limits;
+ * this establishes their shape, with the same messages. */
 function parseStateChanges(value: unknown): StateChange[] {
   if (!isList(value)) throw new Error("Invalid state changes.");
   return value.map((item) => {
