@@ -670,10 +670,8 @@ test("viewer client refreshes data without reloading the page", () => {
     app,
     /t\.target\.nodeId === id && t\.target\.stageId === stageId/,
   );
-  assert.match(
-    app,
-    /data-kind="\$\{esc\(kind\)\}" data-id="\$\{esc\(id\)\}" data-stage="\$\{esc\(stageId \|\| ""\)\}"/,
-  );
+  // The page renders through lit templates and builds no markup strings.
+  assert.doesNotMatch(app, /innerHTML|outerHTML|insertAdjacentHTML/);
   assert.match(styles, /\.drow > code \{/);
   assert.doesNotMatch(styles, /\.drow code \{/);
 });

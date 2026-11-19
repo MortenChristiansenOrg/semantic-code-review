@@ -2363,6 +2363,28 @@ test('file search updates from live snapshots without losing query or background
   await expect(page.locator('textarea[name="nc-body"]')).toHaveValue('Keep my draft');
 });
 
+test('file search reopened before the old one finishes closing keeps following live snapshots', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await expect(dialog.getByRole('option')).toHaveCount(4);
+  // Close and reopen in one task, so the old dialog's close event arrives
+  // after the new picker opened.
+  await page.evaluate(() => {
+    document.querySelector('dialog.file-search').close();
+    document.querySelector('[data-action="file-search"]').click();
+  });
+  await expect(page.locator('dialog.file-search')).toHaveCount(1);
+  const input = dialog.getByRole('combobox');
+  await expect(input).toBeFocused();
+  data.stages[1].files = [];
+  data.viewerRevision = 'reopened-files';
+  await expect(dialog.getByRole('option')).toHaveCount(2, { timeout: 15000 });
+  await expect(input).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
 test('file search keeps all matches scrollable and fits narrow screens', async ({ page }) => {
   const data = fixture();
   data.stages[0].files.push(...Array.from({ length: 120 }, (_, i) => ({ path: `src/${'long-directory/'.repeat(5)}file-${i}.js`, kind: 'added', additions: 1, deletions: 0, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] })));
@@ -2475,6 +2497,83 @@ test('T opens file search without stealing typing, modified keys, or another dia
   await expect(dialog).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(draft).toHaveValue('t');
+});
+
+test('file search renders its results only when the matches or the active option change', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) stage.files = Array.from({ length: 750 }, (_, i) => ({ path: `dir/file${i}.js`, kind: 'modified', revision: 'rev', additions: 1, deletions: 0,
+    memberships: [{ nodeId: `${stage.id}-one`, classification: 'behavior' }, { nodeId: `${stage.id}-two`, classification: 'behavior' }] }));
+  const errors = await mount(page, data);
+  await page.keyboard.press('t');
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  await expect(dialog.getByRole('option')).toHaveCount(3000);
+  // Caret, focus, selection and scroll events only refresh the completion;
+  // moving the active option renders the list. Rendering an option converts its
+  // selected state with the global String, so the calls during one event count
+  // how many options it rendered, and the list's mutations show what changed.
+  const effects = await page.evaluate(() => {
+    const input = document.querySelector('#file-search-input'), list = document.querySelector('#file-search-results');
+    const original = window.String;
+    let calls = 0;
+    const counting = function (...args) { calls++; return original(...args); };
+    Object.setPrototypeOf(counting, original); counting.prototype = original.prototype;
+    const observer = new MutationObserver(() => {});
+    observer.observe(list, { subtree: true, childList: true, attributes: true, characterData: true });
+    const effect = (event) => {
+      calls = 0; window.String = counting;
+      try { input.dispatchEvent(event); } finally { window.String = original; }
+      return { renders: calls, mutations: observer.takeRecords().map((record) => `${record.type}:${record.attributeName}:${record.target.dataset?.index}`) };
+    };
+    const caret = ['keyup', 'focus', 'select', 'scroll', 'click', 'blur'].map((type) => effect(new Event(type)));
+    const move = effect(new KeyboardEvent('keydown', { key: 'ArrowDown' }));
+    const back = effect(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+    observer.disconnect();
+    return { caret, move, back };
+  });
+  for (const caret of effects.caret) {
+    expect(caret.renders).toBeLessThan(100);
+    expect(caret.mutations).toEqual([]);
+  }
+  for (const [move, from, to] of [[effects.move, 0, 1], [effects.back, 1, 0]]) {
+    expect(move.renders).toBeGreaterThanOrEqual(3000);
+    expect(move.mutations.sort()).toEqual([`attributes:aria-selected:${from}`, `attributes:aria-selected:${to}`].sort());
+  }
+  await expect(dialog.getByRole('option').first()).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowDown');
+  await expect(dialog.getByRole('option').nth(1)).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('option').first()).toHaveAttribute('aria-selected', 'false');
+  expect(errors).toEqual([]);
+});
+
+test('file search shows line counts a diff response updates while it is open', async ({ page }) => {
+  const data = fixture(), { lines } = data.stages[0].files[0];
+  // Without lines, opening the file requests its diff.
+  delete data.stages[0].files[0].lines;
+  const errors = await mount(page, data);
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  await page.route('http://localhost/api/diff**', async (route) => {
+    await released;
+    await route.fulfill({ json: { ok: true, lines, additions: 9, deletions: 4 } });
+  });
+  const response = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/diff');
+  await openFile(page);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const options = dialog.getByRole('option');
+  await expect(options).toHaveCount(4);
+  await expect(options.first()).toContainText('+2');
+  release();
+  await response;
+  await expect(options.first()).toContainText('+9');
+  await page.keyboard.press('ArrowDown');
+  await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true');
+  for (const index of [0, 1]) {
+    await expect(options.nth(index)).toContainText('+9');
+    await expect(options.nth(index)).toContainText('−4');
+  }
+  await expect(options.nth(2)).toContainText('+2');
+  expect(errors).toEqual([]);
 });
 
 test('file search requires a contiguous current filename substring and completes inline', async ({ page }) => {
@@ -2745,6 +2844,138 @@ test('linked reasoning is one divided pill with stable hover and multiline toolt
   expect(errors).toEqual([]);
 });
 
+// Every full render first records which steps are open, so counting those
+// lookups counts renders.
+async function countRenders(page) {
+  await page.evaluate(() => {
+    window.renders = 0;
+    const query = Element.prototype.querySelectorAll;
+    Element.prototype.querySelectorAll = function (selector) {
+      if (selector === 'details.node[open]') window.renders++;
+      return query.call(this, selector);
+    };
+  });
+  return () => page.evaluate(() => new Promise((resolve) => setTimeout(() => resolve(window.renders), 50)));
+}
+
+test('inline insight hover updates only its rows, without rendering, and later renders agree', async ({ page }) => {
+  const data = fixture(), insight = codeInsight();
+  insight.codeTarget.endLine = 2;
+  data.stages[0].insights.push(insight);
+  const errors = await mount(page, data); await openFile(page);
+  const button = page.locator('details[data-node="first-one"] .line-code-insights button');
+  const highlighted = page.locator('.is-code-insight-target');
+  const lineIds = () => highlighted.evaluateAll((rows) => rows.map((row) => row.dataset.lineId));
+  const toggleNotes = async (open) => {
+    await page.evaluate(() => document.querySelector('.tb-btn[data-action="toggle-notes"]').click());
+    await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveAttribute('aria-expanded', String(open));
+  };
+  const renders = await countRenders(page);
+  await button.hover();
+  await expect(highlighted).toHaveCount(2);
+  await page.mouse.move(0, 0);
+  await expect(highlighted).toHaveCount(0);
+  await button.focus();
+  await expect(highlighted).toHaveCount(2);
+  await button.blur();
+  await expect(highlighted).toHaveCount(0);
+  expect(await renders()).toBe(0);
+  // A render while the insight is focused keeps exactly the highlighted rows;
+  // one after it is left keeps none. (The open notes panel covers the diff, so
+  // these use focus rather than the pointer.)
+  for (let round = 0; round < 2; round++) {
+    await button.focus();
+    const before = await renders();
+    await toggleNotes(true);
+    expect(await renders()).toBeGreaterThan(before);
+    expect(await lineIds()).toEqual(['l:first:new:1:shared.js', 'l:first:new:2:shared.js']);
+    await button.blur();
+    await expect(highlighted).toHaveCount(0);
+    await toggleNotes(false);
+    await expect(highlighted).toHaveCount(0);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('an inline insight highlight ends when its diff closes under the pointer', async ({ page }) => {
+  const data = fixture(); data.stages[0].insights.push(codeInsight());
+  const errors = await mount(page, data); await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('.line-code-insights button').hover();
+  await expect(page.locator('.is-code-insight-target')).toHaveCount(1);
+  while (await node.locator('.cinema-diff').count()) await page.keyboard.press('Escape');
+  await page.mouse.move(0, 0);
+  await node.locator('.frow-open').click();
+  await expect(node.locator('.cinema-diff .drow').first()).toBeVisible();
+  await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
+  await node.locator('.line-code-insights button').hover();
+  await expect(page.locator('.is-code-insight-target')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('an inline insight highlight follows its insight through live updates', async ({ page }) => {
+  const data = fixture(); data.stages[0].insights.push(codeInsight());
+  const errors = await mount(page, data); await openFile(page);
+  const button = page.locator('details[data-node="first-one"] .line-code-insights button');
+  const highlighted = page.locator('.is-code-insight-target');
+  const lineIds = () => highlighted.evaluateAll((rows) => rows.map((row) => row.dataset.lineId));
+  const ids = (...lines) => lines.map((line) => `l:first:new:${line}:shared.js`);
+  const update = (revision, change) => { change(data.stages[0]); data.viewerRevision = revision; };
+  await button.focus();
+  await expect.poll(lineIds).toEqual(ids(1));
+  // The insight keeps its first line, so its button stays focused while the
+  // range it highlights grows, shrinks, and finally disappears with it.
+  update('wider', (stage) => { stage.insights[0].codeTarget.endLine = 3; });
+  await expect.poll(lineIds).toEqual(ids(1, 2, 3));
+  await expect(button).toBeFocused();
+  update('narrower', (stage) => { stage.insights[0].codeTarget.endLine = 2; });
+  await expect.poll(lineIds).toEqual(ids(1, 2));
+  await expect(button).toBeFocused();
+  update('removed', (stage) => { stage.insights = []; });
+  await expect(button).toHaveCount(0);
+  await expect(highlighted).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('removing a focused inline insight removes its button, not the next one on its line', async ({ page }) => {
+  const data = fixture(), kept = codeInsight();
+  kept.id = 'kept'; kept.title = 'Kept insight'; kept.codeTarget.endLine = 3;
+  data.stages[0].insights.push(codeInsight(), kept);
+  const errors = await mount(page, data); await openFile(page);
+  const buttons = page.locator('details[data-node="first-one"] .line-code-insights button');
+  const highlighted = page.locator('.is-code-insight-target');
+  await expect(buttons).toHaveCount(2);
+  await buttons.first().focus();
+  await expect(highlighted).toHaveCount(1);
+  data.stages[0].insights = [kept]; data.viewerRevision = 'removed-first';
+  await expect(buttons).toHaveCount(1, { timeout: 15000 });
+  await expect(buttons.first()).toHaveAttribute('data-item', 'kept');
+  // The removed insight's button went with it, so nothing on the line stays
+  // focused and the kept insight's range is not highlighted.
+  await expect(buttons.first()).not.toBeFocused();
+  await expect(highlighted).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('removing a hovered inline insight returns the highlight to the focused one', async ({ page }) => {
+  const data = fixture(), hovered = codeInsight();
+  hovered.id = 'hovered'; hovered.title = 'Hovered insight'; hovered.codeTarget.startLine = hovered.codeTarget.endLine = 3;
+  data.stages[0].insights.push(codeInsight(), hovered);
+  const errors = await mount(page, data); await openFile(page);
+  const focused = page.locator('details[data-node="first-one"] .line-code-insights button[data-item="linked"]');
+  const highlighted = page.locator('.is-code-insight-target');
+  const lineIds = () => highlighted.evaluateAll((rows) => rows.map((row) => row.dataset.lineId));
+  await focused.focus();
+  await expect.poll(lineIds).toEqual(['l:first:new:1:shared.js']);
+  await page.locator('details[data-node="first-one"] .line-code-insights button[data-item="hovered"]').hover();
+  await expect.poll(lineIds).toEqual(['l:first:new:3:shared.js']);
+  data.stages[0].insights = data.stages[0].insights.filter((ins) => ins.id !== 'hovered'); data.viewerRevision = 'removed-hovered';
+  await expect(page.locator('.line-code-insights button[data-item="hovered"]')).toHaveCount(0, { timeout: 15000 });
+  await expect(focused).toBeFocused();
+  await expect.poll(lineIds).toEqual(['l:first:new:1:shared.js']);
+  expect(errors).toEqual([]);
+});
+
 test('code insight dialogs animate entry and every dismissal, including an interrupted entry', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   const data = fixture(); data.stages[0].insights.push(codeInsight());
@@ -2752,19 +2983,75 @@ test('code insight dialogs animate entry and every dismissal, including an inter
   const button = page.locator('details[data-node="first-one"] .line-code-insights button');
   const dialog = page.getByRole('dialog', { name: 'Insight and code' });
   for (const action of ['close', 'escape', 'backdrop']) {
+    // Inspect each motion as it starts, in the task that starts it: on a busy
+    // machine the entry, or the whole dismissal, can end before a later check.
+    await page.evaluate(() => {
+      window.motion = { entry: null, closing: null };
+      // Opacity and the transform matrix as numbers, comparable across notations.
+      const pose = (opacity, transform) => [Number(opacity), ...new DOMMatrix(!transform || transform === 'none' ? undefined : transform).toFloat64Array()];
+      const opened = new MutationObserver(() => {
+        const el = document.querySelector('dialog.code-insight-dialog');
+        if (!el) return;
+        opened.disconnect();
+        // Interrupt the entry partway; dismissal must start from there.
+        const entry = el.getAnimations().find(a => a.effect.getTiming().duration === 180 && a.effect.getKeyframes().some(f => f.transform));
+        if (entry) {
+          entry.pause(); entry.currentTime = 70;
+          const style = getComputedStyle(el);
+          window.motion.entry = pose(style.opacity, style.transform);
+        }
+        const closing = new MutationObserver(() => {
+          if (!el.classList.contains('is-closing')) return;
+          closing.disconnect();
+          const animations = el.getAnimations();
+          const frames = animations[0]?.effect.getKeyframes() || [];
+          window.motion.closing = {
+            durations: animations.map(a => a.effect.getTiming().duration),
+            from: frames.length ? pose(frames[0].opacity, frames[0].transform) : null,
+            to: frames.length ? pose(frames.at(-1).opacity, frames.at(-1).transform) : null,
+            playState: animations[0]?.playState, end: null,
+          };
+          // Sample the motion as the dialog closes, before it is removed: the
+          // capturing listener runs before the dialog's own.
+          const animation = animations[0];
+          document.addEventListener('close', (event) => {
+            if (event.target !== el || !animation) return;
+            const style = getComputedStyle(el);
+            window.motion.closing.end = { playState: animation.playState, currentTime: animation.currentTime, startTime: animation.startTime,
+              timeline: document.timeline.currentTime, pose: pose(style.opacity, style.transform) };
+          }, { capture: true, once: true });
+        });
+        closing.observe(el, { attributes: true, attributeFilter: ['class'] });
+      });
+      opened.observe(document.body, { childList: true });
+    });
     await button.click();
-    expect(await dialog.evaluate(el => {
-      const entry = el.getAnimations().find(a => a.effect.getTiming().duration === 180 && a.effect.getKeyframes().some(f => f.transform));
-      if (!entry) return false;
-      entry.pause(); entry.currentTime = 70;
-      return true;
-    })).toBe(true);
+    await expect(dialog).toBeVisible();
+    // The paused entry is partway: neither hidden nor fully shown.
+    const entry = await page.evaluate(() => window.motion.entry);
+    expect(entry[0]).toBeGreaterThan(0);
+    expect(entry[0]).toBeLessThan(1);
     if (action === 'close') await dialog.getByRole('button', { name: 'Close insight' }).click();
     else if (action === 'escape') await page.keyboard.press('Escape');
     else await page.mouse.click(1, 1);
-    await expect(dialog).toHaveClass(/is-closing/);
-    expect(await dialog.evaluate(el => el.getAnimations().some(a => a.effect.getTiming().duration === 140))).toBe(true);
+    // The dialog took its closing class and ran only the closing motion, which
+    // starts where the entry stopped and visibly moves or fades from there.
+    await expect.poll(() => page.evaluate(() => window.motion.closing?.durations)).toEqual([140]);
+    const { from, to } = await page.evaluate(() => window.motion.closing);
+    from.forEach((value, index) => expect(value).toBeCloseTo(entry[index], 3));
+    expect(Math.max(...from.map((value, index) => Math.abs(value - to[index])))).toBeGreaterThan(0.05);
     await expect(dialog).toHaveCount(0);
+    // The closing motion played rather than holding its first frame: it was
+    // running, and by the time the dialog closed it had advanced and changed its
+    // pose whenever document time had moved since it started (a starved machine
+    // may close on the fallback timer before a frame passes).
+    const { playState, end } = await page.evaluate(() => window.motion.closing);
+    expect(playState).toBe('running');
+    expect(['running', 'finished']).toContain(end.playState);
+    if (end.startTime !== null && end.timeline > end.startTime) {
+      expect(end.currentTime).toBeGreaterThan(0);
+      expect(Math.max(...end.pose.map((value, index) => Math.abs(value - from[index])))).toBeGreaterThan(0);
+    } else expect(end.currentTime).toBe(0);
     await expect(button).toBeFocused();
     await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
   }
@@ -3500,8 +3787,17 @@ test('reply and note drafts keep their text, caret, selection and focus across a
   expect(errors).toEqual([]);
 });
 
+// The ranges the viewer highlights as other occurrences of the selected code.
+const selectionHits = (page) => page.evaluate(() => [...(CSS.highlights.get('sel-hit') || [])].map((range) => ({
+  text: range.startContainer.data.slice(range.startOffset, range.endOffset),
+  line: range.startContainer.parentElement.closest('[data-line-id]')?.dataset.lineId ?? null,
+  code: Boolean(range.startContainer.parentElement.closest('.drow > code')),
+  connected: range.startContainer.isConnected,
+})));
+
 test('line threads in a diff keep drafts across live updates and refresh beside a code selection', async ({ page }) => {
   const data = fixture();
+  data.stages[0].files[0].lines[1].s = '// first context';
   const lineId = 'l:first:new:1:shared.js';
   // A second occurrence of the selected word in code, beside the one in the thread.
   data.stages[0].files[0].lines[1].s = '// first context';
@@ -3534,15 +3830,16 @@ test('line threads in a diff keep drafts across live updates and refresh beside 
     window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
     code.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
   });
-  const hits = page.locator('.cinema-diff mark.sel-hit');
-  await expect(hits).toHaveCount(1);
-  await expect(hits).toHaveText('first');
+  // The other occurrence in code is highlighted; the line thread's text is not.
+  const expected = [{ text: 'first', line: 'l:first:new:2:shared.js', code: true, connected: true }];
+  await expect.poll(() => selectionHits(page)).toEqual(expected);
   await expect(lineThread).toContainText('Fixed the first constant');
-  await expect(lineThread.locator('mark.sel-hit')).toHaveCount(0);
   data.feedback[0].comments.push({ author: 'agent', body: 'Second agent reply', createdAt: '2026-09-08T10:02:00Z' });
   data.viewerRevision = 'second-line-reply';
   await expect(lineThread.locator('.tthread')).toContainText('Second agent reply');
   expect(await page.evaluate(() => String(window.getSelection()))).toBe('first');
+  expect(await selectionHits(page)).toEqual(expected);
+  await expect(page.locator('mark')).toHaveCount(0);
   await expect(input).toHaveValue('A line note in progress');
   await page.evaluate(() => window.getSelection().removeAllRanges());
   await input.press('Control+Enter');
@@ -4225,5 +4522,354 @@ test('a selection in the Active column does not bring back a sent note whose thr
   await expect(page.locator('.review-update')).toHaveText('Review updated');
   await expect(active.locator('.tnote')).toHaveCount(0);
   await expect(activeFilter.locator('b')).toHaveText('1');
+  expect(errors).toEqual([]);
+});
+
+// Artifact text that would run script or add markup if it were parsed as HTML.
+const hostile = (label) => `${label} <img src=x onerror="window.injected='${label}'"><b>bold</b> &lt;i&gt; &amp;`;
+// A file name cannot hold a slash.
+const hostileName = (label) => `${label} "><img src=x onerror="window.injected='${label}'">&lt;i&gt; &amp;'.js`;
+
+test('diff rows, ownership notices, inline insights and the diff toolbar keep hostile text literal', async ({ page }) => {
+  const data = fixture();
+  const path = `src/${hostileName('path')}`;
+  const source = [`const a = "${hostile('string')}";\r`, `// ${hostile('comment')}`, `x < y && ${hostile('code')}`];
+  for (const stage of data.stages) {
+    const file = stage.files[0];
+    file.path = path;
+    file.lines.forEach((row, index) => { row.s = source[index]; });
+  }
+  data.stages[0].nodes[1].title = hostile('step');
+  const insight = codeInsight();
+  insight.title = hostile('insight');
+  insight.codeTarget.path = path; insight.codeTarget.original.path = path;
+  data.stages[0].insights.push(insight);
+  const errors = await mount(page, data);
+  await openFile(page);
+  const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+  await expect(page.getByRole('region', { name: `Diff for ${path}`, exact: true })).toBeVisible();
+  expect(await panel.locator('[data-line-id] > code').evaluateAll((codes) => codes.map((code) => code.textContent))).toEqual(source);
+  await expect(panel.locator('[data-line-id] > code *:not(.tok-com, .tok-str, .tok-num, .tok-key)')).toHaveCount(0);
+  await expect(panel.locator('.ownership-notice button')).toHaveText(hostile('step'));
+  await expect(panel.locator('.ownership-notice button')).toHaveAttribute('data-node-id', 'first-two');
+  await expect(panel.locator('.line-code-insights .inline-insight-text')).toHaveText(hostile('insight'));
+  await expect(panel.locator('[data-line-id]').first()).toHaveAttribute('data-line-id', `l:first:new:1:${path}`);
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('b', { hasText: 'bold' })).toHaveCount(0);
+  await panel.locator('.lact').first().click();
+  await expect(panel.locator('.line-thread')).toHaveAttribute('data-thread', `l:first:new:1:${path}`);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+test('Markdown preview validates link and image targets and keeps its content across renders', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  const content = [
+    '[External](https://example.com/page) [Mail](mailto:team@example.com) [Relative](guide.md#usage)',
+    '[Protocol relative](//evil.example/x) [Script](javascript:alert(1)) [Data](data:text/html,<script>alert(1)</script>) [Up](../../../../etc/passwd)',
+    '![Remote](https://example.com/i.png) ![Inline](data:image/png;base64,AAAA) ![Local](./i.png)',
+  ].join('\n\n');
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.markdown-preview');
+  const link = (name) => preview.getByText(name, { exact: true });
+  await expect(link('External')).toHaveAttribute('href', 'https://example.com/page');
+  await expect(link('External')).toHaveAttribute('target', '_blank');
+  await expect(link('External')).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(link('Mail')).toHaveAttribute('href', 'mailto:team@example.com');
+  const relative = new URL(await link('Relative').getAttribute('href'));
+  expect([relative.searchParams.get('target'), relative.hash]).toEqual(['docs/guide.md', '#usage']);
+  // Relative targets resolve inside the repository; the server reads them at the stage revision.
+  expect(new URL(await link('Up').getAttribute('href')).searchParams.get('target')).toBe('etc/passwd');
+  for (const name of ['Protocol relative', 'Script', 'Data']) {
+    await expect(link(name)).not.toHaveAttribute('href', /./);
+    await expect(link(name)).toHaveAttribute('aria-disabled', 'true');
+  }
+  await expect(preview.getByRole('img', { name: 'Remote' })).toHaveAttribute('referrerpolicy', 'no-referrer');
+  await expect(preview.getByRole('img', { name: 'Inline' })).not.toHaveAttribute('src', /./);
+  expect(new URL(await preview.getByRole('img', { name: 'Local' }).getAttribute('src')).searchParams.get('target')).toBe('docs/i.png');
+  await expect(preview.locator('script')).toHaveCount(0);
+  // Unrelated renders keep the rendered preview.
+  await preview.evaluate((el) => { el.dataset.marker = 'kept'; window.previewLink = el.querySelector('a'); });
+  await page.getByRole('button', { name: /^Notes/ }).click();
+  await expect(preview).toHaveAttribute('data-marker', 'kept');
+  expect(await page.evaluate(() => window.previewLink.isConnected)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('dialogs and tooltips show hostile artifact text literally', async ({ page }) => {
+  const data = fixture();
+  const name = hostileName('file'), path = `src/${name}`;
+  for (const stage of data.stages) stage.files[0].path = path;
+  data.requirements = [{ id: 'story', title: 'Story', acceptance: [{ id: 'works', text: hostile('criterion') }] }];
+  data.stages[0].title = hostile('stage');
+  data.stages[0].rationale = hostile('rationale');
+  data.stages[0].nodes[0].title = hostile('step');
+  const insight = codeInsight('mapped');
+  Object.assign(insight, { title: hostile('insight'), body: hostile('body') });
+  for (const target of [insight.codeTarget, insight.codeTarget.original]) {
+    target.path = path; target.context = [hostile('context'), '// context', 'const second = 2;'];
+  }
+  insight.codeTarget.original = { ...insight.codeTarget.original, revision: 'd'.repeat(40) };
+  const evidence = evidenceInsight({ reproduction: hostile('reproduce'), inline: hostile('output') });
+  evidence.title = hostile('evidence');
+  evidence.evidence.attachments[0].caption = hostile('caption');
+  data.stages[0].insights.push(insight, evidence);
+  const errors = await mount(page, data);
+  await routeEvidence(page);
+  await page.locator('.stage[data-stage="first"] .rationale-label').hover();
+  await expect(page.getByRole('tooltip')).toHaveText(hostile('rationale'));
+
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const search = page.getByRole('dialog', { name: 'Find a file' });
+  await search.getByRole('combobox').fill('file');
+  await expect(search.getByRole('option').first().locator('strong')).toHaveText(name);
+  await expect(search.getByRole('heading', { level: 3 }).first()).toHaveText(`01 · ${hostile('stage')}`);
+  await expect(search.getByRole('heading', { level: 4 }).first()).toHaveText(hostile('step'));
+  await expect(search.locator('.file-search-typed')).toHaveText('file');
+  await page.keyboard.press('Escape');
+
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('.node-reasoning').getByRole('button', { name: 'View code', exact: true }).click();
+  const insightDialog = page.getByRole('dialog', { name: 'Insight and code' });
+  await expect(insightDialog.getByRole('heading', { level: 3 }).first()).toHaveText(hostile('insight'));
+  await expect(insightDialog.locator('.insight-full-body')).toHaveText(hostile('body'));
+  await expect(insightDialog.locator('.insight-code-location').first()).toHaveText(`${path}:1–1 · ${'b'.repeat(12)}`);
+  await expect(insightDialog.locator('.insight-code-line.is-target code').first()).toHaveText(hostile('context'));
+  await insightDialog.locator('.insight-original summary').click();
+  await expect(insightDialog.locator('.insight-original p')).toHaveText(`${path}:1–1`);
+  await page.keyboard.press('Escape');
+  await expect(insightDialog).toHaveCount(0);
+
+  await node.getByRole('button', { name: 'View evidence' }).click();
+  const evidenceDialog = page.getByRole('dialog', { name: 'Evidence' });
+  await expect(evidenceDialog.getByRole('heading', { level: 3 })).toHaveText(hostile('evidence'));
+  await expect(evidenceDialog.locator('figcaption').first()).toHaveText(hostile('caption'));
+  await expect(evidenceDialog.locator('.evidence-reproduction')).toHaveText(`Reproduce: ${hostile('reproduce')}`);
+  await expect(evidenceDialog.locator('.evidence-text').last()).toHaveText(hostile('output'));
+  await expect(evidenceDialog.locator('.evidence-links li').first()).toHaveText(`story#works ${hostile('criterion')}`);
+  await expect(evidenceDialog.getByRole('button', { name: `Zoom ${hostile('caption')}` })).toBeVisible();
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('b', { hasText: 'bold' })).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+test('saved reviews and the review data dialog show hostile names literally', async ({ page }) => {
+  const data = { ...fixture(), title: hostile('review') }, other = { ...fixture(), reviewId: 'other', title: hostile('other') };
+  const errors = await mount(page, data, {}, [other]);
+  await page.route('**/api/reviews/storage*', (route) => route.fulfill({ json: { ok: true, storage: {
+    storageDirectory: hostile('directory'), bytes: 2048, categories: [{ label: hostile('label'), bytes: 1024, detail: hostile('detail') }],
+    drafts: 0, unresolved: 0, unused: [], unusedBytes: 0, fingerprint: 'unchanged', deletionPending: false, referenceError: hostile('reference') } } }));
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  const list = page.getByRole('dialog', { name: 'Saved reviews' });
+  await expect(list.locator('[data-review="other"] strong')).toHaveText(hostile('other'));
+  await expect(list.locator('[data-review="browser-review"] strong')).toHaveText(hostile('review'));
+  await expect(list.locator('[data-review="browser-review"]')).toHaveAttribute('aria-current', 'true');
+  await list.locator('[data-review="other"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const cleanup = page.getByRole('dialog', { name: 'Review data', exact: true });
+  await expect(cleanup.locator('> strong')).toHaveText(hostile('other'));
+  await expect(cleanup.locator('td').first()).toHaveText(hostile('label'));
+  await expect(cleanup.locator('td').last()).toHaveText(hostile('detail'));
+  await expect(cleanup).toContainText(`Stored in ${hostile('directory')}`);
+  await expect(cleanup.getByRole('alert')).toHaveText(hostile('reference'));
+  await expect(cleanup.getByRole('button', { name: 'Clean unused files', exact: true })).toBeDisabled();
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('b', { hasText: 'bold' })).toHaveCount(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
+test('selection matches ignore case when lowercasing changes the text length', async ({ page }) => {
+  const data = fixture(), lines = data.stages[0].files[0].lines;
+  lines[0].s = 'const xy = 1;'; lines[1].s = '// XY context'; lines[2].s = 'const İxy = 2;';
+  const errors = await mount(page, data); await openFile(page);
+  await page.locator('[data-line-id="l:first:new:1:shared.js"] code').evaluate((code) => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (!text.data.includes('xy')) text = walker.nextNode();
+    const range = document.createRange(); range.setStart(text, text.data.indexOf('xy')); range.setEnd(text, text.data.indexOf('xy') + 2);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    code.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  await expect.poll(() => selectionHits(page)).toEqual([
+    { text: 'XY', line: 'l:first:new:2:shared.js', code: true, connected: true },
+    { text: 'xy', line: 'l:first:new:3:shared.js', code: true, connected: true },
+  ]);
+  expect(errors).toEqual([]);
+});
+
+// Selects `token` in a diff line without the mouse, as the keyboard would.
+const selectInLine = (page, line, token) => page.locator(`[data-line-id="${line}"] code`).evaluate((code, token) => {
+  const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+  let text = walker.nextNode();
+  while (!text.data.includes(token)) text = walker.nextNode();
+  const range = document.createRange(); range.setStart(text, text.data.indexOf(token)); range.setEnd(text, text.data.indexOf(token) + token.length);
+  window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  const box = range.getBoundingClientRect();
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}, token);
+
+test('dragging selected diff text keeps later keyboard selections matching', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data); await openFile(page);
+  await page.evaluate(() => { window.dragStarts = 0; document.addEventListener('dragstart', () => window.dragStarts++); });
+  // Drag the selected word out: the native drag takes the mouseup.
+  await page.locator('[data-line-id="l:first:new:3:shared.js"]').scrollIntoViewIfNeeded();
+  const word = await selectInLine(page, 'l:first:new:3:shared.js', 'second');
+  await page.mouse.move(word.x, word.y);
+  await page.mouse.down();
+  await page.mouse.move(word.x + 60, word.y + 80, { steps: 6 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.dragStarts)).toBeGreaterThan(0);
+  await selectInLine(page, 'l:first:new:3:shared.js', 'const');
+  await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const', line: 'l:first:new:1:shared.js', code: true, connected: true }]);
+  expect(errors).toEqual([]);
+});
+
+test('a cancelled selection drag refreshes the matches for the changed selection', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data); await openFile(page);
+  const hits = (line) => [{ text: 'const', line, code: true, connected: true }];
+  await selectInLine(page, 'l:first:new:1:shared.js', 'const');
+  await expect.poll(() => selectionHits(page)).toEqual(hits('l:first:new:3:shared.js'));
+  // A drag starts in the diff, changes the selection and is cancelled without
+  // a mouseup.
+  await page.locator('[data-line-id="l:first:new:3:shared.js"] code').dispatchEvent('mousedown', { button: 0 });
+  await selectInLine(page, 'l:first:new:3:shared.js', 'const');
+  await page.evaluate(() => document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true })));
+  await expect.poll(() => selectionHits(page)).toEqual(hits('l:first:new:1:shared.js'));
+  expect(errors).toEqual([]);
+});
+
+test('selection matches refresh once per double-click and not while typing in a field', async ({ page }) => {
+  const data = fixture();
+  const errors = await mount(page, data); await openFile(page);
+  // Each refresh clears the matches; each one with a term builds a highlight;
+  // and each is scheduled for a frame.
+  await page.evaluate(() => {
+    const work = window.selectionWork = { refreshes: 0, matches: 0, frames: 0 };
+    const highlights = CSS.highlights, remove = highlights.delete.bind(highlights);
+    highlights.delete = (name) => { work.refreshes++; return remove(name); };
+    window.Highlight = class extends Highlight { constructor(...ranges) { super(...ranges); work.matches++; } };
+    const frame = window.testFrame = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) => { work.frames++; return frame(callback); };
+  });
+  const settled = () => page.evaluate(() => new Promise((resolve) => testFrame(() => testFrame(() => setTimeout(() => {
+    const work = window.selectionWork, counts = { ...work }; work.refreshes = work.matches = work.frames = 0; resolve(counts);
+  }, 50)))));
+  await settled();
+  const word = page.locator('[data-line-id="l:first:new:3:shared.js"] code');
+  await word.scrollIntoViewIfNeeded();
+  await settled();
+  const box = await word.boundingBox();
+  await page.mouse.dblclick(box.x + 4, box.y + box.height / 2);
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe('const');
+  await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const', line: 'l:first:new:1:shared.js', code: true, connected: true }]);
+  expect(await settled()).toMatchObject({ refreshes: 1, matches: 1 });
+  await page.locator('.file-notes .thread-add').click();
+  const draft = page.locator('textarea[name="nc-body"]');
+  await expect(draft).toBeFocused();
+  await settled();
+  await draft.pressSequentially('hello there');
+  await draft.press('ArrowLeft'); await draft.press('Shift+Home');
+  expect(await settled()).toEqual({ refreshes: 0, matches: 0, frames: 0 });
+  await expect(draft).toHaveValue('hello there');
+  expect(errors).toEqual([]);
+});
+
+test('a paged diff keeps its page, scroll, rows and code selection across live updates', async ({ page }) => {
+  const data = fixture(), file = data.stages[0].files[0];
+  const lines = Array.from({ length: 1900 }, (_, i) => ({ t: 'add', n: i + 1, s: `const row${i + 1} = shared(${i + 1});`, h: 1 }));
+  file.lines = lines.slice(0, 900); file.nextOffset = 900;
+  data.feedback = [thread('live')];
+  const errors = await mount(page, data, { fileView: { [fileId]: 'full' }, openThreads: { first: true } });
+  await page.route('**/api/diff*', (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get('offset'));
+    return route.fulfill({ json: { ok: true, lines: lines.slice(offset, offset + 900), offset, nextOffset: offset + 900 < lines.length ? offset + 900 : null, additions: lines.length, deletions: 0 } });
+  });
+  await openFile(page);
+  const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+  const scroller = panel.locator('.diff-scroll');
+  await panel.getByRole('button', { name: 'Next page', exact: true }).evaluate((el) => el.click());
+  await expect(panel.locator('.diff-pages span')).toHaveText('Rows 901–1800');
+  await scroller.evaluate((el) => { el.scrollTop = 300; });
+  await panel.locator('[data-line-id="l:first:new:950:shared.js"] code').evaluate((code) => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (!text.data.includes('shared')) text = walker.nextNode();
+    const range = document.createRange(); range.setStart(text, text.data.indexOf('shared')); range.setEnd(text, text.data.indexOf('shared') + 6);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    code.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  // Every other row of the page is a match; the selected occurrence is not.
+  await expect.poll(async () => (await selectionHits(page)).length).toBe(899);
+  expect((await selectionHits(page)).some((hit) => hit.line === 'l:first:new:950:shared.js')).toBe(false);
+  await page.evaluate(() => {
+    window.retainedRows = [...document.querySelectorAll('.cinema-diff .drow')];
+    window.removedRows = 0;
+    new MutationObserver((records) => {
+      for (const record of records) for (const node of record.removedNodes) if (node.nodeType === 1 && (node.matches('.drow') || node.querySelector('.drow'))) window.removedRows++;
+    }).observe(document.querySelector('.cinema-diff .diff-grid'), { childList: true, subtree: true });
+  });
+  const expectPageKept = async () => {
+    await expect(panel.locator('.diff-pages span')).toHaveText('Rows 901–1800');
+    expect(await scroller.evaluate((el) => el.scrollTop)).toBe(300);
+    expect(await page.evaluate(() => window.retainedRows.length === 900 && window.retainedRows.every((row) => row.isConnected) && window.removedRows === 0)).toBe(true);
+  };
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply during a selection', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'selected';
+  await expect(page.locator('.stage .tthread')).toContainText('Reply during a selection');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe('shared');
+  const hits = await selectionHits(page);
+  expect(hits.length === 899 && hits.every((hit) => hit.connected && hit.code && hit.text === 'shared')).toBe(true);
+  await expectPageKept();
+  // A selection changed without the mouse, such as from the keyboard, updates
+  // the matches: another token, then select all, which matches nothing.
+  const selectWithoutMouse = (line, token) => panel.locator(`[data-line-id="${line}"] code`).evaluate((code, token) => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let text = walker.nextNode();
+    while (!text.data.includes(token)) text = walker.nextNode();
+    const range = document.createRange(); range.setStart(text, text.data.indexOf(token)); range.setEnd(text, text.data.indexOf(token) + token.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+  }, token);
+  await selectWithoutMouse('l:first:new:960:shared.js', 'const');
+  await expect.poll(async () => (await selectionHits(page)).filter((hit) => hit.text === 'const').length).toBe(899);
+  expect((await selectionHits(page)).length).toBe(899);
+  await page.keyboard.press('ControlOrMeta+a');
+  await expect.poll(() => selectionHits(page)).toEqual([]);
+  await expectPageKept();
+  // Without a selection the full snapshot is adopted; the loaded page stays.
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  data.feedback[0].comments.push({ author: 'agent', body: 'Reply after the selection', createdAt: '2026-09-08T10:02:00Z' });
+  data.viewerRevision = 'cleared';
+  await expect(page.locator('.stage .tthread')).toContainText('Reply after the selection');
+  await expectPageKept();
+  // Clicking outside the diff clears the matches.
+  await selectWithoutMouse('l:first:new:950:shared.js', 'shared');
+  await expect.poll(async () => (await selectionHits(page)).length).toBe(899);
+  await page.locator('.hero, header').first().dispatchEvent('mousedown');
+  expect(await selectionHits(page)).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('a pinned insight popover stays open while an inline insight highlights its lines', async ({ page }) => {
+  const data = fixture(), insight = codeInsight();
+  insight.body = 'Short reasoning.';
+  data.stages[0].insights.push(insight);
+  const errors = await mount(page, data); await openFile(page);
+  const node = page.locator('details[data-node="first-one"]');
+  await node.locator('.node-reasoning .tag-face').click();
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toContainText('Check the boundary');
+  await node.locator('.line-code-insights button').hover();
+  await expect(page.locator('.is-code-insight-target')).toHaveCount(1);
+  await expect(tooltip).toBeVisible();
+  await page.mouse.move(0, 0);
+  await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
+  await expect(tooltip).toBeVisible();
   expect(errors).toEqual([]);
 });

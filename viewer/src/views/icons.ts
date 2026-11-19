@@ -15,3 +15,6 @@ export const caretIcon = html`<svg class="chev" viewBox="0 0 24 24" width="15" h
 
 /** An arrow: jumps to what a note or thread is about. */
 export const arrowIcon = html`<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+/** A speech bubble with a plus: starts a note on a diff line. */
+export const bubblePlusIcon = html`<svg class="bub" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 8v5M9.5 10.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
