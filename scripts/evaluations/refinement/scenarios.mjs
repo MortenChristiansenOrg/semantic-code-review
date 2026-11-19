@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
+import { cliCommand, execute, repository, snapshot, writeJson, readJson, inside } from './common.mjs';
 
 const pricesRequest = '/semantic-flow implement Add an optional percentage discount to total(items), defaulting to zero. Preserve item price × quantity totals; accept 0 through 100 inclusive, including fractional discounts, and reject negative, over-100, and non-finite numeric discounts. Add tests.';
 const scenario = (request, transcriptCriteria, extra = {}) => ({ request, transcriptCriteria, transcriptChecks: Object.keys(transcriptCriteria), ...extra });
@@ -35,21 +35,21 @@ export const scenarios = {
 };
 export const broad = Object.keys(scenarios);
 export function initialize(r, title = 'Order confirmation emails') {
-  r.cli('semantic-implementation', 'init', '--implementation-id', 'evaluation', '--title', title,
+  r.cli('implementation', 'init', '--implementation-id', 'evaluation', '--title', title,
     '--summary', title, '--target-branch', 'main', '--specification-id', 'story', '--specification-title', title,
     '--specification-summary', title, '--source-kind', 'local', '--source-reference', 'evaluation',
     '--criterion', title === 'Discount totals' ? 'works=Apply optional discounts from 0 through 100; reject invalid numeric discounts and preserve default totals, with tests.' : 'works=Order confirmation emails are enabled.');
 }
 export function begin(r, id, title, dependency) {
-  r.cli('semantic-implementation', 'stage', 'begin', '--id', id, '--title', title, '--summary', title,
+  r.cli('implementation', 'stage', 'begin', '--id', id, '--title', title, '--summary', title,
     '--rationale', 'Keep this behavior independently reviewable.', '--specification-ref', 'story#works',
     ...(dependency ? ['--depends-on', dependency] : []));
 }
 export function finish(r, id, file) {
   const input = path.join(r.env.TMPDIR, 'organization.json');
   writeJson(input, { $schema: 'https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json', nodes: [{ id: 'change', description: 'Implement the stage behavior.', changes: [{ path: file, classification: 'behavior' }] }], itemLinks: [] });
-  r.cli('semantic-implementation', 'stage', 'organize', '--file', input);
-  r.cli('semantic-implementation', 'stage', 'finish', '--id', id);
+  r.cli('implementation', 'stage', 'organize', '--file', input);
+  r.cli('implementation', 'stage', 'finish', '--id', id);
   fs.rmSync(input);
 }
 export function prepareFixture(root, skill, scenario, env) {
@@ -70,7 +70,7 @@ export function prepareFixture(root, skill, scenario, env) {
       initialize(r, 'Discount totals'); begin(r, 'discount', 'Apply discounts');
       r.commit('prices.js', 'export function total(items, discount=0) { if (!Number.isFinite(discount) || discount < 0 || discount > 100) throw new RangeError("Discount must be between 0 and 100"); return items.reduce((sum, item) => sum + item.price * item.quantity, 0) * (1-discount/100); }\n', 'Support validated discounts');
       const args = ['stage', 'record', '--kind', 'decision', '--item-id', 'module-boundary', '--category', 'architecture', '--summary', 'Keep discount calculation in prices.js', '--rationale', 'There is only one caller, so a separate module adds indirection without reuse.'];
-      const failure = execute([process.execPath, path.join(skill, 'scripts/semantic-implementation.mjs'), ...args], repo, env);
+      const failure = execute(cliCommand(skill, ['implementation', ...args]), repo, env);
       if (failure.exitCode === 0 || !/category.*allowed values/s.test(failure.stderr)) throw new Error(`Category injection failed: ${failure.stderr}`);
       request += '\nObserved decision: keep the module boundary because there is only one caller. The previous recording call failed:\n' + args.join(' ') + '\n' + failure.stderr;
     }
@@ -81,8 +81,8 @@ export function prepareFixture(root, skill, scenario, env) {
     begin(r, 'delivery-docs', 'Document delivery', 'notifications');
     r.commit('delivery.md', 'Order confirmations use the configured notification format and retry count.\n', 'Document delivery'); finish(r, 'delivery-docs', 'delivery.md');
     if (scenario.startsWith('feedback-')) {
-      r.cli('review-feedback', 'init');
-      r.cli('review-feedback', 'thread', 'add', '--id', 'delivery-retries', '--comment-id', 'reviewer-retries', '--body', 'Please set the retry count to 2 so a temporary delivery failure gets another attempt.', '--label', 'Confirmation delivery', '--target-kind', 'stage', '--stage', 'notifications');
+      r.cli('feedback', 'init');
+      r.cli('feedback', 'thread', 'add', '--id', 'delivery-retries', '--comment-id', 'reviewer-retries', '--body', 'Please set the retry count to 2 so a temporary delivery failure gets another attempt.', '--label', 'Confirmation delivery', '--target-kind', 'stage', '--stage', 'notifications');
       const branch = r.git('branch', '--show-current'); r.git('switch', 'main');
       const compatible = scenario === 'feedback-compatible';
       r.commit('notifications.json', compatible ? '{"enabled":false,"format":"html","retries":1}\n' : '{"enabled":false,"format":"plain","retries":0}\n', compatible ? 'Use HTML; preserve enablement and retry settings' : 'Disable confirmations and retries until the delivery audit is complete');
@@ -140,10 +140,10 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
   add('one-artifact', artifacts.length === 1, artifacts);
   if (artifacts.length !== 1) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   const repo = artifacts[0];
-  const cli = (name, ...args) => [process.execPath, path.join(skill, 'scripts', `${name}.mjs`), ...args];
-  const validation = run('artifact-publication', cli('semantic-implementation', 'validate', '--publish'), repo);
+  const cli = (...args) => cliCommand(skill, args);
+  const validation = run('artifact-publication', cli('implementation', 'validate', '--publish'), repo);
   if (validation.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
-  run('stack', cli('semantic-implementation', 'validate-stack', '--json'), repo);
+  run('stack', cli('implementation', 'validate-stack', '--json'), repo);
   let manifest, stages;
   try {
     manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));
@@ -163,8 +163,8 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
     let settings; try { settings = JSON.parse(contents.stdout); } catch { /* Failed acceptance, not a verifier crash. */ }
     add('compatible-settings', settings?.enabled === true && settings?.format === 'html' && settings?.retries === 2, contents);
     run('delivery-preserved', ['git', 'cat-file', '-e', `${head}:delivery.md`], repo);
-    run('feedback-valid', cli('review-feedback', 'validate'), repo);
-    const inspectionResult = run('feedback-inspection', cli('semantic-flow', 'inspect', '--json'), repo);
+    run('feedback-valid', cli('feedback', 'validate'), repo);
+    const inspectionResult = run('feedback-inspection', cli('inspect', '--json'), repo);
     try {
       if (inspectionResult.exitCode !== 0) throw new Error(inspectionResult.stderr || inspectionResult.error || 'Feedback inspection failed');
       const inspection = JSON.parse(inspectionResult.stdout);

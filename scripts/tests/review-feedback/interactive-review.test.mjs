@@ -3,8 +3,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { controlAgent, feedbackDirectory, sendFeedback, buildFeedbackTargetData } from "../../../skills/semantic-flow/scripts/semantic-view.mjs";
-import { createImplementationWithStages, feedbackCli, flowCli } from "../helpers/repository.mjs";
+import { controlAgent, feedbackDirectory, sendFeedback, buildFeedbackTargetData } from "../../src/semantic-view.ts";
+import { createImplementationWithStages, flowCli } from "../helpers/repository.mjs";
 
 function addThread(repository, id) {
   repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-note`, "--body", `Change ${id}.`,
@@ -82,7 +82,7 @@ test("a listening session times out, takes one viewer send as one round, and sto
 
   const listening = waitAsync(repository, "--session", first.session, "--timeout", "30");
   await pause(1500);
-  const context = { repoRoot: repository.root, feedbackCli, implementation: buildFeedbackTargetData(repository.root) };
+  const context = { repoRoot: repository.root, implementation: buildFeedbackTargetData(repository.root) };
   const sent = sendFeedback(context,
     [{ ref: 0, kind: "stage", id: "implementation", body: "A new note", attachments: [], clientId: "1" }],
     [{ ref: "reply-1", threadId: "earlier", body: "One more thing", attachments: [] }]);

@@ -52,7 +52,7 @@ feedback changes and restacking, repeat the helper with the same `--branch`.
 The command republishes metadata and moves the same cumulative branch from its
 recorded prepared head to the revised final stage head in one ref transaction.
 It refuses the update if another process or user moved the cumulative branch.
-For explicit adoption or rebinding, use `<semantic-implementation> prepare-branch`
+For explicit adoption or rebinding, use `<semantic-flow> implementation prepare-branch`
 after validating publication readiness and resolved feedback. Read
 `../scripts/api/history.d.ts` for its contract. Use `--adopt` only when the user
 explicitly wants to replace the current tip of the bound branch. Use

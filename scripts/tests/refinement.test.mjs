@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import Ajv from 'ajv';
 import { plan } from '../evaluations/refinement/plan.mjs';
 import { codexTelemetry } from '../evaluations/refinement/telemetry.mjs';
-import { checked, environment, execute, inside, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
+import { checked, cliCommand, environment, execute, inside, readJson, repository, snapshot, writeJson } from '../evaluations/refinement/common.mjs';
 import { begin, finish, initialize, prepareFixture, priceAcceptance, scenarios, verifyFixture } from '../evaluations/refinement/scenarios.mjs';
 import { adapterFor, checkPins, driveBeside, launch, loadSession, prepare, runEvaluations, runJob, verify, withLock } from '../evaluations/refinement/session.mjs';
 import { collectResults, grade, invalidate, redact, report, validateGrades } from '../evaluations/refinement/grading.mjs';
@@ -29,9 +29,25 @@ function completeCompatible(f, env) {
   assert.notEqual(rebase.exitCode, 0); // The deliberately compatible textual conflict.
   r.write('notifications.json', '{"enabled":true,"format":"html","retries":2}\n'); r.git('add', 'notifications.json');
   checked(['git', '-c', 'core.editor=true', 'rebase', '--continue'], f.repo, env);
-  r.git('switch', 'main'); r.cli('semantic-implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
-  r.cli('review-feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
+  r.git('switch', 'main'); r.cli('implementation', 'restack', '--base', 'main'); r.git('switch', finalBranch);
+  r.cli('feedback', 'thread', 'reply', '--id', 'delivery-retries', '--comment-id', 'agent-retries', '--author', 'agent', '--body', 'Set two retries; enabled confirmations and HTML formatting are preserved.');
 }
+
+test('CLI commands follow the executable layout of each compared build', (t) => {
+  const older = temp(t), scripts = path.join(older, 'scripts');
+  fs.mkdirSync(scripts);
+  for (const name of ['semantic-flow.mjs', 'semantic-implementation.mjs', 'review-feedback.mjs', 'semantic-view.mjs']) fs.writeFileSync(path.join(scripts, name), '');
+  const node = process.execPath, at = name => path.join(scripts, name);
+  assert.deepEqual(cliCommand(older, ['implementation', 'init', '--title', 'T']), [node, at('semantic-implementation.mjs'), 'init', '--title', 'T']);
+  assert.deepEqual(cliCommand(older, ['feedback', 'thread', 'add']), [node, at('review-feedback.mjs'), 'thread', 'add']);
+  assert.deepEqual(cliCommand(older, ['feedback', '--json']), [node, at('semantic-flow.mjs'), 'feedback', '--json']);
+  assert.deepEqual(cliCommand(older, ['feedback', '--input', '-', 'next']), [node, at('review-feedback.mjs'), '--input', '-', 'next']);
+  assert.deepEqual(cliCommand(older, ['feedback', '--wait', '--json', '--session', 'abc']), [node, at('semantic-flow.mjs'), 'feedback', '--wait', '--json', '--session', 'abc']);
+  assert.deepEqual(cliCommand(older, ['inspect', '--json']), [node, at('semantic-flow.mjs'), 'inspect', '--json']);
+  const current = path.join(skill, 'scripts', 'semantic-flow.mjs');
+  assert.deepEqual(cliCommand(skill, ['implementation', 'init']), [node, current, 'implementation', 'init']);
+  assert.deepEqual(cliCommand(skill, ['feedback', 'validate']), [node, current, 'feedback', 'validate']);
+});
 
 test('plans count grader calls, retain exact roles, pair variants and enforce the budget', () => {
   const config = sample(), baseline = plan(config, source);
@@ -378,7 +394,7 @@ test('corrupted or deleted feedback is failed task evidence, not a verifier cras
   const { root, env, fixture: f } = fixture(t, 'feedback-compatible');
   completeCompatible(f, env);
   assert.ok(verifyFixture(f, root, skill, 'feedback-compatible', env).checks.every(c => c.passed));
-  const inspection = JSON.parse(repository(f.repo, skill, env).cli('semantic-flow', 'inspect', '--json'));
+  const inspection = JSON.parse(repository(f.repo, skill, env).cli('inspect', '--json'));
   const thread = path.join(inspection.selected.feedbackDirectory, 'threads/delivery-retries.json');
   fs.writeFileSync(thread, '{broken');
   for (const mutate of [() => {}, () => fs.rmSync(thread)]) {

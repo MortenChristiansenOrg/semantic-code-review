@@ -16,10 +16,10 @@ function run(command, args) {
   return result.stdout;
 }
 const git = (...args) => run('git', args).trim();
-const cli = (name, ...args) => run(process.execPath, [path.join(skill, 'scripts', `${name}.mjs`), ...args]);
+const cli = (...args) => run(process.execPath, [path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args]);
 const branchOf = id => JSON.parse(fs.readFileSync(path.join(repo, '.semantic-review/stages', `${id}.json`), 'utf8')).change.branch;
 let sequence = 0;
-const reply = (id, claim, body) => cli('review-feedback', 'thread', 'reply', '--id', id, '--comment-id', `agent-${++sequence}`, '--author', 'agent', '--claim', claim, '--body', body);
+const reply = (id, claim, body) => cli('feedback', 'thread', 'reply', '--id', id, '--comment-id', `agent-${++sequence}`, '--author', 'agent', '--claim', claim, '--body', body);
 function edit(stage, file, change) {
   git('switch', '-q', branchOf(stage));
   const target = path.join(repo, file);
@@ -29,13 +29,13 @@ function edit(stage, file, change) {
 const setting = (key, value) => text => JSON.stringify({ ...JSON.parse(text), [key]: value }) + '\n';
 function restack(stage) {
   git('switch', '-q', branchOf(stage));
-  cli('semantic-implementation', 'restack', '--from', stage);
+  cli('implementation', 'restack', '--from', stage);
 }
 
-cli('semantic-flow', 'review');
+cli('review');
 let session, rounds = 0, pending = null;
 for (;;) {
-  const result = JSON.parse(cli('semantic-flow', 'feedback', '--json', '--wait', ...(session ? ['--session', session] : []), '--timeout', '3'));
+  const result = JSON.parse(cli('feedback', '--json', '--wait', ...(session ? ['--session', session] : []), '--timeout', '3'));
   session = result.session;
   if (result.stopped) { console.log('Stopped listening.'); break; }
   if (result.timedOut) continue;
@@ -44,7 +44,7 @@ for (;;) {
     for (const id of pending.threads) reply(id, pending.claim, 'Confirmations now use HTML, as you decided.');
     if (mode === 'sloppy') {
       const reviews = path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews'), threads = path.join(reviews, fs.readdirSync(reviews)[0], 'feedback', 'threads');
-      for (const name of fs.readdirSync(threads)) cli('review-feedback', 'thread', 'resolve', '--id', name.slice(0, -'.json'.length));
+      for (const name of fs.readdirSync(threads)) cli('feedback', 'thread', 'resolve', '--id', name.slice(0, -'.json'.length));
     }
     pending = null; continue;
   }
@@ -59,14 +59,14 @@ for (;;) {
   }
   if (changed.length) {
     restack(result.stages.find(stage => changed.some(thread => thread.stage === stage.stageId)).stageId);
-    cli('review-feedback', 'thread', 'reply-batch', '--claim', result.claim, '--replies', JSON.stringify(changed.map(thread => ({ id: thread.id, 'comment-id': `agent-${++sequence}`, author: 'agent', body: 'Done.' }))));
+    cli('feedback', 'thread', 'reply-batch', '--claim', result.claim, '--replies', JSON.stringify(changed.map(thread => ({ id: thread.id, 'comment-id': `agent-${++sequence}`, author: 'agent', body: 'Done.' }))));
   }
   const contradiction = threads.filter(thread => /as HTML|plain text/.test(last(thread)));
   if (contradiction.length && mode === 'decides') {
     // The format is already plain text; keeping it needs no commit.
     for (const thread of contradiction) reply(thread.id, result.claim, 'Kept plain text.');
   } else if (contradiction.length) {
-    cli('review-feedback', 'agent', 'ask', '--id', 'email-format', '--body', 'Two notes disagree about the email format. Should confirmations use HTML or plain text?', '--choice', 'HTML', '--choice', 'Plain text');
+    cli('feedback', 'agent', 'ask', '--id', 'email-format', '--body', 'Two notes disagree about the email format. Should confirmations use HTML or plain text?', '--choice', 'HTML', '--choice', 'Plain text');
     pending = { claim: result.claim, threads: contradiction.map(thread => thread.id) };
   }
   if (mode === 'early-exit' && rounds === 1) { console.log('Answered the first round.'); break; }

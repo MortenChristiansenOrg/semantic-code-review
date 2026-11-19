@@ -14,7 +14,7 @@ temporary-file handling.
 Obtain the complete committed stage file inventory:
 
 ```text
-<semantic-implementation> stage plan --finalized --stage <stage-id>
+<semantic-flow> implementation stage plan --finalized --stage <stage-id>
 ```
 
 Add `--selectors` only when nodes share files through hunks or line ranges.
@@ -42,7 +42,7 @@ or line exactly once, using either hunks or line ranges consistently.
 ## Apply and return to the workflow
 
 ```text
-<semantic-implementation> stage organize --finalized --stage <stage-id> --file <organization-json>
+<semantic-flow> implementation stage organize --finalized --stage <stage-id> --file <organization-json>
 ```
 
 Both `--stage` and `--file` are required here. `--file` is the temporary

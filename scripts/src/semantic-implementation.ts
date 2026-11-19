@@ -1010,18 +1010,36 @@ function validateArtifact(
 
   if (!quiet) {
     if (!schemaOnly) reportEvidenceWarnings(artifact.stages.values());
-    const mode = schemaOnly ? "schema" : publish ? "publication" : "full";
-    console.log(
-      `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`,
-    );
+    console.log(validationMessage(artifact, schemaOnly ? "schema" : publish ? "publication" : "full"));
   }
   return artifact;
+}
+
+function validationMessage(artifact: Artifact, mode: "schema" | "publication" | "full"): string {
+  return `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`;
 }
 
 function reportEvidenceWarnings(stages: Iterable<Stage>): void {
   for (const stage of stages) {
     for (const warning of evidenceWarnings(stage)) console.error(`Warning: ${warning}`);
   }
+}
+
+export interface ImplementationValidation {
+  /** The summary `implementation validate` prints. */
+  message: string;
+  warnings: string[];
+}
+
+/** Fully validates the implementation in root, as `implementation validate` does. */
+export function validateImplementation(root: string): ImplementationValidation {
+  return withValidationContext(() => {
+    const artifact = validateArtifact(pathsFor(root), { quiet: true });
+    return {
+      message: validationMessage(artifact, "full"),
+      warnings: [...artifact.stages.values()].flatMap((stage) => evidenceWarnings(stage)),
+    };
+  });
 }
 
 function ensureArtifactExcluded(root: string): void {
@@ -2283,9 +2301,56 @@ interface RestackPlan {
   baseRevision: string;
 }
 
+/** What a restack changed, as `implementation restack --json` prints it. */
+export interface RestackSummary {
+  mode: "base" | "stage";
+  fromStage: string | null;
+  targetBranch: string;
+  baseRevision: string;
+  refreshedStages: number;
+  rewrittenBranches: number;
+  stages: Array<{
+    id: string;
+    branch: string;
+    previousHead: string;
+    nextHead: string;
+    baseBranch: string;
+    baseRevision: string;
+    rewritten: boolean;
+  }>;
+}
+
 function restack(paths: ArtifactPaths, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
+  const fromId = option(options, "from");
+  const baseOption = option(options, "base");
+  // Reject a malformed --json before the restack rewrites any refs.
   const json = flag(options, "json");
+  const summary = restackStages(paths, { fromId, baseOption });
+  if (json) {
+    console.log(JSON.stringify(summary));
+  } else {
+    console.log(
+      `Restacked ${summary.refreshedStages} stage(s) ${
+        baseOption
+          ? `onto ${summary.targetBranch}`
+          : `from ${fromId}`
+      }; rewrote ${summary.rewrittenBranches} ${
+        summary.rewrittenBranches === 1 ? "branch" : "branches"
+      }.`,
+    );
+  }
+}
+
+/** Restacks every stage onto the current target branch head. */
+export function restackOntoTarget(root: string, base: string): RestackSummary {
+  return withValidationContext(() => restackStages(pathsFor(root), { baseOption: base }));
+}
+
+function restackStages(
+  paths: ArtifactPaths,
+  { fromId, baseOption }: { fromId?: string; baseOption?: string },
+): RestackSummary {
   assertCleanWorkingTree(paths.root, "Restacking");
   const artifact = validateArtifact(paths, {
     schemaOnly: true,
@@ -2295,8 +2360,6 @@ function restack(paths: ArtifactPaths, options: Options): void {
     fail("Restacking requires every stage to be finalized.");
   }
 
-  const fromId = option(options, "from");
-  const baseOption = option(options, "base");
   if (!fromId && !baseOption) {
     fail("restack requires --from <stage-id> or --base <revision>.");
   }
@@ -2458,37 +2521,23 @@ function restack(paths: ArtifactPaths, options: Options): void {
       }
     });
 
-    if (json) {
-      console.log(
-        JSON.stringify({
-          mode: baseOption ? "base" : "stage",
-          fromStage: fromId ?? null,
-          targetBranch: artifact.manifest.targetBranch,
-          baseRevision: newBase,
-          refreshedStages: plans.length,
-          rewrittenBranches: refUpdates.length,
-          stages: plans.map((plan) => ({
-            id: plan.id,
-            branch: plan.branch,
-            previousHead: plan.previousHead,
-            nextHead: plan.nextHead,
-            baseBranch: plan.baseBranch,
-            baseRevision: plan.baseRevision,
-            rewritten: plan.previousHead !== plan.nextHead,
-          })),
-        }),
-      );
-    } else {
-      console.log(
-        `Restacked ${plans.length} stage(s) ${
-          baseOption
-            ? `onto ${artifact.manifest.targetBranch}`
-            : `from ${fromId}`
-        }; rewrote ${refUpdates.length} ${
-          refUpdates.length === 1 ? "branch" : "branches"
-        }.`,
-      );
-    }
+    return {
+      mode: baseOption ? "base" : "stage",
+      fromStage: fromId ?? null,
+      targetBranch: artifact.manifest.targetBranch,
+      baseRevision: newBase,
+      refreshedStages: plans.length,
+      rewrittenBranches: refUpdates.length,
+      stages: plans.map((plan) => ({
+        id: plan.id,
+        branch: plan.branch,
+        previousHead: plan.previousHead,
+        nextHead: plan.nextHead,
+        baseBranch: plan.baseBranch,
+        baseRevision: plan.baseRevision,
+        rewritten: plan.previousHead !== plan.nextHead,
+      })),
+    };
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
@@ -3239,15 +3288,14 @@ function dispatch(paths: ArtifactPaths, positionals: string[], options: Options)
   fail(`Unknown command: ${positionals.join(" ")}.\n\n${HELP}`);
 }
 
-export function runImplementationCli(): void {
-
-try {
-  const parsed = parseArguments(process.argv.slice(2));
+/** Runs one `semantic-flow implementation` command line in the current working directory. */
+export function runImplementationCommand(argv: string[]): void {
+  const parsed = parseArguments(argv);
   if (parsed.options.has("help") && parsed.positionals.length === 0) {
     assertKnownOptions(parsed.options, new Set(["help"]));
     flag(parsed.options, "help");
     console.log(HELP);
-    process.exit(0);
+    return;
   }
   const root = repositoryRoot();
   withValidationContext(() => dispatch(
@@ -3255,9 +3303,4 @@ try {
     parsed.positionals,
     expandInputOptions(parsed.options, process.cwd()),
   ));
-} catch (error) {
-  console.error(`Error: ${errorMessage(error)}`);
-  process.exit(1);
-}
-
 }

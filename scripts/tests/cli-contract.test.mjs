@@ -6,15 +6,18 @@ import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import {
-  feedbackCli,
+  createImplementationWithStages,
   flowCli,
   scriptsDirectory,
   semanticCli,
 } from "./helpers/repository.mjs";
 
+// Each command group runs inside the one executable; the key is the group
+// prefix typed after it ("" for the workflow commands).
+const groupArgs = (group) => group ? [flowCli, group] : [flowCli];
 const commands = new Map([
   [
-    semanticCli,
+    "implementation",
     [
       "init",
       "specification add",
@@ -40,7 +43,7 @@ const commands = new Map([
     ],
   ],
   [
-    feedbackCli,
+    "feedback",
     [
       "init",
       "thread add",
@@ -54,7 +57,7 @@ const commands = new Map([
     ],
   ],
   [
-    flowCli,
+    "",
     ["inspect", "validate", "prepare", "archive", "status", "review", "feedback", "sync", "refresh-target", "version", "update"],
   ],
 ]);
@@ -62,22 +65,31 @@ const commands = new Map([
 test("production build exposes every documented command", () => {
   const api = fs.readFileSync(path.join(scriptsDirectory, "API.full.d.ts"), "utf8");
 
-  for (const [cli, expectedCommands] of commands) {
-    assert.ok(fs.statSync(cli).size > 0);
-    assert.equal(fs.statSync(cli).mode & 0o111, 0);
-    const help = execFileSync(process.execPath, [cli, "help"], {
+  assert.ok(fs.statSync(flowCli).size > 0);
+  assert.equal(fs.statSync(flowCli).mode & 0o111, 0);
+  assert.deepEqual(
+    fs.readdirSync(scriptsDirectory).filter((file) => file.endsWith(".mjs")),
+    ["semantic-flow.mjs"],
+  );
+  for (const [group, expectedCommands] of commands) {
+    const help = execFileSync(process.execPath, [...groupArgs(group), "help"], {
       encoding: "utf8",
     });
     assert.match(help, /scripts\/API\.d\.ts/);
     for (const command of expectedCommands) {
-      assert.match(help, new RegExp(`  \\S+ ${command.replace(" ", "\\s+")}`));
-      assert.match(api, new RegExp(`@command ${command.replace(" ", "\\s+")}`));
+      const typed = `${group ? `${group} ` : ""}${command}`.replaceAll(" ", "\\s+");
+      assert.match(help, new RegExp(`  semantic-flow\\.mjs ${typed}`));
+      assert.match(api, new RegExp(`@cli semantic-flow\\.mjs\\n \\* @command ${typed}$`, "m"));
     }
 
-    const flagHelp = execFileSync(process.execPath, [cli, "--help"], {
+    const flagHelp = execFileSync(process.execPath, [...groupArgs(group), "--help"], {
       encoding: "utf8",
     });
     assert.equal(flagHelp, help);
+  }
+  const workflowHelp = execFileSync(process.execPath, [flowCli, "help"], { encoding: "utf8" });
+  for (const group of ["implementation", "feedback"]) {
+    assert.match(workflowHelp, new RegExp(`  semantic-flow\\.mjs ${group} <command> \\[options\\]`));
   }
 
   assert.equal(fs.existsSync(path.join(scriptsDirectory, "API.md")), false);
@@ -85,8 +97,8 @@ test("production build exposes every documented command", () => {
 });
 
 test("command parsing rejects unknown commands, options, and malformed flags", () => {
-  for (const cli of commands.keys()) {
-    const unknownCommand = spawnSync(process.execPath, [cli, "unknown"], {
+  for (const group of commands.keys()) {
+    const unknownCommand = spawnSync(process.execPath, [...groupArgs(group), "unknown"], {
       encoding: "utf8",
     });
     assert.notEqual(unknownCommand.status, 0);
@@ -94,7 +106,7 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
 
     const unknownOption = spawnSync(
       process.execPath,
-      [cli, "validate", "--unknown"],
+      [...groupArgs(group), "validate", "--unknown"],
       { encoding: "utf8" },
     );
     assert.notEqual(unknownOption.status, 0);
@@ -103,7 +115,7 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
 
   const valuedHelp = spawnSync(
     process.execPath,
-    [semanticCli, "validate", "--help=true"],
+    [...semanticCli, "validate", "--help=true"],
     { encoding: "utf8" },
   );
   assert.notEqual(valuedHelp.status, 0);
@@ -111,7 +123,7 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
 
   const topLevelValuedHelp = spawnSync(
     process.execPath,
-    [semanticCli, "--help=true"],
+    [...semanticCli, "--help=true"],
     { encoding: "utf8" },
   );
   assert.notEqual(topLevelValuedHelp.status, 0);
@@ -119,6 +131,35 @@ test("command parsing rejects unknown commands, options, and malformed flags", (
     topLevelValuedHelp.stderr,
     /--help is a flag and does not take a value/,
   );
+
+  const viewerWithoutCommand = spawnSync(process.execPath, [flowCli, "viewer"], { encoding: "utf8" });
+  assert.notEqual(viewerWithoutCommand.status, 0);
+  assert.match(viewerWithoutCommand.stderr, /usage: semantic-flow viewer serve/);
+  const viewerUnknownOption = spawnSync(process.execPath, [flowCli, "viewer", "serve", "--unknown"], { encoding: "utf8" });
+  assert.notEqual(viewerUnknownOption.status, 0);
+  assert.match(viewerUnknownOption.stderr, /Unknown option --unknown/);
+});
+
+test("feedback selects its group by a command, wherever the options stand", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "routing", "--comment-id", "routing-comment", "--body", "Check the routing.",
+    "--label", "Implementation", "--target-kind", "stage", "--stage", "implementation");
+  const run = (args, input) => spawnSync(process.execPath, [flowCli, ...args], { cwd: repository.root, input, encoding: "utf8" });
+  const commandFirst = run(["feedback", "next", "--input", "-"], '{"json": true}');
+  assert.equal(commandFirst.status, 0, commandFirst.stderr);
+  const optionsFirst = run(["feedback", "--input", "-", "next"], '{"json": true}');
+  assert.equal(optionsFirst.status, 0, optionsFirst.stderr);
+  assert.deepEqual(JSON.parse(optionsFirst.stdout), JSON.parse(commandFirst.stdout));
+  assert.equal(JSON.parse(optionsFirst.stdout)[0].threads[0].id, "routing");
+
+  // Without a command, feedback is the workflow command that collects pending feedback.
+  const workflow = run(["feedback", "--json"]);
+  assert.equal(workflow.status, 0, workflow.stderr);
+  assert.equal(JSON.parse(workflow.stdout).stages[0].threads[0].id, "routing");
+  const listening = run(["feedback", "--wait", "--json", "--session", "unknown-session", "--timeout", "1"]);
+  assert.equal(listening.status, 0, listening.stderr);
+  assert.deepEqual(JSON.parse(listening.stdout), { session: "unknown-session", stopped: true, reason: "superseded" });
 });
 
 test("CLI subprocess launches hide Windows console windows", () => {
@@ -182,7 +223,7 @@ test("the bundled example conforms to the published schemas", (t) => {
 
   const result = spawnSync(
     process.execPath,
-    [semanticCli, "validate", "--schema-only"],
+    [...semanticCli, "validate", "--schema-only"],
     { cwd: root, encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -245,7 +286,7 @@ test("skill indexes command-specific workflows", () => {
   assert.match(runtime, /node -p "process\.platform"/);
   assert.match(runtime, /<semantic-flow> inspect --json/);
   assert.match(runtime, /otherwise the only\s+matching artifact/);
-  assert.match(commandText.get("implement"), /<semantic-implementation> stage begin/);
+  assert.match(commandText.get("implement"), /<semantic-flow> implementation stage begin/);
   assert.match(commandText.get("feedback"), /<semantic-flow> feedback --json/);
   assert.match(
     commandText.get("feedback"),
@@ -322,13 +363,23 @@ test("skill indexes command-specific workflows", () => {
     fs.readFileSync(path.join(skillRoot, "VERSION"), "utf8").trim(),
     packageJson.version,
   );
-  assert.match(linux, /<semantic-implementation>\s+=> node "\$semantic_implementation"/);
-  assert.match(windows, /<semantic-implementation>\s+=> node \$semanticImplementation/);
+  assert.match(linux, /<semantic-flow>\s+=> node "\$semantic_flow"/);
+  assert.match(windows, /<semantic-flow>\s+=> node \$semanticFlow/);
 
+  // One executable and one placeholder; command groups follow it.
+  const skillFiles = fs.readdirSync(skillRoot, { recursive: true })
+    .filter((file) => file.endsWith(".md") && !file.startsWith("scripts"))
+    .map((file) => [file, fs.readFileSync(path.join(skillRoot, file), "utf8")]);
+  for (const [file, text] of skillFiles) {
+    assert.doesNotMatch(text, /<(semantic-implementation|review-feedback|semantic-view)>/, file);
+    assert.doesNotMatch(text, /(semantic-implementation|review-feedback|semantic-view)\.mjs/, file);
+  }
+  assert.match(linux, /node "\$semantic_flow" implementation validate/);
+  assert.match(linux, /node "\$semantic_flow" feedback next --json/);
+  assert.match(windows, /node \$semanticFlow implementation validate/);
+  assert.match(windows, /node \$semanticFlow feedback next --json/);
   for (const platformGuide of [linux, windows]) {
     assert.match(platformGuide, /semantic-flow\.mjs/);
-    assert.match(platformGuide, /semantic-implementation\.mjs/);
-    assert.match(platformGuide, /review-feedback\.mjs/);
     assert.doesNotMatch(platformGuide, /## [1-7]\./);
   }
 });
@@ -451,7 +502,8 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.equal(packageJson.engines.node, ">=20");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);
   assert.doesNotMatch(sourceRepair, /\.\\scripts|<source-repository>\\skills/);
-  assert.match(userManual, /<semantic-implementation> <command>/);
+  assert.match(userManual, /<semantic-flow> implementation <command>/);
+  assert.match(userManual, /<semantic-flow> feedback <command>/);
   assert.match(userManual, /docs\/os\/linux\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);
 });

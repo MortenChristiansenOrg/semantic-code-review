@@ -46,7 +46,7 @@ export async function prepare(configFile, directory) {
   const versions = { node: process.version, git: checked(['git', '--version'], source), platform: process.platform, arch: process.arch };
   for (const [role, agents] of [['implementer', plan.implementers], ['grader', [plan.grader]]]) for (const a of agents) versions[`${role}:${a.id}`] = checked(a.versionCommand, source);
   // Validate installations before creating any session files or launching models.
-  for (const variant of plan.variants) for (const name of ['SKILL.md', 'scripts/semantic-flow.mjs', 'scripts/semantic-implementation.mjs', 'scripts/review-feedback.mjs']) {
+  for (const variant of plan.variants) for (const name of ['SKILL.md', 'scripts/semantic-flow.mjs']) {
     if (!fs.statSync(path.join(variant.skill, name)).isFile()) throw new Error(`Missing built skill resource: ${name}`);
   }
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-refinement-'));

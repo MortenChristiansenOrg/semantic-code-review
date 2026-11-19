@@ -11,16 +11,10 @@ Use PowerShell. Resolve the installed skill directory, construct paths with
 
 ```powershell
 $skillRoot = (Resolve-Path 'C:\absolute\path\to\semantic-flow').Path
-$semanticImplementation = Join-Path $skillRoot 'scripts\semantic-implementation.mjs'
-$reviewFeedback = Join-Path $skillRoot 'scripts\review-feedback.mjs'
-$semanticView = Join-Path $skillRoot 'scripts\semantic-view.mjs'
 $semanticFlow = Join-Path $skillRoot 'scripts\semantic-flow.mjs'
 
 node --version
 git --version
-Test-Path -LiteralPath $semanticImplementation -PathType Leaf
-Test-Path -LiteralPath $reviewFeedback -PathType Leaf
-Test-Path -LiteralPath $semanticView -PathType Leaf
 Test-Path -LiteralPath $semanticFlow -PathType Leaf
 git rev-parse --show-toplevel
 git status --short --branch
@@ -30,19 +24,16 @@ Verify that Node.js is version 20 or later. In the shared procedure,
 substitute:
 
 ```text
-<semantic-flow>    => node $semanticFlow
-<semantic-implementation>  => node $semanticImplementation
-<review-feedback>  => node $reviewFeedback
-<semantic-view>    => node $semanticView
+<semantic-flow> => node $semanticFlow
 ```
 
 For example:
 
 ```powershell
 node $semanticFlow inspect --json
-node $semanticImplementation validate
-node $reviewFeedback next --json
-node $semanticView review
+node $semanticFlow implementation validate
+node $semanticFlow feedback next --json
+node $semanticFlow review
 ```
 
 Use `Join-Path` or quoted absolute paths for Windows filesystem paths. Use
@@ -63,7 +54,7 @@ PowerShell 7 can pipe a here-string to commands accepting `--input -`:
   "rationale": "Keep the behavior independently reviewable.",
   "specificationRef": ["story#works"]
 }
-'@ | node $semanticImplementation stage begin --input -
+'@ | node $semanticFlow implementation stage begin --input -
 ```
 
 For Windows PowerShell 5.1, or whenever JSON contains non-ASCII text, prefer a
@@ -75,7 +66,7 @@ $platformInput = [System.IO.Path]::GetTempFileName()
 $utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 try {
   [System.IO.File]::WriteAllText($platformInput, $json, $utf8WithoutBom)
-  node $semanticImplementation stage organize --file $platformInput
+  node $semanticFlow implementation stage organize --file $platformInput
 }
 finally {
   Remove-Item -LiteralPath $platformInput -Force

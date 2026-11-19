@@ -17,8 +17,8 @@ export interface BeginStageOptions {
 }
 /**
  * Creates the single active working stage before its code changes begin.
- * @cli semantic-implementation.mjs
- * @command stage begin
+ * @cli semantic-flow.mjs
+ * @command implementation stage begin
  */
 export declare function beginStage(options: BeginStageOptions): void;
 export interface SetStageOptions {
@@ -40,8 +40,8 @@ export interface SetStageOptions {
 /**
  * Updates stage metadata on the active working stage or, with `finalized`, on a finalized stage.
  * At least one field to update must be supplied.
- * @cli semantic-implementation.mjs
- * @command stage set
+ * @cli semantic-flow.mjs
+ * @command implementation stage set
  */
 export declare function setStage(options: SetStageOptions): void;
 export interface RecordStageInsightOptions {
@@ -89,8 +89,8 @@ export interface RecordStageInsightOptions {
 /**
  * Records a decision, discovery, failure, risk, or question when it occurs.
  * Unrelated kind-specific parameters are rejected.
- * @cli semantic-implementation.mjs
- * @command stage record
+ * @cli semantic-flow.mjs
+ * @command implementation stage record
  */
 export declare function recordStageInsight(options: RecordStageInsightOptions): void;
 export interface OrganizeStageOptions {
@@ -105,8 +105,8 @@ export interface OrganizeStageOptions {
  * Post-processes a committed stage diff into descriptive change nodes.
  * Every changed file must belong to a node. Multi-node files must partition
  * their changed hunks or line ranges.
- * @cli semantic-implementation.mjs
- * @command stage organize
+ * @cli semantic-flow.mjs
+ * @command implementation stage organize
  */
 export declare function organizeStage(options: OrganizeStageOptions): void;
 export interface RecordValidationOptions {
@@ -137,8 +137,8 @@ export interface RecordValidationOptions {
 }
 /**
  * Records real validation evidence for a working or finalized stage.
- * @cli semantic-implementation.mjs
- * @command stage validation
+ * @cli semantic-flow.mjs
+ * @command implementation stage validation
  */
 export declare function recordValidation(options: RecordValidationOptions): void;
 export interface RecordEvidenceOptions {
@@ -177,8 +177,8 @@ export interface RecordEvidenceOptions {
 }
 /**
  * Records a capture from exercising the committed stage head. Requires the stage branch checked out and a clean worktree.
- * @cli semantic-implementation.mjs
- * @command stage evidence
+ * @cli semantic-flow.mjs
+ * @command implementation stage evidence
  */
 export declare function recordEvidence(options: RecordEvidenceOptions): void;
 export interface RemoveEvidenceOptions {
@@ -191,8 +191,8 @@ export interface RemoveEvidenceOptions {
 }
 /**
  * Removes evidence and its unused files, for example a capture containing sensitive data.
- * @cli semantic-implementation.mjs
- * @command stage evidence-remove
+ * @cli semantic-flow.mjs
+ * @command implementation stage evidence-remove
  */
 export declare function removeEvidence(options: RemoveEvidenceOptions): void;
 export interface RecordNoEvidenceOptions {
@@ -207,8 +207,8 @@ export interface RecordNoEvidenceOptions {
 }
 /**
  * Records why a stage has no evidence, or clears that reason.
- * @cli semantic-implementation.mjs
- * @command stage no-evidence
+ * @cli semantic-flow.mjs
+ * @command implementation stage no-evidence
  */
 export declare function recordNoEvidence(options: RecordNoEvidenceOptions): void;
 export interface FinishStageOptions {
@@ -219,8 +219,8 @@ export interface FinishStageOptions {
 }
 /**
  * Finalizes a working stage against the current stage branch head.
- * @cli semantic-implementation.mjs
- * @command stage finish
+ * @cli semantic-flow.mjs
+ * @command implementation stage finish
  */
 export declare function finishStage(options: FinishStageOptions): void;
 export interface DiscardStageOptions {
@@ -229,8 +229,8 @@ export interface DiscardStageOptions {
 }
 /**
  * Deletes an unfinished working stage without reverting code changes.
- * @cli semantic-implementation.mjs
- * @command stage discard
+ * @cli semantic-flow.mjs
+ * @command implementation stage discard
  */
 export declare function discardStage(options: DiscardStageOptions): void;
 export interface RecordStageBatchOptions {
@@ -242,8 +242,8 @@ export interface RecordStageBatchOptions {
     items: string;
 }
 /** Atomically records multiple observed insights and validation evidence for one stage.
- * @cli semantic-implementation.mjs
- * @command stage record-batch
+ * @cli semantic-flow.mjs
+ * @command implementation stage record-batch
  */
 export declare function recordStageBatch(options: RecordStageBatchOptions): void;
 export interface OrganizationPlanOptions {
@@ -255,8 +255,8 @@ export interface OrganizationPlanOptions {
     selectors?: true;
 }
 /** Emits the current committed file inventory, revisions, and unlinked item IDs as JSON.
- * @cli semantic-implementation.mjs
- * @command stage plan
+ * @cli semantic-flow.mjs
+ * @command implementation stage plan
  */
 export declare function organizationPlan(options?: OrganizationPlanOptions): void;
 export interface TargetInsightOptions {
@@ -278,7 +278,7 @@ export interface TargetInsightOptions {
     "code-end"?: string;
 }
 /** Attach or retarget after reviewing an insight against committed code, or remove its link.
- * @cli semantic-implementation.mjs
- * @command stage target
+ * @cli semantic-flow.mjs
+ * @command implementation stage target
  */
 export declare function targetInsight(options: TargetInsightOptions): void;

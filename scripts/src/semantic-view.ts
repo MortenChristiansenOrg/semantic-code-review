@@ -7,9 +7,7 @@ export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.j
  * data model (stages, nodes, project-grouped files, full-context diffs), and
  * serves the bundled Cinema viewer on localhost.
  *
- * Usage: node semantic-view.mjs [review] [project-path]
- * The optional leading `review` token is accepted and ignored so the launch
- * reads naturally ("semantic-view review").
+ * Usage: node semantic-flow.mjs viewer serve [project-path] [--review <id> --generation <gen>]
  */
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -36,7 +34,7 @@ export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
-import { captureReviewContext, assertReviewContext, runReviewCommand, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
+import { captureReviewContext, assertReviewContext, isolateReviewEnvironment, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
 
 export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
 import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
@@ -56,6 +54,8 @@ import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { StateChange } from "./shared/review-store.js";
+import { assertKnownOptions, option, parseArguments } from "./shared/arguments.js";
+import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 
 const pathExistsFacts = factCache<boolean>();
 const renameFacts = factCache<string>();
@@ -87,10 +87,11 @@ function locateViewerDir() {
   return "";
 }
 
-function resolveRepositoryRoot(args: string[]) {
-  const positional = args.filter((a) => a !== "review");
+const VIEWER_USAGE = "usage: semantic-flow viewer serve [project-path] [--review <review-id> --generation <generation>]";
+
+function resolveRepositoryRoot(positional: string[]) {
   if (positional.length > 1) {
-    fail("usage: semantic-view [review] [project-path]");
+    fail(VIEWER_USAGE);
   }
   const start = path.resolve(process.cwd(), positional[0] ?? ".");
   let dir = start;
@@ -1541,12 +1542,6 @@ const CONTENT_TYPES: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
-// Locate the sibling review-feedback CLI produced by the skill build.
-function locateFeedbackCli() {
-  const candidate = path.join(scriptDir, "review-feedback.mjs");
-  return fs.existsSync(candidate) ? candidate : "";
-}
-
 function readRequestBody(request: http.IncomingMessage, limit = 8 * 1024 * 1024): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -1700,9 +1695,10 @@ export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
   };
 }
 
-function runFeedbackCli(feedbackCli: string, context: ReviewContext, args: string[], input?: string): string {
+/** Feedback changes for this viewer session, made in-process. */
+function feedbackFor(context: ReviewContext): ReviewFeedback {
   if (assertReviewContext(context).remote) throw new Error("Remote reviews support personal notes only.");
-  return runReviewCommand(context, process.execPath, [feedbackCli, ...args], { input });
+  return reviewFeedback(context.repositoryRoot, context);
 }
 
 function feedbackContext(repoRoot: string, context: ReviewContext | null | undefined, initialize = false): ReviewContext {
@@ -1811,22 +1807,12 @@ export function planFeedbackThreads(notes: unknown, implementation: FeedbackTarg
 }
 
 /** Output of a review-feedback `--partial` batch command over `size` inputs. */
-function parseBatchOutcome(output: string, size: number) {
-  const value = fieldsOf(parseJson(output));
-  const index = (item: unknown) => {
-    const position = numberField(item, "index");
-    if (position === undefined || !Number.isInteger(position) || position < 0 || position >= size) throw new Error("The feedback command returned an invalid batch result.");
-    return position;
-  };
-  return {
-    accepted: listOf(value.accepted).map(index),
-    rejected: listOf(value.rejected).map((item) => ({ index: index(item), error: stringField(item, "error") ?? "" })),
-  };
+function batchOutcome(result: PartialBatchResult) {
+  return { accepted: result.accepted.map((item) => item.index), rejected: result.rejected };
 }
 
 interface FeedbackCommandOptions {
   repoRoot: string;
-  feedbackCli: string;
   context?: ReviewContext | null;
 }
 
@@ -1837,12 +1823,9 @@ interface ExportResult {
   skipped?: SkippedNote<number>[];
 }
 
-export function exportFeedback({ repoRoot, implementation, feedbackCli, context = null }: FeedbackCommandOptions & { implementation: FeedbackTargets }, notes: unknown): ExportResult {
+export function exportFeedback({ repoRoot, implementation, context = null }: FeedbackCommandOptions & { implementation: FeedbackTargets }, notes: unknown): ExportResult {
   const review = feedbackContext(repoRoot, context, true);
   if (assertReviewContext(review).remote) throw new Error("Remote reviews support personal notes only.");
-  if (!feedbackCli) {
-    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
-  }
   if (!isList(notes) || notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
@@ -1853,7 +1836,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
 
   const manifest = path.join(feedbackDirectory(repoRoot), "manifest.json");
   if (!fs.existsSync(manifest)) {
-    try { runFeedbackCli(feedbackCli, review, ["init"]); }
+    try { feedbackFor(review).initialize(); }
     catch (error) { if (!fs.existsSync(manifest)) throw error; } // Another viewer may have initialized it first.
   }
   const exportId = `viewer-${Date.now().toString(36)}`;
@@ -1874,10 +1857,7 @@ export function exportFeedback({ repoRoot, implementation, feedbackCli, context 
       },
     };
   });
-  const result = parseBatchOutcome(runFeedbackCli(
-    feedbackCli, review, ["thread", "add-batch", "--partial", "--input", "-"],
-    JSON.stringify({ threads: batch.map((entry) => entry.input) }),
-  ), batch.length);
+  const result = batchOutcome(feedbackFor(review).addThreads(batch.map((entry) => entry.input)));
   const exported = result.accepted.map((index) => ({ ref: batch[index].ref, threadId: batch[index].threadId }));
   for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
   return { ok: exported.length > 0, exported, skipped, ...(exported.length ? {} : { error: "No notes could be exported." }) };
@@ -1899,12 +1879,9 @@ interface ReplyResult {
   skipped?: SkippedNote<string>[];
 }
 
-export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }: FeedbackCommandOptions, drafts: unknown): ReplyResult {
+export function exportFeedbackReplies({ repoRoot, context = null }: FeedbackCommandOptions, drafts: unknown): ReplyResult {
   const review = feedbackContext(repoRoot, context);
   if (assertReviewContext(review).remote) throw new Error("Remote reviews support personal notes only.");
-  if (!feedbackCli) {
-    return { ok: false, error: "The review-feedback CLI was not found next to the viewer." };
-  }
   if (!isList(drafts) || drafts.length === 0) {
     return { ok: false, error: "No feedback replies to export." };
   }
@@ -1953,10 +1930,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }:
     };
   };
 
-  const result = parseBatchOutcome(runFeedbackCli(
-    feedbackCli, review, ["thread", "reply-batch", "--partial", "--input", "-"],
-    JSON.stringify({ replies: batch.map((entry) => entry.input) }),
-  ), batch.length);
+  const result = batchOutcome(feedbackFor(review).replyToThreads(batch.map((entry) => entry.input)));
   const replied = result.accepted.map((index) => resultFor(batch[index]));
   for (const { index, error } of result.rejected) skipped.push({ ref: batch[index].ref, reason: error });
   return { ok: replied.length > 0, replied, skipped, ...(replied.length ? {} : { error: "No replies could be exported." }) };
@@ -1964,7 +1938,7 @@ export function exportFeedbackReplies({ repoRoot, feedbackCli, context = null }:
 }
 
 /** One viewer send. Listening agents wait until its notes and replies are both written. */
-export function sendFeedback({ repoRoot, implementation = null, feedbackCli, context = null }: FeedbackCommandOptions & { implementation?: FeedbackTargets | null }, notes: unknown, replies: unknown) {
+export function sendFeedback({ repoRoot, implementation = null, context = null }: FeedbackCommandOptions & { implementation?: FeedbackTargets | null }, notes: unknown, replies: unknown) {
   const hasNotes = isList(notes) && notes.length > 0;
   const hasReplies = isList(replies) && replies.length > 0;
   if (!hasNotes && !hasReplies) return { ok: false, error: "No feedback to send." };
@@ -1972,8 +1946,8 @@ export function sendFeedback({ repoRoot, implementation = null, feedbackCli, con
   const token = randomUUID();
   updateAgentState(review.reviewId, (state, now) => markSending(state, now, token, true));
   try {
-    const sent: ExportResult | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), feedbackCli, context: review }, notes) : null;
-    const answered: ReplyResult | null = hasReplies ? exportFeedbackReplies({ repoRoot, feedbackCli, context: review }, replies) : null;
+    const sent: ExportResult | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), context: review }, notes) : null;
+    const answered: ReplyResult | null = hasReplies ? exportFeedbackReplies({ repoRoot, context: review }, replies) : null;
     const ok = Boolean(sent?.ok || answered?.ok);
     return {
       ok,
@@ -2022,7 +1996,6 @@ function isTrustedRequest(request: http.IncomingMessage, port: number) {
 /** What the HTTP handlers need from the server for one feedback request. */
 interface FeedbackRequestContext {
   repoRoot: string;
-  feedbackCli: string;
   jobs: ViewerWorker;
   port: number;
 }
@@ -2095,13 +2068,6 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
       });
       return;
     }
-    if (!context.feedbackCli) {
-      sendJson(response, 422, {
-        ok: false,
-        error: "The review-feedback CLI was not found next to the viewer.",
-      });
-      return;
-    }
     const raw = await readRequestBody(request);
     let payload: unknown;
     try {
@@ -2135,9 +2101,9 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
         }]]));
         if (!result.ok) throw new Error(stringField(result, "error") || stringField(listOf(result.skipped)[0], "reason") || "Reply could not be sent.");
       } else if (action === "resolve") {
-        await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "resolve", "--id", threadId]]);
+        await context.jobs.call("setThreadStatus", [context.implementationId, threadId, "resolved"]);
       } else if (action === "reopen") {
-        await context.jobs.call("feedbackCli", [context.implementationId, ["thread", "reopen", "--id", threadId]]);
+        await context.jobs.call("setThreadStatus", [context.implementationId, threadId, "open"]);
       }
     } catch (error) {
       sendJson(response, 422, { ok: false, error: cliErrorMessage(error) });
@@ -2186,7 +2152,7 @@ export function registeredReviews() {
 export async function openRegisteredReview(id: string, generation: string): Promise<string> {
   const context = captureReviewContext(id);
   if (context.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
-  const child = spawnReviewCommand(context, process.execPath, [fileURLToPath(import.meta.url), "review", context.repositoryRoot], {
+  const child = spawnReviewCommand(context, process.execPath, [fileURLToPath(import.meta.url), "viewer", "serve", context.repositoryRoot, "--review", context.reviewId, "--generation", context.generation], {
     detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" },
   });
   try {
@@ -2234,7 +2200,6 @@ interface ViewerServerOptions {
   viewerDir: string;
   port: number;
   repoRoot: string;
-  feedbackCli: string;
   implementationId: string;
   dataSource: ViewerWorker;
   viewerVersion: string;
@@ -2245,7 +2210,6 @@ function serveViewer({
   viewerDir,
   port,
   repoRoot,
-  feedbackCli,
   implementationId,
   dataSource,
   viewerVersion,
@@ -2517,7 +2481,6 @@ function serveViewer({
     if (request.method === "POST" && pathname === "/api/feedback/export") {
       handleFeedbackExport(request, response, {
         repoRoot,
-        feedbackCli,
         jobs: dataSource,
         port,
       });
@@ -2532,7 +2495,7 @@ function serveViewer({
       handleThreadAction(
         request,
         response,
-        { repoRoot, feedbackCli, port, implementationId, jobs: dataSource },
+        { repoRoot, port, implementationId, jobs: dataSource },
         action,
       );
       return;
@@ -2724,7 +2687,7 @@ function runManagementJob(method: unknown, args: unknown[]) {
   throw new Error("Unknown review management operation.");
 }
 
-async function runViewerJob(root: string, context: ReviewContext, source: ReturnType<typeof createViewerDataSource>, feedbackCli: string, method: unknown, args: unknown[]): Promise<unknown> {
+async function runViewerJob(root: string, context: ReviewContext, source: ReturnType<typeof createViewerDataSource>, method: unknown, args: unknown[]): Promise<unknown> {
   const localState = method === "readReview" || method === "patchReviewState";
   // A state read returns the same record whose generation it checked.
   const record = localState ? readReview(context.reviewId) : undefined;
@@ -2753,24 +2716,24 @@ async function runViewerJob(root: string, context: ReviewContext, source: Return
     return compareApprovalSnapshot(context, snapshotId, approvedFileEndpoint(input, source.implementationData()),
       typeof offset === "number" ? offset : NaN, typeof mode === "string" ? mode : "", typeof scope === "string" ? scope : "");
   }
-  if (method === "sendFeedback") return sendFeedback({ repoRoot: root, feedbackCli, context }, args[1], args[2]);
+  if (method === "sendFeedback") return sendFeedback({ repoRoot: root, context }, args[1], args[2]);
   if (method === "controlAgent") return controlAgent(context, textArg(args, 1), args[2]);
-  if (method === "exportFeedbackReplies") return exportFeedbackReplies({ repoRoot: root, feedbackCli, context }, args[1]);
-  if (method === "feedbackCli") {
-    const commandArgs = args[1];
-    if (!isStringArray(commandArgs)) throw new Error("Invalid feedback command.");
-    return runFeedbackCli(feedbackCli, context, commandArgs);
+  if (method === "exportFeedbackReplies") return exportFeedbackReplies({ repoRoot: root, context }, args[1]);
+  if (method === "setThreadStatus") {
+    const feedback = feedbackFor(context), threadId = textArg(args, 1);
+    if (args[2] === "resolved") return feedback.resolveThread(threadId);
+    if (args[2] === "open") return feedback.reopenThread(threadId);
+    throw new Error("Invalid thread status.");
   }
   throw new Error("Unknown viewer operation.");
 }
 
 function serveWorkerJobs(port: MessagePort, root: string, context: ReviewContext, management: boolean) {
   const source = management ? null : createViewerDataSource(root);
-  const feedbackCli = locateFeedbackCli();
   port.on("message", async (message: unknown) => {
     const { id, method, args } = fieldsOf(message);
     try {
-      const result = source ? await runViewerJob(root, context, source, feedbackCli, method, listOf(args)) : runManagementJob(method, listOf(args));
+      const result = source ? await runViewerJob(root, context, source, method, listOf(args)) : runManagementJob(method, listOf(args));
       port.postMessage({ id, result });
     } catch (error) { port.postMessage({ id, error: cliErrorMessage(error), code: errorCode(error) }); }
   });
@@ -2825,21 +2788,49 @@ function notifyLauncher(message: object) {
 
 let startupWorker: ReturnType<typeof createViewerWorker> | undefined;
 
-async function main() {
-  const repoRoot = resolveRepositoryRoot(process.argv.slice(2));
+/** The review session a reopened viewer must serve, as its launcher named it. */
+interface RequestedReview {
+  reviewId: string;
+  generation: string;
+}
+
+/** Runs `semantic-flow viewer serve`: the long-running viewer server, normally
+ * started detached by `semantic-flow review` or by reopening a saved review. */
+export async function runViewerCommand(argv: string[]): Promise<void> {
+  try {
+    const { positionals, options } = parseArguments(argv);
+    const [command, ...paths] = positionals;
+    if (command !== "serve") fail(VIEWER_USAGE);
+    assertKnownOptions(options, new Set(["review", "generation"]));
+    const reviewOption = option(options, "review"), generation = option(options, "generation");
+    if ((reviewOption === undefined) !== (generation === undefined)) fail(VIEWER_USAGE);
+    const requested = reviewOption !== undefined && generation !== undefined ? { reviewId: reviewOption, generation } : null;
+    // Feedback changes run in this process; Git must see only the reviewed worktree.
+    isolateReviewEnvironment();
+    await serve(resolveRepositoryRoot(paths), requested);
+  } catch (error) {
+    await startupWorker?.close();
+    notifyLauncher({ type: "error", message: errorMessage(error) });
+    if (process.exitCode === undefined || process.exitCode === 0) {
+      console.error(`semantic-view: ${errorMessage(error)}`);
+      process.exitCode = 1;
+    }
+  }
+}
+
+async function serve(repoRoot: string, requested: RequestedReview | null) {
   const viewerDir = locateViewerDir();
   const implementation = implementationSummary(repoRoot);
-  const registered = process.env.SEMANTIC_FLOW_REVIEW_ID
-    ? readReview(process.env.SEMANTIC_FLOW_REVIEW_ID)
+  const registered = requested
+    ? readReview(requested.reviewId)
     : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
   const context = captureReviewContext(registered.id);
-  if (process.env.SEMANTIC_FLOW_REVIEW_ID && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_ID !== context.reviewId || process.env.SEMANTIC_FLOW_REVIEW_GENERATION !== context.generation)) throw new Error("The requested review session changed before startup.");
+  if (requested && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
   const dataSource = createViewerWorker(repoRoot, context);
   startupWorker = dataSource;
-  const feedbackCli = locateFeedbackCli();
   const fingerprint = createHash("sha256");
   fingerprint.update(viewerReleaseVersion);
-  for (const file of [fileURLToPath(import.meta.url), feedbackCli, ...["app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))].filter(Boolean)) {
+  for (const file of [fileURLToPath(import.meta.url), ...["app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))]) {
     fingerprint.update(fs.readFileSync(file));
   }
   const viewerVersion = fingerprint.digest("hex");
@@ -2850,14 +2841,14 @@ async function main() {
   const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {
-      server = await serveViewer({ viewerDir, port, repoRoot, feedbackCli, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
+      server = await serveViewer({ viewerDir, port, repoRoot, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
       if (!["EADDRINUSE", "EACCES"].includes(errorCode(error) ?? "")) throw error;
       const occupant = await probeViewer(port);
       if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion) {
         await dataSource.close();
         const url = `http://${VIEWER_HOST}:${port}/`;
-        notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation, feedbackEnabled: Boolean(feedbackCli) });
+        notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation });
         console.log(`Reusing semantic review viewer: ${url}`);
         openBrowser(url); return;
       }
@@ -2881,11 +2872,6 @@ async function main() {
   console.log(
     `Implementation: ${implementation.title} — ${implementation.stageCount} stages, ${implementation.fileCount} files`,
   );
-  if (!feedbackCli) {
-    console.log(
-      "Note: review-feedback CLI not found; exporting reviewer feedback is disabled.",
-    );
-  }
   console.log("Press Ctrl+C to stop.");
   notifyLauncher({
     type: "ready",
@@ -2894,21 +2880,6 @@ async function main() {
     processId: process.pid,
     reviewId: context.reviewId,
     implementation,
-    feedbackEnabled: Boolean(feedbackCli),
   });
   openBrowser(url);
-}
-
-const isDirectRun =
-  path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url);
-
-if (isDirectRun && isMainThread) {
-  main().catch(async (error) => {
-    await startupWorker?.close();
-    notifyLauncher({ type: "error", message: errorMessage(error) });
-    if (process.exitCode === undefined || process.exitCode === 0) {
-      console.error(`semantic-view: ${errorMessage(error)}`);
-      process.exitCode = 1;
-    }
-  });
 }

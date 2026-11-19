@@ -11,7 +11,7 @@ import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
 import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
-import { validateNotes, releaseBody } from '../src/release.ts';
+import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
 
@@ -27,9 +27,10 @@ function temp(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return root;
 }
-function distribution(version = '0.2.0') {
+function distribution(version = '0.2.0', extraFiles = {}) {
   const root = path.resolve(scriptsDirectory, '..');
   const files = new Map(skillFiles(root).map((name) => [name, fs.readFileSync(path.join(root, name))]));
+  for (const [name, content] of Object.entries(extraFiles)) files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
   const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: 20,
@@ -100,6 +101,11 @@ test('actual archive installs complete CLI without a source checkout and reports
   assert.equal(JSON.parse(result.stdout).sourceCommit, 'a'.repeat(40));
   assert.equal(JSON.parse(result.stdout).skillVersion, '0.2.0');
   assert.ok(fs.existsSync(path.join(destination, 'viewer/app.js')));
+  assert.deepEqual(fs.readdirSync(path.join(destination, 'scripts')).filter((file) => file.endsWith('.mjs')), ['semantic-flow.mjs']);
+  // The packaging smoke test runs every command group of the installed copy.
+  const workspace = path.join(root, 'workspace'); fs.mkdirSync(workspace);
+  smokeTestInstallation(destination, workspace, '0.2.0', 'a'.repeat(40));
+  assert.throws(() => smokeTestInstallation(destination, workspace, '0.3.0', 'a'.repeat(40)), /incorrect release provenance/);
   const pending = ['commands/report.md'];
   const visited = new Set();
   while (pending.length) {
@@ -176,7 +182,7 @@ async function updateFixture(t, options = {}) {
   const installed = path.join(root, 'installed');
   fs.cpSync(path.resolve(scriptsDirectory, '..'), installed, { recursive: true });
   fs.writeFileSync(path.join(installed, 'VERSION'), `${options.previous || '0.1.0'}\n`);
-  const zip = await archive(distribution());
+  const zip = await archive(distribution('0.2.0', options.files));
   fs.writeFileSync(path.join(root, 'asset.zip'), options.corrupt ? Buffer.from('corrupt') : zip);
   const responses = [release('0.2.0'), release('0.1.5')];
   if (options.missing) responses[0].assets = [];
@@ -268,6 +274,56 @@ test('release update restarts the matching viewer and preserves repository artif
   assert.notEqual(before.processId, after.processId);
   assert.equal(after.skillDirectory, fixture.installed);
   assert.equal(beforeArtifact, fixture.repository.read('.semantic-review/manifest.json'));
+});
+
+test('release downgrade restarts the viewer with the executable the older release ships', async (t) => {
+  let port;
+  t.after(async () => {
+    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+  });
+  // Releases before the single executable started their viewer with `semantic-view.mjs review <path>`.
+  const olderViewer = `import fs from 'node:fs';
+fs.writeFileSync(process.env.SEMANTIC_FLOW_TEST_VIEWER_ARGS, JSON.stringify(process.argv.slice(2)));
+process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: process.argv[3], processId: process.pid, implementation: { stageCount: 0, fileCount: 0 } }, () => process.disconnect());
+`;
+  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer } });
+  initializeImplementation(fixture.repository);
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  port = server.address().port; server.close(); await once(server, 'close');
+  const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' };
+  const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, ...env }, encoding: 'utf8' });
+  assert.equal(launch.status, 0, launch.stderr);
+  const viewerArgs = path.join(fixture.root, 'viewer-args.json');
+  const result = await fixture.run(['--version', '0.2.0', '--allow-downgrade'], { ...env, SEMANTIC_FLOW_TEST_VIEWER_ARGS: viewerArgs });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Updated semantic-flow 0.3.0 -> 0.2.0/);
+  const [command, worktree, ...rest] = JSON.parse(fs.readFileSync(viewerArgs, 'utf8'));
+  assert.equal(command, 'review');
+  assert.equal(fs.realpathSync.native(worktree), fs.realpathSync.native(fixture.repository.root));
+  assert.deepEqual(rest, []);
+});
+
+test('a viewer file left over from an older release does not start the viewer', async (t) => {
+  let port;
+  t.after(async () => {
+    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+  });
+  const fixture = await updateFixture(t);
+  // Copying a single-executable release over a four-executable folder keeps the old viewer file.
+  const leftover = path.join(fixture.root, 'leftover-args.json');
+  fs.writeFileSync(path.join(fixture.installed, 'scripts', 'semantic-view.mjs'),
+    `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(leftover)}, '[]'); process.exit(1);\n`);
+  const files = Object.fromEntries(skillFiles(fixture.installed).filter((name) => name !== 'RELEASE.json' && name !== 'scripts/semantic-view.mjs').map((name) => [name, 'x']));
+  fs.writeFileSync(path.join(fixture.installed, 'RELEASE.json'), JSON.stringify({ repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version: '0.1.0', minimumNodeMajor: 20, files }));
+  initializeImplementation(fixture.repository);
+  const server = net.createServer();
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  port = server.address().port; server.close(); await once(server, 'close');
+  const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' }, encoding: 'utf8' });
+  assert.equal(launch.status, 0, launch.stderr);
+  assert.match(launch.stdout, /Semantic review viewer: /);
+  assert.equal(fs.existsSync(leftover), false);
 });
 
 test('publication rehearses draft upload/download, retries failures, and protects published versions and latest selection', async (t) => {

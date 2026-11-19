@@ -96,7 +96,7 @@ assigned corrections are committed and organized, check out that earliest
 changed branch and run:
 
 ```text
-<semantic-implementation> restack --from <earliest-changed-stage-id>
+<semantic-flow> implementation restack --from <earliest-changed-stage-id>
 ```
 
 This replays each descendant once. If a later correction requires code from an

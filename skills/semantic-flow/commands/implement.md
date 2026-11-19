@@ -51,7 +51,7 @@ For new work:
    specification options, then initialize from the isolated worktree:
 
    ```text
-   <semantic-implementation> init <options>
+   <semantic-flow> implementation init <options>
    ```
 
 Initialization records the target branch head as `baseRevision`. The default
@@ -70,7 +70,7 @@ preparatory branch or a future stage branch with Git.
 From the current stack tip:
 
 ```text
-<semantic-implementation> stage begin --input -
+<semantic-flow> implementation stage begin --input -
 ```
 
 The command creates and checks out the deterministic stage branch. The first
@@ -105,7 +105,7 @@ Implement only the active stage intent. Record review-relevant insights when the
 arise:
 
 ```text
-<semantic-implementation> stage record --input -
+<semantic-flow> implementation stage record --input -
 ```
 
 Use `stage record-batch --input -` for multiple already-observed insights or
@@ -152,7 +152,7 @@ Create an organization document conforming to
 `../references/stage-organization.schema.json`, then run:
 
 ```text
-<semantic-implementation> stage organize --file <organization-json>
+<semantic-flow> implementation stage organize --file <organization-json>
 ```
 
 Every changed file must be covered. Whole-file ownership needs no selector.
@@ -171,7 +171,7 @@ recorded as validation evidence. Record only review-relevant results under the
 rules in `../docs/artifact-quality.md`:
 
 ```text
-<semantic-implementation> stage validation --input -
+<semantic-flow> implementation stage validation --input -
 ```
 
 Then capture evidence as described in the next section.
@@ -183,7 +183,7 @@ summary. Record at least one entry for each user-observable feature or acceptanc
 criterion the stage addresses:
 
 ```text
-<semantic-implementation> stage evidence --input -
+<semantic-flow> implementation stage evidence --input -
 ```
 
 - Commit first: the command requires the stage branch and a clean worktree.
@@ -209,7 +209,7 @@ change that affects the diff or recorded insights.
 Finalize:
 
 ```text
-<semantic-implementation> stage finish
+<semantic-flow> implementation stage finish
 ```
 
 Successful `stage finish` already validates the finalized artifact and Git
@@ -227,7 +227,7 @@ After all stages:
    existing references:
 
    ```text
-   <semantic-implementation> stage set --finalized --id <stage-id> --specification-ref <specification-id>#<criterion-id> ...
+   <semantic-flow> implementation stage set --finalized --id <stage-id> --specification-ref <specification-id>#<criterion-id> ...
    ```
 
 2. Exercise the complete acceptance path.

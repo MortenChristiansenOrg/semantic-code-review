@@ -49,8 +49,8 @@ async function fixture(t) {
 }
 function complete(context, implementation = correct, { changeSource = false, brokenTests = false } = {}) {
   const { r, root, f } = context;
-  r.cli('semantic-implementation', 'init', '--implementation-id', 'preview', '--title', 'Message previews', '--summary', 'Pure local utility', '--target-branch', 'main', '--specification-id', 'story', '--specification-title', 'Preview utility', '--specification-summary', 'Preview text locally', '--source-kind', 'local', '--source-reference', 'fixture', '--criterion', 'works=Message previews normalize whitespace and respect code-point limits.');
-  r.cli('semantic-implementation', 'stage', 'begin', '--id', 'preview', '--title', 'Preview utility', '--summary', 'Add the utility', '--rationale', 'Keep local utility reviewable', '--specification-ref', 'story#works');
+  r.cli('implementation', 'init', '--implementation-id', 'preview', '--title', 'Message previews', '--summary', 'Pure local utility', '--target-branch', 'main', '--specification-id', 'story', '--specification-title', 'Preview utility', '--specification-summary', 'Preview text locally', '--source-kind', 'local', '--source-reference', 'fixture', '--criterion', 'works=Message previews normalize whitespace and respect code-point limits.');
+  r.cli('implementation', 'stage', 'begin', '--id', 'preview', '--title', 'Preview utility', '--summary', 'Add the utility', '--rationale', 'Keep local utility reviewable', '--specification-ref', 'story#works');
   r.write('team-chat/lib/message-preview.mjs', implementation);
   r.write('team-chat/lib/message-preview.test.mjs', brokenTests ? "import {test} from 'node:test'; test('broken', () => {throw new Error('failed project check')});\n" : authoredTests);
   r.write('team-chat/package.json', JSON.stringify({ ...f.before.package, scripts: { ...f.before.package.scripts, 'test:message-preview': 'node --test lib/message-preview.test.mjs' } }, null, 2) + '\n');
@@ -59,8 +59,8 @@ function complete(context, implementation = correct, { changeSource = false, bro
   r.git('add', '--', ...changed); r.git('commit', '-qm', 'Implement previews');
   const organization = path.join(root, 'tmp', 'preview-organization.json');
   writeJson(organization, { $schema: 'https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json', nodes: [{ id: 'preview', description: 'Preview utility and tests', changes: changed.map(name => ({ path: name, classification: name.endsWith('.test.mjs') ? 'test' : 'behavior' })) }], itemLinks: [] });
-  r.cli('semantic-implementation', 'stage', 'organize', '--file', organization);
-  r.cli('semantic-implementation', 'stage', 'finish', '--id', 'preview');
+  r.cli('implementation', 'stage', 'organize', '--file', organization);
+  r.cli('implementation', 'stage', 'finish', '--id', 'preview');
 }
 const check = async context => verify({ fixture: context.f, root: context.root, skill, env: context.env, capabilities: context.capabilities });
 const byId = result => Object.fromEntries(result.checks.map(item => [item.id, item]));

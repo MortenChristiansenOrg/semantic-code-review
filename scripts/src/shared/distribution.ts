@@ -37,7 +37,7 @@ export function skillFiles(root: string, prefix = ""): string[] {
 function requiredFiles(files: Map<string, Buffer>): void {
   const required = ["SKILL.md", "VERSION", "RELEASE.json", "THIRD-PARTY-NOTICES.txt",
     "scripts/API.d.ts", "scripts/API.full.d.ts",
-    ...["semantic-flow", "semantic-implementation", "review-feedback", "semantic-view"].map((name) => `scripts/${name}.mjs`),
+    "scripts/semantic-flow.mjs",
     ...["shared", "implementation", "stages", "history", "feedback", "workflow"].map((name) => `scripts/api/${name}.d.ts`),
     ...["index.html", "app.js", "styles.css", "favicon.svg"].map((name) => `viewer/${name}`),
     ...["common", "manifest", "specification", "stage"].map((name) => `references/schema/${name}.schema.json`),

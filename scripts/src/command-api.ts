@@ -10,8 +10,13 @@ export interface CommandSignature {
   options?: OptionSignature[];
 }
 
+/** The one CLI executable; every command group runs inside it. */
+export const CLI_EXECUTABLE = "semantic-flow.mjs";
+
 export interface CliSignature {
-  executable: string;
+  executable: typeof CLI_EXECUTABLE;
+  /** Command group that prefixes every command, or null for the workflow commands. */
+  group: string | null;
   title: string;
   commands: CommandSignature[];
   globalOptions?: OptionSignature[];
@@ -34,8 +39,9 @@ const specificationOptions: OptionSignature[] = [
 ];
 
 export const semanticImplementationApi: CliSignature = {
-  executable: "semantic-implementation.mjs",
-  title: "Semantic implementation artifact CLI",
+  executable: CLI_EXECUTABLE,
+  group: "implementation",
+  title: "Semantic implementation artifact commands",
   globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     {
@@ -210,8 +216,9 @@ export const semanticImplementationApi: CliSignature = {
 };
 
 export const reviewFeedbackApi: CliSignature = {
-  executable: "review-feedback.mjs",
-  title: "Semantic review feedback CLI",
+  executable: CLI_EXECUTABLE,
+  group: "feedback",
+  title: "Semantic review feedback commands",
   globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     { command: "init" },
@@ -299,8 +306,9 @@ const projectSelectionOptions: OptionSignature[] = [
 ];
 
 export const semanticFlowApi: CliSignature = {
-  executable: "semantic-flow.mjs",
-  title: "Semantic flow workflow helper",
+  executable: CLI_EXECUTABLE,
+  group: null,
+  title: "Semantic flow",
   globalOptions: [option("help"), option("input", "<json-file>")],
   commands: [
     {
@@ -361,6 +369,11 @@ export const cliApis = [
   semanticFlowApi,
 ] as const;
 
+/** The command as typed after the executable, including its group. */
+export function fullCommand(api: CliSignature, command: string): string {
+  return api.group ? `${api.group} ${command}` : command;
+}
+
 export function commandOptionNames(
   api: CliSignature,
   command: string,
@@ -369,7 +382,7 @@ export function commandOptionNames(
     (candidate) => candidate.command === command,
   );
   if (!signature) {
-    throw new Error(`Missing command signature: ${api.executable} ${command}`);
+    throw new Error(`Missing command signature: ${api.executable} ${fullCommand(api, command)}`);
   }
   return new Set((signature.options ?? []).map((candidate) => candidate.name));
 }
@@ -380,14 +393,16 @@ function optionUsage(signature: OptionSignature): string {
 }
 
 export function renderCliHelp(api: CliSignature): string {
+  const groups = api.group ? [] : cliApis.filter((other) => other.group).map((other) => `  ${api.executable} ${other.group} <command> [options]`);
   return [
     api.title,
     "",
     "Usage:",
     ...api.commands.map(
       ({ command, options }) =>
-        `  ${api.executable} ${command}${options?.length ? " [options]" : ""}`,
+        `  ${api.executable} ${fullCommand(api, command)}${options?.length ? " [options]" : ""}`,
     ),
+    ...(groups.length ? ["", "Command groups (use <group> --help):", ...groups] : []),
     "",
     "Global options:",
     ...(api.globalOptions ?? []).map(
