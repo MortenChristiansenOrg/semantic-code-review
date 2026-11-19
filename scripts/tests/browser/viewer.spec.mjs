@@ -130,7 +130,22 @@ async function saveAction(page, action, matches) {
   await saved;
   await expect(page.locator('#save-status')).toBeHidden();
 }
-async function showNotes(page) { await page.locator('.tb-btn[data-action="toggle-notes"]').click(); }
+// The notes panel's open state is saved with the review, so it can already be open after a reload.
+async function showNotes(page) {
+  const toggle = page.locator('.tb-btn[data-action="toggle-notes"]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+// The viewer saves review state shortly after each change. A reload before that save lands restores
+// whichever state won the race, so wait until the viewer's own unsaved-changes check is clear.
+async function reload(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }), { message: 'the viewer has unsaved review state' }).toBe(false);
+  await page.reload();
+}
 
 for (const skillVersion of ['0.2.0', undefined]) {
   test(`viewer shows running release with artifact skill version ${skillVersion ?? 'absent'}`, async ({ page }) => {
@@ -165,10 +180,10 @@ test('fresh stages collapse; saved choices restore only for their implementation
   await mount(page, data);
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
   await saveAction(page, () => page.locator('.stage-title[data-id="second"]').click(), (state) => state.openStages?.second === true);
-  await page.reload();
+  await reload(page);
   await expect(page.locator('.stage.is-open')).toHaveAttribute('data-stage', 'second');
   data.implementationId = 'another-review';
-  await page.reload();
+  await reload(page);
   await expect(page.locator('.stage.is-open')).toHaveCount(0);
 });
 
@@ -442,7 +457,7 @@ test('equal node IDs in two stages keep independent note-panel visibility across
     (state) => state.openThreads?.['n:first:same-node'] === false && state.openThreads?.['n:second:same-node'] === true);
   await expect(first.locator('.thread .tthread')).toHaveCount(0);
   await expect(second.locator('.thread .tthread')).toHaveCount(2);
-  await page.reload();
+  await reload(page);
   await expect(first.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'false');
   await expect(second.locator('.notes-toggle')).toHaveAttribute('aria-expanded', 'true');
   await expect(first.locator('.thread .tthread')).toHaveCount(0);
@@ -501,7 +516,7 @@ test('unfinished message text survives a reload and failed saves stay visible', 
     (state) => state.editor?.compose?.body === 'Unfinished screenshot explanation');
   await saveAction(page, () => page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click(),
     (state) => state.editor?.compose?.mode === 'feedback');
-  await page.reload();
+  await reload(page);
   await expect(input).toHaveValue('Unfinished screenshot explanation');
   await expect(page.locator('input[name="nc-mode"][value="feedback"]')).toBeChecked();
   await page.route('**/api/review-state*', (route) => route.fulfill({ status: 409, json: { ok: false, error: 'Another tab changed this draft.' } }));
@@ -587,7 +602,7 @@ test('shared files have independent node approvals, counts, and revocation', asy
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
   await expect(stageApproval).toBeDisabled();
   await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('2/10');
-  await page.reload();
+  await reload(page);
   await expect(one.locator('.frow')).not.toHaveClass(/is-approved/);
   await expect(two.locator('.frow')).toHaveClass(/is-approved/);
 });
@@ -678,7 +693,7 @@ test('folder approval approves its pending and stale files only', async ({ page 
   await expect(api.locator('.fg-done')).toHaveText('0/1');
   await expect(api.locator('.fg-approve')).toBeEnabled();
   await expect(node.locator('.frow.is-approved')).toHaveCount(4);
-  await page.reload();
+  await reload(page);
   await expect(web.locator('.fg-done')).toHaveText('✓ 4/4');
   expect(await page.evaluate(async (key) => (await (await fetch('/api/review-state')).json()).state.approvals[key], doneKey)).toEqual(done);
 });
@@ -708,13 +723,13 @@ for (const legacy of [false, true]) test(`file approvals survive unchanged resta
   data.stages[0].baseRevision = 'c'.repeat(40);
   data.stages[0].headRevision = 'd'.repeat(40);
   data.viewerRevision = 'restacked';
-  await page.reload();
+  await reload(page);
   await expect(row).toHaveClass(/is-approved/);
   await expect(row).not.toHaveClass(/is-stale/);
   await expect(page.getByRole('button', { name: 'Since approval', exact: true })).toHaveCount(0);
   data.stages[0].files[0].memberships[0].classification = 'refactor';
   data.viewerRevision = 'classification-changed';
-  await page.reload();
+  await reload(page);
   await expect(row).toHaveClass(/is-stale/);
 });
 
@@ -808,7 +823,7 @@ test('a target refresh shows a notice until the reviewer dismisses it', async ({
   await expect(notice).toContainText('those edits are not review corrections');
   await saveAction(page, () => notice.getByRole('button', { name: 'Dismiss', exact: true }).click(), (state) => state.dismissedTargetRefresh === now);
   await expect(notice).toHaveCount(0);
-  await page.reload();
+  await reload(page);
   await expect(page.locator('.topbar, header').first()).toBeVisible();
   await expect(notice).toHaveCount(0);
 });
@@ -850,7 +865,7 @@ test('approving a file closes only that file and persists the collapse', async (
     await saveAction(page, () => node.locator('.mini-approve').click(), state => !state.approvals?.[approvalKey('first', 'first-one')]);
     await expect(node.locator('.cinema-diff')).toBeVisible();
     await saveAction(page, () => node.locator('.mini-approve').click(), state => !!state.approvals?.[approvalKey('first', 'first-one')] && !state.activeFiles?.[fileId]);
-    await page.reload();
+    await reload(page);
     await node.locator('summary').click();
     await expect(node.locator('.cinema-diff')).toHaveCount(0);
 });
@@ -987,7 +1002,7 @@ test('approved identity follows observed rename chains across reloads', async ({
   const file = data.stages[0].files[0];
   await saveAction(page, async () => { file.previousPath = file.path; file.path = 'middle.js'; file.kind = 'renamed'; data.viewerRevision = 'rename-one'; }, (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'middle.js')]);
   await expect(one.locator('.frow')).toHaveClass(/is-stale/);
-  await page.reload();
+  await reload(page);
   file.previousPath = file.path; file.path = 'final.js'; data.viewerRevision = 'rename-two';
   await expect(one.locator('.frow')).toContainText('final.js');
   await expect(one.locator('.frow')).toHaveClass(/is-stale/);
@@ -1019,7 +1034,7 @@ test('attachment-only notes survive reloads, preview images, and export managed 
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9X8AAAAASUVORK5CYII=', 'base64');
   await saveAction(page, () => page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png }), (state) => state.editor?.compose?.attachments?.length === 1);
   await expect(page.locator('.note-compose .attachment img')).toBeVisible();
-  await page.reload();
+  await reload(page);
   await expect(page.locator('.note-compose .attachment-name')).toHaveText('context.png');
   await page.getByLabel('Attach files', { exact: true }).setInputFiles({ name: 'context.png', mimeType: 'image/png', buffer: png });
   await expect(page.getByRole('button', { name: 'Add note', exact: true })).toBeEnabled();
@@ -1051,7 +1066,7 @@ test('message editors accept dropped files and pasted images, including replies'
   await expect(page.locator('[data-reply-form] .attachment')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Save reply', exact: true })).toBeEnabled();
   await saveAction(page, () => page.getByRole('button', { name: 'Save reply', exact: true }).click(), (state) => state.replyDrafts?.[0]?.attachments?.length === 2);
-  await page.reload();
+  await reload(page);
   await expect(page.locator('.side.notes .tmsg-draft .attachment')).toHaveCount(2);
   await page.locator('.side.notes [data-action="reply-edit"]').click();
   await page.getByRole('button', { name: 'Remove debug.log', exact: true }).click();
@@ -1354,7 +1369,7 @@ test('combined file counts toggle notes independently of the diff and retain tha
   await expect(node.locator('.file-notes')).toHaveCSS('border-bottom-width', '1px');
   await expect(node.locator('.cinema-diff')).toBeVisible();
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await page.reload(); await openFile(page);
+  await reload(page); await openFile(page);
   await expect(node.locator('.file-notes .tthread')).toHaveCount(0);
   await expect(node.locator('.file-notes .thread-add')).toBeVisible();
   await expect(node.locator('.file-notes')).toHaveCSS('border-bottom-width', '1px');
@@ -1557,11 +1572,11 @@ test('insight reviewed marks toggle, persist, flag rewrites and stay independent
   // The mark survives a reload, and a rewritten insight says so instead of staying reviewed.
   const state = await page.evaluate(async () => (await (await fetch('/api/review-state')).json()).state);
   expect(Object.keys(state.insightReviews)).toEqual(['i:first:decisions:shared']);
-  await page.reload();
+  await reload(page);
   await openFile(page);
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   data.stages[0].insights[0].body = 'A different reason';
-  await page.reload();
+  await reload(page);
   await openFile(page);
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await expect(toggle).toHaveText('!');
@@ -1674,7 +1689,7 @@ test('a recapture of reviewed evidence counts as a change', async ({ page }) => 
   await saveAction(page, () => pill.locator('.insight-review').click(), (state) => !!state.insightReviews?.['i:first:evidence:shot']);
   await expect(pill.locator('.insight-review')).toHaveAttribute('aria-pressed', 'true');
   data.stages[0].insights[0] = evidenceInsight({ inline: 'recaptured', attachments: [] });
-  await page.reload();
+  await reload(page);
   await openFile(page);
   await expect(pill.locator('.insight-review')).toHaveText('!');
 });
@@ -1693,7 +1708,7 @@ test('a thread on evidence takes further notes beside its pill, sent as an insig
   await editor.fill('This shows the wrong page');
   await saveAction(page, () => editor.press('Control+Enter'), (state) => state.comments?.[0]?.kind === 'insight' && state.comments[0].id === 'i:first:evidence:shot');
   await expect(node.locator('.node-reasoning .thread')).toContainText('This shows the wrong page');
-  await page.reload();
+  await reload(page);
   await openFile(page);
   await expect(node.locator('.tag.type-evidence .notes-toggle')).toBeVisible();
   await showNotes(page);
@@ -1915,7 +1930,7 @@ test('wrapping persists across file navigation and full file mode', async ({ pag
   for (const button of await page.getByRole('button', { name: 'Wrap lines', exact: true }).all()) {
     await expect(button).toHaveAttribute('aria-pressed', 'true');
   }
-  await page.reload();
+  await reload(page);
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'true');
 });
@@ -2606,12 +2621,11 @@ test('new line drafts retain their file snapshot across live restacks and reload
   await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
   const editor = page.locator('textarea[name="nc-body"]'); await editor.fill('Check this line');
   await saveAction(page, () => editor.press('Control+Enter'), state => state.comments?.[0]?.snapshot?.fileRevision === 'rev');
-  const refreshed = page.waitForResponse(r => new URL(r.url()).pathname === '/api/implementation');
   data.stages[0].baseRevision = 'c'.repeat(40); data.stages[0].headRevision = 'd'.repeat(40); data.viewerRevision = 'restacked';
-  await refreshed;
+  await expect(page.locator('.review-update')).toHaveText('Review updated');
   await showNotes(page);
   await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
-  await page.reload(); await showNotes(page);
+  await reload(page); await showNotes(page);
   await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
   await expect(page.locator('.side.notes [data-action="jump-to"][data-kind="line"]')).toHaveCount(1);
   const request = page.waitForRequest(r => new URL(r.url()).pathname === '/api/feedback/export');
@@ -2625,7 +2639,7 @@ for (const changed of [false, true]) test(`existing line drafts resolve their or
     snapshot: { base: 'c'.repeat(40), head: 'd'.repeat(40) } };
   await mount(page, data, { comments: [note] });
   await page.route('**/api/draft-snapshots*', route => route.fulfill({ json: { ok: true, snapshots: [{ ...note.snapshot, fileRevision: changed ? 'old-content' : 'rev' }] } }));
-  await page.reload(); await showNotes(page);
+  await reload(page); await showNotes(page);
   await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(changed ? 1 : 0);
   await expect(page.locator(`.side.notes [data-action="jump-to"][data-kind="${changed ? 'file' : 'line'}"]`)).toHaveCount(1);
   if (changed) {
@@ -2758,9 +2772,11 @@ test('interactive reviews can send feedback notes and replies automatically when
   await page.locator('textarea[name="nc-body"]').press('Control+Enter');
   await expect.poll(() => exports.length).toBe(2);
   expect(exports[1].notes.map((note) => note.body)).toEqual(['Rename this file']);
+  await expect(page.locator('.notes-export-msg')).toContainText('Sent 1 feedback thread.');
 
-  await page.reload(); await showNotes(page);
+  await reload(page); await showNotes(page);
   await expect(page.getByRole('checkbox', { name: 'Send automatically' })).toBeChecked();
+  await expect(page.getByRole('button', { name: /Prepare feedback/ })).toHaveText('Prepare feedback (1)');
   const other = await page.context().newPage();
   await mount(other, data); await showNotes(other);
   await other.getByRole('checkbox', { name: 'Send automatically' }).uncheck();
