@@ -58,6 +58,40 @@
   // Questions the reviewer minimized; a new question opens the overlay again.
   const minimizedAgentQuestions = new Set();
   const AGENT_COMMAND = "/semantic-flow review -i";
+  // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
+  const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
+  // Null when storage is unavailable, so the in-page choice still applies.
+  // After a failed write the stored value is stale, so this tab keeps its own choice.
+  let autoSendStoreFailed = false;
+  const readAutoSendPreferred = () => { if (autoSendStoreFailed) return null; try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return null; } };
+  let autoSendPreferred = readAutoSendPreferred() ?? false;
+  // Saved notes (objects) and reply draft IDs waiting for an automatic send.
+  const autoSendQueue = { notes: new Set(), replies: new Set() };
+  // Drafts in the request being sent; they cannot be edited or deleted until it answers.
+  const sendingDrafts = new Set();
+  // Turning it off drops queued saves; they stay as drafts for Prepare feedback.
+  function adoptAutoSendPreferred(on) {
+    autoSendPreferred = on;
+    if (!on) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); }
+  }
+  function setAutoSendPreferred(on) {
+    adoptAutoSendPreferred(on);
+    try { localStorage.setItem(AUTO_SEND_KEY, String(on)); autoSendStoreFailed = false; } catch { autoSendStoreFailed = true; }
+  }
+  // Offered only while an interactive session can take feedback as it arrives.
+  const agentTakesFeedback = () => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
+  const autoSendActive = () => autoSendPreferred && agentTakesFeedback();
+  // Send just the saved note or reply at once; a save during a send goes out when that send finishes.
+  function autoSendFeedback(saved) {
+    const stored = readAutoSendPreferred();
+    if (stored !== null && stored !== autoSendPreferred) adoptAutoSendPreferred(stored);
+    if (!autoSendActive()) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); return; }
+    if (saved) autoSendQueue[saved.note ? "notes" : "replies"].add(saved.note || saved.reply);
+    if (exportState.phase === "working") return;
+    const only = { notes: new Set(autoSendQueue.notes), replies: new Set(autoSendQueue.replies) };
+    autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
+    if (only.notes.size || only.replies.size) void exportFeedback(only);
+  }
   const baseTitle = document.title;
 
   function adoptViewerSnapshot(snapshot) {
@@ -1690,11 +1724,11 @@
     const draftReplies = repliesForThread(t.id)
       .filter((r) => r.id !== replyEditId)
       .map((r) => `<div class="tmsg tmsg-user tmsg-draft" data-reply-id="${esc(r.id)}">
-          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">Draft</span>
-            <span class="tmsg-act">
+          <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">${sendingDrafts.has(r.id) ? "Sending…" : "Draft"}</span>
+            ${sendingDrafts.has(r.id) ? "" : `<span class="tmsg-act">
               <button data-action="reply-edit" data-id="${esc(t.id)}" data-reply-id="${esc(r.id)}" type="button">Edit</button>
               <button class="tmsg-del" data-action="reply-del" data-reply-id="${esc(r.id)}" type="button" aria-label="Delete draft reply">×</button>
-            </span>
+            </span>`}
           </div>
           <p class="comment-body">${formatCommentBody(r.body)}</p>${attachmentList(r.attachments)}
         </div>`)
@@ -1747,7 +1781,7 @@
       : ref && ref.kind !== c.kind ? `<p class="tthread-stale">The line snapshot changed. Open the current file to review its location.</p>` : "";
     const sent = Boolean(c.exported);
     const mode = c.mode || "personal";
-    const acts = sent
+    const acts = sent || sendingDrafts.has(c)
       ? ""
       : `<div class="tnote-act">
           <button data-action="edit-note" data-index="${i}" type="button">Edit</button>
@@ -1756,7 +1790,7 @@
     return `<article data-render-key="${esc(String(c.createdAt))}" class="tthread tnote mode-${mode} ${sent ? "is-sent" : "is-draft"}">
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${mode === "feedback" ? "Feedback" : "Personal"}</span>
-          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : "Draft"}</span>` : ""}
+          ${mode === "feedback" ? `<span class="tnote-state">${sent ? "Sent" : sendingDrafts.has(c) ? "Sending…" : "Draft"}</span>` : ""}
           ${withLabel || renamedLineNote(c) ? `<strong class="tthread-title" title="${esc(label.title)}">${esc(label.text)}</strong>` : ""}${jump}
         </div>
         ${missing}
@@ -2921,12 +2955,21 @@
     const pending = pendingFeedbackCount();
     const working = exportState.phase === "working";
     const statusClass = exportState.phase === "error" ? "is-error" : exportState.phase === "done" ? "is-done" : "";
+    const autoSend = agentTakesFeedback()
+      ? `<label class="notes-auto-send" title="Send each feedback note and reply to the listening agent when you save it. Personal notes stay local."><input type="checkbox" name="auto-send" ${autoSendPreferred ? "checked" : ""}><span>Send automatically</span></label>` : "";
+    const hint = autoSendActive()
+      ? `Feedback notes and replies go to the listening agent when you save them. ${pending ? "Prepare feedback sends earlier drafts." : "Personal notes stay local."}`
+      : pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to."
+        : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically.";
     const foot = data.remote ? `<div class="notes-foot"><p>Personal notes stay on this computer.</p></div>` : `<div class="notes-foot">
-        <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
-          ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
-        </button>
+        <div class="notes-export-row">
+          <button class="notes-export" data-action="export-feedback" type="button" ${pending && !working ? "" : "disabled"}>
+            ${working ? "Sending…" : `Prepare feedback${pending ? ` (${pending})` : ""}`}
+          </button>
+          ${autoSend}
+        </div>
         ${exportState.message ? `<p class="notes-export-msg ${statusClass}">${esc(exportState.message)}</p>`
-          : `<p class="notes-export-hint">${pending ? "Feedback notes are sent to the semantic-flow artifact as threads your implementation agent can reply to." : "Only unsent “Feedback” notes are sent. Personal notes stay local. Agent replies appear here automatically."}</p>`}
+          : `<p class="notes-export-hint">${hint}</p>`}
         ${exportState.skips && exportState.skips.length ? `<ul class="notes-export-skips">${exportState.skips.map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
       </div>`;
     return `<aside class="side notes ${state.notesOpen ? "is-open" : ""}" aria-hidden="${!state.notesOpen}" ${state.notesOpen ? "" : "inert"}>
@@ -3412,6 +3455,7 @@
       if (opening) { render(); }
       else { collapseThenRender((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`)); }
     } else if (a === "edit-note") {
+      if (sendingDrafts.has(state.comments[Number(btn.dataset.index)])) return;
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "markdown-mode") {
       const entry = fileById.get(btn.dataset.id);
@@ -3442,7 +3486,12 @@
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
-      if (c && !c.exported) { state.comments.splice(idx, 1); persist(); render(); }
+      if (c && !c.exported && !sendingDrafts.has(c)) {
+        state.comments.splice(idx, 1);
+        if (compose?.editIndex === idx) compose = null;
+        else if (compose?.editIndex > idx) compose.editIndex -= 1;
+        persist(); render();
+      }
     } else if (a === "open-file") {
       // Let the reviewer select the filename text without toggling the diff:
       // a click that completes a selection over the name is not a toggle.
@@ -3474,6 +3523,7 @@
       if (threadOps[replyTo]) threadOps[replyTo].error = "";
       render(); focusComposer();
     } else if (a === "reply-edit") {
+      if (sendingDrafts.has(btn.dataset.replyId)) return;
       compose = null;
       const draft = pendingReplies().find((r) => r.id === btn.dataset.replyId);
       if (!draft) return;
@@ -3484,6 +3534,7 @@
       replyDirty = false;
       render(); focusComposer();
     } else if (a === "reply-del") {
+      if (sendingDrafts.has(btn.dataset.replyId)) return;
       state.replyDrafts = pendingReplies().filter((r) => r.id !== btn.dataset.replyId);
       if (replyEditId === btn.dataset.replyId) { replyEditId = null; replyTo = null; replyDraft = ""; replyAttachments = []; replyDirty = false; }
       persist(); render();
@@ -3609,12 +3660,14 @@
   function saveReplyDraft(threadId, body) {
     if (!artifactThreadById(threadId)) return;
     if (!Array.isArray(state.replyDrafts)) state.replyDrafts = [];
+    let savedId = replyEditId;
     if (replyEditId != null) {
       const draft = state.replyDrafts.find((r) => r.id === replyEditId);
       if (draft) { draft.body = body; draft.attachments = structuredClone(replyAttachments); }
     } else {
+      savedId = `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
       state.replyDrafts.push({
-        id: `rd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        id: savedId,
         threadId,
         body,
         attachments: structuredClone(replyAttachments),
@@ -3627,6 +3680,7 @@
     replyDirty = false;
     persist();
     render();
+    autoSendFeedback({ reply: savedId });
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
@@ -3708,79 +3762,96 @@
     }
   }
   // Notes and replies go in one request, so a listening agent picks them up as one round.
-  async function exportFeedback() {
+  // `only` limits an automatic send to the drafts just saved.
+  async function exportFeedback(only = null) {
     if (exportState.phase === "working") return;
-    const pending = pendingFeedback();
-    const replies = pendingReplies().slice();
+    // A draft open in an editor waits until its edit is saved.
+    const editingNote = compose?.editIndex != null ? state.comments[compose.editIndex] : null;
+    const pending = pendingFeedback().filter(({ c }) => c !== editingNote && (!only || only.notes.has(c)));
+    const replies = pendingReplies().filter((draft) => draft.id !== replyEditId && (!only || only.replies.has(draft.id)));
     if (!pending.length && !replies.length) return;
-    requestReplyNotifications();
-    exportState = { phase: "working", message: "" };
-    render();
-    const skips = replies.filter((draft) => !artifactThreadById(draft.threadId)).map(() => "reply — thread no longer exists");
-    const sendable = replies.filter((draft) => artifactThreadById(draft.threadId));
-    let notesSent = 0;
-    let repliesSent = 0;
-    if (pending.length || sendable.length) {
-      try {
-        const res = await fetch("/api/feedback/export", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
-            replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
-          })
-        });
-        let out = {};
-        try { out = await res.json(); } catch { /* non-JSON error body */ }
-        (out.skipped || []).forEach((s) => {
-          const c = state.comments[s.ref];
-          const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
-          skips.push(`${label} — ${s.reason}`);
-        });
-        (out.replySkipped || []).forEach((entry) => skips.push(`reply — ${entry.reason}`));
-        if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
-        adoptViewerSnapshot(out);
-        const byRef = new Map(pending.map(({ c, i }) => [i, c]));
-        (out.exported || []).forEach((entry) => {
-          const ref = typeof entry === "number" ? entry : entry && entry.ref;
-          const note = byRef.get(ref);
-          if (note) {
-            note.exported = true;
-            if (entry && entry.threadId) note.threadId = entry.threadId;
-          }
-        });
-        notesSent = (out.exported || []).length;
-        (out.replied || []).forEach((entry) => {
-          const thread = artifactThreadById(entry.threadId);
-          if (!thread) return;
-          if (entry.comment) thread.comments.push(entry.comment);
-          if (entry.status) thread.status = entry.status;
-          if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
-        });
-        const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
-        repliesSent = sentIds.size;
-        state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
-      } catch (err) {
-        persist();
-        exportState = { phase: "error", message: err.message || "Export failed.", skips };
-        render();
-        return;
+    // Each send locks and releases only its own drafts.
+    const locked = [...pending.map(({ c }) => c), ...replies.map((draft) => draft.id)];
+    locked.forEach((draft) => sendingDrafts.add(draft));
+    const release = () => locked.forEach((draft) => sendingDrafts.delete(draft));
+    // The finally releases the drafts if setup throws; normal paths release them before rendering.
+    try {
+      requestReplyNotifications();
+      exportState = { phase: "working", message: "" };
+      render();
+      const skips = replies.filter((draft) => !artifactThreadById(draft.threadId)).map(() => "reply — thread no longer exists");
+      const sendable = replies.filter((draft) => artifactThreadById(draft.threadId));
+      let notesSent = 0;
+      let repliesSent = 0;
+      if (pending.length || sendable.length) {
+        try {
+          const res = await fetch("/api/feedback/export", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              implementationId: data.implementationId,
+              notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
+              replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
+            })
+          });
+          let out = {};
+          try { out = await res.json(); } catch { /* non-JSON error body */ }
+          const byRef = new Map(pending.map(({ c, i }) => [i, c]));
+          (out.skipped || []).forEach((s) => {
+            const c = byRef.get(s.ref);
+            const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
+            skips.push(`${label} — ${s.reason}`);
+          });
+          (out.replySkipped || []).forEach((entry) => skips.push(`reply — ${entry.reason}`));
+          if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
+          adoptViewerSnapshot(out);
+          (out.exported || []).forEach((entry) => {
+            const ref = typeof entry === "number" ? entry : entry && entry.ref;
+            const note = byRef.get(ref);
+            if (note) {
+              note.exported = true;
+              if (entry && entry.threadId) note.threadId = entry.threadId;
+            }
+          });
+          notesSent = (out.exported || []).length;
+          (out.replied || []).forEach((entry) => {
+            const thread = artifactThreadById(entry.threadId);
+            if (!thread) return;
+            if (entry.comment) thread.comments.push(entry.comment);
+            if (entry.status) thread.status = entry.status;
+            if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+          });
+          const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
+          repliesSent = sentIds.size;
+          state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
+        } catch (err) {
+          persist();
+          exportState = { phase: "error", message: err.message || "Export failed.", skips };
+          release();
+          render();
+          // The failed drafts stay for Prepare feedback; saves queued meanwhile still go out.
+          autoSendFeedback();
+          return;
+        }
       }
+      release();
+      persist();
+      const parts = [];
+      if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
+      if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
+      const next = agent?.listening || agent?.working
+        ? "The listening agent picks this up automatically."
+        : `Run “${AGENT_COMMAND}” in your agent to have it handled.`;
+      exportState = {
+        phase: "done",
+        message: `Sent ${parts.join(" and ")}${skips.length ? `, ${skips.length} skipped` : ""}. ${next} Replies and edits appear here.`,
+        skips
+      };
+      render();
+      autoSendFeedback();
+    } finally {
+      release();
     }
-    persist();
-    const parts = [];
-    if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
-    if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
-    const next = agent?.listening || agent?.working
-      ? "The listening agent picks this up automatically."
-      : `Run “${AGENT_COMMAND}” in your agent to have it handled.`;
-    exportState = {
-      phase: "done",
-      message: `Sent ${parts.join(" and ")}${skips.length ? `, ${skips.length} skipped` : ""}. ${next} Replies and edits appear here.`,
-      skips
-    };
-    render();
   }
 
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
@@ -3898,7 +3969,7 @@
     const target = { kind, id };
     if (kind === "file" || kind === "line") target.nodeId = elementNodeId(kind, id);
     if (kind === "node" && stageId) target.stageId = stageId;
-    replyTo = null;
+    replyTo = null; replyEditId = null; replyDraft = ""; replyAttachments = []; replyDirty = false;
     compose = {
       ...target,
       editIndex: null,
@@ -3925,7 +3996,7 @@
   function openNoteEdit(index) {
     const c = state.comments[index];
     if (!c || c.exported) return;
-    replyTo = null;
+    replyTo = null; replyEditId = null; replyDraft = ""; replyAttachments = []; replyDirty = false;
     compose = {
       kind: c.kind,
       id: c.id,
@@ -3974,6 +4045,11 @@
   });
   document.addEventListener("change", (e) => {
     const t = e.target;
+    if (t.matches('.notes-auto-send input[name="auto-send"]')) {
+      setAutoSendPreferred(t.checked);
+      render();
+      return;
+    }
     if (compose && t.matches('.note-compose input[name="nc-mode"]') && t.checked) {
       compose.mode = t.value;
       compose.dirty = true;
@@ -3986,10 +4062,11 @@
       const body = e.target.querySelector("textarea").value.trim();
       const mode = e.target.querySelector('input[name="nc-mode"]:checked')?.value || "personal";
       if (uploadOps.size || !compose || (!body && !compose.attachments?.length)) return;
+      let saved = null;
       if (compose) {
         if (compose.editIndex != null) {
           const c = state.comments[compose.editIndex];
-          if (c && !c.exported) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); }
+          if (c && !c.exported && !sendingDrafts.has(c)) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); saved = c; }
         } else {
           const note = { kind: compose.kind, id: compose.id, body, mode, attachments: structuredClone(compose.attachments || []), createdAt: Date.now() };
           if (compose.stageId) note.stageId = compose.stageId;
@@ -3997,12 +4074,14 @@
           const snapshot = draftSnapshots.get(compose);
           if (snapshot) draftSnapshots.set(note, snapshot); else rememberDraftSnapshot(note);
           state.comments.push(note);
+          saved = note;
         }
         state.lastNoteMode = mode;
       }
       compose = null;
       persist();
       render();
+      if (saved && mode === "feedback") autoSendFeedback({ note: saved });
       return;
     }
     if (e.target.matches("[data-agent-answer]")) {
@@ -4226,6 +4305,14 @@
   }
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
+  // Follow the preference across tabs only once the viewer is ready to render.
+  adoptAutoSendPreferred(readAutoSendPreferred() ?? autoSendPreferred);
+  window.addEventListener("storage", (e) => {
+    if (e.key !== AUTO_SEND_KEY) return;
+    // Events can arrive late; the stored value is the latest choice.
+    adoptAutoSendPreferred(readAutoSendPreferred() ?? e.newValue === "true");
+    render();
+  });
   render();
   if (compose?.nodeId && recoveredStage) {
     const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);

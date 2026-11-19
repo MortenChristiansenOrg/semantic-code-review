@@ -494,6 +494,12 @@ subagent per stage when several stages change independently), restacks once, and
 replies. Feedback you send meanwhile is queued for the next round, including
 follow-ups to threads in progress.
 
+While an agent is listening, tick **Send automatically** next to **Prepare
+feedback** to send each feedback note and reply as soon as you save it.
+Earlier drafts wait for **Prepare feedback**, and personal notes stay local.
+A draft cannot be edited while it is being sent. The viewer remembers the
+choice for later reviews.
+
 The viewer shows whether an agent is listening or working, each thread as
 queued, in progress, or answered, and a notice with unread markers when a round
 finishes; it can also notify you while the tab is hidden. When the agent needs
@@ -682,7 +688,8 @@ with or without text. Uploads and drafts survive reloads and review switches.
 Attachments appear as compact rows with image thumbnails where supported.
 The viewer does not offer file downloads; agents access the managed local files
 through feedback commands.
-Saving a message keeps it local until you prepare feedback.
+Saving a message keeps it local until you prepare feedback, unless it is sent
+automatically in an interactive review.
 
 The CLI can register context too:
 
