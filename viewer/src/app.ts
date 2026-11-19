@@ -104,8 +104,17 @@ import { renderPage } from "./views/page";
   const agentMinutes = (status) => status?.working
     ? Math.max(0, Math.floor((Date.parse(status.serverTime) - Date.parse(status.working.startedAt)) / 60000)) : 0;
   const agentView = (status) => status && JSON.stringify({ ...status, serverTime: null, minutes: agentMinutes(status) });
+  // Stored questions are not validated, so keep only the text the page can show.
+  // Buttons and the click handler then index the same choices.
+  function agentRequests(requests) {
+    return (Array.isArray(requests) ? requests : [])
+      .filter((request) => request && typeof request === "object" && typeof request.id === "string")
+      .map((request) => ({ ...request, body: typeof request.body === "string" ? request.body : "",
+        choices: Array.isArray(request.choices) ? request.choices.filter((choice) => typeof choice === "string") : [] }));
+  }
   function adoptAgentStatus(next) {
     if (!next || typeof next !== "object" || data.remote) return;
+    next = { ...next, requests: agentRequests(next.requests) };
     const previous = agent;
     agent = next;
     for (const id of minimizedAgentQuestions) if (!next.requests?.some((request) => request.id === id)) minimizedAgentQuestions.delete(id);

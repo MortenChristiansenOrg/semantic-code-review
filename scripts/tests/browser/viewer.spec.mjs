@@ -2931,12 +2931,13 @@ test('coverage, progress and the scrim follow approvals under a policy that bloc
   expect(await page.evaluate(() => window.styleViolations)).toEqual([]);
 });
 
-test('a stored agent question without a text body does not stop page updates', async ({ page }) => {
+test('stored agent questions with malformed bodies or choices do not stop page updates', async ({ page }) => {
   const now = new Date().toISOString();
   const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
-    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [], createdAt: now }] } };
+    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [{ nodeType: 1 }, 'Keep'], createdAt: now }] } };
   await mount(page, data);
   await expect(page.locator('.agent-question')).toHaveCount(2);
+  await expect(page.locator('[data-action="agent-choice"]')).toHaveText(['Keep']);
   await page.locator('.tb-btn[data-action="toggle-coverage"]').click();
   await expect(page.locator('.side.coverage')).toHaveClass(/is-open/);
 });
@@ -2953,7 +2954,7 @@ test('agent questions keep the draft, focus and caret across live updates and sh
   await expect(first.locator('.comment-body b, .comment-body i')).toHaveCount(0);
   await expect(first.locator('[data-action="agent-choice"]')).toHaveText('<b>Yes</b>');
 
-  const answer = first.locator('textarea[name="agent-answer-q1"]');
+  const answer = page.locator('textarea[name="agent-answer-q1"]');
   await answer.fill('Draft answer');
   await answer.evaluate((el) => { el.setSelectionRange(2, 5); el.dataset.marker = 'kept'; });
   data.agent = { ...data.agent, working: { startedAt: now, threads: [] },
@@ -2966,6 +2967,15 @@ test('agent questions keep the draft, focus and caret across live updates and sh
   await expect(answer).toBeFocused();
   await expect(answer).toHaveAttribute('data-marker', 'kept');
   expect(await answer.evaluate((el) => [el.selectionStart, el.selectionEnd])).toEqual([2, 5]);
+
+  // Swapping the questions moves the focused answer; it keeps its focus and a backward selection.
+  await answer.evaluate((el) => el.setSelectionRange(1, 4, 'backward'));
+  data.agent = { ...data.agent, requests: [...data.agent.requests].reverse() };
+  data.viewerRevision = 'swapped-questions';
+  await expect(page.locator('.agent-question').first().locator('textarea')).toHaveAttribute('name', 'agent-answer-q2');
+  await expect(answer).toHaveAttribute('data-marker', 'kept');
+  await expect(answer).toBeFocused();
+  expect(await answer.evaluate((el) => [el.selectionStart, el.selectionEnd, el.selectionDirection])).toEqual([1, 4, 'backward']);
 
   await page.locator('[data-action="minimize-agent-questions"]').click();
   await expect(page.locator('.agent-question')).toHaveCount(0);
