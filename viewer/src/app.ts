@@ -3909,6 +3909,9 @@ import { renderPage } from "./views/page";
     root.style.scrollBehavior = previousBehavior;
   }
 
+  // An open file's last visible scroll position per scroller, keyed `${fileId}\0${selector}`.
+  const fileScrollers = [".diff-scroll", ".markdown-preview"];
+  const viewScrolls = new Map();
   const _render = render;
   render = function () {
     forceHidePop();
@@ -3932,19 +3935,20 @@ import { renderPage } from "./views/page";
     // Each open file's diff has its own inner scroll; capture it per file so
     // adding a line note (or any re-render) never resets where the reviewer is
     // looking within the diff.
-    // Moving an element, as a keyed list does when stages or steps reorder,
-    // also resets the scroll of the diff or Markdown preview inside it.
-    const scrollers = [".diff-scroll", ".markdown-preview"];
-    const diffScrolls = {};
+    // Moving or recreating an element, as keyed lists do when stages, steps
+    // or groups change, also resets the scroll of the diff or Markdown preview
+    // inside it. Only a visible scroller reports its position, so the last one
+    // is remembered while the reviewer switches between source and preview.
     const pendingDiffs = [];
-    Object.keys(state.activeFiles).forEach((fid) => {
-      if (!activeFileNodeId(fid)) return;
+    const openFiles = new Set(Object.keys(state.activeFiles).filter((fid) => activeFileNodeId(fid)));
+    for (const key of viewScrolls.keys()) if (!openFiles.has(key.split("\0")[0])) viewScrolls.delete(key);
+    openFiles.forEach((fid) => {
       const holder = fileRowElement(fid)?.nextElementSibling;
       if (!holder?.classList.contains("cinema-diff")) return;
-      diffScrolls[fid] = scrollers.map((selector) => {
+      for (const selector of fileScrollers) {
         const scroller = holder.querySelector(selector);
-        return scroller ? { top: scroller.scrollTop, left: scroller.scrollLeft } : null;
-      });
+        if (scroller?.getClientRects().length) viewScrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
+      }
     });
     _render();
     restoreOpen(open);
@@ -3956,10 +3960,11 @@ import { renderPage } from "./views/page";
         const holder = cinemaHolder(fid);
         if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
           pendingDiffs.push(entry);
-        diffScrolls[fid]?.forEach((saved, index) => {
-          const scroller = saved && holder?.querySelector(scrollers[index]);
-          if (scroller) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
-        });
+        for (const selector of fileScrollers) {
+          const saved = viewScrolls.get(`${fid}\0${selector}`);
+          const scroller = saved && holder?.querySelector(selector);
+          if (scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
+        }
       }
     });
     const newNotes = app.querySelector(".notes-list");
