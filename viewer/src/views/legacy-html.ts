@@ -66,7 +66,10 @@ export function patchElement(node: Element, next: Element): void {
   const snapshot = renderSnapshot(next);
   if (previous?.markup === snapshot.markup) return;
   for (const name of (previous?.attributes || renderSnapshot(node).attributes).keys()) {
-    if (!next.hasAttribute(name)) node.removeAttribute(name);
+    if (next.hasAttribute(name)) continue;
+    node.removeAttribute(name);
+    // The tooltip enhancer moves a title into these; they go with it.
+    if (name === "title") { node.removeAttribute("data-tooltip"); node.removeAttribute("data-tooltip-title"); }
   }
   for (const attr of next.attributes) {
     if (!previous || previous.attributes.get(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
@@ -85,9 +88,6 @@ export function patchElement(node: Element, next: Element): void {
   renderedNodes.set(node, snapshot);
 }
 
-/** Adjusts parsed legacy markup before it is applied to the page. */
-export type LegacyPrepare = (root: HTMLElement) => void;
-
 class LegacyHtmlDirective extends Directive {
   // lit commits `content` to the part once and keeps it while it receives the
   // same object back, so later updates patch in place. Because lit knows the
@@ -99,13 +99,12 @@ class LegacyHtmlDirective extends Directive {
     super(info);
     if (info.type !== PartType.CHILD) throw new Error("legacyHtml() can only be used as child content.");
   }
-  render(_markup: string, _prepare?: LegacyPrepare): unknown {
+  render(_markup: string): unknown {
     return noChange;
   }
-  override update(part: ChildPart, [markup, prepare]: Parameters<this["render"]>): unknown {
+  override update(part: ChildPart, [markup]: Parameters<this["render"]>): unknown {
     const next = document.createElement("div");
     next.innerHTML = markup;
-    prepare?.(next);
     const anchor = this.anchor;
     if (anchor && this.content && anchor.parentNode && anchor.parentNode === part.startNode?.parentNode) {
       patchChildren(anchor.parentNode, next, anchor, part.endNode);

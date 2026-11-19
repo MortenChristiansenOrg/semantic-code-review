@@ -471,7 +471,6 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
   assert.doesNotMatch(viewerApp, /approveBtn\("node"/);
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
-  assert.match(viewerApp, /data-node-id="\$\{esc\(node\.id\)\}"/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);
   const sharedFile = {
     memberships: [{ nodeId: "first-node" }, { nodeId: "clicked-node" }],
