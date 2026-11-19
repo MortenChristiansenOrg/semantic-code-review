@@ -60,28 +60,29 @@
   const AGENT_COMMAND = "/semantic-flow review -i";
   // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
   const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
-  let autoSendPreferred = false;
-  try { autoSendPreferred = localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { /* storage unavailable */ }
+  const readAutoSendPreferred = () => { try { return localStorage.getItem(AUTO_SEND_KEY) === "true"; } catch { return false; } };
+  let autoSendPreferred = readAutoSendPreferred();
   // Saved notes (objects) and reply draft IDs waiting for an automatic send.
   const autoSendQueue = { notes: new Set(), replies: new Set() };
   // Drafts in the request being sent; they cannot be edited or deleted until it answers.
   const sendingDrafts = new Set();
-  function setAutoSendPreferred(on) {
+  // Turning it off drops queued saves; they stay as drafts for Prepare feedback.
+  function adoptAutoSendPreferred(on) {
     autoSendPreferred = on;
+    if (!on) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); }
+  }
+  function setAutoSendPreferred(on) {
+    adoptAutoSendPreferred(on);
     try { localStorage.setItem(AUTO_SEND_KEY, String(on)); } catch { /* storage unavailable */ }
   }
-  window.addEventListener("storage", (e) => {
-    if (e.key !== AUTO_SEND_KEY) return;
-    autoSendPreferred = e.newValue === "true";
-    render();
-  });
   // Offered only while an interactive session can take feedback as it arrives.
   const agentTakesFeedback = () => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
   const autoSendActive = () => autoSendPreferred && agentTakesFeedback();
   // Send just the saved note or reply at once; a save during a send goes out when that send finishes.
   function autoSendFeedback(saved) {
-    if (saved && autoSendActive()) autoSendQueue[saved.note ? "notes" : "replies"].add(saved.note || saved.reply);
-    if (exportState.phase === "working" || !autoSendActive()) return;
+    if (!autoSendActive()) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); return; }
+    if (saved) autoSendQueue[saved.note ? "notes" : "replies"].add(saved.note || saved.reply);
+    if (exportState.phase === "working") return;
     const only = { notes: new Set(autoSendQueue.notes), replies: new Set(autoSendQueue.replies) };
     autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
     if (only.notes.size || only.replies.size) void exportFeedback(only);
@@ -3480,7 +3481,12 @@
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
       const c = state.comments[idx];
-      if (c && !c.exported && !sendingDrafts.has(c)) { state.comments.splice(idx, 1); persist(); render(); }
+      if (c && !c.exported && !sendingDrafts.has(c)) {
+        state.comments.splice(idx, 1);
+        if (compose?.editIndex === idx) compose = null;
+        else if (compose?.editIndex > idx) compose.editIndex -= 1;
+        persist(); render();
+      }
     } else if (a === "open-file") {
       // Let the reviewer select the filename text without toggling the diff:
       // a click that completes a selection over the name is not a toggle.
@@ -3761,78 +3767,83 @@
     if (!pending.length && !replies.length) return;
     pending.forEach(({ c }) => sendingDrafts.add(c));
     replies.forEach((draft) => sendingDrafts.add(draft.id));
-    requestReplyNotifications();
-    exportState = { phase: "working", message: "" };
-    render();
-    const skips = replies.filter((draft) => !artifactThreadById(draft.threadId)).map(() => "reply — thread no longer exists");
-    const sendable = replies.filter((draft) => artifactThreadById(draft.threadId));
-    let notesSent = 0;
-    let repliesSent = 0;
-    if (pending.length || sendable.length) {
-      try {
-        const res = await fetch("/api/feedback/export", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            implementationId: data.implementationId,
-            notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
-            replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
-          })
-        });
-        let out = {};
-        try { out = await res.json(); } catch { /* non-JSON error body */ }
-        (out.skipped || []).forEach((s) => {
-          const c = state.comments[s.ref];
-          const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
-          skips.push(`${label} — ${s.reason}`);
-        });
-        (out.replySkipped || []).forEach((entry) => skips.push(`reply — ${entry.reason}`));
-        if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
-        adoptViewerSnapshot(out);
-        const byRef = new Map(pending.map(({ c, i }) => [i, c]));
-        (out.exported || []).forEach((entry) => {
-          const ref = typeof entry === "number" ? entry : entry && entry.ref;
-          const note = byRef.get(ref);
-          if (note) {
-            note.exported = true;
-            if (entry && entry.threadId) note.threadId = entry.threadId;
-          }
-        });
-        notesSent = (out.exported || []).length;
-        (out.replied || []).forEach((entry) => {
-          const thread = artifactThreadById(entry.threadId);
-          if (!thread) return;
-          if (entry.comment) thread.comments.push(entry.comment);
-          if (entry.status) thread.status = entry.status;
-          if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
-        });
-        const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
-        repliesSent = sentIds.size;
-        state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
-      } catch (err) {
-        persist();
-        exportState = { phase: "error", message: err.message || "Export failed.", skips };
-        sendingDrafts.clear();
-        autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
-        render();
-        return;
+    // The finally releases the drafts if setup throws; normal paths release them before rendering.
+    try {
+      requestReplyNotifications();
+      exportState = { phase: "working", message: "" };
+      render();
+      const skips = replies.filter((draft) => !artifactThreadById(draft.threadId)).map(() => "reply — thread no longer exists");
+      const sendable = replies.filter((draft) => artifactThreadById(draft.threadId));
+      let notesSent = 0;
+      let repliesSent = 0;
+      if (pending.length || sendable.length) {
+        try {
+          const res = await fetch("/api/feedback/export", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              implementationId: data.implementationId,
+              notes: pending.map(({ c, i }) => { rememberDraftSnapshot(c); return { ref: i, kind: c.kind, id: c.id, stageId: c.stageId, body: c.body, attachments: c.attachments || [], clientId: String(c.createdAt), snapshot: draftSnapshots.get(c) }; }),
+              replies: sendable.map((draft) => ({ ref: draft.id, threadId: draft.threadId, body: draft.body, attachments: draft.attachments || [] })),
+            })
+          });
+          let out = {};
+          try { out = await res.json(); } catch { /* non-JSON error body */ }
+          const byRef = new Map(pending.map(({ c, i }) => [i, c]));
+          (out.skipped || []).forEach((s) => {
+            const c = byRef.get(s.ref);
+            const label = c ? labelFor(c.kind, c.id, c.stageId) : `note ${s.ref}`;
+            skips.push(`${label} — ${s.reason}`);
+          });
+          (out.replySkipped || []).forEach((entry) => skips.push(`reply — ${entry.reason}`));
+          if (!res.ok || !out.ok) throw new Error(out.error || `Export failed (HTTP ${res.status}).`);
+          adoptViewerSnapshot(out);
+          (out.exported || []).forEach((entry) => {
+            const ref = typeof entry === "number" ? entry : entry && entry.ref;
+            const note = byRef.get(ref);
+            if (note) {
+              note.exported = true;
+              if (entry && entry.threadId) note.threadId = entry.threadId;
+            }
+          });
+          notesSent = (out.exported || []).length;
+          (out.replied || []).forEach((entry) => {
+            const thread = artifactThreadById(entry.threadId);
+            if (!thread) return;
+            if (entry.comment) thread.comments.push(entry.comment);
+            if (entry.status) thread.status = entry.status;
+            if ("resolvedAt" in entry) thread.resolvedAt = entry.resolvedAt;
+          });
+          const sentIds = new Set((out.replied || []).map((entry) => entry.ref));
+          repliesSent = sentIds.size;
+          state.replyDrafts = pendingReplies().filter((draft) => !sentIds.has(draft.id));
+        } catch (err) {
+          persist();
+          exportState = { phase: "error", message: err.message || "Export failed.", skips };
+          sendingDrafts.clear();
+          autoSendQueue.notes.clear(); autoSendQueue.replies.clear();
+          render();
+          return;
+        }
       }
+      sendingDrafts.clear();
+      persist();
+      const parts = [];
+      if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
+      if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
+      const next = agent?.listening || agent?.working
+        ? "The listening agent picks this up automatically."
+        : `Run “${AGENT_COMMAND}” in your agent to have it handled.`;
+      exportState = {
+        phase: "done",
+        message: `Sent ${parts.join(" and ")}${skips.length ? `, ${skips.length} skipped` : ""}. ${next} Replies and edits appear here.`,
+        skips
+      };
+      render();
+      autoSendFeedback();
+    } finally {
+      sendingDrafts.clear();
     }
-    sendingDrafts.clear();
-    persist();
-    const parts = [];
-    if (notesSent || !repliesSent) parts.push(`${notesSent} feedback thread${notesSent === 1 ? "" : "s"}`);
-    if (repliesSent) parts.push(`${repliesSent} repl${repliesSent === 1 ? "y" : "ies"}`);
-    const next = agent?.listening || agent?.working
-      ? "The listening agent picks this up automatically."
-      : `Run “${AGENT_COMMAND}” in your agent to have it handled.`;
-    exportState = {
-      phase: "done",
-      message: `Sent ${parts.join(" and ")}${skips.length ? `, ${skips.length} skipped` : ""}. ${next} Replies and edits appear here.`,
-      skips
-    };
-    render();
-    autoSendFeedback();
   }
 
   const ANIM_EASE = "cubic-bezier(.22,.7,.2,1)";
@@ -3950,7 +3961,7 @@
     const target = { kind, id };
     if (kind === "file" || kind === "line") target.nodeId = elementNodeId(kind, id);
     if (kind === "node" && stageId) target.stageId = stageId;
-    replyTo = null;
+    replyTo = null; replyEditId = null; replyDraft = ""; replyAttachments = []; replyDirty = false;
     compose = {
       ...target,
       editIndex: null,
@@ -3977,7 +3988,7 @@
   function openNoteEdit(index) {
     const c = state.comments[index];
     if (!c || c.exported) return;
-    replyTo = null;
+    replyTo = null; replyEditId = null; replyDraft = ""; replyAttachments = []; replyDirty = false;
     compose = {
       kind: c.kind,
       id: c.id,
@@ -4286,6 +4297,13 @@
   }
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
+  // Follow the preference across tabs only once the viewer is ready to render.
+  adoptAutoSendPreferred(readAutoSendPreferred());
+  window.addEventListener("storage", (e) => {
+    if (e.key !== AUTO_SEND_KEY) return;
+    adoptAutoSendPreferred(e.newValue === "true");
+    render();
+  });
   render();
   if (compose?.nodeId && recoveredStage) {
     const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);
