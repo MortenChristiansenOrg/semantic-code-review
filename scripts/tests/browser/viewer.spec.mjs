@@ -2934,10 +2934,15 @@ test('coverage, progress and the scrim follow approvals under a policy that bloc
 test('stored agent questions with malformed bodies or choices do not stop page updates', async ({ page }) => {
   const now = new Date().toISOString();
   const data = { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
-    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [{ nodeType: 1 }, 'Keep'], createdAt: now }] } };
+    requests: [{ id: 'q1', choices: [], createdAt: now }, { id: 'q2', body: { toString: null }, choices: [{ nodeType: 1 }, 'Keep'], createdAt: now },
+      { id: 'q2', body: 'Duplicate', choices: ['Other'], createdAt: now }, null],
+    working: { startedAt: now, note: { toString: null }, threads: null },
+    lastRound: { id: 'round-1', completedAt: now },
+    targetRefresh: { at: now, targetBranch: { nodeType: 1 }, previousBaseRevision: 1, baseRevision: 2 } } };
   await mount(page, data);
   await expect(page.locator('.agent-question')).toHaveCount(2);
   await expect(page.locator('[data-action="agent-choice"]')).toHaveText(['Keep']);
+  await expect(page.locator('.agent-bar.is-refreshed')).toHaveCount(0);
   await page.locator('.tb-btn[data-action="toggle-coverage"]').click();
   await expect(page.locator('.side.coverage')).toHaveClass(/is-open/);
 });

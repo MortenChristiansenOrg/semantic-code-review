@@ -104,17 +104,33 @@ import { renderPage } from "./views/page";
   const agentMinutes = (status) => status?.working
     ? Math.max(0, Math.floor((Date.parse(status.serverTime) - Date.parse(status.working.startedAt)) / 60000)) : 0;
   const agentView = (status) => status && JSON.stringify({ ...status, serverTime: null, minutes: agentMinutes(status) });
-  // Stored questions are not validated, so keep only the text the page can show.
-  // Buttons and the click handler then index the same choices.
+  // The agent's session files are read from disk unvalidated. Keep only what the
+  // page can show, so a malformed entry cannot stop rendering. Questions keep
+  // their first occurrence per ID, so buttons and handlers index the same choices.
+  const isText = (value) => typeof value === "string";
+  const record = (value) => value && typeof value === "object" ? value : null;
   function agentRequests(requests) {
+    const seen = new Set();
     return (Array.isArray(requests) ? requests : [])
-      .filter((request) => request && typeof request === "object" && typeof request.id === "string")
-      .map((request) => ({ ...request, body: typeof request.body === "string" ? request.body : "",
-        choices: Array.isArray(request.choices) ? request.choices.filter((choice) => typeof choice === "string") : [] }));
+      .filter((request) => record(request) && isText(request.id) && !seen.has(request.id) && seen.add(request.id))
+      .map((request) => ({ ...request, body: isText(request.body) ? request.body : "",
+        choices: Array.isArray(request.choices) ? request.choices.filter(isText) : [] }));
+  }
+  function agentWorking(working) {
+    if (!record(working)) return null;
+    const threads = (Array.isArray(working.threads) ? working.threads : []).filter((thread) => record(thread) && isText(thread.id));
+    return { ...working, threads, note: isText(working.note) ? working.note : undefined };
+  }
+  function agentStatus(next) {
+    const round = record(next.lastRound) && isText(next.lastRound.id) ? next.lastRound : null;
+    const refresh = record(next.targetRefresh);
+    return { ...next, requests: agentRequests(next.requests), working: agentWorking(next.working),
+      lastRound: round && { ...round, threadIds: Array.isArray(round.threadIds) ? round.threadIds.filter(isText) : [] },
+      targetRefresh: refresh && ["at", "targetBranch", "previousBaseRevision", "baseRevision"].every((key) => isText(refresh[key])) ? refresh : null };
   }
   function adoptAgentStatus(next) {
     if (!next || typeof next !== "object" || data.remote) return;
-    next = { ...next, requests: agentRequests(next.requests) };
+    next = agentStatus(next);
     const previous = agent;
     agent = next;
     for (const id of minimizedAgentQuestions) if (!next.requests?.some((request) => request.id === id)) minimizedAgentQuestions.delete(id);
