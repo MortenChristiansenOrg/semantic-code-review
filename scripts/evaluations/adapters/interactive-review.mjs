@@ -176,12 +176,8 @@ export async function prepare({ root, skill, env, capabilities }) {
 
 export async function drive({ fixture, env, capabilities, signal, agentExited }) {
   const timing = { ...defaults, ...capabilities.timing };
-  const record = { events: [], threads: {}, viewer: null, stopRequestedAt: null, agentExitedAt: null };
+  const record = { events: [], threads: {}, viewer: null, stopRequestedAt: null, agentExitedAt: null, sessionAtExit: null };
   const note = (type, detail) => record.events.push({ at: iso(), type, ...(detail === undefined ? {} : { detail }) });
-  let exited = false;
-  agentExited.then(execution => { exited = true; record.agentExitedAt = execution.at; note('agent-exited', { exitCode: execution.exitCode, timedOut: execution.timedOut }); });
-  const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
-  const sleep = ms => Promise.race([new Promise(resolve => setTimeout(resolve, ms)), aborted]);
   const home = env.SEMANTIC_FLOW_HOME;
   let review = null;
   const findReview = () => {
@@ -191,7 +187,18 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     const value = readJson(path.join(directory, ids[0], 'review.json'));
     return { id: value.id, generation: value.generation, port: value.viewer?.port ?? null, key: value.viewer?.key ?? null, processId: value.viewer?.processId ?? null, directory: path.join(directory, ids[0]) };
   };
-  const agentState = () => { try { return readJson(path.join(review.directory, 'agent.json')); } catch { return {}; } };
+  const stateOf = current => { try { return readJson(path.join(current.directory, 'agent.json')); } catch { return {}; } };
+  const agentState = () => stateOf(review);
+  let exited = false;
+  agentExited.then(execution => {
+    exited = true; record.agentExitedAt = execution.at;
+    // The session as the agent left it orders its exit after Stop without comparing wall-clock stamps.
+    const current = review ?? findReview();
+    record.sessionAtExit = current ? stateOf(current).session ?? null : null;
+    note('agent-exited', { exitCode: execution.exitCode, timedOut: execution.timedOut });
+  });
+  const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+  const sleep = ms => Promise.race([new Promise(resolve => setTimeout(resolve, ms)), aborted]);
   const thread = id => { try { return readJson(path.join(review.directory, 'feedback', 'threads', `${id}.json`)); } catch { return null; } };
   const format = () => {
     try {
@@ -376,10 +383,14 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
   const asked = at('question');
   add('asked-in-viewer', Boolean(asked && asked.detail.formatAtQuestion === 'plain' && !at('decided-without-asking')), asked ?? at('decided-without-asking') ?? 'No question reached the viewer');
 
-  // Compare with the Stop the viewer persisted: the agent may exit before the HTTP response arrives.
-  const session = driver?.agentState?.session;
-  add('stopped-on-request', Boolean(session?.stopRequestedAt && session.endReason === 'stopped' && driver?.agentExitedAt && driver.agentExitedAt >= session.stopRequestedAt && !at('agent-exited-early') && !at('not-stopped')),
-    { stopRequestedAt: session?.stopRequestedAt ?? null, agentExitedAt: driver?.agentExitedAt ?? null, endReason: session?.endReason ?? null });
+  // Order the exit after Stop by cause, not by timestamps: the wall clock can step back between the
+  // viewer's stamp and the exit's. A session ends `stopped` only once a wait read the Stop the viewer
+  // persisted, so it had already ended that way when the exit was seen unless the agent left before
+  // Stop. The agent may exit before the HTTP response arrives.
+  const session = driver?.agentState?.session, atExit = driver?.sessionAtExit;
+  add('stopped-on-request', Boolean(session?.stopRequestedAt && session.endReason === 'stopped' && atExit?.id === session.id && atExit.endReason === 'stopped' && !at('agent-exited-early') && !at('not-stopped')),
+    { stopRequestedAt: session?.stopRequestedAt ?? null, endedAt: session?.endedAt ?? null, endReason: session?.endReason ?? null,
+      endReasonAtExit: atExit ? atExit.endReason ?? 'live' : null, agentExitedAt: driver?.agentExitedAt ?? null });
   const all = fs.existsSync(path.join(reviewDirectory, 'feedback', 'threads')) ? fs.readdirSync(path.join(reviewDirectory, 'feedback', 'threads')).map(name => readJson(path.join(reviewDirectory, 'feedback', 'threads', name))) : [];
   add('nothing-pending', all.length > 0 && all.every(value => !awaitsAgent(value)), all.filter(awaitsAgent).map(value => value.id));
   // Closing a conversation is the reviewer's decision; the agent never resolves a thread.
