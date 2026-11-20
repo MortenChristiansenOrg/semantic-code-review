@@ -653,8 +653,13 @@ test("createImplementationDataScript reloads feedback from disk", (t) => {
 test("viewer client refreshes data without reloading the page", () => {
   // The shipped viewer is minified; read the repository sources.
   const viewerSources = new URL("../../../viewer/src/", import.meta.url);
-  const app = fs.readFileSync(new URL("app.ts", viewerSources), "utf8");
   const api = fs.readFileSync(new URL("api.ts", viewerSources), "utf8");
+  // The page's modules: everything bundled into app.js except its request module.
+  const pageModules = fs.readdirSync(viewerSources, { recursive: true })
+    .map((name) => String(name).replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts").sort();
+  assert.ok(pageModules.includes("app.ts"));
+  const app = pageModules.map((name) => fs.readFileSync(new URL(name, viewerSources), "utf8")).join("\n");
   const styles = fs.readFileSync(
     path.resolve(scriptsDirectory, "..", "viewer", "styles.css"),
     "utf8",
@@ -687,7 +692,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.match(app, /activeNotes: activeNoteCount\(\)/);
   assert.match(app, /base: fileBaseRevision\(entry\)/);
   assert.match(app, /head: entry\.stage\.headRevision/);
-  assert.match(app, /pendingLazyJump = null;\s+state\.notesOpen = false/);
+  assert.match(app, /cancelLazyJump\(\);\s+state\.notesOpen = false/);
   assert.match(app, /function resumePendingLazyJump\(\)/);
   assert.equal(app.match(/const activeCount = activeNoteCount\(\);/g)?.length, 1);
   assert.match(

@@ -63,11 +63,35 @@ test('independent tab edits merge, retries are idempotent, conflicts are atomic'
   const write = (changes) => patchReviewState(review.id, review.generation, changes);
   write([change(['approvals', 'one'], { rev: 'a' })]);
   write([change(['approvals', 'two'], { rev: 'b' })]);
-  write([change(['approvals', 'one'], { rev: 'a' })]);
+  // A retry changes nothing, so it leaves the state revision.
+  assert.equal(write([change(['approvals', 'one'], { rev: 'a' })]).stateRevision, 2);
   assert.deepEqual(readReview(review.id).state.approvals, { one: { rev: 'a' }, two: { rev: 'b' } });
   assert.throws(() => write([change(['draft'], 'keep'), change(['approvals', 'one'], { rev: 'wrong' })]), /another tab/);
   assert.equal(readReview(review.id).state.draft, undefined);
+  assert.equal(readReview(review.id).stateRevision, 2);
   assert.throws(() => write([{ path: ['draft', 1], before: { present: false }, after: { present: true, value: true } }]), /Invalid/);
+});
+
+test('the store records the ID of the save that last changed the state', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'one')], 'save-1').lastSaveId, 'save-1');
+  // An exact retry changes nothing, so it keeps the ID of the save that did.
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'one')], 'save-2').lastSaveId, 'save-1');
+  assert.equal(readReview(review.id).lastSaveId, 'save-1');
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'two', 'one')]).lastSaveId, undefined);
+  assert.equal(readReview(review.id).lastSaveId, undefined);
+});
+
+test('a save is reported as stored when releasing the lock afterwards fails', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(to).includes('.lock.retired-')) throw Object.assign(new Error('I/O error'), { code: 'EIO' });
+    return rename(from, to);
+  });
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'saved')]).state.draft, 'saved');
+  t.mock.restoreAll();
+  assert.equal(readReview(review.id).state.draft, 'saved');
 });
 
 test('state under keys named __proto__, constructor and prototype is saved, restored and never pollutes prototypes', (t) => {
@@ -301,10 +325,11 @@ test('records saved without a title or lifecycle fields stay readable and listed
   const root = setup(t);
   const review = registerReview(path.join(root, 'a'), 'legacy-id', 'Review');
   const file = path.join(reviewDirectory(review.id), 'review.json');
-  const { title, completedAt, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const { title, completedAt, stateRevision, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
   fs.writeFileSync(file, JSON.stringify(legacy));
   assert.equal(readReview(review.id).title, '');
   assert.equal(readReview(review.id).completedAt, null);
+  assert.equal(readReview(review.id).stateRevision, 0);
   assert.deepEqual(listReviews().map((record) => record.id), [review.id]);
 });
 

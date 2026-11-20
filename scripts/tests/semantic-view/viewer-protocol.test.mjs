@@ -352,15 +352,17 @@ test("the protocol check reports a body that drifts from its type", () => {
 
 /* ---- protocol changes break the build ---------------------------------------- */
 
-/** The two programs that use the protocol: the server and the page's request module. */
+/** The two programs that use the protocol: the server, and the whole page as its
+ * config lists it, so both the request module and the modules that read responses
+ * are checked. */
 const programs = [
   { config: path.join(scriptsRoot, "tsconfig.json"), root: path.join(scriptsRoot, "src", "semantic-view.ts") },
-  { config: path.join(repositoryRoot, "viewer", "tsconfig.json"), root: path.join(repositoryRoot, "viewer", "src", "api.ts") },
+  { config: path.join(repositoryRoot, "viewer", "tsconfig.json"), root: null },
 ];
 const parsedSources = new Map();
 
-/** Type-checks the server and the page's request module against a changed protocol
- * source. Returns each diagnostic as `<repository-relative file>: <message>`. */
+/** Type-checks the server and the page against a changed protocol source. Returns
+ * each diagnostic as `<repository-relative file>: <message>`. */
 function typecheckWithProtocol(source) {
   return programs.flatMap(({ config, root }) => {
     const parsed = ts.getParsedCommandLineOfConfigFile(config, {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
@@ -375,7 +377,7 @@ function typecheckWithProtocol(source) {
       if (!parsedSources.has(key)) parsedSources.set(key, read(fileName, languageVersion, ...rest));
       return parsedSources.get(key);
     };
-    const program = ts.createProgram({ rootNames: [root], options: parsed.options, host });
+    const program = ts.createProgram({ rootNames: root ? [root] : parsed.fileNames, options: parsed.options, host });
     return ts.getPreEmitDiagnostics(program).map((diagnostic) => {
       const file = diagnostic.file ? path.relative(repositoryRoot, path.resolve(diagnostic.file.fileName)).split(path.sep).join("/") : "(global)";
       return `${file}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`;
@@ -393,7 +395,7 @@ function changeDeclaration(original, declaration, change) {
   return original.slice(0, start) + changed + original.slice(end);
 }
 
-test("a changed protocol fails the typecheck of the server and the page's request module", () => {
+test("a changed protocol fails the typecheck of the server and the page", () => {
   const original = fs.readFileSync(protocol, "utf8");
   assert.deepEqual(typecheckWithProtocol(original), []);
   const errorsIn = (errors, file, pattern) => errors.filter((error) => error.startsWith(`${file}: `) && pattern.test(error));
@@ -420,6 +422,13 @@ test("a changed protocol fails the typecheck of the server and the page's reques
 
   const response = typecheckWithProtocol(changeDeclaration(original, "export interface ViewerSnapshot {", (block) => block.replace("  revision:", "  renamedRevision:")));
   assert.ok(errorsIn(response, "scripts/src/semantic-view.ts", /renamedRevision|'revision'/).length, response.join("\n"));
+  assert.ok(errorsIn(response, "viewer/src/polling.ts", /'revision'/).length, response.join("\n"));
+
+  // A renamed response field fails the page modules that read it, not only the request module.
+  const implementation = typecheckWithProtocol(changeDeclaration(original, "export interface ImplementationData {", (block) => block.replace("  viewerRevision:", "  renamedViewerRevision:")));
+  assert.ok(errorsIn(implementation, "viewer/src/polling.ts", /'viewerRevision'/).length, implementation.join("\n"));
+  const thread = typecheckWithProtocol(changeDeclaration(original, "export interface FeedbackThread {", (block) => block.replace("  anchorStale:", "  renamedAnchorStale:")));
+  assert.ok(errorsIn(thread, "viewer/src/thread-models.ts", /'anchorStale'/).length, thread.join("\n"));
 
   const diffMode = 'export type DiffMode = "changes" | "full";';
   assert.ok(original.includes(diffMode));

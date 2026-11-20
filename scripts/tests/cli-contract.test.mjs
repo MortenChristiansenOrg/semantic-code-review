@@ -456,10 +456,12 @@ test("repository metadata and maintainer guidance preserve portability", async (
     path.join(repositoryRoot, "docs", "user-manual.md"),
     "utf8",
   );
-  const viewerApp = fs.readFileSync(
-    path.join(repositoryRoot, "viewer", "src", "app.ts"),
-    "utf8",
-  );
+  // The page's modules: everything bundled into app.js except its request module.
+  const viewerSources = path.join(repositoryRoot, "viewer", "src");
+  const viewerApp = fs.readdirSync(viewerSources, { recursive: true })
+    .map((name) => String(name).replaceAll("\\", "/"))
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts")
+    .sort().map((name) => fs.readFileSync(path.join(viewerSources, name), "utf8")).join("\n");
   const { selectedNodeForFile } = await import("../../viewer/src/files.ts");
   const { aggregateApprovalState } = await import("../../viewer/src/approvals.ts");
 

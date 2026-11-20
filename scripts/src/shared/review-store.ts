@@ -143,8 +143,16 @@ function acquireReviewLock<T>(id: string, operation: () => T): T {
   } finally {
     if (!published) fs.rmSync(claim, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   }
-  try { return operation(); }
-  finally { retireLock(lock); }
+  let result: T;
+  try { result = operation(); }
+  catch (error) {
+    try { retireLock(lock); } catch { /* The operation's own error says more. */ }
+    throw error;
+  }
+  // The operation's writes are done. A failure to release the lock must not report
+  // them as refused; a lock left behind names this process to the next writer.
+  try { retireLock(lock); } catch { /* See above. */ }
+  return result;
 }
 export type RemoteReview = { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
 export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string };
@@ -153,6 +161,10 @@ export type ReviewRecord = {
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
   /** The viewer's saved review state. The browser owns its shape; read it by narrowing. */
   state: StoredReviewState;
+  /** Counts the patches that changed the state, so a client can tell whether saves landed while it lacked an answer. */
+  stateRevision: number;
+  /** The ID the viewer gave the save that last changed the state, if it gave one. */
+  lastSaveId?: string;
   remote?: RemoteReview;
   viewer?: ViewerRecord;
 };
@@ -178,13 +190,16 @@ function parseViewer(value: unknown): ViewerRecord | undefined {
 export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
   const invalid = () => new Error(`Review data at ${JSON.stringify(file)} is malformed. Reopen the review explicitly.`);
   if (!isRecord(value)) throw invalid();
-  const { id, generation, repositoryRoot, implementationId, createdAt, remote, viewer } = value;
+  const { id, generation, repositoryRoot, implementationId, createdAt, remote, viewer, lastSaveId } = value;
   // Older viewers could save a record without a title, lifecycle or state; those keep their defaults.
-  const { title = "", updatedAt = createdAt, completedAt = null, state = {} } = value;
+  const { title = "", updatedAt = createdAt, completedAt = null, state = {}, stateRevision = 0 } = value;
   if (typeof id !== "string" || typeof generation !== "string" || typeof repositoryRoot !== "string" || typeof implementationId !== "string" ||
     typeof title !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string" ||
-    (completedAt !== null && typeof completedAt !== "string") || !isRecord(state)) throw invalid();
-  const record: ReviewRecord = { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state };
+    (completedAt !== null && typeof completedAt !== "string") || !isRecord(state) ||
+    typeof stateRevision !== "number" || !Number.isSafeInteger(stateRevision) || stateRevision < 0 ||
+    (lastSaveId !== undefined && typeof lastSaveId !== "string")) throw invalid();
+  const record: ReviewRecord = { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state, stateRevision };
+  if (lastSaveId !== undefined) record.lastSaveId = lastSaveId;
   if (remote !== undefined) {
     const parsed = parseRemote(remote);
     if (!parsed) throw invalid();
@@ -235,7 +250,7 @@ export function registerReview(root: string, implementationId: string, title: st
     // blobs without touching repository files. Locks live outside this directory.
     for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child), { recursive: true });
     const now = new Date().toISOString();
-    const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: root, implementationId, title, createdAt: now, updatedAt: now, completedAt: null, state: {} };
+    const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: root, implementationId, title, createdAt: now, updatedAt: now, completedAt: null, state: {}, stateRevision: 0 };
     atomicJson(file, record);
     return record;
   });
@@ -252,7 +267,7 @@ function validateValue(value: Value) {
 function defineOwn(target: JsonRecord, key: string, value: unknown) {
   Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
 }
-export function patchReviewState(id: string, generation: string, changes: StateChange[]) {
+export function patchReviewState(id: string, generation: string, changes: StateChange[], saveId?: string) {
   if (!Array.isArray(changes) || changes.length > 10000) throw new Error("Invalid state changes.");
   return withReviewLock(id, () => {
     const record = readReview(id);
@@ -260,6 +275,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
     const previousActivity = structuredClone(reviewActivity(record.state));
     const previousSnapshots = approvalSnapshotIds(record.state);
     const previousAttachments = attachmentIds(record.state);
+    let changed = false;
     for (const change of changes) {
       if (!Array.isArray(change.path) || !change.path.length || change.path.length > 32 || change.path.some((key) => typeof key !== "string")) throw new Error("Invalid state change path.");
       validateValue(change.before); validateValue(change.after);
@@ -277,6 +293,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (!isDeepStrictEqual(current, change.before)) throw new Error("Review state changed in another tab. Keep your draft text and reload before retrying.");
       if (change.after.present) defineOwn(target, key, change.after.value);
       else delete target[key];
+      changed = true;
     }
     const { comments, replyDrafts, editor } = record.state;
     const compose = isRecord(editor) ? editor.compose : undefined;
@@ -292,6 +309,11 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (!previousSnapshots.has(snapshotId) && !fs.existsSync(path.join(reviewDirectory(id), "snapshots", snapshotId + ".json"))) throw new Error("Approved content is unavailable. Re-approve the file before saving.");
     }
     if (changes.length) {
+      if (changed) {
+        record.stateRevision += 1;
+        if (saveId) record.lastSaveId = saveId;
+        else delete record.lastSaveId;
+      }
       if (!isDeepStrictEqual(previousActivity, reviewActivity(record.state))) record.updatedAt = new Date().toISOString();
       atomicJson(path.join(reviewDirectory(id), "review.json"), record);
       for (const snapshotId of previousSnapshots) {

@@ -422,8 +422,9 @@ export interface InsightReviewRecord {
 export interface DraftSnapshot {
   base: string;
   head: string;
-  /** `StageFile.revision`; legacy line drafts lack it until `/api/draft-snapshots` resolves it. */
-  fileRevision?: string;
+  /** `StageFile.revision`. Legacy line drafts lack it, or hold null, until
+   * `/api/draft-snapshots` resolves it from `base` and `head`. */
+  fileRevision?: string | null;
 }
 
 /** The element a note is attached to. IDs: stage ID, node ID, `f:<stage>:<path>`,
@@ -486,11 +487,12 @@ export interface EditorState {
   replyAttachments: Attachment[];
 }
 
-/** A draft note saved by an older viewer: `at` instead of `createdAt`, and no `mode`. */
+/** A draft note saved by an older viewer: `at` instead of `createdAt`, no `mode`,
+ * and a sent note possibly without its `body`. */
 export interface LegacyDraftNote extends Partial<Omit<DraftNote, "kind" | "id" | "body">> {
   kind: NoteKind;
   id: string;
-  body: string;
+  body?: string;
   /** Epoch milliseconds. */
   at?: number;
 }
@@ -503,7 +505,9 @@ export interface ReviewState {
   /** A boolean is a legacy approval without a revision; the page discards it. */
   approvals?: Record<string, ApprovalRecord | boolean>;
   insightReviews?: Record<string, InsightReviewRecord>;
+  /** The page keeps an entry it cannot read in its place and saves it back unchanged. */
   comments?: (DraftNote | LegacyDraftNote)[];
+  /** Older viewers saved reply drafts without `attachments`. */
   replyDrafts?: ReplyDraft[];
   editor?: EditorState;
   /** Stage ID -> expanded. */
@@ -609,6 +613,10 @@ export type ReviewStateResponse = ApiResult<{
   reviewId: string;
   generation: string;
   state: StoredReviewState;
+  /** Counts the saves that changed the state; a save that only repeats stored values leaves it. */
+  stateRevision: number;
+  /** The `saveId` of the save that last changed the state, or null when it had none. */
+  lastSaveId: string | null;
 }>;
 
 /** POST `/api/review-state` request. */
@@ -617,6 +625,8 @@ export interface ReviewStatePatchRequest {
   generation: string;
   /** At most 10,000 changes. */
   changes: ReviewStateChange[];
+  /** Identifies this save, so a page that got no answer can tell from `lastSaveId` whether it landed. At most 64 characters. */
+  saveId?: string;
 }
 
 /** GET `/api/revision` response. */
@@ -864,9 +874,10 @@ export type AgentControlResponse = ApiResult<{ agent: AgentStatus }>;
 /** POST `/api/remote/refresh` (body `{}`) response. */
 export type RemoteRefreshResponse = OkResponse;
 
-/** A draft note whose snapshot `/api/draft-snapshots` should resolve. The page
- * sends whole `DraftNote`s; the server reads `kind`, `id` and `snapshot`. */
-export type DraftSnapshotNote = Pick<DraftNote, "kind" | "id" | "snapshot"> & Partial<DraftNote>;
+/** A draft whose snapshot `/api/draft-snapshots` should resolve. The page sends
+ * whole drafts, saved notes and the composer's draft alike, so other fields of
+ * theirs may be present; the server reads only `kind`, `id` and `snapshot`. */
+export type DraftSnapshotNote = Pick<DraftNote, "kind" | "id" | "snapshot">;
 
 /** POST `/api/draft-snapshots` request. */
 export interface DraftSnapshotsRequest {

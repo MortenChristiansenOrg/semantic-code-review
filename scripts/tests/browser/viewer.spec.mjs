@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/app.js', import.meta.url), 'utf8');
@@ -32,6 +33,8 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
+  const revisions = new Map();
+  const lastSaveIds = new Map();
   const attachments = new Map();
   const deleted = new Set();
   const errors = [];
@@ -64,21 +67,34 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     }
     if (url.pathname === '/api/review-state') {
       if (!stores.has(currentId)) stores.set(currentId, structuredClone(saved));
-      const state = stores.get(currentId);
       if (route.request().method() === 'POST') {
-        // Like the review store, every key is an own property, including "__proto__".
+        // Like the review store, every key is an own property, including "__proto__",
+        // a change applies only over its `before` or as an exact retry, and a save applies all its changes or none.
         const own = (target, key, value) => Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
-        for (const change of route.request().postDataJSON().changes) {
+        const state = structuredClone(stores.get(currentId));
+        const conflict = () => route.fulfill({ status: 409, json: { ok: false, error: 'Review state changed in another tab. Keep your draft text and reload before retrying.' } });
+        let changed = false;
+        const { changes, saveId } = route.request().postDataJSON();
+        for (const change of changes) {
           let target = state;
           for (const key of change.path.slice(0, -1)) {
             if (!Object.hasOwn(target, key)) own(target, key, {});
             target = target[key];
+            if (!target || typeof target !== 'object' || Array.isArray(target)) return conflict();
           }
-          if (change.after.present) own(target, change.path.at(-1), change.after.value);
-          else delete target[change.path.at(-1)];
+          const key = change.path.at(-1);
+          const current = Object.hasOwn(target, key) ? { present: true, value: target[key] } : { present: false };
+          if (isDeepStrictEqual(current, change.after)) continue;
+          // Tests that stand in for another tab may send a change without `before`.
+          if (change.before && !isDeepStrictEqual(current, change.before)) return conflict();
+          if (change.after.present) own(target, key, change.after.value);
+          else delete target[key];
+          changed = true;
         }
+        stores.set(currentId, state);
+        if (changed) { revisions.set(currentId, (revisions.get(currentId) || 0) + 1); lastSaveIds.set(currentId, saveId ?? null); }
       }
-      return json({ ok: true, reviewId: currentId, generation: 'test', state });
+      return json({ ok: true, reviewId: currentId, generation: 'test', state: stores.get(currentId), stateRevision: revisions.get(currentId) || 0, lastSaveId: lastSaveIds.get(currentId) ?? null });
     }
     if (url.pathname === '/api/attachments' && route.request().method() === 'POST') {
       const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
@@ -3337,6 +3353,57 @@ for (const changed of [false, true]) test(`existing line drafts resolve their or
   }
 });
 
+const noEditor = { replyTo: null, replyDraft: '', replyEditId: null, replyAttachments: [] };
+
+test('line drafts saved with a null file revision resolve their snapshot and keep their text', async ({ page }) => {
+  const snapshot = { base: 'c'.repeat(40), head: 'd'.repeat(40), fileRevision: null };
+  const note = { kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', body: 'Existing draft', mode: 'feedback', createdAt: 1, snapshot };
+  const compose = { kind: 'line', id: 'l:first:new:3:shared.js', nodeId: 'first-two', editIndex: null, mode: 'feedback', body: 'Unsaved draft', dirty: true, snapshot };
+  await mount(page, fixture(), { comments: [note], editor: { ...noEditor, compose } });
+  const resolved = [];
+  await page.route('**/api/draft-snapshots*', (route) => {
+    const { notes } = route.request().postDataJSON();
+    resolved.push(notes.map((item) => item.body));
+    return route.fulfill({ json: { ok: true, snapshots: notes.map((item) => ({ ...item.snapshot, fileRevision: 'rev' })) } });
+  });
+  await reload(page);
+  await expect.poll(() => resolved).toEqual([['Existing draft', 'Unsaved draft']]);
+  let stored;
+  await saveAction(page, () => showNotes(page), (state) => { stored = state; return state.notesOpen === true; });
+  expect(stored.comments).toEqual([{ ...note, snapshot: { ...snapshot, fileRevision: 'rev' } }]);
+  expect(stored.editor.compose).toMatchObject({ body: 'Unsaved draft', snapshot: { ...snapshot, fileRevision: 'rev' } });
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
+  await expect(page.locator('.side.notes [data-action="jump-to"][data-kind="line"]')).toHaveCount(1);
+});
+
+test('a recovered note edit saves into its own note when an earlier saved note cannot be shown', async ({ page }) => {
+  // The first viewer saved notes on "steps", which the page no longer shows.
+  const step = { kind: 'step', id: 'first-one', body: 'Step note', mode: 'personal', resolved: false };
+  const second = { kind: 'stage', id: 'first', body: 'Second note', mode: 'personal', createdAt: 2 };
+  const third = { kind: 'stage', id: 'second', body: 'Third note', mode: 'personal', createdAt: 3 };
+  const compose = { kind: 'stage', id: 'first', editIndex: 1, mode: 'personal', body: 'Second note, revised', dirty: true };
+  const errors = await mount(page, fixture(), { comments: [step, second, third], notesOpen: true, editor: { ...noEditor, compose } });
+  const panel = page.locator('.side.notes');
+  await expect(panel.locator('.tnote')).toHaveText([/Third note/]);
+  await expect(panel).not.toContainText('Step note');
+  const editor = panel.locator('textarea[name="nc-body"]');
+  await expect(editor).toHaveValue('Second note, revised');
+  let stored;
+  await saveAction(page, () => editor.press('Control+Enter'), (state) => { stored = state; return state.editor?.compose === null; });
+  expect(stored.comments).toEqual([step, { ...second, body: 'Second note, revised', attachments: [] }, third]);
+  await expect(panel.locator('.tnote')).toHaveText([/Second note, revised/, /Third note/]);
+  expect(errors).toEqual([]);
+});
+
+test('reply drafts saved before attachments existed stay listed', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('t')];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'Reply from an older viewer', createdAt: 2 }] });
+  await showNotes(page);
+  await expect(page.locator('.side.notes [data-thread-id="t"] .tmsg-draft')).toContainText('Reply from an older viewer');
+  expect(errors).toEqual([]);
+});
+
 test('interactive review shows agent presence, round progress, unread replies, and agent questions', async ({ page }) => {
   const now = new Date().toISOString();
   const comment = (id, author, body, extra = {}) => ({ id, author, body, attachments: [], createdAt: '2026-10-08T10:00:00Z', ...extra });
@@ -5335,4 +5402,412 @@ test('file approval buttons and notes toggles are named for assistive technology
   await expect(one.getByRole('button', { name: 'Approve file' })).toHaveCount(1);
   await expect(page.locator('.stage[data-stage="first"]').getByRole('button', { name: '1 thread, 1 open' })).toHaveCount(1);
   expect(errors).toEqual([]);
+});
+
+// Resolves once the viewer's own unsaved-changes check is clear.
+async function settled(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }), { message: 'the viewer has unsaved review state' }).toBe(false);
+}
+async function deleteReviewElsewhere(page, reviewId) {
+  await page.evaluate(async (id) => {
+    const input = { reviewId: id, generation: 'test' }, query = `?review=${id}&generation=test`;
+    const post = async (path, body) => {
+      const response = await fetch(path + query, { method: 'POST', body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(`${path} failed with ${response.status}: ${payload.error}`);
+      return payload;
+    };
+    const result = await post('/api/reviews/storage', input);
+    await post('/api/reviews/delete', { ...input, fingerprint: result.storage.fingerprint });
+  }, reviewId);
+}
+
+test('a review deleted during an approval capture ends the approval and a pending switch', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  // Opening the file saves; a save landing after the deletion's preview would make the deletion stale.
+  await settled(page);
+  let release;
+  const captured = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/approval-snapshots*', async (route) => { await captured; return route.fallback(); });
+  await page.locator('details[data-node="first-one"] .mini-approve').click();
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await deleteReviewElsewhere(page, 'a');
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+  release();
+  await expect(page.locator('#review-list')).toContainText('The review was deleted before its changes were saved.');
+  await expect(page).toHaveURL('http://localhost/');
+  // A page stuck retrying the save would not answer.
+  expect(await page.evaluate(() => 1 + 1)).toBe(2);
+});
+
+test('a failed save clears once no change is left to save', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  await settled(page);
+  await page.route('**/api/review-state*', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Storage unavailable' } }) : route.fallback());
+  const wrap = page.getByRole('button', { name: 'Wrap lines', exact: true }).first();
+  await wrap.click();
+  await expect(page.locator('#save-status')).toContainText('Storage unavailable');
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page).toHaveURL('http://localhost/b');
+});
+
+test('reverting a change after a save whose response was lost saves the reversal', async ({ page }) => {
+  await mount(page, fixture());
+  await openFile(page);
+  await settled(page);
+  let lose = true;
+  await page.route('**/api/review-state*', async (route) => {
+    if (route.request().method() !== 'POST' || !lose) return route.fallback();
+    lose = false;
+    // The server commits the save, but its response never arrives.
+    const { url, body } = { url: route.request().url(), body: route.request().postData() };
+    await page.evaluate(([input, payload]) => fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }), [url, body]);
+    await route.abort('failed');
+  });
+  const wrap = page.getByRole('button', { name: 'Wrap lines', exact: true }).first();
+  await expect(wrap).toHaveAttribute('aria-pressed', 'false');
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeVisible();
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await reload(page);
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'false');
+});
+
+/** Fails the page's next review-state save. With `commit`, the server stores it
+ * first, as when only the response is lost; otherwise the request never arrives.
+ * `failed` resolves with the save's URL and changes. */
+async function failNextSave(page, { commit }) {
+  let armed = true, settle;
+  const failed = new Promise((resolve) => { settle = resolve; });
+  await page.route('**/api/review-state*', async (route) => {
+    if (route.request().method() !== 'POST' || !armed) return route.fallback();
+    armed = false;
+    const url = route.request().url(), body = route.request().postData();
+    if (commit) await page.evaluate(([input, payload]) => fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }), [url, body]);
+    await route.abort('failed');
+    settle({ url, changes: JSON.parse(body).changes });
+  });
+  return failed;
+}
+/** Saves changes to the review state as another tab would. */
+async function saveElsewhere(page, url, changes) {
+  await page.evaluate(async ([input, list]) => {
+    const response = await fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reviewId: 'browser-review', generation: 'test', changes: list }) });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error);
+  }, [url, changes]);
+}
+const storedOnServer = (page, url) => page.evaluate(async (input) => (await (await fetch(input)).json()).state, url);
+/** Opens a message draft and saves `text` as its body. */
+async function savedDraft(page, text) {
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  const input = page.locator('textarea[name="nc-body"]');
+  await saveAction(page, () => input.fill(text), (state) => state.editor?.compose?.body === text);
+  await settled(page);
+  return input;
+}
+/** Counts the page's review-state saves from now on. */
+function countSaves(page) {
+  const counter = { saves: 0 };
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') counter.saves += 1; });
+  return counter;
+}
+
+test('a save whose response was lost does not overwrite a value another tab restored', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const lost = failNextSave(page, { commit: true });
+  await input.fill('Edited');
+  const { url, changes } = await lost;
+  await expect(page.locator('#save-status')).toBeVisible();
+  // Another tab, which received the edit, restores the original text.
+  await saveElsewhere(page, url, changes.map(({ path, before, after }) => ({ path, before: after, after: before })));
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await expect(input).toHaveValue('Edited');
+  const stored = await storedOnServer(page, url);
+  expect(stored.editor.compose.body).toBe('Original');
+  expect(stored.wrapLines).toBe(false);
+});
+
+test('undoing an edit whose save never arrived does not retry it over another tab\'s text', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const failed = failNextSave(page, { commit: false });
+  await input.fill('Edited');
+  const { url } = await failed;
+  await expect(page.locator('#save-status')).toBeVisible();
+  await saveElsewhere(page, url, [{ path: ['editor', 'compose', 'body'], before: { present: true, value: 'Original' }, after: { present: true, value: 'Other tab' } }]);
+  const counter = countSaves(page);
+  await input.fill('Original');
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await input.fill('Later text');
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+  expect(counter.saves).toBe(0);
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await expect(input).toHaveValue('Later text');
+  expect((await storedOnServer(page, url)).editor.compose.body).toBe('Other tab');
+});
+
+test('undoing an edit whose save never arrived does not overwrite another tab\'s identical text', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const failed = failNextSave(page, { commit: false });
+  await input.fill('Edited');
+  const { url, changes } = await failed;
+  await expect(page.locator('#save-status')).toBeVisible();
+  // Another tab saves the same text, which is not this page's save landing.
+  await saveElsewhere(page, url, changes);
+  const counter = countSaves(page);
+  await input.fill('Original');
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+  expect(counter.saves).toBe(0);
+  expect((await storedOnServer(page, url)).editor.compose.body).toBe('Edited');
+});
+
+test('a save whose response was lost is confirmed before the next change saves', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const lost = failNextSave(page, { commit: true });
+  await input.fill('Edited');
+  const { url } = await lost;
+  await expect(page.locator('#save-status')).toBeVisible();
+  const counter = countSaves(page);
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await settled(page);
+  expect(counter.saves).toBe(1);
+  const stored = await storedOnServer(page, url);
+  expect(stored.editor.compose.body).toBe('Edited');
+  expect(stored.wrapLines).toBe(true);
+});
+
+test('turning a failed since-approval comparison off and on loads it again', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await openFile(page);
+  await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+  const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
+  let fail = true;
+  await page.route('**/api/approval-comparison*', (route) => fail
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Comparison unavailable' } })
+    : route.fulfill({ json: { ok: true, approved: endpoint, current: endpoint, baseChanged: false, ownershipChanged: false, lines: [{ t: 'add', n: 1, s: 'new content' }], offset: 0, nextOffset: null } }));
+  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await openFile(page);
+  const diff = page.locator('details[data-node="first-one"] .cinema-diff');
+  await expect(diff).toContainText('Comparison unavailable');
+  fail = false;
+  const toggle = page.getByRole('button', { name: 'Since approval', exact: true });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await toggle.click();
+  await expect(diff).toContainText('new content');
+});
+
+test('a validation check without a passed status does not count as passed', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights = [
+    { id: 'unknown', collection: 'validation', type: 'validation', title: 'Unknown check', nodeRefs: ['first-one'] },
+    { id: 'passed', collection: 'validation', type: 'validation', title: 'Passed check', meta: 'passed', nodeRefs: ['first-one'] },
+  ];
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  await one.getByRole('button', { name: 'Checks not passed: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-vstat="notrun"]')).toBeFocused();
+  await expect(one.locator('.tag-face[data-vstat="passed"]')).toHaveCount(1);
+});
+
+test('closing a file while its line jump loads cancels the jump', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('far', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 50, label: 'shared.js:50' })];
+  await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:50:shared.js', nodeId: 'first-one', exported: true, threadId: 'far', body: 'Feedback far' }] });
+  await openFile(page);
+  let release;
+  const loaded = new Promise((resolve) => { release = resolve; });
+  let diffRequested;
+  const requested = new Promise((resolve) => { diffRequested = resolve; });
+  await page.route('**/api/diff*', async (route) => { diffRequested(); await loaded; return route.fallback(); });
+  await showNotes(page);
+  await page.locator('.side.notes [data-thread-id="far"] [data-action="jump-to"]').click();
+  await requested;
+  await page.keyboard.press('Escape');
+  const node = page.locator('details[data-node="first-one"]');
+  await expect(node.locator('.cinema-diff')).toHaveCount(0);
+  await node.locator('summary').click();
+  await expect(node).not.toHaveAttribute('open', '');
+  const response = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/diff');
+  release();
+  await response;
+  // Two frames carry the jump; a cancelled one opens nothing.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  await expect(node).not.toHaveAttribute('open', '');
+});
+
+test('stage notes and notes on a node named overview keep separate groups', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].nodes.push({ id: 'overview', title: 'Overview step', description: 'Node description' });
+  await mount(page, data, { comments: [
+    { kind: 'stage', id: 'first', mode: 'personal', body: 'Stage note', createdAt: 1 },
+    { kind: 'node', id: 'overview', stageId: 'first', mode: 'personal', body: 'Node note', createdAt: 1 },
+  ] });
+  await showNotes(page);
+  const headings = page.locator('.side.notes .note-node-h');
+  await expect(headings).toHaveCount(2);
+  await expect(headings.filter({ hasText: 'Stage overview' })).toHaveCount(1);
+  await expect(headings.filter({ hasText: 'Overview step' })).toHaveCount(1);
+});
+
+test('a poll response requested before a local resolve does not reopen the thread', async ({ page }) => {
+  const data = fixture(); data.feedback = [thread('resolve-me')];
+  await mount(page, data, { openThreads: { first: true } });
+  let release, requested, fetched = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = new Promise((resolve) => { requested = resolve; });
+  page.on('response', (response) => { if (new URL(response.url()).pathname === '/api/implementation') fetched++; });
+  await page.route('**/api/implementation*', async (route) => {
+    if (fetched || requested === null) return route.fallback();
+    const stale = structuredClone(data);
+    requested(); requested = null;
+    await gate;
+    return route.fulfill({ json: { ok: true, implementation: stale } });
+  });
+  data.viewerRevision = 'changed';
+  await seen;
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 0');
+  release();
+  // The stale response is discarded and the next poll fetches the resolved thread.
+  await expect.poll(() => fetched).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 0');
+});
+
+test('an older saved-review refresh does not replace a newer list', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a', title: 'Review A' }, b = { ...fixture(), reviewId: 'b', title: 'Review B' };
+  await mount(page, a, {}, [b]);
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await expect(page.locator('[data-review="a"]')).toBeVisible();
+  const staleList = { ok: true, reviews: ['a', 'b'].map((id) => ({ id, generation: 'test', title: `Review ${id.toUpperCase()}`, implementationId: 'browser-review', repositoryRoot: `/repos/${id}`, updatedAt: '2026-09-11T10:00:00Z', completedAt: null, available: true })) };
+  let calls = 0, release, staleDone;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fulfilled = new Promise((resolve) => { staleDone = resolve; });
+  await page.route('**/api/reviews?*', async (route) => {
+    calls += 1;
+    if (calls !== 1) return route.fallback();
+    await gate;
+    await route.fulfill({ json: staleList });
+    staleDone();
+  });
+  await page.locator('[data-review="a"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true });
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-review="a"]')).toHaveCount(0);
+  release();
+  await fulfilled;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await expect(page.locator('[data-review="a"]')).toHaveCount(0);
+  await expect(page.locator('[data-review="b"]')).toBeVisible();
+});
+
+test('a stale anchor on an old line that is now unchanged jumps to its file', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), anchorStale: true }];
+  await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:old:2:shared.js', nodeId: 'first-one', exported: true, threadId: 'old-context', body: 'Feedback old-context' }] });
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="old-context"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'file');
+  await jump.click();
+  await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toBeVisible();
+});
+
+test('a saved composer with a negative edit index does not keep a saved note from sending', async ({ page }) => {
+  await mount(page, fixture(), {
+    comments: [{ kind: 'stage', id: 'first', mode: 'feedback', body: 'Send me', createdAt: 1 }],
+    editor: { compose: { kind: 'stage', id: 'first', editIndex: -1, mode: 'feedback', body: 'Composer text' } },
+  });
+  await showNotes(page);
+  const request = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/feedback/export');
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  expect((await request).postDataJSON().notes.map((note) => note.body)).toEqual(['Send me']);
+});
+
+test('an unread reply is not read while the page is hidden and is read once it shows again', async ({ page }) => {
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [{ id: 'one', status: 'open', target, comments: [comment('u1', 'user', 'First?')] }] };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data);
+  await baseline;
+  data.feedback[0].comments.push(comment('answer', 'agent', 'Short answer.', '2026-10-08T10:05:00Z'));
+  data.viewerRevision = 'replied';
+  await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+  await showNotes(page);
+  const reply = page.locator('.side.notes [data-reply-key=\'["one","answer"]\']');
+  await expect(reply).toBeInViewport();
+  // The dwell has started but not finished when the page hides.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  await expect(reply).toHaveClass(/is-unread/);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(reply).not.toHaveClass(/is-unread/, { timeout: 5000 });
+});
+
+test('a visibility report that arrives after an unread reply was removed does not read it', async ({ page }) => {
+  // The page's observer reports only what the test delivers, as a browser may
+  // deliver a queued report after the reply was removed and unobserved.
+  await page.addInitScript(() => {
+    const Native = window.IntersectionObserver;
+    window.IntersectionObserver = class extends Native {
+      constructor(callback, options) {
+        super(() => {}, options);
+        window.reportVisible = (target) => callback([{ target, intersectionRatio: 1, intersectionRect: { height: 100 }, rootBounds: { height: 800 } }], this);
+      }
+    };
+  });
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [{ id: 'one', status: 'open', target, comments: [comment('u1', 'user', 'First?')] }] };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data, { openThreads: { first: true } });
+  await baseline;
+  data.feedback[0].comments.push(comment('answer', 'agent', 'Short answer.', '2026-10-08T10:05:00Z'));
+  data.viewerRevision = 'replied';
+  await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+  const reply = page.locator('.stage [data-reply-key=\'["one","answer"]\']');
+  await expect(reply).toHaveClass(/is-unread/);
+  const removed = await reply.elementHandle();
+  await page.locator('.stage [data-action="toggle-thread"]').click();
+  await expect(reply).toHaveCount(0);
+  await removed.evaluate((element) => window.reportVisible(element));
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  expect(await page.title()).toMatch(/^\(1\)/);
 });
