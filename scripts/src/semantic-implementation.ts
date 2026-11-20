@@ -2209,11 +2209,16 @@ class ScratchWorktree {
 
   /** The worktree a pending restack left, if it still exists. */
   static open(root: string, location: string): ScratchWorktree | undefined {
+    if (!fs.existsSync(location)) return undefined;
+    // Git lists real paths, which differ from the configured one under a symlink such as macOS's /var.
+    const real = (candidate: string) => {
+      const resolved = fs.existsSync(candidate) ? fs.realpathSync.native(candidate) : path.resolve(candidate);
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    const wanted = real(location);
     const listed = git(["worktree", "list", "--porcelain"], { cwd: root }).split(/\r?\n/)
-      .filter((line) => line.startsWith("worktree ")).map((line) => path.resolve(line.slice("worktree ".length)));
-    const wanted = path.resolve(location);
-    const same = (other: string) => process.platform === "win32" ? other.toLowerCase() === wanted.toLowerCase() : other === wanted;
-    return fs.existsSync(location) && listed.some(same) ? new ScratchWorktree(root, location) : undefined;
+      .filter((line) => line.startsWith("worktree ")).map((line) => real(line.slice("worktree ".length)));
+    return listed.includes(wanted) ? new ScratchWorktree(root, location) : undefined;
   }
 
   /** Removes the worktree at location and its registration, whatever state it is in. */
