@@ -71,7 +71,8 @@ export function gitRaw(
 ): string | Buffer | null {
   const result = spawnSync("git", args, {
     cwd,
-    input,
+    // With buffer output, Node cannot encode a string input itself.
+    input: typeof input === "string" ? Buffer.from(input, "utf8") : input,
     encoding,
     windowsHide: true,
     maxBuffer: SUBPROCESS_MAX_BUFFER,

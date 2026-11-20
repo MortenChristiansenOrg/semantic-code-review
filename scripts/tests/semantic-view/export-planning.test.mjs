@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { rememberImplementation } from "../../src/shared/artifact-store.ts";
 import { fileURLToPath } from "node:url";
 import {
   beginStage,
@@ -16,7 +17,6 @@ import {
   scriptsDirectory,
   sourceLoader,
 } from "../helpers/repository.mjs";
-import { ArtifactDraft, commitArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 
 const moduleUrl = new URL("../../src/semantic-view.ts", import.meta.url).href;
 
@@ -48,12 +48,6 @@ function seedStages(repository, stages) {
   });
 }
 
-/** Copies the active artifact of one worktree into another through the store. */
-function copyArtifact(from, to) {
-  const snapshot = requireArtifact(from), draft = new ArtifactDraft(undefined);
-  for (const file of snapshot.list()) draft.write(file, snapshot.read(file));
-  commitArtifact(to, undefined, draft);
-}
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
@@ -826,7 +820,7 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   const linked = first.root + "-linked";
   first.git("worktree", "add", "--detach", linked, "HEAD");
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
-  copyArtifact(first.root, linked);
+  // The linked worktree sees the same artifact as first.root.
   const roots = [first.root, linked, otherRepo.root];
   const ids = roots.map((repoRoot) => {
     const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot) },
@@ -841,6 +835,8 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   const replies = exportFeedbackReplies({ repoRoot: linked }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
   assert.equal(replies.ok, true);
   assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
+  // A worktree is selected for the implementation it has claimed.
+  rememberImplementation(linked, "test-implementation");
   const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
   assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(linked));
   assert.notEqual(fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8"), before);
@@ -862,19 +858,23 @@ test("concurrent first submissions initialize shared feedback once and deduplica
 
 test("snapshot reads reject an implementation switch instead of changing feedback stores", (t) => {
   const { repository } = createImplementationWithStages(t);
-  // The store reads the manifest from this file; the mock swaps its content between reads.
-  const manifestPath = requireArtifact(repository.root).describe("manifest.json");
+  repository.feedback("init");
+  // While the snapshot reads feedback, another implementation replaces the active one.
+  const active = "refs/semantic-review/active/test-implementation";
+  const commit = repository.git("rev-parse", active);
+  const manifestPath = repository.feedbackPath("manifest.json");
   const originalRead = fs.readFileSync;
-  const initial = JSON.parse(originalRead(manifestPath, "utf8"));
-  let reads = 0;
+  let switched = false;
   t.mock.method(fs, "readFileSync", (file, ...args) => {
-    if (String(file) === manifestPath) {
-      reads++;
-      return JSON.stringify({ ...initial, implementationId: reads === 1 ? initial.implementationId : "replacement" });
+    if (String(file) === manifestPath && !switched) {
+      switched = true;
+      repository.git("update-ref", "refs/semantic-review/active/replacement", commit);
+      repository.git("update-ref", "-d", active);
     }
     return originalRead(file, ...args);
   });
   assert.throws(() => viewerSnapshot(repository.root), /active implementation changed/);
+  assert.equal(switched, true);
 });
 
 

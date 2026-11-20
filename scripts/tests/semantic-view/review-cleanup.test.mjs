@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
@@ -29,7 +29,10 @@ function oldAttachment(review, filename) {
 test('storage previews count drafts and feedback; confirmed deletion preserves other reviews and repository files', (t) => {
   const { root, review, other } = setup(t);
   fs.writeFileSync(path.join(root, 'repo', 'source.txt'), 'source');
-  const artifact = new ArtifactDraft(undefined); artifact.write('manifest.json', 'artifact');
+  // The artifact is stored in the repository's Git refs.
+  execFileSync('git', ['init', '-q'], { cwd: path.join(root, 'repo') });
+  const manifest = '{"implementationId": "same-id"}\n';
+  const artifact = new ArtifactDraft(undefined); artifact.write('manifest.json', manifest);
   commitArtifact(path.join(root, 'repo'), undefined, artifact);
   const file = oldAttachment(review, 'context.log');
   const otherFile = storeAttachment(other.id, other.generation, 'context.log', 'text/plain', Buffer.from('context'));
@@ -42,7 +45,7 @@ test('storage previews count drafts and feedback; confirmed deletion preserves o
   assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).deleted, true);
   assert.throws(() => readReview(review.id), /deleted/);
   assert.equal(fs.readFileSync(path.join(root, 'repo', 'source.txt'), 'utf8'), 'source');
-  assert.equal(readArtifact(path.join(root, 'repo')).read('manifest.json').toString('utf8'), 'artifact');
+  assert.equal(readArtifact(path.join(root, 'repo')).read('manifest.json').toString('utf8'), manifest);
   assert.ok(fs.existsSync(resolveAttachment(other.id, otherFile.id).localPath));
   assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true, cleanupPending: false });
   const reopened = registerReview(path.join(root, 'repo'), 'same-id', 'Fresh'); assert.notEqual(reopened.generation, review.generation);

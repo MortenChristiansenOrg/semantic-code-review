@@ -8,8 +8,7 @@ branch immediately below it.
 
 | State | Purpose |
 | --- | --- |
-| `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
-| `.semantic-review/.work/` | Current unfinished stage |
+| `refs/semantic-review/active/<implementation-id>` | Active requirements, stages, head revisions, reasoning, validation and the current unfinished stage, stored in Git and shared by every worktree |
 | `semantic-flow/<implementation-id>/stages/<stage-id>` | Cumulative stage branch |
 | `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
@@ -272,8 +271,8 @@ Use `--file` for a single capture, `--before` and `--after` for a comparison, an
 `--inline` for short terminal output. Add a caption with `path=caption`. Prefer a
 screenshot or recording when the change has visible output. Supported files are
 PNG, JPEG, GIF, WebP, MP4, WebM, text, log, CSV, Markdown, JSON, and PDF, up to
-25 MiB each and 100 MiB per stage. Files are copied to `.semantic-review/evidence/`,
-which never appears in a stage diff; publishing and archiving include them, so
+25 MiB each and 100 MiB per stage. Files are copied into the artifact's `evidence/`
+folder, which never appears in a stage diff; publishing and archiving include them, so
 check captures for secrets and personal data first.
 
 Use `stage evidence --replace` after recapturing and `stage evidence-remove` to
@@ -573,7 +572,6 @@ comments about the implementation being reviewed still use Semantic Flow feedbac
 
 - `restack --from <stage>`: lower stage branch changed.
 - `restack --base <target>`: trunk changed.
-- `repair`: interrupted artifact file mutation with an unambiguous recovery.
 - `validate`: explain schema, reference, branch, or ancestry problems.
 - `implementation export [--destination <directory>]`: show the artifact in its
   full form, with each stage's branch, base revision and file inventory, for

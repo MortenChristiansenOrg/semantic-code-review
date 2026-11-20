@@ -14,13 +14,6 @@ export interface RestackOptions {
  */
 export declare function restack(options: RestackOptions): void;
 
-/**
- * Repairs unambiguous interrupted artifact mutations.
- * @cli semantic-flow.mjs
- * @command implementation repair
- */
-export declare function repairArtifact(): void;
-
 export interface PublishArtifactOptions {
   /** Metadata commit message. @defaultValue "Publish <implementation-id> semantic implementation" */
   message?: string;

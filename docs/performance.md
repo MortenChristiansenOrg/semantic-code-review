@@ -84,6 +84,36 @@ failed scans, distant diff pages/line jumps and rename/recreated-path separation
 single-CLI mixed-validity export, and focused/full API contract drift checks.
 Existing publication, restack, recovery, feedback and viewer tests remain enabled.
 
+## Artifact stored in Git (#172)
+
+The active artifact moved from `.semantic-review/` files to snapshot commits of
+`refs/semantic-review/active/<implementation-id>`. A read lists the active refs
+with one `git for-each-ref`, lists the snapshot tree once with `git ls-tree`,
+and reads every document of it with one `git cat-file --batch`; a process reads
+each snapshot commit's tree only once. A write stores changed blobs with one
+`git hash-object --stdin-paths`, builds the tree in a temporary index, and moves
+the ref and any stage branches in one `git update-ref --stdin` transaction.
+
+Same fixtures, Linux, Node 24.20.0; before is the folder store with derived
+stage data, after is the Git store:
+
+| Operation / fixture | Before | After |
+| --- | ---: | ---: |
+| Completion, continuation, reconcile/simulate: ten-stage verification | 47 Git calls, 535 ms | 55 Git calls, 568 ms |
+| Status of ten-stage stack | 47 Git calls, 523 ms | 55 Git calls, 553 ms |
+| Prepare ten-stage stack | 58 Git calls, 588 ms | 67 Git calls, 621 ms |
+| Archive landed stack | 67 Git calls, 620 ms | 78 Git calls, 662 ms |
+| Validate 300 line threads | 3 Git calls, 422 ms | 7 Git calls, 445 ms |
+| Reply among 300 line threads | 3 Git calls, 440 ms | 8 Git calls, 463 ms |
+| Feedback preflight, 300 threads | 14 Git calls, 486 ms | 23 Git calls, 533 ms |
+| Twenty unchanged snapshot polls, 300 threads | 0 document reads | 0 document reads |
+
+Each command now spends a few more short Git processes, about 20–50 ms, mostly
+on listing the active refs again for each read. The listing is not cached:
+long-running processes such as the viewer and feedback waits must see writes
+from other processes. An unchanged viewer poll costs one `for-each-ref`, since
+the snapshot commit identifies the artifact's content.
+
 ## Functional effects and limits
 
 - API references are grouped under `scripts/api/`; `API.d.ts` is the small index

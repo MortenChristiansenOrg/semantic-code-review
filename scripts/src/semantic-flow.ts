@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { activeImplementationId, listJsonIds, readArtifact, readArtifactJson, requireArtifact } from "./shared/artifact-store.js";
+import { assertNoLegacyArtifact, claimedImplementation, interruptedArchiveNote, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -158,14 +158,14 @@ function worktreeRoots(root: string): string[] {
     .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
-function artifactCandidate(root: string): ArtifactCandidate | null {
-  const snapshot = readArtifact(root);
+/** The active implementation as seen from the worktree that works on it. */
+function artifactCandidate(root: string, implementationId: string): ArtifactCandidate | null {
+  const snapshot = readArtifact(root, implementationId);
   if (!snapshot) {
     return null;
   }
   // Inspection reports on possibly invalid artifacts, so read only what is present.
   const manifest = readArtifactJson(snapshot, "manifest.json");
-  const implementationId = activeImplementationId(root, snapshot);
   return {
     worktree: root,
     implementationId,
@@ -210,15 +210,32 @@ function inspect(options: Options): Inspection {
   const project = option(options, "project");
   const implementationId = option(options, "implementation-id");
   const root = repositoryRoot(path.resolve(project ?? process.cwd()));
-  const candidates = worktreeRoots(root)
-    .map(artifactCandidate)
+  // Every worktree sees every active implementation; each is reported from the
+  // worktree that has claimed it, or else from the inspected one.
+  const actives = listActiveImplementations(root);
+  const worktrees = worktreeRoots(root);
+  // A worktree that still holds an artifact of an earlier version is reported, not
+  // ignored: the inspected one always, the others when nothing else is active.
+  assertNoLegacyArtifact(root);
+  if (actives.length === 0) for (const worktree of worktrees) assertNoLegacyArtifact(worktree);
+  const claimedIn = (worktree: string) => claimedImplementation(worktree, actives)?.implementationId;
+  const claims = new Map(worktrees.map((worktree) => [worktree, claimedIn(worktree)]));
+  const candidates = actives
+    .map(({ implementationId }) => {
+      const claiming = [...claims].filter(([, claimed]) => claimed === implementationId).map(([worktree]) => worktree);
+      const worktree = claiming.find((candidate) => samePath(candidate, root)) ?? claiming[0] ?? root;
+      return artifactCandidate(worktree, implementationId);
+    })
     .filter((candidate): candidate is ArtifactCandidate => candidate !== null)
-    .sort((left, right) => left.worktree.localeCompare(right.worktree));
+    .sort((left, right) => left.worktree.localeCompare(right.worktree) || left.implementationId.localeCompare(right.implementationId));
   const matching = implementationId
     ? candidates.filter((candidate) => candidate.implementationId === implementationId)
     : candidates;
+  // The inspected worktree selects only the implementation it has claimed;
+  // one reported from it merely because nothing claimed it is not preferred.
+  const rootClaim = claimedImplementation(root, actives)?.implementationId;
   const preferred = matching.find((candidate) =>
-    samePath(candidate.worktree, root),
+    samePath(candidate.worktree, root) && candidate.implementationId === rootClaim,
   );
   const selected = preferred ?? (matching.length === 1 ? matching[0] : null);
   return { repositoryRoot: root, candidates, selected };
@@ -231,14 +248,15 @@ function printInspection(inspection: Inspection, json: boolean): void {
   }
   if (inspection.candidates.length === 0) {
     console.log(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
     );
     return;
   }
   for (const candidate of inspection.candidates) {
     const marker =
       inspection.selected &&
-      samePath(candidate.worktree, inspection.selected.worktree)
+      samePath(candidate.worktree, inspection.selected.worktree) &&
+      candidate.implementationId === inspection.selected.implementationId
         ? "*"
         : "-";
     console.log(
@@ -260,16 +278,18 @@ function resolveSingle(
   );
   const inspection = inspect(selectionOptions);
   if (inspection.selected) {
+    // The commands the workflow runs act on the selected implementation.
+    selectImplementation(inspection.selected.implementationId);
     return inspection.selected;
   }
   const implementationId = option(selectionOptions, "implementation-id");
   if (inspection.candidates.length === 0) {
     fail(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
     );
   }
   if (implementationId) {
-    fail(`No active semantic implementation has implementation ID ${implementationId}.`);
+    fail(`No active semantic implementation has implementation ID ${implementationId}.${interruptedArchiveNote(inspection.repositoryRoot)}`);
   }
   const choices = inspection.candidates
     .map(
@@ -369,10 +389,16 @@ function arrayField(value: unknown, key: string): unknown[] {
 }
 
 async function status(options: Options): Promise<void> {
-  const candidate = resolveSingle(options, "status");
-  const artifact = requireArtifact(candidate.worktree);
+  const selected = resolveSingle(options, "status");
+  const artifact = requireArtifact(selected.worktree, selected.implementationId);
   // Status reports on possibly invalid artifacts; the validation below reports their errors.
   const manifest = readArtifactJson(artifact, "manifest.json");
+  // Another worktree may have changed the artifact since inspection: report this snapshot.
+  const candidate: ArtifactCandidate = {
+    ...selected,
+    finalizedStageIds: listedStageIds(manifest),
+    workingStageIds: listJsonIds(artifact, ".work/stages"),
+  };
   const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
     readArtifactJson(artifact, `requirements/${id}.json`),
   );
@@ -566,7 +592,7 @@ function releaseShips(file: string): boolean {
 
 async function launchViewer(
   worktree: string,
-  { openBrowser = true, replaceExisting = true } = {},
+  { openBrowser = true, replaceExisting = true, implementationId }: { openBrowser?: boolean; replaceExisting?: boolean; implementationId?: string } = {},
 ): Promise<void> {
   const child = spawn(
     process.execPath,
@@ -580,6 +606,9 @@ async function launchViewer(
         ...process.env,
         ...(!openBrowser ? { SEMANTIC_VIEW_NO_OPEN: "1" } : {}),
         ...(!replaceExisting ? { SEMANTIC_VIEW_NO_REPLACE: "1" } : {}),
+        // A restarted viewer serves the implementation it served, not the one
+        // its worktree now selects.
+        ...(implementationId !== undefined ? { SEMANTIC_FLOW_IMPLEMENTATION_ID: implementationId } : {}),
       },
     },
   );
@@ -778,7 +807,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     git(["switch", "--detach", targetHead], { cwd: candidate.worktree });
   }
 
-  const found = artifactCandidate(candidate.worktree);
+  const found = artifactCandidate(candidate.worktree, candidate.implementationId);
   if (!found) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
   }
@@ -1500,8 +1529,7 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
     if (viewer.skillDirectory !== undefined &&
         (typeof viewer.skillDirectory !== "string" ||
          !samePath(viewer.skillDirectory, skillDirectory))) continue;
-    const snapshot = readArtifact(viewerRoot);
-    if (!snapshot || activeImplementationId(viewerRoot, snapshot) !== viewer.implementationId) continue;
+    if (typeof viewer.implementationId !== "string" || !readArtifact(viewerRoot, viewer.implementationId)) continue;
     found.push({ ...viewer, repositoryRoot: viewerRoot });
   }
   return found;
@@ -1510,7 +1538,7 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
 async function restartViewers(viewers: Array<ViewerIdentity & { repositoryRoot: string }>) {
   const failures: unknown[] = [];
   for (const viewer of viewers) {
-    try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+    try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false, implementationId: viewer.implementationId }); }
     catch (error) { failures.push(error); }
   }
   if (failures.length) throw new AggregateError(failures, "Some review services could not restart. Reopen them from the review list.");
@@ -1523,7 +1551,7 @@ async function stopViewersForUpdate(viewers: Array<ViewerIdentity & { repository
   } catch (error) {
     const failures: unknown[] = [error];
     for (const viewer of stopped) {
-      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false, implementationId: viewer.implementationId }); }
       catch (restartError) { failures.push(restartError); }
     }
     if (failures.length > 1) throw new AggregateError(failures, "Stopping viewers failed; some stopped viewers could not restart.");

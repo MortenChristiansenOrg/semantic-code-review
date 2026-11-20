@@ -2,21 +2,24 @@
  * viewer request reads and writes the active artifact through this module, so
  * nothing else knows where or how it is stored.
  *
+ * An active artifact lives in the repository's Git object store: the private
+ * ref refs/semantic-review/active/<implementation-id> points at a snapshot
+ * commit whose tree holds the artifact's files. Every worktree of the
+ * repository sees the same artifact, and cleaning a worktree cannot lose it.
+ *
  * A read pins one snapshot: an immutable view of the artifact's files, with a
  * version that changes whenever the artifact does. A writer edits a draft on
- * top of the snapshot it read and commits the draft, which fails when the
- * artifact changed since that read. */
+ * top of the snapshot it read and commits the draft as a new snapshot, moving
+ * the ref only if it still points at the snapshot that was read. */
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.js";
-import { gitRaw } from "./git.js";
+import { git, gitRaw } from "./git.js";
 import { jsonBytes, parseJsonDocument } from "./json.js";
 import { errorCode, errorMessage, isRecord } from "./narrow.js";
 
-/** The folder, relative to a worktree root, that holds the active artifact. */
-const ACTIVE_DIRECTORY = ".semantic-review";
 /** The folder published and archived artifacts are stored under in a commit. */
 export const PUBLISHED_DIRECTORY = ".semantic-review";
 export const ZERO_OID = "0000000000000000000000000000000000000000";
@@ -40,7 +43,7 @@ export interface ArtifactFiles {
   describe(file: string): string;
 }
 
-/** The active artifact of a repository, as one read found it. */
+/** An artifact as one read found it. */
 export interface ArtifactSnapshot extends ArtifactFiles {
   /** The worktree the artifact was read from; Git commands run there. */
   readonly root: string;
@@ -88,14 +91,13 @@ export function listJsonIds(files: ArtifactFiles, directory: string): string[] {
     .map((file) => file.slice(directory.length + 1, -".json".length));
 }
 
-// --- Folder storage ---------------------------------------------------------
+// --- Folder storage -----------------------------------------------------------
 
+/** Artifact files in a directory, such as a remote review's projection. */
 class FolderFiles implements ArtifactSnapshot {
-  readonly directory: string;
   readonly #version: string;
 
-  constructor(readonly root: string, directory = path.join(root, ACTIVE_DIRECTORY)) {
-    this.directory = directory;
+  constructor(readonly root: string, readonly directory: string) {
     // Taken when the snapshot is read, so a later comparison detects every
     // write that happened after this read.
     const hash = createHash("sha256");
@@ -158,45 +160,226 @@ class FolderFiles implements ArtifactSnapshot {
   }
 }
 
-function folderHasArtifact(root: string): boolean {
-  return fs.existsSync(path.join(root, ACTIVE_DIRECTORY, "manifest.json"));
-}
-
 /** Artifact files stored in a directory outside any worktree, such as a
  * remote review's projection; Git commands run in root. */
 export function readArtifactDirectory(root: string, directory: string): ArtifactSnapshot | undefined {
   return fs.existsSync(path.join(directory, "manifest.json")) ? new FolderFiles(root, directory) : undefined;
 }
 
-/** The active artifact of the worktree at root, or undefined when it has none. */
-export function readArtifact(root: string): ArtifactSnapshot | undefined {
-  return folderHasArtifact(root) ? new FolderFiles(root) : undefined;
+// --- Active artifacts ---------------------------------------------------------
+
+/** The namespace of the refs holding active artifacts, one per implementation. */
+export const ACTIVE_REF_PREFIX = "refs/semantic-review/active/";
+/** Where earlier versions kept the active artifact, relative to a worktree root. */
+const LEGACY_DIRECTORY = ".semantic-review";
+/** The file in a worktree's Git directory naming the implementation last
+ * initialized or begun there; it settles which of several is meant. */
+const WORKTREE_SELECTION = "semantic-review-implementation";
+/** The fixed identity of artifact snapshot commits, so writing one needs no user configuration. */
+const SNAPSHOT_IDENTITY = {
+  GIT_AUTHOR_NAME: "Semantic Flow",
+  GIT_AUTHOR_EMAIL: "semantic-flow@localhost",
+  GIT_COMMITTER_NAME: "Semantic Flow",
+  GIT_COMMITTER_EMAIL: "semantic-flow@localhost",
+};
+
+export const activeRef = (implementationId: string) => `${ACTIVE_REF_PREFIX}${implementationId}`;
+
+/** While an implementation is archived, its snapshot moves from the active ref
+ * to this claim, which keeps it reachable until the archive commit exists. */
+export const ARCHIVING_REF_PREFIX = "refs/semantic-review/archiving/";
+export const archivingRef = (implementationId: string) => `${ARCHIVING_REF_PREFIX}${implementationId}`;
+
+/** Explains how to recover implementations whose archiving was interrupted. */
+export function interruptedArchiveNote(root: string): string {
+  const claims = git(["for-each-ref", "--format=%(objectname) %(refname) %(symref)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
+  return (claims ?? "").split(/\r?\n/).filter(Boolean).map((line) => {
+    const [snapshot, claim, symref = ""] = line.split(" ");
+    const id = claim.slice(ARCHIVING_REF_PREFIX.length);
+    // Only a plain claim whose ID can name an implementation is put into a shell command.
+    if (symref !== "" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[0-9a-f]{40,64}$/.test(snapshot)) {
+      return ` The archiving claim ${JSON.stringify(claim)} is left from an interrupted archive.`;
+    }
+    // One transaction moves the snapshot back, and only while nothing else took the ID.
+    const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --no-deref --stdin`;
+    const finish = `git update-ref --no-deref -d ${claim} ${snapshot}`;
+    return ` Archiving ${id} was interrupted. If its archive commit exists and holds the whole artifact, finish with \`${finish}\`. Otherwise revert any commit that holds part of the archive, unstage and remove the archive files left behind (git status lists them), then make it active again with \`${restore}\`.`;
+  }).join("");
 }
 
-/** The active artifact of the worktree at root; fails when it has none. */
-export function requireArtifact(root: string): ArtifactSnapshot {
-  const snapshot = readArtifact(root);
-  if (!snapshot) fail(`No semantic implementation manifest exists at ${path.join(root, ACTIVE_DIRECTORY, "manifest.json")}.`);
-  return snapshot;
+/** An active implementation, as its ref names it. */
+export interface ActiveImplementation {
+  implementationId: string;
+  ref: string;
+  /** The snapshot commit the ref points at. */
+  commit: string;
+  /** The stage heads earlier snapshots recorded and later ones replaced. */
+  supersededHeads: string[];
 }
 
-/** Whether the worktree holds artifact files that do not form an artifact. */
-export function hasIncompleteArtifact(root: string): boolean {
-  const directory = path.join(root, ACTIVE_DIRECTORY);
-  return !folderHasArtifact(root) && fs.existsSync(directory) && fs.readdirSync(directory).length > 0;
+/** Every active implementation of the repository of root, read with one Git process. */
+export function listActiveImplementations(root: string): ActiveImplementation[] {
+  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ACTIVE_REF_PREFIX], { cwd: root });
+  return output.split(/\r?\n/).filter(Boolean).map((line) => {
+    const [commit, ref, parents = ""] = line.split("\t");
+    return { implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) };
+  }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
 }
 
-/** Where messages say the active artifact of root is stored. */
-export function describeArtifact(root: string): string {
-  return path.join(root, ACTIVE_DIRECTORY);
+/** Names the implementation a process acts on once a command selected it.
+ * Worker threads and child processes, such as the viewer and the commands it
+ * runs, inherit the selection with the environment. */
+const SELECTION_VARIABLE = "SEMANTIC_FLOW_IMPLEMENTATION_ID";
+
+/** Makes later reads of this process and its children act on the
+ * implementation, or select one again when undefined. */
+export function selectImplementation(implementationId: string | undefined): void {
+  if (implementationId === undefined) delete process.env[SELECTION_VARIABLE];
+  else process.env[SELECTION_VARIABLE] = implementationId;
 }
 
-/** The nearest directory from start upwards whose worktree has an active artifact. */
-export function locateArtifactRoot(start: string): string | undefined {
-  for (let directory = start; ; directory = path.dirname(directory)) {
-    if (folderHasArtifact(directory)) return directory;
-    if (path.dirname(directory) === directory) return undefined;
+const selectedImplementation = (): string | undefined => process.env[SELECTION_VARIABLE] || undefined;
+
+function worktreeSelectionFile(root: string): string {
+  return path.resolve(root, gitRaw(["rev-parse", "--git-path", WORKTREE_SELECTION], { cwd: root }));
+}
+
+/** Records that the worktree at root works on the implementation. */
+export function rememberImplementation(root: string, implementationId: string): void {
+  try {
+    fs.writeFileSync(worktreeSelectionFile(root), `${implementationId}\n`);
+  } catch { /* The record only settles ambiguity; without it, a command asks which implementation is meant. */ }
+}
+
+function rememberedImplementation(root: string): string | undefined {
+  try {
+    return fs.readFileSync(worktreeSelectionFile(root), "utf8").trim() || undefined;
+  } catch {
+    return undefined;
   }
+}
+
+/** Whether ref is one of the stage branches or the metadata branch named by a branch prefix. */
+function ownsBranch(prefix: string, ref: string): boolean {
+  const start = `refs/heads/${prefix}/`;
+  if (!ref.startsWith(start)) return false;
+  const rest = ref.slice(start.length);
+  return rest === "metadata" || /^stages\/[^/]+$/.test(rest);
+}
+
+/** The active implementation the worktree at root has claimed: the one whose
+ * branch is checked out there, or else the one last initialized or begun there. */
+export function claimedImplementation(root: string, actives: ActiveImplementation[]): ActiveImplementation | undefined {
+  if (actives.length === 0) return undefined;
+  const head = git(["symbolic-ref", "--quiet", "HEAD"], { cwd: root, allowFailure: true });
+  if (head) {
+    let manifests = new Map<string, Buffer>();
+    try {
+      manifests = readBlobs(defaultRunner(root), actives.map((active) => `${active.commit}:manifest.json`));
+    } catch { /* A snapshot without a readable manifest owns no branch. */ }
+    // An implementation owns its stage and metadata branches; when several
+    // prefixes still name the branch, the longest one owns it.
+    let owner: ActiveImplementation | undefined;
+    let ownerPrefix = "";
+    for (const active of actives) {
+      let manifest: unknown;
+      try {
+        manifest = parseJsonDocument(manifests.get(`${active.commit}:manifest.json`)?.toString("utf8") ?? "", "manifest.json");
+      } catch {
+        continue;
+      }
+      const prefix = isRecord(manifest) ? manifest.branchPrefix : undefined;
+      if (typeof prefix === "string" && ownsBranch(prefix, head) && prefix.length > ownerPrefix.length) {
+        owner = active;
+        ownerPrefix = prefix;
+      }
+    }
+    if (owner) return owner;
+  }
+  const remembered = rememberedImplementation(root);
+  return actives.find((active) => active.implementationId === remembered);
+}
+
+/** The active implementation the worktree at root has claimed, if any; see claimedImplementation. */
+export function worktreeImplementation(root: string): ActiveImplementation | undefined {
+  return claimedImplementation(root, listActiveImplementations(root));
+}
+
+/** The active implementation a worktree works on: the selected one, the only
+ * one, or the one the worktree has claimed. */
+function chooseActive(root: string, actives: ActiveImplementation[], implementationId: string | undefined): ActiveImplementation | undefined {
+  if (implementationId !== undefined) return actives.find((active) => active.implementationId === implementationId);
+  if (actives.length <= 1) return actives[0];
+  const claimed = claimedImplementation(root, actives);
+  if (claimed) return claimed;
+  fail(`Several semantic implementations are active in this repository: ${actives.map((active) => active.implementationId).join(", ")}. Run the command in the worktree of the one you mean, with one of its stage branches checked out.`);
+}
+
+/** Fails when root holds an untracked artifact folder from an earlier version. */
+export function assertNoLegacyArtifact(root: string): void {
+  const manifest = path.join(root, LEGACY_DIRECTORY, "manifest.json");
+  if (!fs.existsSync(manifest)) return;
+  // A checkout of a metadata branch or an archive tracks its artifact files.
+  const tracked = git(["ls-files", "--", `${LEGACY_DIRECTORY}/manifest.json`], { cwd: root, allowFailure: true });
+  if (tracked) return;
+  fail(`${path.join(root, LEGACY_DIRECTORY)} holds a semantic implementation written by an earlier Semantic Flow version. Implementations are now stored in Git, and an earlier one cannot be continued across this change: finish it with the earlier version, or remove ${LEGACY_DIRECTORY}/ and start again.${interruptedArchiveNote(root)}`);
+}
+
+const snapshotTrees = new Map<string, TreeFiles>();
+
+/** The active artifact of an implementation, pinned to one snapshot commit.
+ * The files are listed and read from Git only when first used. */
+class RefSnapshot implements ArtifactSnapshot {
+  #files: TreeFiles | undefined;
+
+  constructor(readonly root: string, readonly active: ActiveImplementation, readonly run: GitRunner = defaultRunner(root)) {}
+
+  get implementationId(): string { return this.active.implementationId; }
+  get version(): string { return this.active.commit; }
+
+  get files(): TreeFiles {
+    if (!this.#files) {
+      // Snapshot commits never change, so one process lists and reads each once.
+      const key = `${this.root}\0${this.active.commit}`;
+      let files = snapshotTrees.get(key);
+      if (!files) {
+        files = treeFiles(this.run, this.active.commit, "", this.active.ref)
+          ?? fail(`Cannot read the snapshot ${this.active.commit} of ${this.active.ref}.`);
+        snapshotTrees.set(key, files);
+        // A long-running viewer sees many snapshots; keep only the recent ones.
+        for (const old of snapshotTrees.keys()) {
+          if (snapshotTrees.size <= 8) break;
+          snapshotTrees.delete(old);
+        }
+      }
+      this.#files = files;
+    }
+    return this.#files;
+  }
+
+  list(directory?: string): string[] { return this.files.list(directory); }
+  type(file: string): ArtifactEntryType | undefined { return this.files.type(file); }
+  size(file: string): number { return this.files.size(file); }
+  read(file: string): Buffer { return this.files.read(file); }
+  describe(file: string): string { return this.files.describe(file); }
+  objectId(file: string): string | undefined { return this.files.objectId(file); }
+}
+
+/** The active artifact the worktree at root works on, or undefined when it has none. */
+export function readArtifact(root: string, implementationId = selectedImplementation()): ArtifactSnapshot | undefined {
+  const active = chooseActive(root, listActiveImplementations(root), implementationId);
+  if (active) return new RefSnapshot(root, active);
+  assertNoLegacyArtifact(root);
+  return undefined;
+}
+
+/** The active artifact the worktree at root works on; fails when it has none. */
+export function requireArtifact(root: string, implementationId = selectedImplementation()): ArtifactSnapshot {
+  const snapshot = readArtifact(root, implementationId);
+  if (snapshot) return snapshot;
+  fail((implementationId === undefined
+    ? "No active semantic implementation exists in this repository."
+    : `No active semantic implementation has implementation ID ${implementationId}.`) + interruptedArchiveNote(root));
 }
 
 // --- Drafts and commits -----------------------------------------------------
@@ -268,96 +451,104 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
+    // An update that keeps a ref's value only verifies it.
     ...updates.map(({ ref, next, previous }) =>
-      next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
+      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
     "prepare",
     "commit",
     "",
   ].join("\n");
-  gitRaw(["update-ref", "--stdin"], { cwd: root, input: commands });
+  gitRaw(["update-ref", "--create-reflog", "-m", "semantic-flow", "--stdin"], { cwd: root, input: commands });
 }
 
-const reversed = (updates: readonly RefUpdate[]): RefUpdate[] =>
-  updates.map(({ ref, next, previous }) => ({ ref, next: previous, previous: next }));
-
-function assertUnchanged(root: string, base: ArtifactSnapshot | undefined): void {
-  const current = readArtifact(root);
-  if ((current?.version ?? null) !== (base?.version ?? null)) {
-    fail(base
-      ? "The semantic implementation changed while this command ran; retry it."
-      : `A semantic implementation already exists at ${describeArtifact(root)}.`);
-  }
-}
-
-function writeFileAtomically(file: string, bytes: Buffer): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
+/** The stage heads a stored manifest records, read leniently. */
+function recordedHeads(files: ArtifactFiles | undefined): string[] {
+  if (!files || files.type("manifest.json") !== "file") return [];
+  let manifest: unknown;
   try {
-    fs.writeFileSync(temporary, bytes);
-    fs.renameSync(temporary, file);
+    manifest = readArtifactJson(files, "manifest.json");
+  } catch {
+    return [];
+  }
+  const stages = isRecord(manifest) && Array.isArray(manifest.stages) ? manifest.stages : [];
+  return stages.flatMap((stage) =>
+    isRecord(stage) && typeof stage.headRevision === "string" && /^[0-9a-f]{40,64}$/.test(stage.headRevision) ? [stage.headRevision] : []);
+}
+
+/** The superseded heads of the next snapshot: those the base carried, and
+ * those the base recorded that the draft no longer does. Keeping them as the
+ * snapshot's parents keeps earlier stage heads reachable, so feedback anchored
+ * to them survives garbage collection. */
+function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft): string[] {
+  const current = new Set(recordedHeads(draft));
+  const heads = [...(base?.active.supersededHeads ?? []), ...recordedHeads(base)];
+  return [...new Set(heads)].filter((head) => !current.has(head));
+}
+
+/** Writes the draft's files as one tree and returns it. Unchanged files keep
+ * their blobs; new bytes are stored unchanged by any filter or line-ending setting. */
+function writeDraftTree(root: string, draft: ArtifactDraft): string {
+  const listed = draft.list();
+  for (const file of listed) if (draft.type(file) !== "file") fail(`${draft.describe(file)} is not a regular file.`);
+  const oids = writeBlobs(root, draft, listed);
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-artifact-"));
+  try {
+    const env = { GIT_INDEX_FILE: path.join(scratch, "index") };
+    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${file}\0`).join("");
+    gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
+    return gitRaw(["write-tree"], { cwd: root, env });
   } finally {
-    fs.rmSync(temporary, { force: true });
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
-/** Removes the directories a removal emptied, up to the artifact's root. */
-function removeEmptyDirectories(directory: string, file: string): void {
-  for (let parent = path.dirname(file); parent.startsWith(`${directory}${path.sep}`); parent = path.dirname(parent)) {
-    try {
-      fs.rmdirSync(parent);
-    } catch (error) {
-      if (["ENOTEMPTY", "EEXIST", "ENOENT", "EPERM", "EBUSY"].includes(errorCode(error) ?? "")) return;
-      throw error;
-    }
+const CHANGED = "The semantic implementation changed while this command ran; retry it.";
+
+/** Runs a ref transaction that includes the artifact's ref. When it fails
+ * because another writer moved that ref first, says so. */
+function moveArtifactRef(root: string, implementationId: string, previous: string, updates: RefUpdate[]): void {
+  try {
+    updateRefs(root, updates);
+  } catch (error) {
+    const current = listActiveImplementations(root).find((active) => active.implementationId === implementationId)?.commit ?? ZERO_OID;
+    if (current === previous) throw error;
+    fail(previous === ZERO_OID ? `A semantic implementation with implementation ID ${implementationId} already exists.` : CHANGED);
   }
 }
 
-/** Writes a draft as the new artifact of root, together with the ref updates.
- * Fails without changing anything when the artifact changed since base was read. */
+/** Commits a draft as the new snapshot of its implementation and moves the
+ * implementation's ref to it together with the other ref updates, in one
+ * transaction. Fails without changing anything when the artifact changed since
+ * base was read; without base, when the implementation already exists. */
 export function commitArtifact(
   root: string,
   base: ArtifactSnapshot | undefined,
   draft: ArtifactDraft,
   refUpdates: readonly RefUpdate[] = [],
-): void {
-  assertUnchanged(root, base);
-  const folder = new FolderFiles(root);
-  // Only what this write changes is restored on failure; a path it never
-  // reached, or an entry that is not a regular file, is left as it was.
-  const restores: Array<() => void> = [];
-  updateRefs(root, refUpdates);
-  try {
-    // Entries that are not regular files cannot be restored, so they are
-    // removed last, once every other change succeeded.
-    const changes = [...draft.changes].sort(([left], [right]) => Number(folder.type(left) === "other") - Number(folder.type(right) === "other"));
-    for (const [file, bytes] of changes) {
-      const absolute = folder.absolute(file);
-      const type = folder.type(file);
-      if (type === "other" && bytes) fail(`${absolute} is not a regular file.`);
-      const previous = type === "file" ? folder.read(file) : undefined;
-      if (type === undefined && !bytes) continue;
-      // The restore is recorded before the change, so a change that fails
-      // halfway, such as a removal whose directory cleanup fails, is undone too.
-      if (type !== "other") restores.push(previous ? () => writeFileAtomically(absolute, previous) : () => fs.rmSync(absolute, { force: true }));
-      if (bytes) writeFileAtomically(absolute, bytes);
-      else {
-        fs.rmSync(absolute, { force: true });
-        removeEmptyDirectories(folder.directory, absolute);
-      }
-    }
-  } catch (error) {
-    try { updateRefs(root, reversed(refUpdates)); } catch { /* The write's own error says more. */ }
-    for (const restore of restores.reverse()) {
-      try { restore(); } catch { /* Restore what can be restored. */ }
-    }
-    throw error;
+): string {
+  if (base !== undefined && !(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be committed.");
+  const implementationId = activeImplementationId(root, draft);
+  if (base && base.implementationId !== implementationId) fail("A command may not change the implementation ID.");
+  const tree = writeDraftTree(root, draft);
+  const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
+  const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
+  const previous = base?.version ?? ZERO_OID;
+  // A new implementation may not take the ID of one whose archiving was interrupted.
+  const claim = archivingRef(implementationId);
+  if (!base && git(["rev-parse", "--verify", "--quiet", claim], { cwd: root, allowFailure: true })) {
+    fail(`An implementation with implementation ID ${implementationId} is being archived.${interruptedArchiveNote(root)}`);
   }
+  const unclaimed = base ? [] : [{ ref: claim, next: ZERO_OID, previous: ZERO_OID }];
+  // The artifact's ref goes last, so no other update can fail after it moved.
+  moveArtifactRef(root, implementationId, previous, [...refUpdates, ...unclaimed, { ref: activeRef(implementationId), next: commit, previous }]);
+  return commit;
 }
 
-/** Removes the active artifact of root, unless it changed since base was read. */
-export function removeArtifact(root: string, base: ArtifactSnapshot): void {
-  assertUnchanged(root, base);
-  fs.rmSync(path.join(root, ACTIVE_DIRECTORY), { recursive: true, force: true });
+/** Removes the active artifact read as base, together with the other ref
+ * updates, unless it changed since. */
+export function removeArtifact(root: string, base: ArtifactSnapshot, refUpdates: readonly RefUpdate[] = []): void {
+  if (!(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be removed.");
+  moveArtifactRef(root, base.implementationId, base.version, [...refUpdates, { ref: base.active.ref, next: ZERO_OID, previous: base.version }]);
 }
 
 /** Writes every file of an artifact below a directory, byte for byte, and
@@ -410,6 +601,17 @@ export function exportArtifactFiles(files: ArtifactFiles, destination: string): 
 /** A thrown value's message; describing it never throws. */
 function describeFailure(failure: unknown): string {
   try { return errorMessage(failure); } catch { return "an unprintable error"; }
+}
+
+function writeFileAtomically(file: string, bytes: Buffer): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, bytes);
+    fs.renameSync(temporary, file);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
 }
 
 /** Replaces the files of an artifact directory, such as a remote review's
@@ -549,6 +751,10 @@ class TreeFiles implements ArtifactFiles {
 
 /** The files below a directory of a Git tree, or undefined when the tree has no such directory. */
 export function readTreeFiles(run: GitRunner, treeish: string, directory: string, label = `${treeish}:${directory}`): ArtifactFiles | undefined {
+  return treeFiles(run, treeish, directory, label);
+}
+
+function treeFiles(run: GitRunner, treeish: string, directory: string, label: string): TreeFiles | undefined {
   let output: Buffer;
   try {
     output = run(["ls-tree", "-r", "-z", "-l", "--full-tree", `${treeish}:${directory}`]);
@@ -571,18 +777,31 @@ export function readPublishedArtifact(root: string, commit: string, run: GitRunn
   return readTreeFiles(run, commit, PUBLISHED_DIRECTORY);
 }
 
+/** The blob a file is already stored as, when it was read from Git unchanged. */
+function storedObjectId(files: ArtifactFiles | undefined, file: string): string | undefined {
+  if (files instanceof ArtifactDraft) return files.changes.has(file) ? undefined : storedObjectId(files.base, file);
+  return files instanceof TreeFiles || files instanceof RefSnapshot ? files.objectId(file) : undefined;
+}
+
 /** Stores the files as blobs, unchanged by any filter or line-ending setting. */
 function writeBlobs(root: string, files: ArtifactFiles, paths: readonly string[]): Map<string, string> {
   const oids = new Map<string, string>();
   const pending: string[] = [];
   for (const file of paths) {
-    const known = files instanceof TreeFiles ? files.objectId(file) : undefined;
+    const known = storedObjectId(files, file);
     if (known) oids.set(file, known);
     else pending.push(file);
   }
   if (pending.length === 0) return oids;
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-artifact-"));
   try {
+    if (/[\r\n]/.test(scratch)) {
+      // Git reads one path per line, so without a usable scratch path each blob goes through stdin.
+      for (const file of pending) {
+        oids.set(file, gitRaw(["hash-object", "-w", "--no-filters", "--stdin"], { cwd: root, input: files.read(file) }));
+      }
+      return oids;
+    }
     const sources = pending.map((file, index) => {
       // Git reads one path per line, so a path with a line break is copied first.
       if (files instanceof FolderFiles && !/[\r\n]/.test(files.absolute(file))) return files.absolute(file);
@@ -623,6 +842,8 @@ export function buildArtifactTree(root: string, files: ArtifactFiles, parent: st
  * read; commands that use the artifact validate it. */
 export function activeImplementationId(root: string, snapshot: ArtifactFiles | undefined = readArtifact(root)): string {
   if (!snapshot) fail("No active semantic implementation exists.");
+  // An active artifact's ref names its implementation.
+  if (snapshot instanceof RefSnapshot) return snapshot.implementationId;
   const manifest = readArtifactJson(snapshot, "manifest.json");
   const implementationId = isRecord(manifest) ? manifest.implementationId : undefined;
   if (typeof implementationId !== "string") fail("The active semantic implementation manifest has no implementation ID.");

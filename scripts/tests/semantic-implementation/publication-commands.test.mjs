@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   beginStage,
@@ -125,12 +127,31 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     "../outside/.semantic-review",
   );
 
+  // An archive whose commit fails leaves the implementation active and nothing behind.
+  const active = "refs/semantic-review/active/publish-implementation";
+  const snapshot = repository.git("rev-parse", active);
+  const hook = path.join(repository.git("rev-parse", "--path-format=absolute", "--git-path", "hooks"), "pre-commit");
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  repository.expectSemanticFailure(/./, "archive", "--destination", ".semantic-review-history/publish-implementation/.semantic-review");
+  fs.rmSync(hook);
+  assert.equal(repository.git("rev-parse", active), snapshot);
+  assert.equal(repository.git("for-each-ref", "refs/semantic-review/archiving/"), "");
+  assert.equal(fs.existsSync(path.join(repository.root, ".semantic-review-history")), false);
+  assert.equal(repository.git("status", "--porcelain"), "");
+
   repository.semantic(
     "archive",
     "--destination",
     ".semantic-review-history/publish-implementation/.semantic-review",
     "--message",
     "Archive test implementation",
+  );
+  assert.equal(repository.git("for-each-ref", "refs/semantic-review/active/", "refs/semantic-review/archiving/"), "");
+  // The archive holds exactly the published bytes.
+  assert.equal(
+    repository.git("rev-parse", "HEAD:.semantic-review-history/publish-implementation/.semantic-review"),
+    repository.git("rev-parse", `${metadataBranch}:.semantic-review`),
   );
   assert.equal(repository.artifact.present(), false);
   const archived = (file) => repository.readJson(`.semantic-review-history/publish-implementation/.semantic-review/${file}`);

@@ -22,9 +22,9 @@ Read `../docs/runtime.md`, `../docs/artifact-quality.md`,
 5. Require the final stage branch to be checked out at its recorded head before
    the uncommitted edits. Every other stage branch and the target branch must
    still match the artifact.
-6. Require application edits to reconcile. Reject edits to
-   `.semantic-review/`; the artifact and user-local feedback may only be
-   changed through their bundled CLIs. Feedback is outside the repository.
+6. Require application edits to reconcile. The artifact and user-local
+   feedback are stored outside the worktree and may only be changed through
+   their bundled CLIs.
 7. Inspect staged, unstaged, deleted, renamed, and untracked files. If some
    edits are unrelated to the requested reconciliation, stop and ask the user
    which edits belong to it. Do not capture unrelated work.

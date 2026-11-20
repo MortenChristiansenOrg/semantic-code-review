@@ -95,24 +95,6 @@ test("full validation detects damaged, missing and stray evidence files", t => {
   assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file evidence\/loose\.png/);
 });
 
-test("a symlinked evidence directory is refused and nothing outside the artifact is touched", { skip: process.platform === "win32" }, t => {
-  const repo = working(t);
-  record(repo, "--file", capture(t, "shot.png"));
-  // The active artifact is a folder here; a symbolic link in it must not lead writes outside it.
-  const id = workStage(repo).id, directory = path.join(repo.root, ".semantic-review", "evidence", id);
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-outside-"));
-  t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
-  for (const name of fs.readdirSync(directory)) fs.renameSync(path.join(directory, name), path.join(outside, name));
-  fs.writeFileSync(path.join(outside, "unrelated.txt"), "keep me");
-  fs.rmdirSync(directory);
-  fs.symlinkSync(outside, directory);
-  assert.throws(() => repo.semantic("validate"), /must be a real directory/);
-  assert.throws(() => repo.semantic("stage", "evidence-remove", "--item-id", "shot"), /real directory/);
-  assert.throws(() => record(repo, "--file", capture(t, "other.png", Buffer.from("x")), "--replace"), /real directory/);
-  assert.equal(fs.readFileSync(path.join(outside, "unrelated.txt"), "utf8"), "keep me");
-  assert.equal(fs.readdirSync(outside).length, 2);
-});
-
 test("a capture damaged by a crash is rewritten, and a lost one can be removed", t => {
   const repo = working(t);
   const source = capture(t, "shot.png");

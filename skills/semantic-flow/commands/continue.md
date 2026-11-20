@@ -57,8 +57,6 @@ or intended behavior needs clarification.
 - If the request is specifically to bring the latest target changes into the
   stack, follow `sync.md` instead. For any restack conflict, follow
   `../docs/restack-conflicts.md`.
-- Use `repair` only for the unambiguous interrupted artifact writes supported
-  by the CLI. Do not use it to conceal missing or inconsistent data.
 
 Follow the stage procedure and quality rules in `implement.md` for all resumed
 work. Stop when the implementation is ready for `/semantic-flow review`.

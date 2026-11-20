@@ -62,15 +62,18 @@ import {
   ArtifactDraft,
   buildArtifactTree,
   commitArtifact,
-  describeArtifact,
   exportArtifactFiles,
   hasFile,
-  hasIncompleteArtifact,
+  interruptedArchiveNote,
   listJsonIds,
   readArtifact,
+  activeRef,
+  archivingRef,
+  rememberImplementation,
   removeArtifact,
   requireArtifact,
   updateRefs,
+  worktreeImplementation,
   ZERO_OID,
   type ArtifactFiles,
   type ArtifactSnapshot,
@@ -829,28 +832,6 @@ export function validateImplementation(root: string): ImplementationValidation {
   });
 }
 
-function ensureArtifactExcluded(root: string): void {
-  const exclude = git(["rev-parse", "--git-path", "info/exclude"], {
-    cwd: root,
-  });
-  const resolvedExclude = path.isAbsolute(exclude)
-    ? exclude
-    : path.resolve(root, exclude);
-  fs.mkdirSync(path.dirname(resolvedExclude), { recursive: true });
-  const existing = fs.existsSync(resolvedExclude)
-    ? fs.readFileSync(resolvedExclude, "utf8")
-    : "";
-  const lines = existing.split(/\r?\n/);
-  if (!lines.includes(".semantic-review/")) {
-    const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
-    fs.appendFileSync(
-      resolvedExclude,
-      `${prefix}.semantic-review/\n`,
-      "utf8",
-    );
-  }
-}
-
 /** A specification built from command options; it is validated before use. */
 function specificationFromOptions(options: Options): Specification {
   const criteria = repeatedOption(options, "criterion").map((value) => {
@@ -876,19 +857,17 @@ function specificationFromOptions(options: Options): Specification {
 
 function initialize(root: string, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "init"));
-  const existing = readArtifact(root);
-  if (existing) {
-    fail(`A semantic implementation already exists at ${existing.describe("manifest.json")}.`);
+  const claimed = worktreeImplementation(root);
+  if (claimed) {
+    fail(`A semantic implementation already exists in this worktree: ${claimed.implementationId}. Start new work in another worktree.`);
   }
-  if (hasIncompleteArtifact(root)) {
-    fail(
-      `${describeArtifact(root)} already contains files but has no manifest. Inspect or remove it before initialization.`,
-    );
+  const implementationId = option(options, "implementation-id", { required: true });
+  if (readArtifact(root, implementationId)) {
+    fail(`A semantic implementation with implementation ID ${implementationId} already exists.`);
   }
   assertCleanWorkingTree(root, "Initialization");
 
   const specificationInput = specificationFromOptions(options);
-  const implementationId = option(options, "implementation-id", { required: true });
   const targetBranch = option(options, "target-branch", { required: true });
   git(["check-ref-format", "--branch", targetBranch], { cwd: root });
   const targetHead = branchCommit(root, targetBranch);
@@ -928,8 +907,8 @@ function initialize(root: string, options: Options): void {
   draft.writeJson(`requirements/${specification.id}.json`, specification);
   writeManifest(draft, { manifest, stages: new Map() });
   validateArtifact({ root }, { quiet: true }, draft);
-  ensureArtifactExcluded(root);
   commitArtifact(root, undefined, draft);
+  rememberImplementation(root, implementationId);
   console.log(`Initialized semantic implementation ${manifest.implementationId}.`);
 }
 
@@ -1019,19 +998,24 @@ function beginStage(workspace: Workspace, options: Options): void {
   const draft = new ArtifactDraft(workspace.snapshot);
   writeStage(draft, stage);
   validateArtifact(workspace, { quiet: true }, draft);
-  const originalBranch = currentBranch(workspace.root);
-  git(["switch", "-c", branch, parent], { cwd: workspace.root });
+  // The stage branch is created together with the artifact's new snapshot.
+  const branchRef = `refs/heads/${branch}`;
+  const snapshot = commitArtifact(workspace.root, workspace.snapshot, draft, [{ ref: branchRef, next: parent, previous: ZERO_OID }]);
   try {
-    commitArtifact(workspace.root, workspace.snapshot, draft);
+    git(["switch", branch], { cwd: workspace.root });
   } catch (error) {
-    if (originalBranch) {
-      git(["switch", originalBranch], { cwd: workspace.root });
-    } else {
-      git(["switch", "--detach", parent], { cwd: workspace.root });
+    // A failing post-checkout hook fails the switch after it took effect; the stage was then begun.
+    if (gitOptional(["symbolic-ref", "--quiet", "HEAD"], { cwd: workspace.root }) !== branchRef) {
+      // Without the switch the stage was never begun: take back the branch and the snapshot.
+      updateRefs(workspace.root, [
+        { ref: branchRef, next: ZERO_OID, previous: parent },
+        { ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: snapshot },
+      ]);
+      throw error;
     }
-    git(["branch", "-D", branch], { cwd: workspace.root });
-    throw error;
+    console.error(`semantic-implementation: the switch to ${branch} succeeded but reported: ${errorMessage(error)}`);
   }
+  rememberImplementation(workspace.root, artifact.manifest.implementationId);
   if (flag(options, "json")) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch, baseRevision: parent, headRevision: parent, next: "implement" }));
   else console.log(`Began working stage ${id} on ${branch}.`);
 }
@@ -1055,7 +1039,7 @@ function selectedWorkingStageId(artifact: Artifact, requested: string | undefine
   }
   if (artifact.workStages.size > 1) {
     fail(
-      `More than one working stage exists; repair the artifact before using --${optionName} current.`,
+      `More than one working stage exists; specify --${optionName} explicitly.`,
     );
   }
   const [id] = artifact.workStages.keys();
@@ -1848,22 +1832,16 @@ function discardStage(workspace: Workspace, options: Options): void {
   draft.remove(`evidence/${id}`);
   validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
   const wasCurrent = removeBranch && currentBranch(workspace.root) === branch;
-  if (wasCurrent) {
-    git(["switch", "--detach", creationParent], { cwd: workspace.root });
-  }
-  let branchRemoved = false;
+  if (wasCurrent) git(["switch", "--detach", creationParent], { cwd: workspace.root });
   try {
-    if (removeBranch) {
-      git(["branch", "-D", branch], { cwd: workspace.root });
-      branchRemoved = true;
-      branchNote = ` Removed unchanged branch ${branch}.`;
-    }
-    commitArtifact(workspace.root, workspace.snapshot, draft);
+    // The unchanged stage branch is deleted together with the artifact's new snapshot.
+    commitArtifact(workspace.root, workspace.snapshot, draft,
+      removeBranch ? [{ ref: `refs/heads/${branch}`, next: ZERO_OID, previous: creationParent }] : []);
   } catch (error) {
-    if (branchRemoved) git(["branch", branch, creationParent], { cwd: workspace.root, allowFailure: true });
     if (wasCurrent) git(["switch", branch], { cwd: workspace.root, allowFailure: true });
     throw error;
   }
+  if (removeBranch) branchNote = ` Removed unchanged branch ${branch}.`;
   console.log(`Discarded working stage ${id}.${branchNote}`);
 }
 
@@ -2231,61 +2209,6 @@ function restackStages(
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
-}
-
-function repairArtifact(workspace: Workspace, options: Options): void {
-  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "repair"));
-  const files = workspace.snapshot;
-  const manifest = loadManifest(files);
-  const removals: string[] = [];
-  const ambiguous: string[] = [];
-
-  for (const id of listJsonIds(files, "requirements")) {
-    if (!manifest.requirements.includes(id)) {
-      removals.push(`requirements/${id}.json`);
-    }
-  }
-
-  for (const id of listJsonIds(files, "stages")) {
-    if (!manifest.stages.includes(id)) {
-      if (hasFile(files, `.work/stages/${id}.json`)) {
-        removals.push(`stages/${id}.json`);
-      } else {
-        ambiguous.push(`stages/${id}.json`);
-      }
-    }
-  }
-
-  for (const id of manifest.stages) {
-    if (!hasFile(files, `stages/${id}.json`)) {
-      ambiguous.push(`stages/${id}.json`);
-    } else if (hasFile(files, `.work/stages/${id}.json`)) {
-      removals.push(`.work/stages/${id}.json`);
-    }
-  }
-
-  for (const id of manifest.requirements) {
-    if (!hasFile(files, `requirements/${id}.json`)) {
-      ambiguous.push(`requirements/${id}.json`);
-    }
-  }
-
-  if (ambiguous.length > 0) {
-    fail(
-      `Repair is ambiguous for: ${ambiguous.join(", ")}. Restore these files from source control or the interrupted process before retrying.`,
-    );
-  }
-  if (removals.length === 0) {
-    validateArtifact(workspace, { quiet: true, validateGit: false });
-    console.log("No interrupted artifact mutation was found.");
-    return;
-  }
-
-  const draft = new ArtifactDraft(files);
-  for (const file of removals) draft.remove(file);
-  validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
-  commitArtifact(workspace.root, files, draft);
-  console.log(`Repaired ${removals.length} interrupted artifact write(s).`);
 }
 
 function changedPathNames(root: string, from: string, to: string): string[] {
@@ -2754,20 +2677,46 @@ function archiveImplementation(
   ) {
     fail("Archive destination must end in .semantic-review inside the repository.");
   }
-  if (fs.existsSync(destination)) {
+  const realDestination = resolvedPath(destination), realRoot = resolvedPath(workspace.root);
+  if (!realDestination.startsWith(`${realRoot}${path.sep}`)) {
+    fail("Archive destination must not lead outside the repository through a link.");
+  }
+  const relativeDestination = formatPath(path.relative(workspace.root, destination));
+  // A sparse checkout can hide a destination that the target branch tracks.
+  if (fs.existsSync(destination) || gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}`], { cwd: workspace.root }) !== undefined) {
     fail(`Archive destination already exists: ${destinationOption}.`);
   }
 
   const message = option(options, "message")
     ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
-  const currentHead = gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root });
+  const implementationId = artifact.manifest.implementationId;
+  const claim = archivingRef(implementationId);
+  const version = workspace.snapshot.version;
+  const startHead = git(["rev-parse", "HEAD"], { cwd: workspace.root });
+  const archiveFiles = fullFormFiles(artifact, workspace.snapshot);
+  // The archive is built like a publication, from blobs no filter changed, so
+  // its bytes, paths and modes are known as one tree before anything is written.
+  const archiveTree = buildArtifactTree(workspace.root, archiveFiles, startHead, relativeDestination);
+  const expectedArchive = git(["rev-parse", `${archiveTree}:${relativeDestination}`], { cwd: workspace.root });
+  // Only a new commit on top of the starting one that holds exactly that tree
+  // proves the archive exists; the destination was absent before.
+  const archived = () => {
+    // One resolution of HEAD, so both checks see the same commit.
+    const head = gitOptional(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: workspace.root });
+    return head !== undefined && head !== "" &&
+      gitOptional(["rev-parse", `${head}^`], { cwd: workspace.root }) === startHead &&
+      gitOptional(["rev-parse", `${head}:${relativeDestination}`], { cwd: workspace.root }) === expectedArchive;
+  };
   let removeWritten = () => {};
+  // Moving the snapshot from the active ref to an archiving claim first makes a
+  // concurrent writer fail instead of changing an artifact that is being
+  // archived, and keeps the snapshot reachable if archiving is interrupted.
+  removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
   try {
-    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
-    const relativeDestination = formatPath(
-      path.relative(workspace.root, destination),
-    );
-    git(["add", "-f", "--", relativeDestination], { cwd: workspace.root });
+    removeWritten = exportArtifactFiles(archiveFiles, destination);
+    // The index takes the archive's blobs as built, not the files through Git's filters.
+    const entries = gitRaw(["ls-tree", "-r", "-z", "--full-tree", archiveTree, "--", relativeDestination], { cwd: workspace.root });
+    gitRaw(["update-index", "-z", "--index-info"], { cwd: workspace.root, input: entries });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: workspace.root,
     })
@@ -2786,21 +2735,33 @@ function archiveImplementation(
       ["commit", "-m", message],
       { cwd: workspace.root },
     );
-    removeArtifact(workspace.root, workspace.snapshot);
-    if (!quiet) console.log(
-      `Archived ${artifact.manifest.implementationId} at ${relativeDestination}.`,
-    );
   } catch (error) {
-    git(["reset", "--", destinationOption], {
-      cwd: workspace.root,
-      allowFailure: true,
-    });
-    if (currentHead === gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root })) {
-      // Only what the archive wrote is removed; a failed export already removed its own files.
+    // While the branch has not moved, nothing was committed and everything is undone.
+    if (gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root }) === startHead) {
+      git(["reset", "--", destinationOption], {
+        cwd: workspace.root,
+        allowFailure: true,
+      });
+      // Only what the archive wrote is removed; anything a hook left beside it stays.
       removeWritten();
+      updateRefs(workspace.root, [
+        { ref: claim, next: ZERO_OID, previous: version },
+        { ref: activeRef(implementationId), next: version, previous: ZERO_OID },
+      ]);
+      throw error;
     }
-    throw error;
+    // The branch moved although Git reported a failure, such as a failing hook;
+    // whether the commit holds the archive is checked below.
+    console.error(`semantic-implementation: ${errorMessage(error)}`);
   }
+  if (!archived()) {
+    // A hook or an interruption can change what is committed; the claim keeps the snapshot until someone checks.
+    fail(`The archive commit does not hold the whole artifact at ${relativeDestination}, so ${implementationId} stays claimed.${interruptedArchiveNote(workspace.root)}`);
+  }
+  updateRefs(workspace.root, [{ ref: claim, next: ZERO_OID, previous: version }]);
+  if (!quiet) console.log(
+    `Archived ${implementationId} at ${relativeDestination}.`,
+  );
 }
 
 /** A path with every existing ancestor's links resolved, so containment checks see where it leads. */
@@ -2944,10 +2905,6 @@ function dispatch(root: string, positionals: string[], options: Options): void {
   }
   if (command === "restack" && subcommand === undefined) {
     restack(openWorkspace(root), options);
-    return;
-  }
-  if (command === "repair" && subcommand === undefined) {
-    repairArtifact(openWorkspace(root), options);
     return;
   }
   if (command === "export" && subcommand === undefined) return exportImplementation(openWorkspace(root), options);

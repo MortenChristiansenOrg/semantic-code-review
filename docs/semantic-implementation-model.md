@@ -8,7 +8,11 @@ purpose.
 
 Each stage records specification coverage, rationale, decisions, assumptions,
 alternatives, failed attempts, risks, validation, dependencies, branch/base
-relationship, immutable head snapshot, and affected files.
+relationship, immutable head snapshot, and affected files. While an
+implementation is active, only the head is stored; the branch, base and
+affected files are derived from Git. The active artifact itself is stored in
+Git, outside every worktree, as described in
+[the artifact format](artifact-format.md#active-storage).
 
 Affected files are organized into descriptive change nodes. A node represents
 one cause or coherent implementation move, such as renaming an abstraction and

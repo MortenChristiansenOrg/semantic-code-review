@@ -2,7 +2,7 @@
  * shared: global options and shared vocabulary
  * implementation: init and specification add
  * stages: stage authoring and finalization
- * history: restack, repair, validation, publication, preparation, archive
+ * history: restack, validation, publication, preparation, archive
  * feedback: review thread operations
  * workflow: worktree selection and workflow helpers
  */

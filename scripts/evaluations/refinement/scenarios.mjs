@@ -136,11 +136,14 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
   if (listed.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   const roots = listed.stdout.split(/\r?\n/).filter(line => line.startsWith('worktree ')).map(line => line.slice(9));
   if (roots.some(repo => !inside(root, repo))) { add('worktree-scope', false, roots); return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks }; }
-  const artifacts = roots.filter(repo => fs.existsSync(path.join(repo, '.semantic-review/manifest.json')));
+  const cli = (...args) => cliCommand(skill, args);
+  // Active artifacts live in Git; inspection reports each with the worktree that works on it.
+  const inspected = run('artifact-inspect', cli('inspect', '--json'), roots[0]);
+  let artifacts = [];
+  try { artifacts = (JSON.parse(inspected.stdout).candidates ?? []).map(candidate => candidate.worktree); } catch { /* Reported by the check below. */ }
   add('one-artifact', artifacts.length === 1, artifacts);
   if (artifacts.length !== 1) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   const repo = artifacts[0];
-  const cli = (...args) => cliCommand(skill, args);
   const validation = run('artifact-publication', cli('implementation', 'validate', '--publish'), repo);
   if (validation.exitCode !== 0) return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   run('stack', cli('implementation', 'validate-stack', '--json'), repo);

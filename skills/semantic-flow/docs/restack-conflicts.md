@@ -2,8 +2,8 @@
 
 If any restack in this workflow reports a stage conflict, including automatic
 target restacking during preflight, the command has already discarded its
-temporary index and left every stage ref and artifact unchanged. This is not an
-interrupted artifact write. Do not run `repair`, look for a rebase state,
+temporary index and left every stage ref and artifact unchanged. Do not look
+for a rebase state,
 merge lower-stage commits into the conflicting stage, or ask the user merely
 because Git found conflicts.
 

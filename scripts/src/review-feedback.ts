@@ -117,7 +117,7 @@ function pathsFor(root: string, requester: FeedbackRequester | null = null): Fee
   // A remote review's checkout has no active artifact; its projection names the
   // review, so feedback commands reach the remote review's own refusal.
   const snapshot = readReviewArtifact(root)?.files;
-  if (!snapshot) fail("No active .semantic-review artifact exists.");
+  if (!snapshot) fail("No active semantic implementation exists.");
   // Only the identity is needed here; commands that use the artifact validate it.
   const implementationId = activeImplementationId(root, snapshot);
   const feedback = feedbackDirectory(root, implementationId);
@@ -176,7 +176,7 @@ function listJsonIds(directory: string): string[] {
 
 function semanticArtifact(paths: FeedbackPaths): SemanticArtifact {
   const files = readArtifact(paths.root);
-  if (!files) fail("No active .semantic-review artifact exists.");
+  if (!files) fail("No active semantic implementation exists.");
   const { manifest, requirements, stages } = loadImplementation(paths.root, files, { includeWork: false });
   if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
   return { manifest, requirements, stages };

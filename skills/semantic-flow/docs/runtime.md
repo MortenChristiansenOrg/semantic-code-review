@@ -92,11 +92,11 @@ commands, run:
 
 Use `--project <repository-path>` when the user supplied a project path and
 `--implementation-id <implementation-id>` when it identifies the requested implementation. The command
-inspects the repository and every linked worktree without mutating them. It
-selects the current worktree's artifact when present, otherwise the only
-matching artifact.
+lists the repository's active implementations, each with the worktree that
+works on it, without mutating them. It selects the current worktree's
+implementation when present, otherwise the only matching one.
 
-If several linked worktrees contain artifacts, use the implementation ID, title,
+If several implementations are active, use the implementation ID, title,
 specification source reference, checked-out semantic stage branch, current
 branch, and revisions only as clues. Select a candidate only when the
 relationship is clear. Otherwise ask which piece of work the user means, using
@@ -106,11 +106,15 @@ If none contains an artifact, report that no active implementation was found. Do
 initialize a replacement or copy an artifact during discovery.
 
 Run artifact and feedback commands from the resolved artifact worktree root.
+When several implementations are active, those commands act on the one whose
+stage branch is checked out there, or else the one last initialized or begun
+there.
 
 ## Mutation and Git safety
 
-- Use the bundled CLI for every `.semantic-review/` and
-  private feedback mutation. Resolve its user-local directory from
+- Use the bundled CLI for every artifact and
+  private feedback mutation. The artifact is stored in Git, not in the
+  worktree; `implementation export` prints it. Resolve its user-local directory from
   `semantic-flow inspect --json` (`selected.feedbackDirectory`); never infer it
   from the current working directory or hand-edit generated state.
 - Preserve unrelated user changes. Never stash, discard, absorb, or revert
@@ -124,8 +128,8 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   `restack-conflicts.md` is the sole raw-ref recovery exception; follow that
   complete procedure without a separate approval. Ordinary implementation and feedback commits may
   advance only the recorded branch while it is checked out.
-- Treat refs below `refs/semantic-review/prepared/` as CLI-owned local
-  preparation state. `prepare-branch` uses them to guard updates to a stable
+- Treat refs below `refs/semantic-review/` as CLI-owned: `active/` holds
+  active artifacts, and `prepared/` holds local preparation state. `prepare-branch` uses them to guard updates to a stable
   cumulative branch.
 - A branch ref does not define a stage boundary. The manifest order and each
   stage's recorded base and head revisions do. An extra branch below the prefix

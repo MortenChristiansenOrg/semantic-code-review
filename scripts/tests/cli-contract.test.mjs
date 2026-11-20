@@ -41,7 +41,6 @@ const commands = new Map([
       "stage finish",
       "stage discard",
       "restack",
-      "repair",
       "publish",
       "export",
       "validate-stack",
@@ -296,7 +295,7 @@ test("skill indexes command-specific workflows", () => {
   assert.doesNotMatch(skill, /git worktree list --porcelain/);
   assert.match(runtime, /node -p "process\.platform"/);
   assert.match(runtime, /<semantic-flow> inspect --json/);
-  assert.match(runtime, /otherwise the only\s+matching artifact/);
+  assert.match(runtime, /otherwise the only\s+matching one/);
   assert.match(commandText.get("implement"), /<semantic-flow> implementation stage begin/);
   assert.match(commandText.get("feedback"), /<semantic-flow> feedback --json/);
   assert.match(
@@ -311,7 +310,7 @@ test("skill indexes command-specific workflows", () => {
   );
   assert.match(
     commandText.get("feedback"),
-    /This is not an\s+interrupted artifact write[\s\S]*Do not run `repair`/,
+    /Do not ask for permission\s+merely because Git reported a conflict/,
   );
   assert.match(
     fs.readFileSync(path.join(skillRoot, "docs", "restack-conflicts.md"), "utf8"),
