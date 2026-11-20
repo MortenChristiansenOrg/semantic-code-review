@@ -3274,7 +3274,9 @@ test('code insight dialogs animate entry and every dismissal, including an inter
     const { from, to } = await page.evaluate(() => window.motion.closing);
     from.forEach((value, index) => expect(value).toBeCloseTo(entry[index], 3));
     expect(Math.max(...from.map((value, index) => Math.abs(value - to[index])))).toBeGreaterThan(0.05);
-    await expect(dialog).toHaveCount(0);
+    // Closing hides the dialog at once, but its close event, which samples the
+    // motion and then removes the dialog, runs in a later task: wait for removal.
+    await expect(page.locator('dialog.code-insight-dialog')).toHaveCount(0);
     // The closing motion played rather than holding its first frame: it was
     // running, and by the time the dialog closed it had advanced and changed its
     // pose whenever document time had moved since it started (a starved machine
