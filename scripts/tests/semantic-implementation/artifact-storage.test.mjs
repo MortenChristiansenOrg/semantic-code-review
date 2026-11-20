@@ -148,6 +148,41 @@ test("the longest branch prefix that matches the checked-out branch claims it", 
   assert.equal(spawnSyncChecked("git", ["symbolic-ref", "--short", "HEAD"], second), "team/beta/stages/implementation");
   assert.equal(JSON.parse(spawnSyncChecked(process.execPath, [...semanticCli, "export"], second)).manifest.implementationId, "beta");
   assert.equal(JSON.parse(repo.semantic("export")).manifest.implementationId, "alpha");
+
+  // A prefix that only resembles another implementation's stage branch does not claim it.
+  const third = path.join(path.dirname(second), "third");
+  repo.git("worktree", "add", "--detach", third, "main");
+  init(third, "gamma", "team/stages");
+  begin(third);
+  fs.rmSync(spawnSyncChecked("git", ["rev-parse", "--path-format=absolute", "--git-path", "semantic-review-implementation"], repo.root), { force: true });
+  assert.equal(repo.git("symbolic-ref", "--short", "HEAD"), "team/stages/implementation");
+  assert.equal(JSON.parse(repo.semantic("export")).manifest.implementationId, "alpha");
+});
+
+test("an interrupted archive keeps its snapshot and says how to recover it", (t) => {
+  const repo = createRepository(t);
+  initializeImplementation(repo);
+  beginStage(repo);
+  const snapshot = repo.git("rev-parse", ACTIVE);
+  // Archiving moves the snapshot to its claim before it commits the archive.
+  repo.git("update-ref", "refs/semantic-review/archiving/test-implementation", snapshot);
+  repo.git("update-ref", "-d", ACTIVE);
+  repo.expectSemanticFailure(/Archiving test-implementation was interrupted/, "validate");
+  repo.git("update-ref", ACTIVE, "refs/semantic-review/archiving/test-implementation");
+  repo.git("update-ref", "-d", "refs/semantic-review/archiving/test-implementation");
+  repo.semantic("validate");
+});
+
+test("a stage begins when only the post-checkout hook fails", (t) => {
+  const repo = createRepository(t);
+  initializeImplementation(repo);
+  const hook = path.join(repo.git("rev-parse", "--path-format=absolute", "--git-path", "hooks"), "post-checkout");
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  beginStage(repo);
+  assert.equal(repo.git("symbolic-ref", "--short", "HEAD"), "semantic-flow/test-implementation/stages/implementation");
+  fs.rmSync(hook);
+  repo.semantic("validate");
 });
 
 test("several active implementations are told apart by their worktrees", (t) => {

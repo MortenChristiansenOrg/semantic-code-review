@@ -211,6 +211,11 @@ object store, not in a worktree:
   `refs/semantic-review/active/`. With several, a command acts on the one whose
   stage branch is checked out in its worktree, or else the one last initialized
   or begun there.
+- While an implementation is archived, its snapshot moves from the active ref
+  to `refs/semantic-review/archiving/<implementation-id>` until the archive
+  commit exists. A failed archive moves it back; an interrupted one leaves the
+  claim, and commands that find no active implementation explain how to
+  restore it.
 - `refs/semantic-review/archive/` is reserved.
 
 An earlier tooling version kept the active artifact in a worktree's

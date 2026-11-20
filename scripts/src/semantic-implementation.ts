@@ -67,6 +67,7 @@ import {
   listJsonIds,
   readArtifact,
   activeRef,
+  archivingRef,
   rememberImplementation,
   removeArtifact,
   requireArtifact,
@@ -1002,12 +1003,16 @@ function beginStage(workspace: Workspace, options: Options): void {
   try {
     git(["switch", branch], { cwd: workspace.root });
   } catch (error) {
-    // Without the switch the stage was never begun: take back the branch and the snapshot.
-    updateRefs(workspace.root, [
-      { ref: branchRef, next: ZERO_OID, previous: parent },
-      { ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: snapshot },
-    ]);
-    throw error;
+    // A failing post-checkout hook fails the switch after it took effect; the stage was then begun.
+    if (gitOptional(["symbolic-ref", "--quiet", "HEAD"], { cwd: workspace.root }) !== branchRef) {
+      // Without the switch the stage was never begun: take back the branch and the snapshot.
+      updateRefs(workspace.root, [
+        { ref: branchRef, next: ZERO_OID, previous: parent },
+        { ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: snapshot },
+      ]);
+      throw error;
+    }
+    console.error(`semantic-implementation: the switch to ${branch} succeeded but reported: ${errorMessage(error)}`);
   }
   rememberImplementation(workspace.root, artifact.manifest.implementationId);
   if (flag(options, "json")) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch, baseRevision: parent, headRevision: parent, next: "implement" }));
@@ -2677,16 +2682,21 @@ function archiveImplementation(
 
   const message = option(options, "message")
     ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
-  const currentHead = gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root });
-  let removeWritten = () => {};
-  // Removing the active ref first claims the archive: a concurrent writer then
-  // fails instead of changing an artifact that is already being archived.
-  removeArtifact(workspace.root, workspace.snapshot);
+  const implementationId = artifact.manifest.implementationId;
+  const claim = archivingRef(implementationId);
+  const version = workspace.snapshot.version;
+  const relativeDestination = formatPath(path.relative(workspace.root, destination));
+  // The topmost directory the archive creates, removed again when archiving fails.
+  let created = destination;
+  while (!fs.existsSync(path.dirname(created))) created = path.dirname(created);
+  // The archive commit holds the archived manifest; nothing else proves it exists.
+  const archived = () => gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}/manifest.json`], { cwd: workspace.root }) !== undefined;
+  // Moving the snapshot from the active ref to an archiving claim first makes a
+  // concurrent writer fail instead of changing an artifact that is being
+  // archived, and keeps the snapshot reachable if archiving is interrupted.
+  removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
   try {
-    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
-    const relativeDestination = formatPath(
-      path.relative(workspace.root, destination),
-    );
+    exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
     git(["add", "-f", "--", relativeDestination], { cwd: workspace.root });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: workspace.root,
@@ -2706,21 +2716,26 @@ function archiveImplementation(
       ["commit", "-m", message],
       { cwd: workspace.root },
     );
-    if (!quiet) console.log(
-      `Archived ${artifact.manifest.implementationId} at ${relativeDestination}.`,
-    );
   } catch (error) {
-    git(["reset", "--", destinationOption], {
-      cwd: workspace.root,
-      allowFailure: true,
-    });
-    if (currentHead === gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root })) {
-      // Only what the archive wrote is removed; a failed export already removed its own files.
-      removeWritten();
-      updateRefs(workspace.root, [{ ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: ZERO_OID }]);
+    if (!archived()) {
+      git(["reset", "--", destinationOption], {
+        cwd: workspace.root,
+        allowFailure: true,
+      });
+      fs.rmSync(created, { recursive: true, force: true });
+      updateRefs(workspace.root, [
+        { ref: claim, next: ZERO_OID, previous: version },
+        { ref: activeRef(implementationId), next: version, previous: ZERO_OID },
+      ]);
+      throw error;
     }
-    throw error;
+    // The archive was committed although Git reported a failure, such as a failing hook.
+    console.error(`semantic-implementation: ${errorMessage(error)}`);
   }
+  updateRefs(workspace.root, [{ ref: claim, next: ZERO_OID, previous: version }]);
+  if (!quiet) console.log(
+    `Archived ${implementationId} at ${relativeDestination}.`,
+  );
 }
 
 /** A path with every existing ancestor's links resolved, so containment checks see where it leads. */

@@ -185,6 +185,20 @@ const SNAPSHOT_IDENTITY = {
 
 export const activeRef = (implementationId: string) => `${ACTIVE_REF_PREFIX}${implementationId}`;
 
+/** While an implementation is archived, its snapshot moves from the active ref
+ * to this claim, which keeps it reachable until the archive commit exists. */
+export const ARCHIVING_REF_PREFIX = "refs/semantic-review/archiving/";
+export const archivingRef = (implementationId: string) => `${ARCHIVING_REF_PREFIX}${implementationId}`;
+
+/** Explains how to recover implementations whose archiving was interrupted. */
+export function interruptedArchiveNote(root: string): string {
+  const claims = git(["for-each-ref", "--format=%(refname)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
+  return (claims ?? "").split(/\r?\n/).filter(Boolean).map((claim) => {
+    const id = claim.slice(ARCHIVING_REF_PREFIX.length);
+    return ` Archiving ${id} was interrupted. If its archive commit is missing, make it active again with \`git update-ref ${activeRef(id)} ${claim}\`; then remove the claim with \`git update-ref -d ${claim}\`.`;
+  }).join("");
+}
+
 /** An active implementation, as its ref names it. */
 export interface ActiveImplementation {
   implementationId: string;
@@ -237,6 +251,14 @@ function rememberedImplementation(root: string): string | undefined {
   }
 }
 
+/** Whether ref is one of the stage branches or the metadata branch named by a branch prefix. */
+function ownsBranch(prefix: string, ref: string): boolean {
+  const start = `refs/heads/${prefix}/`;
+  if (!ref.startsWith(start)) return false;
+  const rest = ref.slice(start.length);
+  return rest === "metadata" || /^stages\/[^/]+$/.test(rest);
+}
+
 /** The active implementation the worktree at root has claimed: the one whose
  * branch is checked out there, or else the one last initialized or begun there. */
 export function claimedImplementation(root: string, actives: ActiveImplementation[]): ActiveImplementation | undefined {
@@ -247,7 +269,8 @@ export function claimedImplementation(root: string, actives: ActiveImplementatio
     try {
       manifests = readBlobs(defaultRunner(root), actives.map((active) => `${active.commit}:manifest.json`));
     } catch { /* A snapshot without a readable manifest owns no branch. */ }
-    // When several prefixes match the branch, the longest one owns it.
+    // An implementation owns its stage and metadata branches; when several
+    // prefixes still name the branch, the longest one owns it.
     let owner: ActiveImplementation | undefined;
     let ownerPrefix = "";
     for (const active of actives) {
@@ -258,7 +281,7 @@ export function claimedImplementation(root: string, actives: ActiveImplementatio
         continue;
       }
       const prefix = isRecord(manifest) ? manifest.branchPrefix : undefined;
-      if (typeof prefix === "string" && head.startsWith(`refs/heads/${prefix}/`) && prefix.length > ownerPrefix.length) {
+      if (typeof prefix === "string" && ownsBranch(prefix, head) && prefix.length > ownerPrefix.length) {
         owner = active;
         ownerPrefix = prefix;
       }
@@ -284,7 +307,6 @@ function chooseActive(root: string, actives: ActiveImplementation[], implementat
   fail(`Several semantic implementations are active in this repository: ${actives.map((active) => active.implementationId).join(", ")}. Run the command in the worktree of the one you mean, with one of its stage branches checked out.`);
 }
 
-/** Fails when the worktree still holds an artifact written by an earlier version. */
 /** Fails when root holds an untracked artifact folder from an earlier version. */
 export function assertNoLegacyArtifact(root: string): void {
   const manifest = path.join(root, LEGACY_DIRECTORY, "manifest.json");
@@ -347,9 +369,9 @@ export function readArtifact(root: string, implementationId = selectedImplementa
 export function requireArtifact(root: string, implementationId = selectedImplementation()): ArtifactSnapshot {
   const snapshot = readArtifact(root, implementationId);
   if (snapshot) return snapshot;
-  fail(implementationId === undefined
+  fail((implementationId === undefined
     ? "No active semantic implementation exists in this repository."
-    : `No active semantic implementation has implementation ID ${implementationId}.`);
+    : `No active semantic implementation has implementation ID ${implementationId}.`) + interruptedArchiveNote(root));
 }
 
 // --- Drafts and commits -----------------------------------------------------

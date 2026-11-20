@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { assertNoLegacyArtifact, claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
+import { assertNoLegacyArtifact, claimedImplementation, interruptedArchiveNote, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -213,8 +213,9 @@ function inspect(options: Options): Inspection {
   // Every worktree sees every active implementation; each is reported from the
   // worktree that has claimed it, or else from the inspected one.
   const actives = listActiveImplementations(root);
-  if (actives.length === 0) assertNoLegacyArtifact(root);
-  const worktrees = actives.length === 0 ? [] : worktreeRoots(root);
+  const worktrees = worktreeRoots(root);
+  // A worktree that still holds an artifact of an earlier version is reported, not ignored.
+  if (actives.length === 0) for (const worktree of [root, ...worktrees]) assertNoLegacyArtifact(worktree);
   const claimedIn = (worktree: string) => claimedImplementation(worktree, actives)?.implementationId;
   const claims = new Map(worktrees.map((worktree) => [worktree, claimedIn(worktree)]));
   const candidates = actives
@@ -245,14 +246,15 @@ function printInspection(inspection: Inspection, json: boolean): void {
   }
   if (inspection.candidates.length === 0) {
     console.log(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
     );
     return;
   }
   for (const candidate of inspection.candidates) {
     const marker =
       inspection.selected &&
-      samePath(candidate.worktree, inspection.selected.worktree)
+      samePath(candidate.worktree, inspection.selected.worktree) &&
+      candidate.implementationId === inspection.selected.implementationId
         ? "*"
         : "-";
     console.log(
@@ -281,7 +283,7 @@ function resolveSingle(
   const implementationId = option(selectionOptions, "implementation-id");
   if (inspection.candidates.length === 0) {
     fail(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
     );
   }
   if (implementationId) {

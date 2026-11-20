@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { rememberImplementation } from "../../src/shared/artifact-store.ts";
 import { fileURLToPath } from "node:url";
 import {
   beginStage,
@@ -834,6 +835,8 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   const replies = exportFeedbackReplies({ repoRoot: linked }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
   assert.equal(replies.ok, true);
   assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
+  // A worktree is selected for the implementation it has claimed.
+  rememberImplementation(linked, "test-implementation");
   const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
   assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(linked));
   assert.notEqual(fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8"), before);
