@@ -87,7 +87,7 @@ npm run build --prefix ./scripts
 
 Before continuing, follow the operating-system selection in
 `skills/semantic-flow/SKILL.md` and read either
-`skills/semantic-flow/docs/os/linux.md` or
+`skills/semantic-flow/docs/os/unix.md` (Linux and macOS) or
 `skills/semantic-flow/docs/os/windows.md`. The examples below reuse the
 platform guide's concrete invocations as:
 

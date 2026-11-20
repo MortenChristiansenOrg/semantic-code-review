@@ -1,8 +1,9 @@
-# Linux runtime details
+# Linux and macOS runtime details
 
-Read this file only when `node -p "process.platform"` reports `linux`. This
-includes WSL and Linux containers. Command files define workflow behavior; this
-file defines only Linux invocation, path, and temporary-file details.
+Read this file only when `node -p "process.platform"` reports `linux` or
+`darwin` (macOS). Linux includes WSL and Linux containers. Command files define
+workflow behavior; this file defines only invocation, path, and temporary-file
+details for these systems.
 
 ## Preflight and CLI invocations
 
@@ -36,7 +37,7 @@ node "$semantic_flow" feedback next --json
 node "$semantic_flow" review
 ```
 
-Use forward slashes for Linux filesystem paths. Also use forward slashes for
+Use forward slashes for filesystem paths. Also use forward slashes for
 repository paths stored in artifacts or supplied through options such as
 `--path`.
 
