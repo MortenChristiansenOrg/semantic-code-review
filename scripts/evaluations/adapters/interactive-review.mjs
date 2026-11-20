@@ -187,14 +187,16 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     const value = readJson(path.join(directory, ids[0], 'review.json'));
     return { id: value.id, generation: value.generation, port: value.viewer?.port ?? null, key: value.viewer?.key ?? null, processId: value.viewer?.processId ?? null, directory: path.join(directory, ids[0]) };
   };
-  const stateOf = current => { try { return readJson(path.join(current.directory, 'agent.json')); } catch { return {}; } };
-  const agentState = () => stateOf(review);
-  let exited = false;
+  const agentState = () => { try { return readJson(path.join(review.directory, 'agent.json')); } catch { return {}; } };
+  let exited = false, exitSnapshotFailure = null;
   agentExited.then(execution => {
     exited = true; record.agentExitedAt = execution.at;
     // The session as the agent left it orders its exit after Stop without comparing wall-clock stamps.
-    const current = review ?? findReview();
-    record.sessionAtExit = current ? stateOf(current).session ?? null : null;
+    // Only a missing file means no session; an unreadable one invalidates the attempt.
+    try {
+      const current = review ?? findReview(), file = current && path.join(current.directory, 'agent.json');
+      record.sessionAtExit = file && fs.existsSync(file) ? readJson(file).session ?? null : null;
+    } catch (error) { exitSnapshotFailure = error; }
     note('agent-exited', { exitCode: execution.exitCode, timedOut: execution.timedOut });
   });
   const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
@@ -310,6 +312,10 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     await finish('evaluator-failure').catch(() => {});
   }
   await Promise.race([agentExited, aborted]);
+  if (exitSnapshotFailure && !failure) {
+    failure = new Error(`The agent's session could not be read when it exited: ${exitSnapshotFailure.message}`);
+    note('evaluator-failure', failure.message);
+  }
   review = findReview() ?? review;
   record.agentState = review ? agentState() : null;
   await stopViewer(review, home, note);
