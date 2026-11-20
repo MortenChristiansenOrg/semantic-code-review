@@ -365,12 +365,19 @@ export function removeArtifact(root: string, base: ArtifactSnapshot): void {
 export function exportArtifactFiles(files: ArtifactFiles, destination: string): () => void {
   const createdFiles: string[] = [];
   const createdDirectories: string[] = [];
+  // Directories are created one level at a time, so only those this call made are recorded.
   const makeDirectory = (directory: string) => {
-    const first = fs.mkdirSync(directory, { recursive: true });
-    if (first === undefined) return;
-    for (let current = directory; ; current = path.dirname(current)) {
-      createdDirectories.push(current);
-      if (current === first || path.dirname(current) === current) break;
+    const missing: string[] = [];
+    for (let current = directory; !fs.existsSync(current) && path.dirname(current) !== current; current = path.dirname(current)) {
+      missing.unshift(current);
+    }
+    for (const current of missing) {
+      try {
+        fs.mkdirSync(current);
+        createdDirectories.push(current);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
     }
   };
   // Removes only what this call created, so a concurrent writer's files and
@@ -386,15 +393,12 @@ export function exportArtifactFiles(files: ArtifactFiles, destination: string): 
     for (const file of files.list()) {
       if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
       const target = path.join(destination, ...file.split("/"));
+      const bytes = files.read(file);
       makeDirectory(path.dirname(target));
-      try {
-        fs.writeFileSync(target, files.read(file), { flag: "wx" });
-      } catch (error) {
-        // A file that already existed belongs to someone else; one this write created does not.
-        if (errorCode(error) !== "EEXIST") createdFiles.push(target);
-        throw error;
-      }
+      // Only a file this call opened exclusively is its own to remove.
+      const descriptor = fs.openSync(target, "wx");
       createdFiles.push(target);
+      try { fs.writeFileSync(descriptor, bytes); } finally { fs.closeSync(descriptor); }
     }
   } catch (error) {
     remove();

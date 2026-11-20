@@ -2761,8 +2761,9 @@ function archiveImplementation(
   const message = option(options, "message")
     ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
   const currentHead = gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root });
+  let removeWritten = () => {};
   try {
-    exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
+    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
     const relativeDestination = formatPath(
       path.relative(workspace.root, destination),
     );
@@ -2795,7 +2796,8 @@ function archiveImplementation(
       allowFailure: true,
     });
     if (currentHead === gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root })) {
-      fs.rmSync(destination, { recursive: true, force: true });
+      // Only what the archive wrote is removed; a failed export already removed its own files.
+      removeWritten();
     }
     throw error;
   }

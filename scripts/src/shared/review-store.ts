@@ -1,5 +1,6 @@
 /** User-local review storage. All writes hold a per-review lock and replace one
  * document atomically; private data is never placed in implementation branches. */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -64,6 +65,20 @@ function managedCheckoutOwner(root: string): string | undefined {
   };
   return canonical(path.dirname(real)) === canonical(reviewDirectory(owner)) ? owner : undefined;
 }
+/** Moves the projection an earlier version kept inside a managed checkout out
+ * of it, whole. It runs under the review's lock, so a refresh that briefly
+ * vacates the projection is never mistaken for a missing one, and it moves
+ * only an untracked folder, never one that the checked-out branch tracks. */
+function moveLegacyProjection(owner: string, root: string, directory: string): void {
+  const legacy = path.join(root, ".semantic-review");
+  if (!fs.existsSync(path.join(legacy, "manifest.json"))) return;
+  withReviewLock(owner, () => {
+    if (fs.existsSync(directory) || !fs.existsSync(path.join(legacy, "manifest.json"))) return;
+    const tracked = spawnSync("git", ["ls-files", "--", ".semantic-review/manifest.json"], { cwd: root, encoding: "utf8", windowsHide: true });
+    if (tracked.status !== 0 || tracked.stdout.trim()) return;
+    try { fs.renameSync(legacy, directory); } catch { /* It stays unavailable until reopened. */ }
+  });
+}
 /** The artifact a review of root shows: the projection a remote review made for
  * its managed checkout, or else the active artifact of root. */
 export function readReviewArtifact(root: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
@@ -71,11 +86,7 @@ export function readReviewArtifact(root: string): { files: ArtifactSnapshot; pro
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
     const directory = projectionDirectory(owner);
-    const legacy = path.join(root, ".semantic-review");
-    if (!fs.existsSync(directory) && fs.existsSync(path.join(legacy, "manifest.json"))) {
-      // An earlier version kept the projection inside the checkout; it moves out whole.
-      try { fs.renameSync(legacy, directory); } catch { /* Another reader moved it first, or it stays unavailable. */ }
-    }
+    if (!fs.existsSync(directory)) moveLegacyProjection(owner, root, directory);
     const projection = readArtifactDirectory(root, directory);
     return projection && { files: projection, projection: true };
   }
