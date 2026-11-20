@@ -630,7 +630,11 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   expect(await keyTaken()).toEqual([false]);
 
   const label = page.locator('.stage[data-stage="first"] .rationale-label');
-  await label.focus();
+  // Until the opening frame shows it, the hidden tooltip has no key hint to describe.
+  expect(await label.evaluate((el) => {
+    el.focus();
+    return document.querySelector('#review-tooltip .pop-scroll-hint').textContent;
+  })).toBe('');
   await expect(tooltip).toBeVisible();
   await expect(tooltip.locator('strong')).toHaveText(data.stages[0].rationale);
   // Screen readers still get the full text, without the visible key hint.

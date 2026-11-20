@@ -100,8 +100,8 @@ export function showPop(btn: HTMLElement): void {
   requestAnimationFrame(() => {
     if (popOwner !== btn) return;
     positionPop(btn);
-    markKeyScrollable();
     pop.style.visibility = "";
+    markKeyScrollable();
   });
 }
 export function scheduleHide(): void { clearTimeout(popTimer); popTimer = setTimeout(hidePop, 130); }
@@ -128,7 +128,8 @@ export function markKeyScrollable(): void {
   const scrollTop = popEl.scrollTop;
   popHint.textContent = "";
   const focused = document.activeElement;
-  if (popOwner && focused && popOwner.contains(focused) && popOverflows()) popHint.textContent = "\u2191\u2193 PgUp PgDn to scroll";
+  // While the tooltip is hidden, its description would include hidden text.
+  if (popEl.style.visibility !== "hidden" && popOwner && focused && popOwner.contains(focused) && popOverflows()) popHint.textContent = "\u2191\u2193 PgUp PgDn to scroll";
   popEl.scrollTop = scrollTop;
 }
 const POP_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
