@@ -294,7 +294,7 @@ function currentIdentity(root: string, variable: "GIT_AUTHOR_IDENT" | "GIT_COMMI
   return git(["var", variable], { cwd: root }).replace(/ \d+ [+-]\d{4}$/, "");
 }
 
-const IDENTITY = /^[^<>\n]+ <[^<>\n]+>$/;
+const IDENTITY = /^[^<>\x00-\x1f]+ <[^<>\x00-\x1f]+>$/;
 const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?.toLowerCase() ?? identity.toLowerCase();
 
 /** The message of a stage commit: the stage's title and summary, then a
@@ -307,15 +307,16 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coA
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
  * author, in order of first appearance. */
 function rangeCoAuthors(root: string, base: string, head: string, author: string): string[] {
-  // Only the trailer block counts: a Co-authored-by line in the body is text, not attribution.
-  const log = gitRaw(["log", "--reverse", "--format=%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,separator=%x02)%x01", `${base}..${head}`], { cwd: root });
+  // Only the trailer block counts: a Co-authored-by line in the body is text,
+  // not attribution. A message cannot hold NUL, so NUL separates the values
+  // and two of them start each commit.
+  const log = gitRaw(["log", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
-  for (const entry of log.split("\x01")) {
-    const [identity, trailerBlock = ""] = entry.replace(/^\r?\n/, "").split("\0");
-    const trailers = trailerBlock.split("\x02");
+  for (const entry of log.split("\0\0").slice(1)) {
+    const [identity, ...trailers] = entry.split("\0").map((value) => value.trim());
     if (!identity) continue;
-    for (const candidate of [identity, ...trailers.map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer))]) {
+    for (const candidate of [identity, ...trailers.filter((trailer) => IDENTITY.test(trailer))]) {
       const key = identityEmail(candidate);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1902,8 +1903,13 @@ function finishStage(workspace: Workspace, options: Options): void {
   // The checked-out branch moves to a commit with the same tree, so the checkout
   // stays as it is; an unchanged branch is verified. The folded commits stay
   // reachable for code targets captured on them.
+  // The finalized stages below, which the new stage builds on, are verified.
+  const lower = artifact.manifest.stages.filter((stageId) => stageId !== id).map((stageId): RefUpdate => {
+    const { branch, headRevision: head } = finalizedStage(artifact, stageId).change;
+    return { ref: `refs/heads/${branch}`, next: head, previous: head };
+  });
   commitArtifact(workspace.root, workspace.snapshot, draft,
-    [{ ref: `refs/heads/${workStage.branch}`, next: headRevision, previous: workHead }],
+    [...lower, { ref: `refs/heads/${workStage.branch}`, next: headRevision, previous: workHead }],
     headRevision === workHead ? [] : [workHead]);
   reportEvidenceWarnings([stage]);
   if (json) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));

@@ -448,14 +448,20 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
-    // An update that keeps a ref's value only verifies it. Semantic Flow's own
-    // refs are never symbolic, so one made symbolic since it was read is
-    // replaced rather than followed to the branch it names; the expected
-    // value is still checked.
-    ...updates.flatMap(({ ref, next, previous }) => [
-      ...(ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
-      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
-    ]),
+    ...updates.flatMap(({ ref, next, previous }) => {
+      const write = next !== previous;
+      return [
+        // A write never follows a symbolic ref: a ref made symbolic since it
+        // was read is replaced, not the ref it names, and the expected value is
+        // still checked. Semantic Flow's own refs are never symbolic.
+        ...(write || ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
+        // An unchanged ref is only checked. Git reports `verify` to
+        // reference-transaction hooks as a deletion, so an existing ref is
+        // checked by updating it to its own value.
+        !write ? (previous === ZERO_OID ? `verify ${ref} ${ZERO_OID}` : `update ${ref} ${previous} ${previous}`)
+          : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
+      ];
+    }),
     "prepare",
     "commit",
     "",

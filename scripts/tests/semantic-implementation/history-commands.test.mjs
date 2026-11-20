@@ -528,7 +528,15 @@ test("restack rebases every stage branch onto an advanced target", (t) => {
     "new base\n",
     "Advance base",
   );
+  // The target is checked, not deleted: a hook that refuses deleting it lets the restack through.
+  const hooks = path.resolve(repository.root, repository.git("rev-parse", "--git-path", "hooks"));
+  fs.mkdirSync(hooks, { recursive: true });
+  fs.writeFileSync(path.join(hooks, "reference-transaction"),
+    '#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = refs/heads/main ] && [ "$new" = 0000000000000000000000000000000000000000 ]; then exit 1; fi\ndone\n',
+    { mode: 0o755 });
+  const targetReflog = repository.git("reflog", "--format=%H", "refs/heads/main");
   repository.semantic("restack", "--base", "main");
+  assert.equal(repository.git("reflog", "--format=%H", "refs/heads/main"), targetReflog);
   const rebasedPolicy = repository.git(
     "rev-parse",
     "semantic-flow/test-implementation/stages/policy",
@@ -654,6 +662,8 @@ test("finishing folds a stage's commits into one with a generated message and co
   repository.commitFile("third.txt", "third\n", "Third part\n\nCo-authored-by: Ada Author <ADA@example.test>");
   // Only the trailer block credits anyone; this line is part of the body.
   repository.commitFile("fourth.txt", "fourth\n", "Fourth part\n\nFor example:\nCo-authored-by: Example Person <example@example.test>\n\nNo trailers here.");
+  // A malformed trailer value is ignored whole, whatever bytes it holds.
+  repository.commitFile("fifth.txt", "fifth\n", "Fifth part\n\nCo-authored-by: Bad >\u0002Fake <fake@example.test>");
   repository.semantic("stage", "record", "--kind", "risk", "--item-id", "risk", "--summary", "May reject input",
     "--code-path", "second.txt", "--code-start", "1");
   const workHead = repository.git("rev-parse", "HEAD");
