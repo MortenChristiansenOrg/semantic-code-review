@@ -686,9 +686,10 @@ test("viewer client refreshes data without reloading the page", () => {
   const viewerSources = new URL("../../../viewer/src/", import.meta.url);
   const api = fs.readFileSync(new URL("api.ts", viewerSources), "utf8");
   // The page's modules: everything bundled into app.js except its request module.
+  // boot.ts starts the page before app.js loads and may reload it for a new launch link.
   const pageModules = fs.readdirSync(viewerSources, { recursive: true })
     .map((name) => String(name).replaceAll("\\", "/"))
-    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts").sort();
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts" && name !== "boot.ts").sort();
   assert.ok(pageModules.includes("app.ts"));
   const app = pageModules.map((name) => fs.readFileSync(new URL(name, viewerSources), "utf8")).join("\n");
   const styles = fs.readFileSync(

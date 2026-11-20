@@ -524,6 +524,8 @@ interface ViewerLaunchMessage {
   type: "ready" | "error";
   message?: string;
   url?: string;
+  /** The viewer's key, for requests the launching process makes. */
+  key?: string;
   repositoryRoot?: string;
   processId?: number;
   implementation?: {
@@ -544,6 +546,7 @@ function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
     type: value.type,
     message: stringField(value, "message"),
     url: stringField(value, "url"),
+    key: stringField(value, "key"),
     repositoryRoot: stringField(value, "repositoryRoot"),
     processId: numberField(value, "processId"),
     // The viewer starts on artifacts that miss optional fields such as the title.
@@ -1523,8 +1526,10 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
   });
   if (!targetRoot) return [];
   const roots = worktreeRoots(path.resolve(targetRoot));
-  const ports = new Set(listReviews().filter((r) => roots.some((root) => samePath(root, r.repositoryRoot))).map((r) => r.viewer?.port).filter((port): port is number => Boolean(port)));
-  const candidates = await Promise.all([probeViewer(), ...Array.from(ports, (port) => probeViewer(port))]);
+  const recorded = listReviews().filter((r) => roots.some((root) => samePath(root, r.repositoryRoot))).flatMap((r) => r.viewer ? [r.viewer] : []);
+  // Viewers are found through the review records, which hold their keys. Viewers
+  // of older releases need no key and may run on the default port unrecorded.
+  const candidates = await Promise.all([probeViewer(), ...recorded.map((viewer) => probeViewer(viewer.port, { key: viewer.key }))]);
   const found: Array<ViewerIdentity & { repositoryRoot: string }> = [];
   for (const viewer of candidates) {
     if (!viewer || typeof viewer.repositoryRoot !== "string" || found.some((item) => item.port === viewer.port)) continue;

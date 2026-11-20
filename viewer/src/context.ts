@@ -5,7 +5,7 @@ import type { ViewerData } from "./types";
 
 declare global {
   interface Window {
-    /** Written by `implementation-data.js`. */
+    /** Written by boot.js from GET `/api/bootstrap`. */
     SEMANTIC_IMPLEMENTATION: ImplementationData | UnavailableImplementationData;
     SEMANTIC_REVIEW_CONTEXT?: ReviewContext;
   }

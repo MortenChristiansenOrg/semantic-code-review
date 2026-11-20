@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/app.js', import.meta.url), 'utf8');
+const bootSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/boot.js', import.meta.url), 'utf8');
 const markdownSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/markdown.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';
@@ -41,7 +42,9 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://localhost/**', async (route) => {
     const url = new URL(route.request().url());
-    const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || url.pathname.slice(1))) || data;
+    // The page path names the review; its start request carries no review scope.
+    const pagePath = url.pathname === '/api/bootstrap' ? new URL(route.request().frame().url()).pathname : url.pathname;
+    const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || pagePath.slice(1))) || data;
     const currentId = currentData.reviewId || currentData.implementationId;
     const json = (body) => route.fulfill({ json: body });
     if (url.pathname === '/api/reviews') return json({ ok: true, reviews: records });
@@ -59,7 +62,9 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
       return json({ ok: true, deleted: true });
     }
     if (deleted.has(currentId) && ['/api/review-state', '/api/revision', '/api/attachments'].includes(url.pathname)) return route.fulfill({ status: 409, json: { ok: false, reviewUnavailable: true, error: 'Review data was deleted.' } });
-    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}` });
+    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}#launch=code` });
+    if (url.pathname === '/api/session') return json({ ok: true, key: 'test-key', read: 'test-read' });
+    if (url.pathname === '/api/bootstrap') return json({ ok: true, implementation: currentData, context: { reviewId: currentId, generation: 'test' } });
     if (url.pathname === '/api/reviews/completion') {
       const payload = route.request().postDataJSON();
       records.find((r) => r.id === payload.reviewId).completedAt = payload.completed ? '2026-09-11T11:00:00Z' : null;
@@ -125,11 +130,12 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     }
     if (url.pathname === '/markdown.js') return route.fulfill({ contentType: 'text/javascript', body: markdownSource });
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
+    if (url.pathname === '/boot.js') return route.fulfill({ contentType: 'text/javascript', body: bootSource });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: '<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script src="/boot.js"></script>' });
   });
-  await page.goto('http://localhost/');
+  await page.goto('http://localhost/#launch=code');
   await expect(page.locator('.stage')).toHaveCount(data.stages.length);
   expect(errors).toEqual([]);
   return errors;

@@ -83,13 +83,14 @@ function cliCommand(node, skill, args) {
 function toolPins(capabilities) {
   for (const tool of Object.values(capabilities.tools)) if (hash(fs.readFileSync(tool.path)) !== tool.sha256) throw new Error(`Pinned evaluator executable changed: ${tool.path}`);
 }
-/** One JSON request to a viewer on 127.0.0.1, scoped like the viewer's own page.
+/** One JSON request to a viewer on 127.0.0.1, scoped like the viewer's own page and
+ * sent with the viewer's key from the review record (viewers of older releases have none).
  * Always settles: a reset, early close, timeout or abort rejects. */
-function request(port, method, pathname, { query, body, signal } = {}) {
+function request(review, method, pathname, { query, body, signal } = {}) {
   const search = query ? '?' + new URLSearchParams(query) : '';
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path: pathname + search, timeout: 30_000, signal,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' } }, response => {
+    const req = http.request({ host: '127.0.0.1', port: review.port, method, path: pathname + search, timeout: 30_000, signal,
+      headers: { ...(review.key ? { 'x-semantic-flow-key': review.key } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, response => {
       let text = '', ended = false; response.setEncoding('utf8');
       response.on('data', chunk => { text += chunk; });
       response.on('error', reject);
@@ -122,7 +123,7 @@ export async function preflight({ options = {}, workspace }) {
   const server = http.createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end('{"ok":true}'); });
   await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
   try {
-    const probe = await request(server.address().port, 'POST', '/probe', { body: {} });
+    const probe = await request({ port: server.address().port }, 'POST', '/probe', { body: {} });
     if (probe.status !== 200 || !probe.json?.ok) throw new Error('Loopback HTTP probe failed');
   } finally { await new Promise(resolve => server.close(resolve)); }
   const timing = { ...defaults, ...options.timing };
@@ -188,7 +189,7 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     const ids = fs.existsSync(directory) ? fs.readdirSync(directory).filter(name => fs.existsSync(path.join(directory, name, 'review.json'))) : [];
     if (ids.length !== 1) return null;
     const value = readJson(path.join(directory, ids[0], 'review.json'));
-    return { id: value.id, generation: value.generation, port: value.viewer?.port ?? null, processId: value.viewer?.processId ?? null, directory: path.join(directory, ids[0]) };
+    return { id: value.id, generation: value.generation, port: value.viewer?.port ?? null, key: value.viewer?.key ?? null, processId: value.viewer?.processId ?? null, directory: path.join(directory, ids[0]) };
   };
   const agentState = () => { try { return readJson(path.join(review.directory, 'agent.json')); } catch { return {}; } };
   const thread = id => { try { return readJson(path.join(review.directory, 'feedback', 'threads', `${id}.json`)); } catch { return null; } };
@@ -203,7 +204,7 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
   // invalidates the attempt instead of counting against the agent.
   const call = async (method, pathname, body) => {
     let response;
-    try { response = await request(review.port, method, pathname, { query: { review: review.id, generation: review.generation }, body, signal }); }
+    try { response = await request(review, method, pathname, { query: { review: review.id, generation: review.generation }, body, signal }); }
     catch (error) { throw Object.assign(new Error(`Viewer ${method} ${pathname} failed: ${error.message}`), { apparatus: true }); }
     if (response.status !== 200 || !response.json?.ok) throw Object.assign(new Error(`Viewer ${method} ${pathname} answered ${response.status}: ${response.json?.error ?? response.text}`), { apparatus: true });
     return response.json;
@@ -235,7 +236,7 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     const listening = await until('listen', timing.listenMinutes, async () => {
       review = findReview();
       if (!review?.port || !agentState().session || agentState().session.endedAt) return null;
-      const whoami = await request(review.port, 'GET', '/api/whoami', { signal }).catch(() => null);
+      const whoami = await request(review, 'GET', '/api/whoami', { signal }).catch(() => null);
       return whoami?.json?.reviewId === review.id ? whoami.json : null;
     });
     if (!listening) return;
@@ -313,10 +314,10 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
  * agent exits (it may have started late), confirm its identity, and confirm it stopped. */
 async function stopViewer(review, home, note) {
   if (!review?.port) return;
-  const identity = async () => (await request(review.port, 'GET', '/api/whoami').catch(() => null))?.json;
+  const identity = async () => (await request(review, 'GET', '/api/whoami').catch(() => null))?.json;
   const current = await identity();
   if (current?.reviewId !== review.id || path.resolve(current.reviewHome ?? '') !== path.resolve(home)) return;
-  await request(review.port, 'POST', '/api/shutdown', { body: {} }).catch(() => null);
+  await request(review, 'POST', '/api/shutdown', { body: {} }).catch(() => null);
   for (let attempt = 0; attempt < 25 && await identity(); attempt++) await new Promise(resolve => setTimeout(resolve, 200));
   if (await identity()) {
     try { process.kill(current.processId); note('viewer-killed', { processId: current.processId }); }

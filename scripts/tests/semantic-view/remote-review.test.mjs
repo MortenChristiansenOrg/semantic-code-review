@@ -8,6 +8,7 @@ import http from 'node:http';
 import { promisify } from 'node:util';
 import { remoteIdentity } from '../../src/shared/remote-review.ts';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
+import { viewerFetch } from '../helpers/viewer-client.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../src/semantic-view.ts';
 
@@ -219,9 +220,9 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   });
   assert.equal(result.status, 0, result.stderr);
   const url = /http:\/\/127\.0\.0\.1:\d+\//.exec(result.stdout)?.[0]; assert.ok(url, result.stdout);
-  const identity = await (await fetch(url + 'api/whoami')).json();
+  const identity = await (await viewerFetch(url + 'api/whoami')).json();
   t.after(async () => {
-    await fetch(url + 'api/shutdown', { method: 'POST', headers: { "content-type": "application/json" }, body: '{}' }).catch(() => {});
+    await viewerFetch(url + 'api/shutdown', { method: 'POST', headers: { "content-type": "application/json" }, body: '{}' }).catch(() => {});
     for (let attempt = 0; attempt < 100; attempt++) {
       try { process.kill(identity.processId, 0); }
       catch (error) { if (error.code === 'ESRCH') return; throw error; }
@@ -230,26 +231,26 @@ test('review --branch enforces read-only mode and authoritative approval lineage
     assert.fail('The remote review viewer did not exit.');
   });
   const query = `?review=${identity.reviewId}&generation=${identity.generation}`;
-  const feedback = await fetch(url + 'api/feedback/export' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" }, body: '{}' });
+  const feedback = await viewerFetch(url + 'api/feedback/export' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" }, body: '{}' });
   assert.equal(feedback.status, 403);
-  const post = (route, body) => fetch(url + route + query, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const implementation = (await (await fetch(url + 'api/implementation' + query)).json()).implementation;
+  const post = (route, body) => viewerFetch(url + route + query, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const implementation = (await (await viewerFetch(url + 'api/implementation' + query)).json()).implementation;
   const docStage = implementation.stages.find(stage => stage.files.some(file => file.path === 'docs/README.md'));
   const docFile = docStage.files.find(file => file.path === 'docs/README.md');
   const contentUrl = new URL(url + 'api/file-content' + query);
   for (const [key, value] of Object.entries({ stage: docStage.id, path: docFile.path, base: docFile.baseRevision, head: docStage.headRevision })) contentUrl.searchParams.set(key, value);
-  const document = await (await fetch(contentUrl)).json();
+  const document = await (await viewerFetch(contentUrl)).json();
   assert.equal(document.content, '# Preview\n\nComplete document.\n');
   assert.equal(document.revision, docStage.headRevision);
   contentUrl.searchParams.set('raw', '1');
-  const raw = await fetch(contentUrl);
+  const raw = await viewerFetch(contentUrl);
   assert.equal(raw.headers.get('content-type'), 'text/plain; charset=utf-8');
   assert.equal(raw.headers.get('x-content-type-options'), 'nosniff');
   assert.match(raw.headers.get('content-security-policy'), /sandbox/);
   contentUrl.searchParams.set('target', '../outside');
-  assert.equal((await fetch(contentUrl)).status, 422);
+  assert.equal((await viewerFetch(contentUrl)).status, 422);
   contentUrl.searchParams.set('review', 'wrong-review');
-  assert.equal((await fetch(contentUrl)).status, 409);
+  assert.equal((await viewerFetch(contentUrl)).status, 409);
   const initial = endpoint(implementation);
   const draftSnapshot = { base: initial.baseRevision, head: initial.headRevision };
   const migrated = await (await post('api/draft-snapshots', { notes: [{ kind: 'line', id: `l:${initial.stageId}:new:1:${initial.path}`, snapshot: draftSnapshot }] })).json();
@@ -271,11 +272,11 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   author.git('mv', 'middle.txt', 'final.txt'); author.git('commit', '-m', 'Second rename');
   author.write('final.txt', 'updated\n'); author.write('unrelated.txt', 'different file\n');
   author.git('add', 'final.txt', 'unrelated.txt'); author.git('commit', '-m', 'Update files'); author.git('switch', 'main');
-  const refreshed = await fetch(url + 'api/remote/refresh' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" } });
+  const refreshed = await viewerFetch(url + 'api/remote/refresh' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" } });
   assert.equal(refreshed.status, 200, await refreshed.text());
-  const list = await (await fetch(url + 'api/reviews' + query)).json();
+  const list = await (await viewerFetch(url + 'api/reviews' + query)).json();
   assert.ok(list.reviews.find((r) => r.id === identity.reviewId).remote);
-  const current = (await (await fetch(url + 'api/implementation' + query)).json()).implementation.stages.at(-1);
+  const current = (await (await viewerFetch(url + 'api/implementation' + query)).json()).implementation.stages.at(-1);
   const compare = (filePath) => {
     const file = current.files.find(file => file.path === filePath);
     return post('api/approval-comparison', { stageId: current.id, nodeId: 'changes', path: file.path,

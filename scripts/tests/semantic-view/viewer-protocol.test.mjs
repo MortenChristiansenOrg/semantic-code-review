@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { captureCodeTarget } from "../../src/semantic-view.ts";
 import { beginStage, createRepository, finalizeStage, flowCli, initializeImplementation } from "../helpers/repository.mjs";
+import { viewerBase, viewerFetch, viewerKey } from "../helpers/viewer-client.mjs";
 
 const protocol = fileURLToPath(new URL("../../src/shared/viewer-protocol.ts", import.meta.url));
 const scriptsRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -39,9 +40,9 @@ function exited(pid) {
 
 /** Stops a viewer. One that already exited is not asked again: its port may since
  * serve another test's viewer. */
-async function stopViewer({ url, pid }) {
+async function stopViewer({ url, pid, key }) {
   if (pid !== undefined && exited(pid)) return;
-  if (url) await fetch(url + "api/shutdown", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
+  if (url) await viewerFetch(url + "api/shutdown", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }, key).catch(() => {});
   for (let attempt = 0; pid !== undefined && attempt < 100; attempt++) {
     if (exited(pid)) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -66,16 +67,21 @@ async function startViewer(viewer, repository) {
     env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(await reservePort()) },
   });
   viewer.pid = Number(/\(PID (\d+)\)/.exec(launch.stdout)?.[1]) || undefined;
-  viewer.url = /^Semantic review viewer: (\S+)$/m.exec(launch.stdout)?.[1];
+  const printed = /^Semantic review viewer: (\S+)$/m.exec(launch.stdout)?.[1];
   assert.equal(launch.status, 0, launch.stderr);
-  assert.ok(viewer.url, launch.stdout);
+  assert.ok(printed, launch.stdout);
+  assert.match(printed, /\/#launch=[\w-]+$/);
+  viewer.url = viewerBase(printed);
+  viewer.key = viewerKey(new URL(viewer.url).port);
 }
 
 /** Requests that record each JSON response with the protocol type it should have. */
 async function client(url) {
   const captured = [];
+  // Read now: deleting the review removes its record.
+  const key = viewerKey(new URL(url).port);
   const capture = async (type, route, init, status = 200) => {
-    const response = await fetch(url + route, init);
+    const response = await viewerFetch(url + route, init, key);
     const body = await response.json();
     assert.equal(response.status, status, `${route}: ${JSON.stringify(body)}`);
     captured.push({ type, route, body });
@@ -135,6 +141,11 @@ test("a running viewer answers every JSON route with the shared protocol types",
   const { implementation } = await get("ImplementationResponse", "api/implementation");
   const [stage] = implementation.stages, [file] = stage.files, [ownership] = file.memberships;
 
+  await capture("BootstrapResponse", "api/bootstrap");
+  const json = (body) => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const { code } = await capture("LaunchResponse", "api/launch", json({}));
+  await capture("SessionResponse", "api/session", json({ code }));
+  await capture("ApiFailure", "api/session", json({ code }), 403);
   await get("RevisionResponse", "api/revision");
   const fileQuery = { stage: stage.id, path: file.path, base: file.baseRevision, head: stage.headRevision };
   await get("DiffResponse", `api/diff?${new URLSearchParams(fileQuery)}`);
@@ -152,7 +163,7 @@ test("a running viewer answers every JSON route with the shared protocol types",
   const saved = await post("ReviewStateResponse", "api/review-state", { ...target, changes });
   // Keys named like prototype properties are stored and returned as own keys.
   const query = `review=${encodeURIComponent(target.reviewId)}&generation=${encodeURIComponent(target.generation)}`;
-  const reread = JSON.parse(await (await fetch(`${viewer.url}api/review-state?${query}`)).text());
+  const reread = JSON.parse(await (await viewerFetch(`${viewer.url}api/review-state?${query}`)).text());
   for (const state of [saved.state, reread.state]) {
     for (const name of names) {
       assert.ok(Object.hasOwn(state.approvals, name) && Object.hasOwn(state.specificationOpen, name), name);
@@ -191,8 +202,10 @@ test("a running viewer answers every JSON route with the shared protocol types",
   await get("ReviewsResponse", "api/reviews");
   const { storage } = await post("ReviewStorageResponse", "api/reviews/storage", target);
   await post("ReviewCleanResponse", "api/reviews/clean-unused", { ...target, fingerprint: storage.fingerprint });
-  // Opening the review this viewer serves reuses it.
-  assert.equal((await post("ReviewOpenResponse", "api/reviews/open", target)).url, viewer.url);
+  // Opening the review this viewer serves reuses it, with a new launch code.
+  const reopened = (await post("ReviewOpenResponse", "api/reviews/open", target)).url;
+  assert.equal(viewerBase(reopened), viewer.url);
+  assert.match(reopened, /#launch=[\w-]+$/);
   await post("OkResponse", "api/reviews/completion", { ...target, completed: true, expectedCompletedAt: null });
   const { storage: current } = await post("ReviewStorageResponse", "api/reviews/storage", target);
   await post("ReviewDeleteResponse", "api/reviews/delete", { ...target, fingerprint: current.fingerprint });

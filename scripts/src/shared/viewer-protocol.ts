@@ -4,10 +4,21 @@
  * Node server can use this module. The page's requests (`viewer/src/api.ts`), the
  * server's request parsers (`viewer-requests.ts`) and its response bodies all use
  * these types, and `tests/semantic-view/viewer-protocol.test.mjs` checks a running
- * server's responses against them. Every `/api/*` route except `/api/whoami` and
- * `/api/shutdown` also requires the `ReviewQuery` search parameters, which the
- * page's request module (`viewer/src/api.ts`) appends to each request. POST routes require
- * `content-type: application/json` and a same-origin request. */
+ * server's responses against them.
+ *
+ * Every request must name the viewer in its `Host` header (`127.0.0.1:<port>` or
+ * `localhost:<port>`). Every `/api/*` request must come from the viewer's own page:
+ * an `Origin` header, when sent, is the viewer's own, and `Sec-Fetch-Site`, when
+ * sent, is `same-origin` or `none`. Every `/api/*` request except POST
+ * `/api/session` also needs the viewer's key in the `x-semantic-flow-key` header; GET
+ * requests of `/api/evidence`, `/api/attachments/:id` and `/api/file-content?raw=1`
+ * may instead carry the read token as the `read` search parameter. A request
+ * without them fails with 403 and `keyRequired`.
+ *
+ * Every `/api/*` route except `/api/whoami`, `/api/shutdown`, `/api/session`,
+ * `/api/launch` and `/api/bootstrap` also requires the `ReviewQuery` search
+ * parameters, which the page's request module (`viewer/src/api.ts`) appends to
+ * each request. POST routes require `content-type: application/json`. */
 
 /* ---- common ------------------------------------------------------------- */
 
@@ -19,6 +30,9 @@ export interface ApiFailure {
   /** Set on the review-scope gate and on `/api/review-state` failures when the
    * review session was deleted or replaced. */
   reviewUnavailable?: boolean;
+  /** Set when the request lacked a valid key, read token or launch code: the
+   * page needs a fresh link. */
+  keyRequired?: boolean;
 }
 
 /** A success body carrying `T`, or a failure body. */
@@ -54,7 +68,7 @@ export type ReviewQuery = {
   generation: string;
 };
 
-/** `window.SEMANTIC_REVIEW_CONTEXT`, written by GET `/implementation-data.js`. */
+/** `window.SEMANTIC_REVIEW_CONTEXT`, the `context` of GET `/api/bootstrap`. */
 export interface ReviewContext {
   reviewId: string;
   generation: string;
@@ -339,11 +353,11 @@ export interface RemoteInfo {
   refreshedAt?: string;
 }
 
-/** `window.SEMANTIC_IMPLEMENTATION` (GET `/implementation-data.js`) and the
- * `implementation` of GET `/api/implementation`. Built by the worker method
- * `implementationDataScript`.
+/** `window.SEMANTIC_IMPLEMENTATION` (the `implementation` of GET `/api/bootstrap`)
+ * and the `implementation` of GET `/api/implementation`. Built by the worker
+ * method `implementation`.
  *
- * When the review is unavailable, `/implementation-data.js` sends a reduced payload
+ * When the review is unavailable, `/api/bootstrap` sends a reduced payload
  * (`UnavailableImplementationData`) instead. `/api/implementation` always sends
  * this full form. */
 export interface ImplementationData {
@@ -964,7 +978,7 @@ export type ThreadActionResponse =
   | ApiFailure;
 
 /** GET `/api/whoami` response: the viewer's identity, used to find and reuse a
- * running viewer. Requires no review scope. */
+ * running viewer. Requires the key but no review scope. */
 export interface WhoAmIResponse {
   ok: true;
   app: "semantic-flow-review-viewer";
@@ -985,3 +999,26 @@ export interface WhoAmIResponse {
 
 /** POST `/api/shutdown` (body `{}`) response; requires no review scope. */
 export type ShutdownResponse = OkResponse;
+
+/** POST `/api/session` request: a launch code from the `#launch=` fragment of the
+ * viewer URL. Needs no key. A code works once and for ten minutes. */
+export interface SessionRequest {
+  code: string;
+}
+
+/** POST `/api/session` response: the secrets of this viewer process. */
+export type SessionResponse = ApiResult<{
+  /** Send in the `x-semantic-flow-key` header of every API request. */
+  key: string;
+  /** The `read` search parameter of evidence, attachment and raw file URLs. */
+  read: string;
+}>;
+
+/** POST `/api/launch` (body `{}`) response: a new launch code. */
+export type LaunchResponse = ApiResult<{ code: string }>;
+
+/** GET `/api/bootstrap` response: what the page starts with. Requires no review scope. */
+export type BootstrapResponse = ApiResult<{
+  implementation: ImplementationData | UnavailableImplementationData;
+  context: ReviewContext;
+}>;

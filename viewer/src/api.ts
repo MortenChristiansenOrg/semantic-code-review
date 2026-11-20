@@ -1,6 +1,9 @@
 /* The only module that issues requests to the review server. Every request,
    including URLs the page hands to the browser for images, links and media,
-   carries the review scope from here, so request credentials have one home. */
+   carries the review scope from here, so request credentials have one home:
+   requests send the viewer key in a header, and only the URLs of evidence,
+   attachments and raw file content carry the read token. */
+import { showFreshLinkNotice, storeAccess, type Access } from "./access";
 import type {
   AgentControlResponse,
   AgentRespondRequest,
@@ -11,6 +14,7 @@ import type {
   AttachmentQuery,
   AttachmentUploadRequest,
   AttachmentUploadResponse,
+  BootstrapResponse,
   DiffQuery,
   DiffResponse,
   DraftSnapshotsRequest,
@@ -36,6 +40,8 @@ import type {
   ReviewStorageResponse,
   ReviewTarget,
   RevisionResponse,
+  SessionRequest,
+  SessionResponse,
   ThreadActionKind,
   ThreadActionRequest,
   ThreadActionResponse,
@@ -53,6 +59,41 @@ let generation: string | undefined;
 export function configureApi(scope: { reviewId?: string; generation?: string }): void {
   reviewId = scope.reviewId;
   generation = scope.generation;
+}
+
+const KEY_HEADER = "x-semantic-flow-key";
+/** How long the server may stay unreachable before the page asks for a fresh link. */
+const UNREACHABLE_MS = 5000;
+
+let access: Access | null | undefined;
+const currentAccess = (): Access | null => access === undefined ? (access = window.SEMANTIC_ACCESS ?? null) : access;
+/** Sets the key and read token later requests use. */
+export function configureAccess(next: Access | null): void { access = next; }
+
+let accessLost = false;
+let unreachableSince = 0;
+/** Stops every later request and shows how to get a fresh link. */
+export function loseAccess(): void {
+  if (accessLost) return;
+  accessLost = true;
+  storeAccess(null);
+  showFreshLinkNotice();
+}
+
+/** Whether a response is the server's refusal of a missing or outdated key. */
+async function keyRefused(response: Response): Promise<boolean> {
+  if (response.status !== 403) return false;
+  try {
+    const body: unknown = await response.clone().json();
+    return Boolean(body && typeof body === "object" && "keyRequired" in body && body.keyRequired === true);
+  } catch { return false; }
+}
+
+// Only these resources, which the browser loads by URL, carry the read token.
+function withReadToken(url: URL): URL {
+  const current = currentAccess();
+  if (current && url.origin === window.location.origin) url.searchParams.set("read", current.read);
+  return url;
 }
 
 // Only this viewer's own server receives the review scope.
@@ -86,8 +127,24 @@ function apiUrl(path: string, query: Query = {}): URL {
 }
 
 /** Issues one request. Nothing else in the page calls fetch. */
-function request(input: string, init?: RequestInit): Promise<Response> {
-  return window.fetch(scoped(new URL(input, window.location.href)).href, init);
+async function request(input: string, init: RequestInit = {}): Promise<Response> {
+  if (accessLost) throw new Error("This review page needs a fresh link.");
+  const url = scoped(new URL(input, window.location.href));
+  const headers = new Headers(init.headers);
+  const current = currentAccess();
+  if (current && url.origin === window.location.origin) headers.set(KEY_HEADER, current.key);
+  let response: Response;
+  try { response = await window.fetch(url.href, { ...init, headers }); }
+  catch (error) {
+    // A viewer that stopped, for example for an update, comes back with new secrets.
+    const now = Date.now();
+    if (!unreachableSince) unreachableSince = now;
+    else if (now - unreachableSince >= UNREACHABLE_MS) loseAccess();
+    throw error;
+  }
+  unreachableSince = 0;
+  if (await keyRefused(response)) loseAccess();
+  return response;
 }
 
 function getJson<T>(input: string): Promise<JsonResponse<T>> {
@@ -101,6 +158,11 @@ function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   }) as Promise<JsonResponse<T>>;
 }
+
+/* ---- page start -------------------------------------------------------- */
+export const startSession = ({ code }: SessionRequest) =>
+  postJson<SessionResponse>("/api/session", { code } satisfies Body<SessionRequest>);
+export const getBootstrap = () => getJson<BootstrapResponse>("/api/bootstrap");
 
 /* ---- review session ---------------------------------------------------- */
 export const getReviewState = () => getJson<ReviewStateResponse>("/api/review-state");
@@ -128,6 +190,7 @@ export function getDiff({ stage, path, base, head, mode, offset, side, line }: D
 export function fileContentUrl({ stage, path, base, head, target, raw, image }: FileContentQuery, hash = ""): string {
   const query: QueryFields<FileContentQuery> = { stage, path, base, head, target, raw, image };
   const url = apiUrl("/api/file-content", query);
+  if (raw === "1") withReadToken(url);
   url.hash = hash;
   return url.href;
 }
@@ -154,14 +217,14 @@ export const compareApproval = ({ snapshotId, offset, mode, scope, ...endpoint }
 
 /* ---- evidence and attachments ------------------------------------------ */
 export function evidenceUrl({ stage, item, index }: EvidenceQuery): string {
-  return apiUrl("/api/evidence", { stage, item, index } satisfies QueryFields<EvidenceQuery>).href;
+  return withReadToken(apiUrl("/api/evidence", { stage, item, index } satisfies QueryFields<EvidenceQuery>)).href;
 }
 
 /** Loads a URL from evidenceUrl. */
 export const getEvidence = (url: string) => request(url);
 
 export function attachmentUrl(id: string, preview = false): string {
-  return apiUrl(`/api/attachments/${encodeURIComponent(id)}`, { preview: preview ? "1" : undefined } satisfies QueryFields<AttachmentQuery>).href;
+  return withReadToken(apiUrl(`/api/attachments/${encodeURIComponent(id)}`, { preview: preview ? "1" : undefined } satisfies QueryFields<AttachmentQuery>)).href;
 }
 
 export const uploadAttachment = ({ filename, mediaType, data }: AttachmentUploadRequest) =>

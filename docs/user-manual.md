@@ -395,6 +395,11 @@ files have paged changes and full-context views; line-thread navigation loads
 the relevant page. Reopening review reuses a healthy viewer for the same worktree,
 implementation, and installed viewer version.
 
+Each link the review command prints or opens works once and for ten minutes. A
+tab keeps working across reloads while its viewer runs. A new tab, a bookmark,
+or a tab left open while the viewer restarted (for example after an update)
+shows that the page needs a fresh link: run the review again to get one.
+
 ## 7. Send feedback
 
 In **Review queue**, add notes containing change instructions or questions.
