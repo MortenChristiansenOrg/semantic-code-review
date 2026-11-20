@@ -74,11 +74,19 @@ function rotateArtifactReviewId(gitDirectory: string, implementationId: string, 
  * during an archive's rollback can miss both. "unconfirmed" when they are not. */
 function reviewIdHolder(gitDirectory: string, implementationId: string, id: string): "active" | "archiving" | "replaced" | "none" | "unconfirmed" {
   const { active, archiving, confirmed } = readImplementationRefsInGitDirectory(gitDirectory, implementationId);
-  const stored = active === undefined ? undefined : artifactReviewId(active);
+  const stored = active === undefined ? undefined : storedReviewId(active);
   if (stored === id) return "active";
-  if (archiving !== undefined && artifactReviewId(archiving) === id) return "archiving";
-  if (!confirmed()) return "unconfirmed";
+  const claimed = archiving === undefined ? undefined : storedReviewId(archiving);
+  if (claimed === id) return "archiving";
+  // A review ID file that cannot be read may hold id.
+  if (stored === null || claimed === null || !confirmed()) return "unconfirmed";
   return stored === undefined ? "none" : "replaced";
+}
+/** The review ID files store: undefined when they have no review ID file, null
+ * when it cannot be read or holds no valid ID, since it may still name a review. */
+function storedReviewId(files: ArtifactFiles): string | null | undefined {
+  if (!hasFile(files, REVIEW_ID_FILE)) return undefined;
+  return artifactReviewId(files) ?? null;
 }
 /** Gives the implementation a fresh review ID in place of id: stored one, found
  * no snapshot holding id, or could not establish that id is replaced, because
@@ -256,13 +264,21 @@ function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committ
   catch { return "unknown"; }
   if (record.id !== id) return "unknown";
   if (record.remote) return "committed";
-  // A worktree that reaches the review and still holds the ID proves the
-  // deletion did not commit, however long the recorded location has been gone.
+  // A worktree known to reach the review decides, however long the recorded
+  // location has been gone: it becomes the recorded location, so a later cleanup
+  // that cannot see the worktree does not count the old location's absence. One
+  // whose archive claims the ID, or whose refs cannot be read or confirmed, may
+  // still hold it once a failing archive puts the snapshot back: wait.
   const verifiedDirectory = reachingRoot === undefined ? undefined : gitCommonDirectoryOf(reachingRoot);
   if (verifiedDirectory !== undefined) {
     try {
-      if (reviewIdHolder(verifiedDirectory, record.implementationId, id) === "active") return "uncommitted";
-    } catch { /* Decided below. */ }
+      const { missingSince: _cleared, ...current } = record;
+      atomicJson(file, { ...current, repositoryRoot: fs.realpathSync(reachingRoot!), gitCommonDir: verifiedDirectory });
+    } catch { return "unknown"; }
+    let holder: ReturnType<typeof reviewIdHolder>;
+    try { holder = reviewIdHolder(verifiedDirectory, record.implementationId, id); }
+    catch { return "unknown"; }
+    return holder === "active" ? "uncommitted" : holder === "replaced" ? "committed" : "unknown";
   }
   const presence = repositoryPresence(record);
   if (presence === "missing" && missingLongEnough(record)) return "committed";
@@ -275,8 +291,7 @@ function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committ
       atomicJson(file, current);
     }
   } catch { /* See above. */ }
-  const gitDirectory = (reachingRoot === undefined ? undefined : gitCommonDirectoryOf(reachingRoot))
-    ?? (record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot));
+  const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot);
   if (gitDirectory === undefined) return "unknown";
   try {
     const holder = reviewIdHolder(gitDirectory, record.implementationId, id);

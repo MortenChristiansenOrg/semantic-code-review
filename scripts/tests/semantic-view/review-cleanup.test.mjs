@@ -8,7 +8,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, registeredReviews, setReviewCompleted, recordViewer, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck, assertReviewContext, captureReviewContext, viewerLaunchCurrent } from '../../src/semantic-view.ts';
 import { activeRef, archivingRef, ArtifactDraft, commitArtifact, readArtifact, replaceArtifactFileInGitDirectory } from '../../src/shared/artifact-store.ts';
-import { newReviewId, removeOrphanedReviews, writeReviewId } from '../../src/shared/review-store.ts';
+import { newReviewId, recoverInterruptedDeletion, removeOrphanedReviews, writeReviewId } from '../../src/shared/review-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 function setup(t) {
@@ -474,6 +474,30 @@ test('an interrupted deletion of a repository that moved long ago is rolled back
   assert.deepEqual(registered.state.comments, [{ mode: 'personal', body: 'Keep me' }]);
   assert.equal(fs.existsSync(pendingFolder(review)), false);
   assert.equal(storedReviewId(moved, 'same-id'), review.id);
+});
+
+test('an interrupted deletion of a repository that moved long ago stays pending while an archive claims the ID', (t) => {
+  const { root, review } = setup(t), moved = path.join(root, 'moved');
+  patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  fs.renameSync(path.join(root, 'repo'), moved);
+  const file = path.join(pendingFolder(review), 'review.json'), record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  record.missingSince = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(record));
+  // An archive that starts during recovery from the moved worktree claims the ID;
+  // a failing archive brings it back, so recovery must not erase the folder.
+  const snapshot = claimForArchive(moved, 'same-id');
+  recoverInterruptedDeletion(review.id, moved);
+  assert.ok(fs.existsSync(pendingFolder(review)));
+  // The moved worktree is now the recorded location, so cleanup, which cannot see
+  // where a command runs, no longer counts the old location's absence.
+  registeredReviews();
+  assert.ok(fs.existsSync(pendingFolder(review)));
+  failArchive(moved, 'same-id', snapshot);
+  const registered = registerReview(moved, 'same-id', 'Review');
+  assert.equal(registered.id, review.id);
+  assert.deepEqual(registered.state.comments, [{ mode: 'personal', body: 'Keep me' }]);
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
 });
 
 test('a deletion that reads the refs during an archive rollback does not take the review ID for gone', (t) => {
