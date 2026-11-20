@@ -661,6 +661,16 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   overflow-wrap: anywhere;
 }
 .tag-pop-float.is-tooltip { width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 7px 10px; }
+/* A cut-off tooltip names the keys that scroll it while its trigger has focus.
+   The hint has empty alternative text, so the description stays the tooltip's text. */
+.tag-pop-float.is-key-scrollable::after {
+  content: "\2191 \2193  PgUp PgDn to scroll" / "";
+  position: sticky; bottom: -10px; display: block;
+  margin: 8px -12px -10px; padding: 4px 12px;
+  border-top: 1px solid #46515f; background: #303a46;
+  font-family: var(--mono); font-size: 10.5px; color: #aab4c0; text-align: right;
+}
+.tag-pop-float.is-tooltip.is-key-scrollable::after { bottom: -7px; margin: 6px -10px -7px; padding: 4px 10px; }
 .tag-pop-float b { font-weight: 400; }
 .tag-pop-float p {
   color: #c4ccd6; font-size: 12.5px; margin: 8px 0 0; line-height: 1.5;

@@ -39,6 +39,9 @@ export function ensurePop(): HTMLDivElement {
   pop.className = "tag-pop-float";
   pop.id = "review-tooltip";
   pop.setAttribute("role", "tooltip");
+  // Chromium would make it a tab stop while it scrolls; its keys come from
+  // the element it describes instead (see scrollPopFromKey).
+  pop.tabIndex = -1;
   document.body.appendChild(pop);
   pop.addEventListener("pointerenter", () => clearTimeout(popTimer));
   pop.addEventListener("pointerleave", () => { if (!popSticky) scheduleHide(); });
@@ -84,11 +87,13 @@ export function showPop(btn: HTMLElement): void {
   btn.setAttribute("aria-describedby", [...ids].join(" "));
   fillPop(btn);
   const pop = ensurePop();
+  pop.scrollTop = 0;
   pop.style.visibility = "hidden";
   pop.classList.add("is-shown");
   requestAnimationFrame(() => {
     if (popOwner !== btn) return;
     positionPop(btn);
+    markKeyScrollable();
     pop.style.visibility = "";
   });
 }
@@ -109,6 +114,13 @@ export function forceHidePop(): void {
 /** Whether the open tooltip or popover is cut off and scrolls. */
 function popOverflows(): boolean {
   return Boolean(popEl?.classList.contains("is-shown") && popEl.scrollHeight > popEl.clientHeight);
+}
+/** Shows the scrolling keys on a cut-off tooltip while focus is on what it describes. */
+export function markKeyScrollable(): void {
+  if (!popEl) return;
+  popEl.classList.remove("is-key-scrollable");
+  const focused = document.activeElement;
+  if (popOwner && focused && popOwner.contains(focused) && popOverflows()) popEl.classList.add("is-key-scrollable");
 }
 const POP_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
 /**
@@ -146,10 +158,12 @@ export function installPopover(): void {
   document.addEventListener("focusin", (e) => {
     const b = tooltipTarget(e.target);
     if (b) showPop(b);
+    markKeyScrollable();
   });
   document.addEventListener("focusout", (e) => {
     const b = leftTooltipTarget(e.target);
     if (b && !popSticky) scheduleHide();
+    markKeyScrollable();
   });
   document.addEventListener("click", (e) => {
     const b = e.target instanceof Element ? e.target.closest(".tag-face[data-tagpop]") : null;
@@ -175,5 +189,6 @@ export function installPopover(): void {
       popEl?.classList.add("is-shown");
     }
     positionPop(popOwner);
+    markKeyScrollable();
   });
 }
