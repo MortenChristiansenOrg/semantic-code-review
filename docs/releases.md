@@ -154,6 +154,11 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    The first release that requires Node.js 22 must say prominently under
    Breaking changes and Updating that Node.js 20 is no longer supported and that
    users must install Node.js 22 or newer before updating.
+   The first release that makes a finalized stage one commit must say under
+   Breaking changes that `stage finish`, `stage organize --finalized` and
+   `restack` fold a stage's commits into one commit whose message comes from
+   the stage title and summary, with the folded commits' authors as
+   co-authors, and that validation rejects a stage of several commits.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

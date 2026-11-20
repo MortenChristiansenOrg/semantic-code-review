@@ -183,7 +183,8 @@ export interface OrganizeStageOptions {
 /**
  * Post-processes a committed stage diff into descriptive change nodes.
  * Every changed file must belong to a node. Multi-node files must partition
- * their changed hunks or line ranges.
+ * their changed hunks or line ranges. With `finalized`, a corrected stage is
+ * recorded at its new head, folded into one stage commit.
  * @cli semantic-flow.mjs
  * @command implementation stage organize
  */
@@ -297,7 +298,9 @@ export interface FinishStageOptions {
     id?: string;
 }
 /**
- * Finalizes a working stage against the current stage branch head.
+ * Finalizes a working stage against the current stage branch head, folding the
+ * stage's commits into one commit whose message is the stage title and summary,
+ * with the other authors of the folded commits as co-authors.
  * @cli semantic-flow.mjs
  * @command implementation stage finish
  */
@@ -370,7 +373,8 @@ export interface RestackOptions {
     json?: true;
 }
 /**
- * Refreshes an edited stage branch and rebases every branch above it.
+ * Accepts edited stage branches, folds each into one stage commit again, and
+ * replays every branch above the earliest one.
  * @cli semantic-flow.mjs
  * @command implementation restack
  */

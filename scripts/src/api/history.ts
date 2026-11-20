@@ -8,7 +8,8 @@ export interface RestackOptions {
 }
 
 /**
- * Refreshes an edited stage branch and rebases every branch above it.
+ * Accepts edited stage branches, folds each into one stage commit again, and
+ * replays every branch above the earliest one.
  * @cli semantic-flow.mjs
  * @command implementation restack
  */

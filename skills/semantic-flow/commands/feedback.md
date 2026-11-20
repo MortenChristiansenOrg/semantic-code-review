@@ -180,7 +180,8 @@ earliest changed branch and run one restack:
 <semantic-flow> implementation restack --from <earliest-changed-stage-id>
 ```
 
-This accepts every edited stage head and replays each descendant once. If a
+This accepts every edited stage head, folds each edited stage into one commit
+again, and replays each descendant once. If a
 later correction cannot be implemented coherently until it includes an earlier
 correction, restack before that stage, then continue and restack once more from
 the earliest stage changed after that point.

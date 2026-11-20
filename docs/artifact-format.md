@@ -14,7 +14,8 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
 4. Each stage is one cumulative local branch and one review unit.
 5. The first stage branch is based on `targetBranch`; every later stage branch
    is based on the branch immediately below it.
-6. A stage may contain multiple linear commits. Merge commits are invalid.
+6. A finalized stage is one commit. Commits made while the stage is worked on
+   or corrected are folded into it. Merge commits are invalid.
 7. Immutable base/head snapshots make mutable branches and feedback anchors
    verifiable.
 8. The active artifact stores only what Git cannot tell. Branch names, base
@@ -157,8 +158,11 @@ baseRevision = previousStage.change.headRevision
 
 `branch` MUST equal `<branch-prefix>/stages/<stage-id>`.
 The local branch ref MUST point to `headRevision` during an active implementation.
-`headRevision` MUST descend linearly from `baseRevision` and the range MUST
-contain at least one commit and no merge commit.
+`headRevision` MUST be the one commit of the range `baseRevision..headRevision`.
+Tooling folds the commits made while a stage is worked on or corrected into
+that commit when it records the stage head. The reference tooling generates its
+message from the stage title and summary and adds a `Co-authored-by` trailer
+for every other author of the folded commits.
 
 `files` is derived from:
 
@@ -230,8 +234,9 @@ tip. Finalization records the branch head and removes the working document.
 
 Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
 
-1. Read the current head of stage `k`.
-2. Replay each branch above it onto the newly computed lower head, bottom-up.
+1. Read the current head of stage `k` and fold its commits into one.
+2. Replay each branch above it onto the newly computed lower head, bottom-up,
+   folding any branch that was edited too.
 3. Abort without moving refs if any patch conflicts.
 4. Move affected branch refs as one transaction.
 5. Record each affected `headRevision` (and the manifest's `baseRevision` when

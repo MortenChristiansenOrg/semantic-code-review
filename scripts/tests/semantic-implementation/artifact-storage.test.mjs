@@ -46,6 +46,12 @@ test("an active ref made symbolic after it was read is replaced, not followed", 
   updateRefs(repo.root, [{ ref: ACTIVE, next: "0".repeat(40), previous: snapshot }]);
   assert.equal(repo.git("rev-parse", "decoy"), snapshot);
   assert.equal(repo.result("git", ["rev-parse", "--verify", "--quiet", ACTIVE]).status, 1);
+  // Moving a branch made symbolic since it was read leaves the branch it names.
+  const main = repo.git("rev-parse", "main");
+  repo.git("symbolic-ref", "refs/heads/alias", "refs/heads/decoy");
+  updateRefs(repo.root, [{ ref: "refs/heads/alias", next: main, previous: snapshot }]);
+  assert.equal(repo.git("rev-parse", "decoy"), snapshot);
+  assert.equal(repo.git("rev-parse", "refs/heads/alias"), main);
 });
 
 test("every worktree of the repository sees the same artifact", (t) => {

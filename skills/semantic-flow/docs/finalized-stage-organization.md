@@ -52,7 +52,8 @@ Use the CLI to update the artifact; never hand-edit its nodes or revisions.
 Remove the temporary input afterward.
 
 A correction commit can leave the branch ahead of the recorded stage head
-until organization and restacking finish. That is expected during this
+until organization and restacking finish; organization folds it into the stage
+commit when it records the corrected head. That is expected during this
 workflow, not by itself a schema migration or interrupted-write problem.
 Return to the calling command's batched restack procedure; do not restack after
 each organization or restart feedback preflight midway through the corrections.

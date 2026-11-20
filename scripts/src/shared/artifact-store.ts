@@ -448,14 +448,20 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
-    // An update that keeps a ref's value only verifies it. Semantic Flow's own
-    // refs are never symbolic, so one made symbolic since it was read is
-    // replaced rather than followed to the branch it names; the expected
-    // value is still checked.
-    ...updates.flatMap(({ ref, next, previous }) => [
-      ...(ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
-      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
-    ]),
+    ...updates.flatMap(({ ref, next, previous }) => {
+      const write = next !== previous;
+      return [
+        // A write never follows a symbolic ref: a ref made symbolic since it
+        // was read is replaced, not the ref it names, and the expected value is
+        // still checked. Semantic Flow's own refs are never symbolic.
+        ...(write || ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
+        // An unchanged ref is only checked. Git reports `verify` to
+        // reference-transaction hooks as a deletion, so an existing ref is
+        // checked by updating it to its own value.
+        !write ? (previous === ZERO_OID ? `verify ${ref} ${ZERO_OID}` : `update ${ref} ${previous} ${previous}`)
+          : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
+      ];
+    }),
     "prepare",
     "commit",
     "",
@@ -481,9 +487,9 @@ function recordedHeads(files: ArtifactFiles | undefined): string[] {
  * those the base recorded that the draft no longer does. Keeping them as the
  * snapshot's parents keeps earlier stage heads reachable, so feedback anchored
  * to them survives garbage collection. */
-function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft): string[] {
+function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft, retain: readonly string[] = []): string[] {
   const current = new Set(recordedHeads(draft));
-  const heads = [...(base?.active.supersededHeads ?? []), ...recordedHeads(base)];
+  const heads = [...(base?.active.supersededHeads ?? []), ...recordedHeads(base), ...retain];
   return [...new Set(heads)].filter((head) => !current.has(head));
 }
 
@@ -521,18 +527,21 @@ function moveArtifactRef(root: string, implementationId: string, previous: strin
 /** Commits a draft as the new snapshot of its implementation and moves the
  * implementation's ref to it together with the other ref updates, in one
  * transaction. Fails without changing anything when the artifact changed since
- * base was read; without base, when the implementation already exists. */
+ * base was read; without base, when the implementation already exists.
+ * Superseded stage heads stay reachable as the snapshot's parents, as do the
+ * retained commits, such as the commits a fold replaced. */
 export function commitArtifact(
   root: string,
   base: ArtifactSnapshot | undefined,
   draft: ArtifactDraft,
   refUpdates: readonly RefUpdate[] = [],
+  retain: readonly string[] = [],
 ): string {
   if (base !== undefined && !(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be committed.");
   const implementationId = activeImplementationId(root, draft);
   if (base && base.implementationId !== implementationId) fail("A command may not change the implementation ID.");
   const tree = writeDraftTree(root, draft);
-  const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
+  const parents = supersededHeads(base, draft, retain).flatMap((head) => ["-p", head]);
   const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
   const previous = base?.version ?? ZERO_OID;
   // A new implementation may not take the ID of an archived one, whose archive

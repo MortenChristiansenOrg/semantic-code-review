@@ -99,7 +99,8 @@ changed branch and run:
 <semantic-flow> implementation restack --from <earliest-changed-stage-id>
 ```
 
-This replays each descendant once. If a later correction requires code from an
+This folds each corrected stage into one commit and replays each descendant
+once. If a later correction requires code from an
 earlier correction before it can be recreated coherently, restack before that
 stage, then continue and run one final restack from the earliest stage changed
 afterward.

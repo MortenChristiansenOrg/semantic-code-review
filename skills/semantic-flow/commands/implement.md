@@ -139,7 +139,8 @@ failures or skipped checks.
 
 ### Commit and organize
 
-Commit the stage implementation. Multiple linear commits are allowed. The
+Commit the stage implementation. Multiple linear commits are allowed; `stage
+finish` folds them into one stage commit with a generated message. The
 artifact and private feedback are stored outside the worktree, feedback under
 `~/.semantic-flow`, and must never be copied into stage commits.
 
