@@ -409,6 +409,9 @@ read `~/.semantic-flow` (such as Firefox installed as a snap), or when `.html`
 files open in an editor instead of the browser. The link then appears in that
 program's arguments while it starts.
 
+The viewer trusts other software serving on the machine's loopback address
+(`127.0.0.1`), so do not use it on a host shared with untrusted users.
+
 ## 7. Send feedback
 
 In **Review queue**, add notes containing change instructions or questions.
