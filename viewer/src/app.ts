@@ -612,6 +612,16 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   const diffIdentity = (entry) => JSON.stringify([fileBaseRevision(entry), entry.stage.headRevision, entry.file.revision,
     fileViewMode(entry.id) === "full" ? "full" : "changes"]);
   const diffRequests = new Map();
+  // An open file shows its diff once loaded. Run after each render, so a file
+  // opened, restored with the review, or adopted without its lines loads the
+  // diff its rendered row now waits for; the load renders again when done.
+  function loadOpenDiffs() {
+    Object.keys(state.activeFiles).forEach((fid) => {
+      const entry = fileById.get(fid);
+      if (!entry || !activeFileNodeId(fid) || !fileRowElement(fid)) return;
+      if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError) ensureFileDiff(entry);
+    });
+  }
   async function ensureFileDiff(entry, offset = 0, force = false, target = null, pageScroll = null) {
     if (!entry) return;
     if (diffRequests.has(entry.id)) {
@@ -3842,7 +3852,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     // or groups change, also resets the scroll of the diff or Markdown preview
     // inside it. Only a visible scroller reports its position, and only the
     // same scroller, still visible, gets it back after this render.
-    const pendingDiffs = [];
     const viewScrolls = new Map();
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!activeFileNodeId(fid)) return;
@@ -3860,8 +3869,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       const entry = fileById.get(fid);
       if (row && entry) {
         const holder = cinemaHolder(fid);
-        if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
-          pendingDiffs.push(entry);
         for (const selector of fileScrollers) {
           const saved = viewScrolls.get(`${fid}\0${selector}`);
           const scroller = saved && holder?.querySelector(selector);
@@ -3879,7 +3886,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       const replacement = [...app.querySelectorAll(focusSelector)].find((el) => !el.closest("[inert]"));
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
-    pendingDiffs.forEach((entry) => ensureFileDiff(entry));
+    loadOpenDiffs();
     resumePendingLazyJump();
   };
 
