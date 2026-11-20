@@ -4918,7 +4918,8 @@ test('selection matches refresh once per double-click and not while typing in a 
   await settled();
   const box = await word.boundingBox();
   await page.mouse.dblclick(box.x + 4, box.y + box.height / 2);
-  expect(await page.evaluate(() => String(window.getSelection()))).toBe('const');
+  // Windows also selects the space after a double-clicked word; matching trims it.
+  expect((await page.evaluate(() => String(window.getSelection()))).trim()).toBe('const');
   await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const', line: 'l:first:new:1:shared.js', code: true, connected: true }]);
   expect(await settled()).toMatchObject({ refreshes: 1, matches: 1 });
   await page.locator('.file-notes .thread-add').click();
