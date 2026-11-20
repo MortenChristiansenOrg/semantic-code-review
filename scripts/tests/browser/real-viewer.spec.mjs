@@ -146,7 +146,11 @@ test('a page opened without a key shows how to get a fresh link', async ({ brows
   await expect(page.locator('#fresh-link-notice')).toContainText(NOTICE);
   await expect(page.locator('#fresh-link-notice')).toContainText('Run the review command again');
   await expect(page.locator('.stage')).toHaveCount(0);
+  // The link changes only the fragment, so the page that did not start reloads
+  // and the new page exchanges the code; the notice shows on both.
+  const exchanged = page.waitForResponse((response) => response.url().endsWith('/api/session'));
   await page.goto(`${reviews.a.base}#launch=not-a-code`);
+  await exchanged;
   await expect(page.locator('#fresh-link-notice')).toContainText(NOTICE);
   expect(await page.evaluate(() => location.hash)).toBe('');
   expect(await violations(page)).toEqual([]);
