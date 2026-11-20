@@ -2047,17 +2047,17 @@ const EMPTY_STAGE_TRAILER = "Semantic-Flow-Empty: true";
 
 /** The marked empty commit an emptied stage becomes on parent. */
 function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string): string {
-  const coAuthors = gitRaw(["show", "-s", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x02)", source], { cwd: root })
-    .split("\x02").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
+  const coAuthors = gitRaw(["show", "-s", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
+    .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
   return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, true));
 }
 
 /** Whether a stage head is a marked empty stage commit. */
 function isMarkedEmptyStage(root: string, head: string): boolean {
-  const [tree, parent, marker = ""] = gitRaw(["show", "-s", "--format=%T%x00%P%x00%(trailers:key=Semantic-Flow-Empty,valueonly,separator=%x02)", head], { cwd: root }).split("\0");
+  const [tree, parent, ...markers] = gitRaw(["show", "-s", "--format=%T%x00%P%x00%(trailers:key=Semantic-Flow-Empty,valueonly,unfold,separator=%x00)", head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return false;
   return tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root }) &&
-    marker.split("\x02").some((value) => value.trim() === "true");
+    markers.some((value) => value.trim() === "true");
 }
 
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
