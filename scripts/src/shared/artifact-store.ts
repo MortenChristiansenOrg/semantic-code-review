@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.js";
 import { git, gitRaw } from "./git.js";
-import { jsonBytes, parseJsonDocument } from "./json.js";
+import { jsonBytes, parseJsonDocument, replaceFile } from "./json.js";
 import { errorCode, errorMessage, isRecord } from "./narrow.js";
 
 /** The folder published and archived artifacts are stored under in a commit. */
@@ -691,7 +691,7 @@ function writeFileAtomically(file: string, bytes: Buffer): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(temporary, bytes);
-    fs.renameSync(temporary, file);
+    replaceFile(temporary, file);
   } finally {
     fs.rmSync(temporary, { force: true });
   }
@@ -699,7 +699,10 @@ function writeFileAtomically(file: string, bytes: Buffer): void {
 
 /** Replaces the files of an artifact directory, such as a remote review's
  * projection. The change runs first; nothing is replaced when it fails. When
- * anything fails, undo reverts the change and the previous files stay. */
+ * anything fails, undo reverts the change and the previous files stay.
+ * Viewers may be reading the directory meanwhile; Windows refuses to move a
+ * directory while a file in it is open, so each move waits for them as
+ * replaceFile does. */
 export function replaceArtifactDirectory(
   directory: string,
   files: Iterable<readonly [string, Buffer]>,
@@ -715,14 +718,14 @@ export function replaceArtifactDirectory(
     try {
       change();
       fs.rmSync(previous, { recursive: true, force: true });
-      if (fs.existsSync(directory)) fs.renameSync(directory, previous);
-      fs.renameSync(next, directory);
+      if (fs.existsSync(directory)) replaceFile(directory, previous);
+      replaceFile(next, directory);
     } catch (error) {
       // The change is reverted first; both rollback steps run before any failure is described.
       const failures: Array<[string, unknown]> = [];
       try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
-        if (!fs.existsSync(directory) && fs.existsSync(previous)) fs.renameSync(previous, directory);
+        if (!fs.existsSync(directory) && fs.existsSync(previous)) replaceFile(previous, directory);
       } catch (failure) {
         failures.push([`Restoring the previous files from ${previous} also failed`, failure]);
       }

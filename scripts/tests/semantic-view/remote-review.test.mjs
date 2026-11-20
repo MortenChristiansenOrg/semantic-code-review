@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
 import { remoteIdentity } from '../../src/shared/remote-review.ts';
+import { replaceArtifactDirectory } from '../../src/shared/artifact-store.ts';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { viewerFetch } from '../helpers/viewer-client.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
@@ -432,4 +434,89 @@ test('remote approval comparisons follow a complete rename chain across commits 
   assert.deepEqual(dataFor(review).stages.at(-1).files[0].previousPaths, file.previousPaths);
   assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, { ...current, previousPaths: [], path: 'unrelated.txt' }), /another file review/);
   assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, { ...current, nodeId: 'another-node' }), /another file review/);
+});
+
+/** A projection directory holding one file, and a reader of the folder's files. */
+function projection(t, contents = 'previous\n') {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'projection-replace-'));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const directory = path.join(parent, 'artifact');
+  fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, 'manifest.json'), contents);
+  const read = () => fs.readFileSync(path.join(directory, 'manifest.json'), 'utf8');
+  return { parent, directory, read };
+}
+
+/** Runs operation as on platform, refusing each rename refuse names a code for. */
+function withRenames(t, platform, refuse, operation) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  const rename = fs.renameSync;
+  const moves = [];
+  const mock = t.mock.method(fs, 'renameSync', (from, to) => {
+    const code = refuse(from, to);
+    moves.push([path.basename(from), path.basename(to), code ?? 'moved']);
+    if (code) throw Object.assign(new Error(`${code}: simulated, rename`), { code });
+    return rename(from, to);
+  });
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try { operation(); }
+  finally { Object.defineProperty(process, 'platform', original); mock.mock.restore(); }
+  return moves;
+}
+
+test('replacing a projection on Windows waits for readers of its files and folder', (t) => {
+  const { parent, directory, read } = projection(t);
+  // A reader's open file refuses moving the folder it is in until the reader is done.
+  const refusals = new Map([['artifact', ['EPERM', 'EACCES', 'EBUSY']]]);
+  const moves = withRenames(t, 'win32', (from) => refusals.get(path.basename(from))?.shift(), () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {}));
+  assert.deepEqual(moves.filter(([from]) => from === 'artifact').map(([, , outcome]) => outcome), ['EPERM', 'EACCES', 'EBUSY', 'moved']);
+  assert.deepEqual(moves.filter(([from]) => from === 'artifact.next').map(([, to, outcome]) => [to, outcome]), [['artifact', 'moved']]);
+  assert.equal(read(), 'next\n');
+  assert.deepEqual(fs.readdirSync(parent), ['artifact']);
+});
+
+test('a projection that stays in use keeps its previous files and reverts the change', (t) => {
+  const { parent, directory, read } = projection(t);
+  // The retry's own clock and waits, so the budget is checked without real time.
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(Atomics, 'wait', (array, index, value, ms) => { now += ms; return 'timed-out'; });
+  let reverted = 0;
+  const refuse = (from) => path.basename(from) === 'artifact' ? 'EPERM' : undefined;
+  assert.throws(() => withRenames(t, 'win32', refuse, () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {}, () => { reverted++; })), /EPERM/);
+  assert.ok(now >= 2000, `waited ${now} ms`);
+  assert.equal(reverted, 1);
+  assert.equal(read(), 'previous\n');
+  assert.deepEqual(fs.readdirSync(parent), ['artifact']);
+  // Elsewhere the refusal is not a reader's, so it is reported at once.
+  now = 0;
+  assert.throws(() => withRenames(t, 'linux', refuse, () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {})), /EPERM/);
+  assert.equal(now, 0);
+  assert.equal(read(), 'previous\n');
+});
+
+test('a projection is replaced while another process reads one of its files', { skip: process.platform !== 'win32' }, async (t) => {
+  const { parent, directory, read } = projection(t);
+  // The reader holds the file open for a moment after saying so, then closes it.
+  const reader = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const descriptor = fs.openSync(process.argv[1], 'r');
+    process.stdout.write('open\\n');
+    setTimeout(() => fs.closeSync(descriptor), 400);
+  `, path.join(directory, 'manifest.json')], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const exited = new Promise((resolve) => reader.on('exit', resolve));
+  t.after(() => reader.kill());
+  await new Promise((resolve, reject) => {
+    reader.stdout.on('data', (chunk) => { if (String(chunk).includes('open')) resolve(); });
+    reader.on('exit', () => reject(new Error('The reader exited before opening the file.')));
+  });
+  // The open file is what the replacement must wait for.
+  assert.throws(() => fs.renameSync(directory, `${directory}.moved`), (error) => ['EPERM', 'EACCES', 'EBUSY'].includes(error.code));
+  replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {});
+  assert.equal(read(), 'next\n');
+  assert.equal(await exited, 0);
+  assert.deepEqual(fs.readdirSync(parent).filter((name) => name !== 'artifact.previous'), ['artifact']);
 });

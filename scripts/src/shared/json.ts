@@ -98,9 +98,10 @@ export function writeJson(file: string, value: unknown): void {
 export const REPLACE_WAIT_MS = 2000;
 const SHARING_VIOLATIONS = ["EPERM", "EACCES", "EBUSY"];
 
-/** Moves source over destination, as `fs.renameSync` does. Windows refuses to
- * replace a file while another process has it open, which readers of review data
- * do briefly, so there the move is retried until the readers are done. */
+/** Moves a file or directory over destination, as `fs.renameSync` does.
+ * Windows refuses to replace a file, or move a directory, while another process
+ * has it or a file in it open, which readers of review data and artifacts do
+ * briefly, so there the move is retried until the readers are done. */
 export function replaceFile(source: string, destination: string): void {
   const deadline = performance.now() + REPLACE_WAIT_MS;
   for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
