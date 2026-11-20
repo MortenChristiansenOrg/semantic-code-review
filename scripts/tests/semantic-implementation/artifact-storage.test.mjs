@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ArtifactDraft, commitArtifact, readArtifact } from "../../src/shared/artifact-store.ts";
+import { ArtifactDraft, commitArtifact, readArtifact, updateRefs } from "../../src/shared/artifact-store.ts";
 import {
   beginStage,
   createRepository,
@@ -31,6 +31,21 @@ test("the active artifact lives in a private ref and survives git clean -fdx", (
   repo.git("clean", "-fdx");
   repo.semantic("validate");
   assert.equal(storedSummary(repo), "Add the implementation.");
+});
+
+test("an active ref made symbolic after it was read is replaced, not followed", (t) => {
+  const repo = createRepository(t);
+  initializeImplementation(repo);
+  const snapshot = repo.git("rev-parse", ACTIVE);
+  repo.git("branch", "decoy", snapshot);
+  // Another writer turns the active ref into a symbolic ref between the read and the write.
+  repo.git("update-ref", "-d", ACTIVE);
+  repo.git("symbolic-ref", ACTIVE, "refs/heads/decoy");
+  // The expected value is still checked.
+  assert.throws(() => updateRefs(repo.root, [{ ref: ACTIVE, next: "0".repeat(40), previous: repo.git("rev-parse", "main") }]));
+  updateRefs(repo.root, [{ ref: ACTIVE, next: "0".repeat(40), previous: snapshot }]);
+  assert.equal(repo.git("rev-parse", "decoy"), snapshot);
+  assert.equal(repo.result("git", ["rev-parse", "--verify", "--quiet", ACTIVE]).status, 1);
 });
 
 test("every worktree of the repository sees the same artifact", (t) => {

@@ -169,7 +169,9 @@ export function readArtifactDirectory(root: string, directory: string): Artifact
 // --- Active artifacts ---------------------------------------------------------
 
 /** The namespace of the refs holding active artifacts, one per implementation. */
-export const ACTIVE_REF_PREFIX = "refs/semantic-review/active/";
+/** Refs only Semantic Flow writes, all of them direct. */
+const OWN_REF_PREFIX = "refs/semantic-review/";
+export const ACTIVE_REF_PREFIX = `${OWN_REF_PREFIX}active/`;
 /** Where earlier versions kept the active artifact, relative to a worktree root. */
 const LEGACY_DIRECTORY = ".semantic-review";
 /** The file in a worktree's Git directory naming the implementation last
@@ -188,7 +190,7 @@ export const activeRef = (implementationId: string) => `${ACTIVE_REF_PREFIX}${im
 /** An archived implementation: a commit on top of its published metadata
  * commit that adds the landing record. Archiving moves the implementation from
  * its active ref to this one in one transaction. */
-export const ARCHIVE_REF_PREFIX = "refs/semantic-review/archive/";
+export const ARCHIVE_REF_PREFIX = `${OWN_REF_PREFIX}archive/`;
 export const archiveRef = (implementationId: string) => `${ARCHIVE_REF_PREFIX}${implementationId}`;
 /** The annotated tag that shares an archive. It is never moved once created. */
 export const ARCHIVE_TAG_PREFIX = "refs/tags/semantic-review/archive/";
@@ -445,9 +447,14 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
-    // An update that keeps a ref's value only verifies it.
-    ...updates.map(({ ref, next, previous }) =>
-      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
+    // An update that keeps a ref's value only verifies it. Semantic Flow's own
+    // refs are never symbolic, so one made symbolic since it was read is
+    // replaced rather than followed to the branch it names; the expected
+    // value is still checked.
+    ...updates.flatMap(({ ref, next, previous }) => [
+      ...(ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
+      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
+    ]),
     "prepare",
     "commit",
     "",
@@ -578,7 +585,7 @@ export function replaceArtifactFileInGitDirectory(
     const next = gitRaw([gitDir, "commit-tree", tree, ...parents.split(" ").filter(Boolean).flatMap((parent) => ["-p", parent]),
       "-m", `Semantic implementation ${implementationId}`], { env: SNAPSHOT_IDENTITY });
     try {
-      run(["update-ref", "--create-reflog", "-m", "semantic-flow", ref, next, commit]);
+      run(["update-ref", "--no-deref", "--create-reflog", "-m", "semantic-flow", ref, next, commit]);
       return true;
     } catch (error) {
       // Only another writer moving the ref first is worth deciding again.
