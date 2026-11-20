@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.js";
 import { git, gitRaw } from "./git.js";
-import { jsonBytes, parseJsonDocument, replaceFile } from "./json.js";
+import { jsonBytes, parseJsonDocument, removeFolder, replaceFile } from "./json.js";
 import { errorCode, errorMessage, isRecord } from "./narrow.js";
 
 /** The folder published and archived artifacts are stored under in a commit. */
@@ -711,26 +711,26 @@ export function replaceArtifactDirectory(
 ): void {
   const next = `${directory}.next`;
   const previous = `${directory}.previous`;
-  // Windows also refuses to remove a folder while a file in it is open.
-  const remove = (folder: string) => fs.rmSync(folder, { recursive: true, force: true, ...(process.platform === "win32" ? { maxRetries: 10, retryDelay: 20 } : {}) });
-  // A replacement whose rollback failed left the previous files only in their
-  // backup; they are put back before that backup can be replaced.
-  if (!fs.existsSync(directory) && fs.existsSync(previous)) replaceFile(previous, directory);
-  remove(next);
+  // A replacement whose rollback failed left the earlier files only in their
+  // backup. They may not match what the change undid, so they are not shown
+  // again, but kept until new files are in place.
+  const leftover = !fs.existsSync(directory) && fs.existsSync(previous);
+  let movedAside = false;
+  removeFolder(next);
   try {
     // Each file is written before the next is produced, so large files are not all held at once.
     for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
     try {
       change();
-      remove(previous);
-      if (fs.existsSync(directory)) replaceFile(directory, previous);
+      if (!leftover) removeFolder(previous);
+      if (fs.existsSync(directory)) { replaceFile(directory, previous); movedAside = true; }
       replaceFile(next, directory);
     } catch (error) {
       // The change is reverted first; both rollback steps run before any failure is described.
       const failures: Array<[string, unknown]> = [];
       try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
-        if (!fs.existsSync(directory) && fs.existsSync(previous)) replaceFile(previous, directory);
+        if (movedAside && !fs.existsSync(directory)) replaceFile(previous, directory);
       } catch (failure) {
         failures.push([`Restoring the previous files from ${previous} also failed`, failure]);
       }
@@ -742,10 +742,10 @@ export function replaceArtifactDirectory(
     }
   } finally {
     // The staged files are not needed once the replacement succeeded or failed.
-    try { remove(next); } catch { /* The operation's own outcome says more. */ }
+    try { removeFolder(next); } catch { /* The operation's own outcome says more. */ }
   }
   // The new files are in place; a copy left behind is removed by the next replacement.
-  try { remove(previous); } catch { /* See above. */ }
+  try { removeFolder(previous); } catch { /* See above. */ }
 }
 
 // --- Artifacts stored in Git trees ------------------------------------------

@@ -103,9 +103,21 @@ const SHARING_VIOLATIONS = ["EPERM", "EACCES", "EBUSY"];
  * has it or a file in it open, which readers of review data and artifacts do
  * briefly, so there the move is retried until the readers are done. */
 export function replaceFile(source: string, destination: string): void {
+  waitingForReaders(() => fs.renameSync(source, destination));
+}
+
+/** Removes a folder and everything in it, if it exists. Windows refuses while
+ * another process has a file in it open, so there it waits as replaceFile does. */
+export function removeFolder(folder: string): void {
+  waitingForReaders(() => fs.rmSync(folder, { recursive: true, force: true }));
+}
+
+/** Runs operation, and on Windows runs it again while another process's open
+ * handle refuses it, for up to REPLACE_WAIT_MS in all. */
+function waitingForReaders(operation: () => void): void {
   const deadline = performance.now() + REPLACE_WAIT_MS;
   for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
-    try { fs.renameSync(source, destination); return; }
+    try { operation(); return; }
     catch (error) {
       const remaining = deadline - performance.now();
       if (process.platform !== "win32" || !SHARING_VIOLATIONS.includes(errorCode(error) ?? "") || remaining <= 0) throw error;
