@@ -72,6 +72,28 @@ test('independent tab edits merge, retries are idempotent, conflicts are atomic'
   assert.throws(() => write([{ path: ['draft', 1], before: { present: false }, after: { present: true, value: true } }]), /Invalid/);
 });
 
+test('the store records the ID of the save that last changed the state', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'one')], 'save-1').lastSaveId, 'save-1');
+  // An exact retry changes nothing, so it keeps the ID of the save that did.
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'one')], 'save-2').lastSaveId, 'save-1');
+  assert.equal(readReview(review.id).lastSaveId, 'save-1');
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'two', 'one')]).lastSaveId, undefined);
+  assert.equal(readReview(review.id).lastSaveId, undefined);
+});
+
+test('a save is reported as stored when releasing the lock afterwards fails', (t) => {
+  const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
+  const rename = fs.renameSync;
+  t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(to).includes('.lock.retired-')) throw Object.assign(new Error('I/O error'), { code: 'EIO' });
+    return rename(from, to);
+  });
+  assert.equal(patchReviewState(review.id, review.generation, [change(['draft'], 'saved')]).state.draft, 'saved');
+  t.mock.restoreAll();
+  assert.equal(readReview(review.id).state.draft, 'saved');
+});
+
 test('state under keys named __proto__, constructor and prototype is saved, restored and never pollutes prototypes', (t) => {
   const root = setup(t), review = registerReview(path.join(root, 'a'), 'id', 'Review');
   const write = (changes) => patchReviewState(review.id, review.generation, changes);

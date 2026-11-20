@@ -2684,13 +2684,13 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
     review();
     if (activeImplementationId(root) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
   };
-  const storedState = (record: ReviewRecord) => ({ reviewId: record.id, generation: record.generation, state: record.state, stateRevision: record.stateRevision });
+  const storedState = (record: ReviewRecord) => ({ reviewId: record.id, generation: record.generation, state: record.state, stateRevision: record.stateRevision, lastSaveId: record.lastSaveId ?? null });
   return {
     readReview: (reviewId: string): ReviewStateBody => storedState(session(reviewId)),
     patchReviewState: (reviewId: string, fields: JsonRecord): ReviewStateBody => {
       session(reviewId);
-      const { generation, changes } = parseStatePatch(fields);
-      return storedState(patchReviewState(context.reviewId, generation, changes));
+      const { generation, changes, saveId } = parseStatePatch(fields);
+      return storedState(patchReviewState(context.reviewId, generation, changes, saveId));
     },
     snapshot: (refresh: boolean): Wire.ViewerSnapshot => {
       review();

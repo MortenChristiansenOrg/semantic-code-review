@@ -104,8 +104,8 @@ function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
 
 /* ---- review session ---------------------------------------------------- */
 export const getReviewState = () => getJson<ReviewStateResponse>("/api/review-state");
-export const saveReviewState = ({ reviewId, generation, changes }: ReviewStatePatchRequest) =>
-  postJson<ReviewStateResponse>("/api/review-state", { reviewId, generation, changes } satisfies Body<ReviewStatePatchRequest>);
+export const saveReviewState = ({ reviewId, generation, changes, saveId }: ReviewStatePatchRequest) =>
+  postJson<ReviewStateResponse>("/api/review-state", { reviewId, generation, changes, saveId } satisfies Body<ReviewStatePatchRequest>);
 export const getRevision = () => getJson<RevisionResponse>("/api/revision");
 export const getImplementation = () => getJson<ImplementationResponse>("/api/implementation");
 export const refreshRemote = () => postJson<RemoteRefreshResponse>("/api/remote/refresh", {});

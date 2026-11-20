@@ -143,8 +143,16 @@ function acquireReviewLock<T>(id: string, operation: () => T): T {
   } finally {
     if (!published) fs.rmSync(claim, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   }
-  try { return operation(); }
-  finally { retireLock(lock); }
+  let result: T;
+  try { result = operation(); }
+  catch (error) {
+    try { retireLock(lock); } catch { /* The operation's own error says more. */ }
+    throw error;
+  }
+  // The operation's writes are done. A failure to release the lock must not report
+  // them as refused; a lock left behind names this process to the next writer.
+  try { retireLock(lock); } catch { /* See above. */ }
+  return result;
 }
 export type RemoteReview = { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
 export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string };
@@ -155,6 +163,8 @@ export type ReviewRecord = {
   state: StoredReviewState;
   /** Counts the patches that changed the state, so a client can tell whether saves landed while it lacked an answer. */
   stateRevision: number;
+  /** The ID the viewer gave the save that last changed the state, if it gave one. */
+  lastSaveId?: string;
   remote?: RemoteReview;
   viewer?: ViewerRecord;
 };
@@ -180,14 +190,16 @@ function parseViewer(value: unknown): ViewerRecord | undefined {
 export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
   const invalid = () => new Error(`Review data at ${JSON.stringify(file)} is malformed. Reopen the review explicitly.`);
   if (!isRecord(value)) throw invalid();
-  const { id, generation, repositoryRoot, implementationId, createdAt, remote, viewer } = value;
+  const { id, generation, repositoryRoot, implementationId, createdAt, remote, viewer, lastSaveId } = value;
   // Older viewers could save a record without a title, lifecycle or state; those keep their defaults.
   const { title = "", updatedAt = createdAt, completedAt = null, state = {}, stateRevision = 0 } = value;
   if (typeof id !== "string" || typeof generation !== "string" || typeof repositoryRoot !== "string" || typeof implementationId !== "string" ||
     typeof title !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string" ||
     (completedAt !== null && typeof completedAt !== "string") || !isRecord(state) ||
-    typeof stateRevision !== "number" || !Number.isSafeInteger(stateRevision) || stateRevision < 0) throw invalid();
+    typeof stateRevision !== "number" || !Number.isSafeInteger(stateRevision) || stateRevision < 0 ||
+    (lastSaveId !== undefined && typeof lastSaveId !== "string")) throw invalid();
   const record: ReviewRecord = { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state, stateRevision };
+  if (lastSaveId !== undefined) record.lastSaveId = lastSaveId;
   if (remote !== undefined) {
     const parsed = parseRemote(remote);
     if (!parsed) throw invalid();
@@ -255,7 +267,7 @@ function validateValue(value: Value) {
 function defineOwn(target: JsonRecord, key: string, value: unknown) {
   Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
 }
-export function patchReviewState(id: string, generation: string, changes: StateChange[]) {
+export function patchReviewState(id: string, generation: string, changes: StateChange[], saveId?: string) {
   if (!Array.isArray(changes) || changes.length > 10000) throw new Error("Invalid state changes.");
   return withReviewLock(id, () => {
     const record = readReview(id);
@@ -297,7 +309,11 @@ export function patchReviewState(id: string, generation: string, changes: StateC
       if (!previousSnapshots.has(snapshotId) && !fs.existsSync(path.join(reviewDirectory(id), "snapshots", snapshotId + ".json"))) throw new Error("Approved content is unavailable. Re-approve the file before saving.");
     }
     if (changes.length) {
-      if (changed) record.stateRevision += 1;
+      if (changed) {
+        record.stateRevision += 1;
+        if (saveId) record.lastSaveId = saveId;
+        else delete record.lastSaveId;
+      }
       if (!isDeepStrictEqual(previousActivity, reviewActivity(record.state))) record.updatedAt = new Date().toISOString();
       atomicJson(path.join(reviewDirectory(id), "review.json"), record);
       for (const snapshotId of previousSnapshots) {

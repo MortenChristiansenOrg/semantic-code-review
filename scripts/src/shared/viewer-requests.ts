@@ -136,7 +136,9 @@ export function parseStateChanges(value: unknown): Wire.ReviewStateChange[] {
 }
 
 export function parseStatePatch(fields: JsonRecord): Wire.ReviewStatePatchRequest {
-  return { ...parseReviewTarget(fields), changes: parseStateChanges(fields.changes) };
+  const { saveId } = fields;
+  if (saveId !== undefined && (typeof saveId !== "string" || !saveId || saveId.length > 64)) throw new Error("Invalid save ID.");
+  return { ...parseReviewTarget(fields), changes: parseStateChanges(fields.changes), ...(saveId === undefined ? {} : { saveId }) };
 }
 
 export function parseAttachmentUpload(fields: JsonRecord, maxBytes: number): Wire.AttachmentUploadRequest {

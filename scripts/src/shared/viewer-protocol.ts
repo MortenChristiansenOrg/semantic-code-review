@@ -615,6 +615,8 @@ export type ReviewStateResponse = ApiResult<{
   state: StoredReviewState;
   /** Counts the saves that changed the state; a save that only repeats stored values leaves it. */
   stateRevision: number;
+  /** The `saveId` of the save that last changed the state, or null when it had none. */
+  lastSaveId: string | null;
 }>;
 
 /** POST `/api/review-state` request. */
@@ -623,6 +625,8 @@ export interface ReviewStatePatchRequest {
   generation: string;
   /** At most 10,000 changes. */
   changes: ReviewStateChange[];
+  /** Identifies this save, so a page that got no answer can tell from `lastSaveId` whether it landed. At most 64 characters. */
+  saveId?: string;
 }
 
 /** GET `/api/revision` response. */

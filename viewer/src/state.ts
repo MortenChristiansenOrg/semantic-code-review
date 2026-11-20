@@ -96,16 +96,22 @@ export function saveState(): Promise<void> {
 }
 /** How a save ended: stored, refused by the server, or unknown when no answer arrived. */
 type SaveOutcome = "saved" | "rejected" | "unknown";
-/** The changes of a save whose outcome is unknown: the server may hold them or the values before them. */
-let unresolvedChanges: ReviewStateChange[] | null = null;
+/** One save: the ID the server records when it lands, and its changes. */
+interface StateSave { saveId: string; changes: ReviewStateChange[] }
+/** A save whose outcome is unknown: the server may hold its changes or the values before them. */
+let unresolvedSave: StateSave | null = null;
 /** The server's message when another tab changed state this page saves. */
 const changedInAnotherTab = "Review state changed in another tab. Keep your draft text and reload before retrying.";
 /** Set once another tab changed a value this page saved without an answer; saving stops until reload. */
 let changedElsewhere = false;
+/** A random save ID. Unlike `crypto.randomUUID`, `getRandomValues` also works outside a secure context. */
+function newSaveId(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 /** Sends one change set and records why it failed. A failure the server reports stored nothing. */
-async function sendChanges(changes: ReviewStateChange[]): Promise<SaveOutcome> {
+async function sendChanges({ saveId, changes }: StateSave): Promise<SaveOutcome> {
   try {
-    const response = await api.saveReviewState({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes });
+    const response = await api.saveReviewState({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes, saveId });
     const payload = await response.json();
     if (response.ok && payload.ok) { persistedRevision = payload.stateRevision; return "saved"; }
     if (payload.ok === false) {
@@ -159,13 +165,15 @@ function setValueAt(root: StoredReviewState, path: string[], value: ReviewStateV
     target = record;
   }
 }
-/** Finds out from the server's state what a save of unknown outcome left there.
- * A value the server holds as saved was stored. A value it holds as before was
- * not stored, unless another save also landed since the page's last confirmed
- * one: that save may have restored the value after this one stored it. Anything
- * else another tab changed, which ends saving as when the server refuses a save
- * for that reason. A request that fails leaves the outcome unknown. */
-async function resolveUnknownSave(changes: ReviewStateChange[]): Promise<"resolved" | "conflict" | "unknown"> {
+/** Finds out from the server whether a save of unknown outcome landed. If no
+ * save changed the state since the page's last confirmed one, it did not. If
+ * exactly one did, the server's `lastSaveId` says whether it was this one or
+ * another tab's. With more, this one may have landed under another tab's, so it
+ * counts as a conflict. So does a value another tab changed at one of this
+ * save's paths, even to the same value: as when the server refuses a save for
+ * that reason, saving stops until reload. A request that fails leaves the
+ * outcome unknown. */
+async function resolveUnknownSave({ saveId, changes }: StateSave): Promise<"resolved" | "conflict" | "unknown"> {
   try {
     const response = await api.getReviewState();
     const body = await response.json();
@@ -176,12 +184,15 @@ async function resolveUnknownSave(changes: ReviewStateChange[]): Promise<"resolv
       return "unknown";
     }
     if (body.generation !== savedReview.generation) { saveError = "This review session was replaced. Reopen the review."; return "unknown"; }
-    const alone = body.stateRevision - persistedRevision <= 1;
+    const conflict = () => { changedElsewhere = true; saveError = changedInAnotherTab; return "conflict" as const; };
+    const landedSince = body.stateRevision - persistedRevision;
+    if (landedSince < 0 || landedSince > 1) return conflict();
+    const stored = landedSince === 1 && body.lastSaveId === saveId;
     const acknowledged = structuredClone(persistedState);
     for (const change of changes) {
       const current = valueAt(body.state, change.path);
-      if (current && sameValue(current, change.after)) setValueAt(acknowledged, change.path, change.after);
-      else if (!current || !alone || !sameValue(current, change.before)) { changedElsewhere = true; saveError = changedInAnotherTab; return "conflict"; }
+      if (!current || !sameValue(current, stored ? change.after : change.before)) return conflict();
+      if (stored) setValueAt(acknowledged, change.path, change.after);
     }
     persistedState = acknowledged;
     persistedRevision = body.stateRevision;
@@ -193,20 +204,21 @@ export async function writeState(): Promise<void> {
   captureEditor();
   if (changedElsewhere) return;
   // With nothing left to save and every earlier save's outcome known, an earlier failure no longer applies.
-  if (!unresolvedChanges && !stateChanges(persistedState, storedState()).length) { if (saveError) { saveError = ""; showSaveStatus(); } return; }
+  if (!unresolvedSave && !stateChanges(persistedState, storedState()).length) { if (saveError) { saveError = ""; showSaveStatus(); } return; }
   savingState = true; showSaveStatus();
   try {
     // Until a save's outcome is known, the state the server last confirmed may
     // not be its state, and a change back to it would not be sent.
-    if (unresolvedChanges) {
-      if (await resolveUnknownSave(unresolvedChanges) !== "resolved") return;
-      unresolvedChanges = null;
+    if (unresolvedSave) {
+      if (await resolveUnknownSave(unresolvedSave) !== "resolved") return;
+      unresolvedSave = null;
     }
     const next = storedState();
     const changes = stateChanges(persistedState, next);
     if (changes.length) {
-      const outcome = await sendChanges(changes);
-      if (outcome === "unknown") unresolvedChanges = changes;
+      const save = { saveId: newSaveId(), changes };
+      const outcome = await sendChanges(save);
+      if (outcome === "unknown") unresolvedSave = save;
       if (outcome !== "saved") return;
       persistedState = next;
     }
@@ -237,6 +249,6 @@ export function installUnloadGuard(): void {
   window.addEventListener("beforeunload", (event) => {
     if (reviewDeleted) return;
     captureEditor();
-    if (uploadOps.size || approvalOps.size || savingState || saveError || unresolvedChanges || changedElsewhere || exportState.phase === "working" || saveTimer && stateChanges(persistedState, storedState()).length) { event.preventDefault(); event.returnValue = ""; }
+    if (uploadOps.size || approvalOps.size || savingState || saveError || unresolvedSave || changedElsewhere || exportState.phase === "working" || saveTimer && stateChanges(persistedState, storedState()).length) { event.preventDefault(); event.returnValue = ""; }
   });
 }

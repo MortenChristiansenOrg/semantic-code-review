@@ -14,7 +14,7 @@ type Entry = { name: string; size: number; modified: number; directory: boolean;
 type Category = { label: string; detail: string; bytes: number };
 /** The ticket keeps the storage inspection shown before deletion for display only;
  * removal never depends on it, so it stays unvalidated and is narrowed where shown. */
-type Ticket = { review: Omit<ReviewRecord, "state" | "stateRevision" | "viewer">; preview: unknown; requestedAt: string; error?: string };
+type Ticket = { review: Omit<ReviewRecord, "state" | "stateRevision" | "lastSaveId" | "viewer">; preview: unknown; requestedAt: string; error?: string };
 function isCategory(value: unknown): value is Category {
   return isRecord(value) && typeof value.label === "string" && typeof value.detail === "string" && typeof value.bytes === "number" && Number.isSafeInteger(value.bytes) && value.bytes >= 0;
 }
@@ -29,7 +29,7 @@ function parseTicket(value: unknown, file: string): Ticket {
   if (!isRecord(value) || !isRecord(value.review) || typeof value.requestedAt !== "string" ||
     (value.error !== undefined && typeof value.error !== "string")) throw damaged;
   // The identity has the record's fields without its state; parse it with an empty one.
-  const { state: ignoredState, stateRevision: ignoredRevision, viewer: ignoredViewer, ...review } = parseReviewRecord({ ...value.review, state: {} }, file);
+  const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, ...review } = parseReviewRecord({ ...value.review, state: {} }, file);
   return { review, preview: value.preview, requestedAt: value.requestedAt, error: stringField(value, "error") };
 }
 function trashDirectory(id: string, generation: string) {
@@ -142,7 +142,7 @@ function inspect(id: string, generation: string) {
   ];
   const bytes = entries.reduce((sum, item) => sum + item.size, 0), knownBytes = categories.reduce((sum, item) => sum + item.bytes, 0);
   if (bytes > knownBytes) categories.push({ label: "Other owned files", bytes: bytes - knownBytes, detail: "Temporary and auxiliary review files" });
-  const { state: ignoredState, stateRevision: ignoredRevision, viewer: ignoredViewer, ...identity } = review;
+  const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, ...identity } = review;
   return { review: identity, storageDirectory: directory, bytes, categories, drafts, unresolved, referenceError,
     fingerprint: digest(JSON.stringify([review, entries])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0), deletionPending: false };
 }

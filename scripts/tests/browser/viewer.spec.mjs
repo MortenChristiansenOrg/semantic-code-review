@@ -34,6 +34,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
   const revisions = new Map();
+  const lastSaveIds = new Map();
   const attachments = new Map();
   const deleted = new Set();
   const errors = [];
@@ -73,7 +74,8 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
         const state = structuredClone(stores.get(currentId));
         const conflict = () => route.fulfill({ status: 409, json: { ok: false, error: 'Review state changed in another tab. Keep your draft text and reload before retrying.' } });
         let changed = false;
-        for (const change of route.request().postDataJSON().changes) {
+        const { changes, saveId } = route.request().postDataJSON();
+        for (const change of changes) {
           let target = state;
           for (const key of change.path.slice(0, -1)) {
             if (!Object.hasOwn(target, key)) own(target, key, {});
@@ -90,9 +92,9 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
           changed = true;
         }
         stores.set(currentId, state);
-        if (changed) revisions.set(currentId, (revisions.get(currentId) || 0) + 1);
+        if (changed) { revisions.set(currentId, (revisions.get(currentId) || 0) + 1); lastSaveIds.set(currentId, saveId ?? null); }
       }
-      return json({ ok: true, reviewId: currentId, generation: 'test', state: stores.get(currentId), stateRevision: revisions.get(currentId) || 0 });
+      return json({ ok: true, reviewId: currentId, generation: 'test', state: stores.get(currentId), stateRevision: revisions.get(currentId) || 0, lastSaveId: lastSaveIds.get(currentId) ?? null });
     }
     if (url.pathname === '/api/attachments' && route.request().method() === 'POST') {
       const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
@@ -5562,6 +5564,23 @@ test('undoing an edit whose save never arrived does not retry it over another ta
   await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
   await expect(input).toHaveValue('Later text');
   expect((await storedOnServer(page, url)).editor.compose.body).toBe('Other tab');
+});
+
+test('undoing an edit whose save never arrived does not overwrite another tab\'s identical text', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const failed = failNextSave(page, { commit: false });
+  await input.fill('Edited');
+  const { url, changes } = await failed;
+  await expect(page.locator('#save-status')).toBeVisible();
+  // Another tab saves the same text, which is not this page's save landing.
+  await saveElsewhere(page, url, changes);
+  const counter = countSaves(page);
+  await input.fill('Original');
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+  expect(counter.saves).toBe(0);
+  expect((await storedOnServer(page, url)).editor.compose.body).toBe('Edited');
 });
 
 test('a save whose response was lost is confirmed before the next change saves', async ({ page }) => {
