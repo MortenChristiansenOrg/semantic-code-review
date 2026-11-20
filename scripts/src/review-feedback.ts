@@ -43,7 +43,7 @@ import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
 import { activeImplementationId, readArtifact } from "./shared/artifact-store.js";
 import { loadImplementation } from "./shared/implementation.js";
-import { atomicJson, feedbackDirectory, readReview, readReviewArtifact, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
+import { atomicJson, readReview, readReviewArtifact, registerReview, relocateReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
@@ -120,12 +120,15 @@ function pathsFor(root: string, requester: FeedbackRequester | null = null): Fee
   if (!snapshot) fail("No active semantic implementation exists.");
   // Only the identity is needed here; commands that use the artifact validate it.
   const implementationId = activeImplementationId(root, snapshot);
-  const feedback = feedbackDirectory(root, implementationId);
+  const id = reviewId(root, implementationId);
+  // A review found from a new location records it when the old one no longer works.
+  relocateReview(id, root);
+  const feedback = path.join(reviewDirectory(id), "feedback");
   return {
     root,
     requester,
     implementationId,
-    reviewId: reviewId(root, implementationId),
+    reviewId: id,
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
     threads: path.join(feedback, "threads"),
@@ -139,6 +142,8 @@ function withFeedbackLock<T>(paths: FeedbackPaths, action: () => T): T {
     const { requester } = paths;
     if (requester && (paths.reviewId !== requester.reviewId || readReview(paths.reviewId).generation !== requester.generation)) fail("The initiating review was deleted or replaced.");
     if (generation && readReview(paths.reviewId).generation !== generation) fail("The review session changed. Retry from the current review.");
+    // A review deleted before this command registered it must not be written again.
+    if (!generation && reviewId(paths.root, paths.implementationId) !== paths.reviewId) fail("The review was deleted. Retry the command.");
     // The lock is reentrant, so an enclosing operation's write flag is kept.
     const enclosingWrote = feedbackWritten;
     feedbackWritten = false;

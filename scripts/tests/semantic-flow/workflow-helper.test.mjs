@@ -768,9 +768,11 @@ test("concurrent review services isolate commands and reopen registered worktree
   const { repository: a } = createImplementationWithStages(t);
   const b = createRepository(t, "concurrent-review-b-");
   initializeImplementation(b); // Deliberately the same implementation ID.
-  const linked = a.path("../", path.basename(a.root) + "-linked");
-  // The linked worktree sees the same artifact as a.root.
-  a.git("worktree", "add", "--detach", linked, "HEAD");
+  // All worktrees of a repository share its reviews, so the third review is
+  // registered from a linked worktree of a third repository.
+  const { repository: c } = createImplementationWithStages(t);
+  const linked = c.path("../", path.basename(c.root) + "-linked");
+  c.git("worktree", "add", "--detach", linked, "HEAD");
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
   const deniedPortHook = a.path("denied-port.cjs");
@@ -838,8 +840,10 @@ test("concurrent review services isolate commands and reopen registered worktree
   const context = module.captureReviewContext(third.reviewId);
   const oldGit = process.env.GIT_DIR;
   const oldLowerGit = process.env.git_dir;
-  process.env.git_dir = a.path(".git");
-  process.env.GIT_DIR = a.path(".git");
+  // The review's checks in this process read the review's own repository; the
+  // command must still not inherit the variables.
+  process.env.git_dir = c.path(".git");
+  process.env.GIT_DIR = c.path(".git");
   try {
     assert.equal(module.runReviewCommand(context, process.execPath, ["-e", "console.log(process.env.git_dir || process.env.GIT_DIR || 'clear')"]).trim(), "clear");
     assert.equal(module.runReviewCommand(context, "git", ["rev-parse", "--show-toplevel"]).trim(), linked.replaceAll("\\", "/"));
@@ -877,7 +881,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   const storage = await request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
   assert.equal(storage.ok, true, JSON.stringify(storage)); assert.ok(storage.storage.bytes > 0);
   const deleted = await request(first, "api/reviews/delete", { reviewId: third.reviewId, generation: third.generation, fingerprint: storage.storage.fingerprint }).then((r) => r.json());
-  assert.equal(deleted.deleted, true); assert.equal(deleted.cleanupPending, false);
+  assert.deepEqual(deleted, { ok: true, deleted: true });
   assert.equal((await request(missingViewer, "api/review-state")).status, 409);
   assert.equal((await request(missingViewer, "api/attachments", upload)).status, 409);
   assert.equal((await request(missingViewer, "api/review-state", { reviewId: third.reviewId, generation: third.generation, changes: [] })).status, 409);

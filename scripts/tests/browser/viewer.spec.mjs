@@ -48,7 +48,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     if (url.pathname === '/api/reviews/storage') {
       const input = route.request().postDataJSON(), review = records.find((record) => record.id === input.reviewId), state = stores.get(input.reviewId) || {};
       const drafts = (state.comments || []).filter((note) => !note.exported && note.mode === 'feedback').length;
-      return json({ ok: true, storage: { review, storageDirectory: `/user-data/reviews/${input.reviewId}`, bytes: 2048, categories: [{ label: 'Review state', bytes: 1024, detail: `${drafts} unsent drafts · 1 personal note` }, { label: 'Submitted feedback', bytes: 1024, detail: '1 unresolved' }], drafts, unresolved: 1, unused: [], unusedBytes: 0, fingerprint: JSON.stringify(state), deletionPending: false } });
+      return json({ ok: true, storage: { review, storageDirectory: `/user-data/reviews/${input.reviewId}`, bytes: 2048, categories: [{ label: 'Review state', bytes: 1024, detail: `${drafts} unsent drafts · 1 personal note` }, { label: 'Submitted feedback', bytes: 1024, detail: '1 unresolved' }], drafts, unresolved: 1, unused: [], unusedBytes: 0, fingerprint: JSON.stringify(state) } });
     }
     if (url.pathname === '/api/reviews/delete') {
       const input = route.request().postDataJSON();
@@ -56,7 +56,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
       deleted.add(input.reviewId); stores.delete(input.reviewId);
       for (const key of attachments.keys()) if (key.startsWith(input.reviewId + ":")) attachments.delete(key);
       records.splice(records.findIndex((item) => item.id === input.reviewId), 1);
-      return json({ ok: true, deleted: true, cleanupPending: false });
+      return json({ ok: true, deleted: true });
     }
     if (deleted.has(currentId) && ['/api/review-state', '/api/revision', '/api/attachments'].includes(url.pathname)) return route.fulfill({ status: 409, json: { ok: false, reviewUnavailable: true, error: 'Review data was deleted.' } });
     if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}` });
@@ -1314,32 +1314,30 @@ test('a review deleted in another tab preserves unsent text for copying and reje
 });
 
 
-test('a pending deletion stays visible and can retry file removal', async ({ page }) => {
-  await mount(page); let pending = false, gone = false;
-  const failure = 'Could not clean /user-data/trash/review/locked.bin (EBUSY). Editor (PID 123) is using the file. Close it, then choose Retry file removal. Do not delete review files manually.';
+test('a failed deletion reports where the files are held and can be retried', async ({ page }) => {
+  await mount(page); let failed = false, gone = false;
+  const failure = 'Could not clean /user-data/reviews/review/locked.bin (EBUSY). Editor (PID 123) is using the file. Close it, then Use Refresh details, then retry deletion. Do not delete review files manually.';
   const record = { id: 'browser-review', generation: 'test', title: 'Review fixes', repositoryRoot: '/repos/review', implementationId: 'browser-review', updatedAt: '2026-09-11T10:00:00Z', completedAt: null };
-  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: gone ? [] : [{ ...record, available: !pending, deletionPending: pending }] } }));
-  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { review: record, storageDirectory: '/user-data/trash/review', bytes: 1024, categories: [], drafts: 0, unresolved: 0, fingerprint: 'preview', unused: [], unusedBytes: 0, deletionPending: pending, error: pending ? failure : undefined } } }));
+  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: gone ? [] : [{ ...record, available: true }] } }));
+  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { review: record, storageDirectory: '/user-data/reviews/review', bytes: 1024, categories: [], drafts: 0, unresolved: 0, fingerprint: 'preview', unused: [], unusedBytes: 0 } } }));
   await page.route('**/api/reviews/delete?*', (route) => {
-    if (!pending) { pending = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: true, error: failure } }); }
-    gone = true; return route.fulfill({ json: { ok: true, deleted: true, cleanupPending: false } });
+    if (!failed) { failed = true; return route.fulfill({ status: 500, json: { ok: false, error: failure } }); }
+    gone = true; return route.fulfill({ json: { ok: true, deleted: true } });
   });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Review data', exact: true }); await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText('/user-data/trash/review/locked.bin');
+  await expect(dialog.getByRole('alert')).toContainText('/user-data/reviews/review/locked.bin');
   await expect(dialog.getByRole('alert')).toContainText('Editor (PID 123)');
-  await expect(page.locator('[data-review="browser-review"]')).toContainText('Deletion pending');
-  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await page.getByRole('button', { name: 'Retry deletion…', exact: true }).click();
-  await expect(dialog.getByRole('alert')).toContainText(failure);
-  await dialog.getByRole('button', { name: 'Retry file removal', exact: true }).click();
+  await expect(page.locator('[data-review="browser-review"]')).toHaveCount(1);
+  await expect(page.locator('[data-review="browser-review"]')).not.toContainText('Deletion pending');
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
   await expect(dialog).toHaveCount(0); await expect(page.locator('[data-review="browser-review"]')).toHaveCount(0);
 });
 
 test('unused-file cleanup keeps the review and its saved messages', async ({ page }) => {
   await mount(page); let cleaned = false;
-  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { storageDirectory: '/user-data/reviews/browser-review', bytes: cleaned ? 1024 : 2048, categories: [], drafts: 1, unresolved: 0, fingerprint: 'preview', unused: cleaned ? [] : [{ path: 'attachments/unused', bytes: 1024 }], unusedBytes: cleaned ? 0 : 1024, deletionPending: false } } }));
+  await page.route('**/api/reviews/storage?*', (route) => route.fulfill({ json: { ok: true, storage: { storageDirectory: '/user-data/reviews/browser-review', bytes: cleaned ? 1024 : 2048, categories: [], drafts: 1, unresolved: 0, fingerprint: 'preview', unused: cleaned ? [] : [{ path: 'attachments/unused', bytes: 1024 }], unusedBytes: cleaned ? 0 : 1024 } } }));
   await page.route('**/api/reviews/clean-unused?*', (route) => { cleaned = true; return route.fulfill({ json: { ok: true, reclaimedBytes: 1024, failures: [] } }); });
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.getByRole('button', { name: 'Delete data…', exact: true }).click();
@@ -5131,7 +5129,7 @@ test('saved reviews and the review data dialog show hostile names literally', as
   const errors = await mount(page, data, {}, [other]);
   await page.route('**/api/reviews/storage*', (route) => route.fulfill({ json: { ok: true, storage: {
     storageDirectory: hostile('directory'), bytes: 2048, categories: [{ label: hostile('label'), bytes: 1024, detail: hostile('detail') }],
-    drafts: 0, unresolved: 0, unused: [], unusedBytes: 0, fingerprint: 'unchanged', deletionPending: false, referenceError: hostile('reference') } } }));
+    drafts: 0, unresolved: 0, unused: [], unusedBytes: 0, fingerprint: 'unchanged', referenceError: hostile('reference') } } }));
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   const list = page.getByRole('dialog', { name: 'Saved reviews' });
   await expect(list.locator('[data-review="other"] strong')).toHaveText(hostile('other'));

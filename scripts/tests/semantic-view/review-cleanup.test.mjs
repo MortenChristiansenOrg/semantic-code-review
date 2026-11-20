@@ -5,18 +5,34 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../src/semantic-view.ts';
+import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck, assertReviewContext } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
+import { writeReviewId } from '../../src/shared/review-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 function setup(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-cleanup-')), previous = process.env.SEMANTIC_FLOW_HOME;
   process.env.SEMANTIC_FLOW_HOME = path.join(root, 'data');
   t.after(() => { t.mock.restoreAll(); if (previous === undefined) delete process.env.SEMANTIC_FLOW_HOME; else process.env.SEMANTIC_FLOW_HOME = previous; fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); });
-  fs.mkdirSync(path.join(root, 'repo')); fs.mkdirSync(path.join(root, 'other'));
+  for (const name of ['repo', 'other']) activate(path.join(root, name), 'same-id');
   const review = registerReview(path.join(root, 'repo'), 'same-id', 'Review'), other = registerReview(path.join(root, 'other'), 'same-id', 'Other');
   return { root, review, other };
 }
+const manifest = (implementationId) => `{"implementationId": ${JSON.stringify(implementationId)}}\n`;
+/** Makes the implementation active in a repository at root, creating the repository if needed. */
+function activate(root, implementationId) {
+  if (!fs.existsSync(path.join(root, '.git'))) {
+    fs.mkdirSync(root, { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'Initial'], { cwd: root });
+  }
+  // The artifact is stored in the repository's Git refs.
+  const draft = new ArtifactDraft(undefined); draft.write('manifest.json', manifest(implementationId));
+  writeReviewId(draft, root, implementationId);
+  commitArtifact(root, undefined, draft);
+}
+const storedReviewId = (root, implementationId) => JSON.parse(readArtifact(root, implementationId).read('review.json')).reviewId;
+const retiredFolders = () => fs.readdirSync(path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews')).filter((name) => !/^[a-z0-9-]+--[a-z0-9-]+--[a-f0-9]{64}$/.test(name));
 const change = (key, value, before) => ({ path: [key], before: before === undefined ? { present: false } : { present: true, value: before }, after: { present: true, value } });
 const preview = (review) => inspectReviewStorage(review.id, review.generation);
 function oldAttachment(review, filename) {
@@ -29,11 +45,6 @@ function oldAttachment(review, filename) {
 test('storage previews count drafts and feedback; confirmed deletion preserves other reviews and repository files', (t) => {
   const { root, review, other } = setup(t);
   fs.writeFileSync(path.join(root, 'repo', 'source.txt'), 'source');
-  // The artifact is stored in the repository's Git refs.
-  execFileSync('git', ['init', '-q'], { cwd: path.join(root, 'repo') });
-  const manifest = '{"implementationId": "same-id"}\n';
-  const artifact = new ArtifactDraft(undefined); artifact.write('manifest.json', manifest);
-  commitArtifact(path.join(root, 'repo'), undefined, artifact);
   const file = oldAttachment(review, 'context.log');
   const otherFile = storeAttachment(other.id, other.generation, 'context.log', 'text/plain', Buffer.from('context'));
   patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'feedback', body: 'Unsent', attachments: [file] }, { mode: 'personal', body: 'Personal' }]), change('editor', { compose: { body: 'Typing' } })]);
@@ -45,38 +56,82 @@ test('storage previews count drafts and feedback; confirmed deletion preserves o
   assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).deleted, true);
   assert.throws(() => readReview(review.id), /deleted/);
   assert.equal(fs.readFileSync(path.join(root, 'repo', 'source.txt'), 'utf8'), 'source');
-  assert.equal(readArtifact(path.join(root, 'repo')).read('manifest.json').toString('utf8'), manifest);
+  assert.equal(readArtifact(path.join(root, 'repo')).read('manifest.json').toString('utf8'), manifest('same-id'));
   assert.ok(fs.existsSync(resolveAttachment(other.id, otherFile.id).localPath));
-  assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true, cleanupPending: false });
-  const reopened = registerReview(path.join(root, 'repo'), 'same-id', 'Fresh'); assert.notEqual(reopened.generation, review.generation);
-  assert.throws(() => deleteReviewData(review.id, review.generation, before.fingerprint), /replaced/);
-  assert.throws(() => patchReviewState(review.id, review.generation, [change('late', true)]), /replaced/);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true });
+  assert.deepEqual(retiredFolders(), []);
+  // The implementation got a fresh review ID, so the next review starts empty and the old ID is never used again.
+  const reopened = registerReview(path.join(root, 'repo'), 'same-id', 'Fresh');
+  assert.notEqual(reopened.id, review.id); assert.deepEqual(reopened.state, {});
+  assert.equal(storedReviewId(path.join(root, 'repo'), 'same-id'), reopened.id);
+  assert.equal(readReview(other.id).generation, other.generation);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true });
+  assert.throws(() => patchReviewState(review.id, review.generation, [change('late', true)]), /deleted/);
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
 });
 
-test('deletion rejects an outdated preview and works after the worktree is removed', (t) => {
-  const { root, review } = setup(t), before = preview(review);
+test('an open viewer of a deleted review sees it as unavailable', (t) => {
+  const { root, review } = setup(t);
+  const context = { reviewId: review.id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId };
+  assert.equal(assertReviewContext(context).id, review.id);
+  deleteReviewData(review.id, review.generation, preview(review).fingerprint);
+  assert.throws(() => assertReviewContext(context), (error) => error.code === 'REVIEW_UNAVAILABLE');
+  assert.equal(reviewSessionUnavailable(context), true);
+  // Even a record restored in its place no longer matches the implementation's review.
+  fs.mkdirSync(reviewDirectory(review.id), { recursive: true });
+  fs.writeFileSync(path.join(reviewDirectory(review.id), 'review.json'), JSON.stringify(review));
+  assert.throws(() => assertReviewContext(context), (error) => error.code === 'REVIEW_TARGET_UNAVAILABLE');
+  assert.notEqual(reviewId(path.join(root, 'repo'), 'same-id'), review.id);
+});
+
+test('cleanup removes reviews whose repository is gone and keeps those whose implementation ended', (t) => {
+  const { root, review, other } = setup(t);
+  activate(path.join(root, 'archived'), 'archived-id');
+  const archived = registerReview(path.join(root, 'archived'), 'archived-id', 'Archived');
+  execFileSync('git', ['update-ref', '-d', 'refs/semantic-review/active/archived-id'], { cwd: path.join(root, 'archived') });
+  assert.equal(readReview(review.id).gitCommonDir, fs.realpathSync(path.join(root, 'repo', '.git')));
+  fs.rmSync(path.join(root, 'other'), { recursive: true });
+  const listed = registeredReviews();
+  assert.deepEqual(listed.map((entry) => entry.id).sort(), [archived.id, review.id].sort());
+  assert.equal(listed.find((entry) => entry.id === archived.id).available, false);
+  assert.equal(fs.existsSync(reviewDirectory(other.id)), false);
+  assert.deepEqual(retiredFolders(), []);
+  // Registering a review also cleans up.
+  fs.rmSync(path.join(root, 'archived'), { recursive: true });
+  registerReview(path.join(root, 'repo'), 'same-id', 'Review');
+  assert.equal(fs.existsSync(reviewDirectory(archived.id)), false);
+  assert.equal(readReview(review.id).generation, review.generation);
+});
+
+test('deletion rejects an outdated preview and works after the recorded worktree is removed', (t) => {
+  const { root } = setup(t), linked = path.join(root, 'linked');
+  execFileSync('git', ['worktree', 'add', '-q', '--detach', linked], { cwd: path.join(root, 'repo') });
+  activate(linked, 'linked-id');
+  const review = registerReview(linked, 'linked-id', 'Linked'), before = preview(review);
   patchReviewState(review.id, review.generation, [change('comments', [{ body: 'New work' }])]);
   assert.throws(() => deleteReviewData(review.id, review.generation, before.fingerprint), /changed since/);
-  fs.rmSync(path.join(root, 'repo'), { recursive: true });
+  fs.rmSync(linked, { recursive: true });
   assert.equal(registeredReviews().find((entry) => entry.id === review.id).available, false);
-  assert.equal(deleteReviewData(review.id, review.generation, preview(review).fingerprint).cleanupPending, false);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
+  // The repository's other worktree still has the implementation; it got a fresh review ID.
+  assert.notEqual(storedReviewId(path.join(root, 'repo'), 'linked-id'), review.id);
 });
 
-test('failed removal invalidates writers and stays discoverable until retry completes', (t) => {
+test('files that cannot be removed yet do not keep a deleted review and a later cleanup removes them', (t) => {
   const { root, review } = setup(t), before = preview(review), remove = fs.rmSync;
   const mock = t.mock.method(fs, 'rmSync', (file, options) => {
-    if (String(file).includes(path.join('data', 'trash'))) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
+    if (path.basename(String(file)).startsWith('.deleted-')) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
     return remove(file, options);
   });
-  const result = deleteReviewData(review.id, review.generation, before.fingerprint);
-  assert.equal(result.cleanupPending, true); assert.throws(() => readReview(review.id), /deleted/);
-  const remaining = preview(review); assert.equal(remaining.categories.reduce((sum, item) => sum + item.bytes, 0), remaining.bytes);
-  assert.equal(registeredReviews().find((entry) => entry.id === review.id).deletionPending, true);
-  assert.throws(() => storeAttachment(review.id, review.generation, 'late', 'text/plain', Buffer.alloc(0)), /deleted/);
-  assert.throws(() => registerReview(path.join(root, 'repo'), 'same-id', 'Fresh'), /pending review deletion/);
-  mock.mock.restore();
-  assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, false);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true });
+  assert.throws(() => readReview(review.id), /deleted/);
+  assert.equal(retiredFolders().length, 1);
   assert.equal(registeredReviews().some((entry) => entry.id === review.id), false);
+  assert.throws(() => storeAttachment(review.id, review.generation, 'late', 'text/plain', Buffer.alloc(0)), /deleted/);
+  assert.notEqual(registerReview(path.join(root, 'repo'), 'same-id', 'Fresh').id, review.id);
+  mock.mock.restore();
+  registeredReviews();
+  assert.deepEqual(retiredFolders(), []);
 });
 
 test('unused cleanup protects references and recent uploads, and permits retry of partially removed files', (t) => {
@@ -167,85 +222,29 @@ test('retirement retries an unknown startup identity and still rejects replaced 
 });
 
 
-test('a locked child reports its path and preserves a durable retry after partial removal', (t) => {
-  const { review, other } = setup(t), unused = oldAttachment(review, 'blocked');
-  const original = preview(review), remove = fs.rmSync;
-  let blocked;
-  const mock = t.mock.method(fs, 'rmSync', (file, options) => {
-    if (String(file).includes(path.join('data', 'trash'))) {
-      // Simulate a recursive removal that succeeded on one file first.
-      remove(path.join(file, 'review.json'), { force: true });
-      blocked = path.join(file, unused.path);
-      throw Object.assign(new Error('Sharing violation'), { code: 'EBUSY', path: blocked });
-    }
-    return remove(file, options);
-  });
-  const result = deleteReviewData(review.id, review.generation, original.fingerprint);
-  assert.equal(result.cleanupPending, true);
-  assert.ok(result.error.includes(JSON.stringify(blocked)));
-  assert.match(result.error, /EBUSY/);
-  assert.match(result.error, /Retry file removal/);
-  assert.match(result.error, /Do not delete review files manually/);
-  assert.equal(preview(review).error, result.error);
-  assert.equal(readReview(other.id).generation, other.generation);
-  assert.throws(() => patchReviewState(review.id, review.generation, [change('late', true)]), /deleted/);
-  mock.mock.restore();
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
-});
-
-test('a failed retirement leaves files intact and an unreadable pending tree still allows retry', (t) => {
-  const { review } = setup(t), original = preview(review), live = reviewDirectory(review.id);
+test('a review folder that cannot be moved reports its path, keeps its files and allows retry', (t) => {
+  const { root, review, other } = setup(t), original = preview(review), live = reviewDirectory(review.id);
   const bytes = fs.readFileSync(path.join(live, 'review.json'));
   const rename = fs.renameSync;
   const locked = t.mock.method(fs, 'renameSync', (from, to) => {
     if (String(from) === live) throw Object.assign(new Error('File is open'), { code: 'EBUSY', path: live });
     return rename(from, to);
   });
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, true);
+  assert.throws(() => deleteReviewData(review.id, review.generation, original.fingerprint), (error) => {
+    assert.ok(error.message.includes(JSON.stringify(live)));
+    assert.match(error.message, /EBUSY/);
+    assert.match(error.message, /retry deletion/);
+    assert.match(error.message, /Do not delete review files manually/);
+    return true;
+  });
   assert.deepEqual(fs.readFileSync(path.join(live, 'review.json')), bytes);
-  const stat = fs.lstatSync;
-  const unreadable = t.mock.method(fs, 'lstatSync', (file, ...args) => {
-    if (String(file) === live) throw Object.assign(new Error('Access denied'), { code: 'EACCES', path: live });
-    return stat(file, ...args);
-  });
-  const pending = preview(review);
-  assert.equal(pending.deletionPending, true);
-  assert.match(pending.error, /Retry file removal/);
-  assert.ok(pending.categories.every(item => item.detail.includes('inspection unavailable')));
-  unreadable.mock.restore(); locked.mock.restore();
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
-});
-
-test('an uninspectable pending deletion shows only the known fields of valid stored categories', (t) => {
-  const { review } = setup(t), original = preview(review), live = reviewDirectory(review.id);
-  const rename = fs.renameSync;
-  const locked = t.mock.method(fs, 'renameSync', (from, to) => {
-    if (String(from) === live) throw Object.assign(new Error('File is open'), { code: 'EBUSY', path: live });
-    return rename(from, to);
-  });
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, true);
-  const stat = fs.lstatSync;
-  const unreadable = t.mock.method(fs, 'lstatSync', (file, ...args) => {
-    if (String(file) === live) throw Object.assign(new Error('Access denied'), { code: 'EACCES', path: live });
-    return stat(file, ...args);
-  });
-  const ticket = path.join(process.env.SEMANTIC_FLOW_HOME, 'deletions', `${review.id}.${review.generation}.json`);
-  const record = JSON.parse(fs.readFileSync(ticket, 'utf8'));
-  record.preview.categories[0].nested = { label: { toString: 1 } };
-  fs.writeFileSync(ticket, JSON.stringify(record));
-  const pending = preview(review);
-  assert.ok(pending.categories.length > 0);
-  for (const category of pending.categories) assert.deepEqual(Object.keys(category).sort(), ['bytes', 'detail', 'label']);
-  assert.equal(pending.categories.reduce((sum, item) => sum + item.bytes, 0), pending.bytes);
-
-  // A size that is no safe integer marks the stored preview damaged, so no category is shown and the total stays a number.
-  record.preview.categories[0].bytes = 'HUGE';
-  fs.writeFileSync(ticket, JSON.stringify(record).replace('"HUGE"', '1e400'));
-  const damaged = JSON.parse(JSON.stringify(preview(review)));
-  assert.deepEqual(damaged.categories, []);
-  assert.equal(damaged.bytes, 0);
-  unreadable.mock.restore(); locked.mock.restore();
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
+  assert.equal(readReview(other.id).generation, other.generation);
+  // The implementation already moved on to a fresh review, so nothing reaches this one again.
+  assert.notEqual(storedReviewId(path.join(root, 'repo'), 'same-id'), review.id);
+  assert.equal(registeredReviews().find((entry) => entry.id === review.id).available, false);
+  locked.mock.restore();
+  assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(live), false);
 });
 
 test('unused cleanup reports the retired file and leaves saved state unchanged until retry', (t) => {
@@ -288,12 +287,12 @@ test('review lock contention identifies the lock location and recorded owner PID
   });
   clock.mock.restore();
   fs.rmSync(lock, { recursive: true });
-  assert.equal(preview(review).deletionPending, false);
+  assert.equal(preview(review).review.id, review.id);
 });
 
 
 test('a file locked during preflight reports recovery without retiring the review', (t) => {
-  const { review } = setup(t), original = preview(review), read = fs.readFileSync;
+  const { root, review } = setup(t), original = preview(review), read = fs.readFileSync;
   const file = path.join(reviewDirectory(review.id), 'review.json');
   const mock = t.mock.method(fs, 'readFileSync', (target, ...args) => {
     if (String(target) === file) throw Object.assign(new Error('Locked during preflight'), { code: 'EACCES', path: file });
@@ -306,34 +305,6 @@ test('a file locked during preflight reports recovery without retiring the revie
   });
   mock.mock.restore();
   assert.equal(readReview(review.id).generation, review.generation);
-  assert.equal(preview(review).deletionPending, false);
-  assert.equal(deleteReviewData(review.id, review.generation, original.fingerprint).cleanupPending, false);
-});
-
-test('a damaged deletion preview still lists the review and allows retry', (t) => {
-  const { review } = setup(t), before = preview(review), remove = fs.rmSync;
-  const mock = t.mock.method(fs, 'rmSync', (file, options) => {
-    if (String(file).includes(path.join('data', 'trash'))) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
-    return remove(file, options);
-  });
-  assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, true);
-  const ticket = path.join(process.env.SEMANTIC_FLOW_HOME, 'deletions', `${review.id}.${review.generation}.json`);
-  const record = JSON.parse(fs.readFileSync(ticket, 'utf8'));
-  record.preview.categories[0].bytes = 'damaged';
-  // The browser renders these with String(); objects without callable conversions would throw.
-  Object.assign(record.preview, { referenceError: { toString: 1, valueOf: 1 }, storageDirectory: { toString: 1 }, review: { title: { toString: 1 } }, extra: 'kept out' });
-  fs.writeFileSync(ticket, JSON.stringify(record));
-
-  assert.equal(registeredReviews().find((entry) => entry.id === review.id).deletionPending, true);
-  const pending = preview(review);
-  assert.equal(pending.deletionPending, true);
-  assert.equal(pending.categories[0].detail, 'Earlier preview unavailable');
-  assert.equal(pending.categories.reduce((sum, item) => sum + item.bytes, 0), pending.bytes);
-  assert.equal(pending.referenceError, '');
-  assert.equal(typeof pending.storageDirectory, 'string');
-  assert.equal(pending.review.title, 'Review');
-  assert.deepEqual(Object.keys(pending).sort(), ['bytes', 'categories', 'deletionPending', 'drafts', 'error', 'fingerprint', 'referenceError', 'review', 'storageDirectory', 'unresolved', 'unused', 'unusedBytes']);
-  mock.mock.restore();
-  assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).cleanupPending, false);
-  assert.equal(registeredReviews().some((entry) => entry.id === review.id), false);
+  assert.equal(storedReviewId(path.join(root, 'repo'), 'same-id'), review.id);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, original.fingerprint), { deleted: true });
 });

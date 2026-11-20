@@ -31,13 +31,13 @@ import {
 } from "./shared/viewer-lifecycle.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
-import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, removeOrphanedReviews, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, isolateReviewEnvironment, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
 
 export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
-import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
+import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { evidenceRange } from "./shared/evidence.js";
@@ -2153,12 +2153,13 @@ function approvedFileEndpoint(input: ReceivedApprovalEndpoint, data: Implementat
 }
 
 export function registeredReviews(): Wire.ReviewSummary[] {
-  return [...listReviews().map((record) => {
+  removeOrphanedReviews();
+  return listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
     const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
     return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
-  }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
 /** Reopen using a registry identity, with no caller-supplied path or command. */
@@ -2196,7 +2197,6 @@ export function reviewRetirementCheck(context: ReviewContext) {
   let original: string | null | undefined;
   try { original = identity(); } catch (error) { if (errorCode(error) === "ENOENT") original = null; }
   return () => {
-    if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
     let current: string;
     try { current = identity(); } catch (error) { return errorCode(error) === "ENOENT"; }
     if (original === null) return true;

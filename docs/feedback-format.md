@@ -4,7 +4,8 @@
 
 Feedback is mutable local workflow state under
 `~/.semantic-flow/reviews/<review-id>/feedback/`. The viewer and CLI use the
-same store, keyed by canonical artifact-worktree path and implementation ID.
+same store, keyed by the review ID stored in the implementation's active artifact,
+so all worktrees of a repository share it.
 `semantic-flow inspect --json` exposes each candidate's resolved `feedbackDirectory`;
 use that output instead of constructing a path. `SEMANTIC_FLOW_HOME` overrides
 the user data root and must be an absolute path. There is no migration or fallback
@@ -109,9 +110,9 @@ A review owns its feedback and files exclusively; identical attachments in
 separate reviews have separate stored copies. Explicit review deletion removes
 local feedback together with drafts, notes, approvals, attachments, and snapshots.
 The implementation artifact and archived or published provenance are unaffected.
-Deletion first records the retired generation under `~/.semantic-flow/deletions/`
-and moves its files into `~/.semantic-flow/trash/`. Pending removal remains
-retryable; a fresh session cannot start until it finishes. Stale writes fail.
+Deletion first gives the implementation a new review ID, then moves the review's
+folder aside and removes it; a folder left behind is removed by a later cleanup.
+A fresh review starts under the new ID. Stale writes fail.
 
 Unused-file cleanup keeps every persisted reference and protects fresh uploads
 and snapshots for one hour. Unreferenced files are retired inside the owning

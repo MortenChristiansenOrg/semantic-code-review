@@ -19,14 +19,18 @@ as a collapsible folder.
 
 The viewer stores review progress, drafts, personal notes, and preferences under
 `~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
-data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
-implementation ID, independently of browser ports. Folder names use
-`<worktree>--<implementation>--<sha256>`, for example
+data root and must be an absolute path. Each implementation has one review, with
+a random review ID that `implementation init` stores in the private artifact and
+that publication and archives leave out. All worktrees of the repository share
+the review. The review records a worktree and the repository's Git directory only
+to locate it; when that worktree is moved or removed, the next command run from
+another worktree records the new location. Folder names use
+`<repository>--<implementation>--<64 random hex characters>`, for example
 `my-project--order-cancellation--<64 hex characters>`. The readable parts are
-normalized and capped at 24 and 40 characters; the full hash preserves uniqueness
-even when names collide or are shortened. Changing the display title does not
-rename the folder. Moving a worktree creates a new
-review identity; the old data remains available for cleanup. There is no migration
+normalized and capped at 24 and 40 characters. Changing the display title does not
+rename the folder. Deleting a review gives the implementation a new review ID, so
+the next review starts empty. Reviews whose repository no longer exists are
+removed when saved reviews are listed or a review is started. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
 the same field or draft list fail visibly rather than overwrite another tab.
 Unfinished composers are shared review state; preserve conflicting text before
@@ -612,8 +616,9 @@ picker dims and blocks the page behind it; Close, Escape, or clicking outside
 dismisses it without rebuilding the page or losing an unfinished message. Switching
 saves the current draft, starts or reuses the selected review's service, and
 opens its page. If saving or opening fails, the current page and draft remain.
-A removed or changed worktree remains listed with an explanation; its stored
-review data is never silently reassigned to another worktree.
+A review whose recorded worktree was removed, or whose implementation is no
+longer active, remains listed with an explanation until a command from another
+worktree records its new location.
 
 **Mark complete** and **Reopen review** change only the local review's lifecycle.
 Completion does not approve files, land an implementation, stop its service, or
@@ -713,8 +718,8 @@ Open **Reviews → Delete data…** to inspect a review's location, lifecycle st
 storage size, drafts, personal notes, approvals, feedback, attachments, and saved
 snapshots. **Delete review data** confirms removal of that review's local data.
 Unsent drafts and unresolved feedback are highlighted before confirmation.
-Completion never deletes data automatically; unavailable worktrees can be cleaned
-too. Source files, branches, implementation artifacts, publications, and archives
+Completion never deletes data automatically; unavailable reviews can be cleaned
+too. Only a review whose repository is gone is removed without asking. Source files, branches, implementation artifacts, publications, and archives
 are preserved.
 
 **Clean unused files** reclaims unreferenced uploads and snapshots separately.
@@ -725,21 +730,19 @@ when requested, not automatically when that hour expires. Deleting a whole
 review removes its data regardless of age. If another process
 changes the data after the preview, refresh the details before confirming.
 
-Deletion invalidates the old session before removing files. Stale tabs and CLI
-requests cannot recreate it. If a file is locked or removal is interrupted,
-**Retry deletion…** remains in Saved reviews. The error identifies the failing
-file or folder and filesystem error code. When available, a bounded lookup also
+Deletion gives the implementation a new review ID, then moves the review's folder
+aside and removes it. Stale tabs and CLI requests cannot recreate the deleted
+review. Files that cannot be removed at once are removed by a later cleanup. If
+the folder cannot be moved, deletion fails and can be retried. The error
+identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
 Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,
 or miss a directory-only lock; an unidentified process is not evidence of no lock.
 No processes are terminated automatically.
 
 Close the application or terminal using the reported location, or release the
-lock and check access permissions. Choose **Retry deletion… → Retry file removal**
-afterward. Pending deletion remains retryable even when storage inspection cannot
-read the remaining files; displayed sizes may be the last known preview. The old
-session stays disabled while retired files are removed, so partial disk removal
-cannot become an active, inconsistent review. For **Clean unused files**, saved
+lock and check access permissions. Choose **Delete data…** again afterward. For
+**Clean unused files**, saved
 messages and referenced files stay intact; use the same button again to remove
 remaining retired files. Neither operation requires manual file deletion.
 

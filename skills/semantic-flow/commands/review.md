@@ -49,8 +49,9 @@ no code from the reviewed branch is built or executed.
 Remote reviews appear in Saved reviews with a **Remote** label. Their independent
 Git clone lives at `~/.semantic-flow/reviews/<review-id>/checkout/` (or the
 configured `SEMANTIC_FLOW_HOME`). Your project's checkout, refs and uncommitted
-changes stay untouched. Deleting a review removes its clone, notes, attachments
-and approved-content snapshots together.
+changes stay untouched. Opening the same remote branch from any checkout reopens
+its review. Deleting a review removes its clone, notes, attachments and
+approved-content snapshots together.
 
 The viewer allows personal notes and approvals only. It does not offer feedback
 messages or send anything to an implementation agent or remote author. Do not

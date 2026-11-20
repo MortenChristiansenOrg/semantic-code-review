@@ -74,7 +74,26 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).deleted, true);
   assert.equal(fs.existsSync(reviewDirectory(review.id)), false); assert.ok(fs.existsSync(source.root)); assert.ok(fs.existsSync(author.root));
   assert.throws(() => refreshRemoteReview(review.id, review.generation), /unavailable|deleted/);
-  const reopened = startRemoteReview(source.root, 'feature'); assert.equal(reopened.id, review.id); assert.notEqual(reopened.generation, review.generation);
+  // A deleted review is started again with a fresh identity.
+  const reopened = startRemoteReview(source.root, 'feature'); assert.notEqual(reopened.id, review.id);
+  assert.equal(startRemoteReview(source.root, 'feature').id, reopened.id);
+});
+
+test('a remote review keeps its identity when opened from another checkout of the repository', (t) => {
+  const { author, source } = setup(t);
+  const review = startRemoteReview(source.root, 'origin/feature');
+  assert.equal(review.remote.url, author.root);
+  const linked = source.root + '-linked';
+  source.git('worktree', 'add', '-q', '--detach', linked);
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  const clone = createRepository(t, 'remote-reviewer-clone-');
+  clone.git('remote', 'add', 'origin', author.root);
+  assert.equal(startRemoteReview(linked, 'feature').id, review.id);
+  assert.equal(startRemoteReview(clone.root, 'feature').id, review.id);
+  // Another branch of the same remote is another review.
+  author.git('branch', 'other', 'feature');
+  assert.notEqual(startRemoteReview(clone.root, 'other').id, review.id);
+  assert.equal(registeredReviews().filter((entry) => entry.remote?.url === author.root).length, 2);
 });
 
 test('refresh preserves notes and approved snapshots through appends, force-pushes, and failures', (t) => {
@@ -318,7 +337,8 @@ test('remote clones support nested paths under the private review directory', (t
   refreshRemoteReview(review.id, review.generation);
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'refreshed content\n');
   const storage = inspectReviewStorage(review.id, review.generation);
-  assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).cleanupPending, false);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, storage.fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
 });
 
 

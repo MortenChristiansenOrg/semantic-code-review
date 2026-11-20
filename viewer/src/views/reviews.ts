@@ -18,7 +18,6 @@ export interface ReviewItemView {
   unavailable: string | null;
   canOpen: boolean;
   completed: boolean;
-  deletionPending: boolean;
 }
 
 export interface ReviewsPanelView {
@@ -30,7 +29,7 @@ export interface ReviewsPanelView {
 }
 
 function deletedReview(view: { text: string }): TemplateResult {
-  return html`<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in the original worktree to start a fresh session.</p>
+  return html`<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in a worktree of the repository to start a fresh session.</p>
       ${view.text ? html`<label>Copy any unsent text you want to keep<textarea readonly rows="6" .value=${view.text}></textarea></label>` : nothing}</section>`;
 }
 
@@ -41,8 +40,8 @@ function review(view: ReviewsPanelView, item: ReviewItemView): TemplateResult {
         <p>Last edited <time datetime=${item.updatedAt}>${item.updatedText}</time></p>
         ${item.unavailable !== null ? html`<p class="review-unavailable">Unavailable: ${item.unavailable}</p>` : nothing}</div>
         <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id=${item.id} ?disabled=${view.busy || !item.canOpen}>Open review</button>
-        <button class="tb-btn" type="button" data-action="complete-review" data-review-id=${item.id} ?disabled=${view.busy || item.deletionPending}>${item.completed ? "Reopen review" : "Mark complete"}</button>
-        <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id=${item.id} ?disabled=${view.busy}>${item.deletionPending ? "Retry deletion…" : "Delete data…"}</button></div>
+        <button class="tb-btn" type="button" data-action="complete-review" data-review-id=${item.id} ?disabled=${view.busy}>${item.completed ? "Reopen review" : "Mark complete"}</button>
+        <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id=${item.id} ?disabled=${view.busy}>Delete data…</button></div>
       </article>`;
 }
 
@@ -67,7 +66,6 @@ export interface ReviewStorageView {
   categories: readonly StorageCategoryView[];
   drafts: number;
   unresolved: number;
-  deletionPending: boolean;
   unusedSize: string;
   unusedCount: number;
   referenceError: string;
@@ -94,11 +92,11 @@ export function reviewCleanupView(view: ReviewCleanupView): TemplateResult {
         <table><thead><tr><th>Data</th><th>Size</th><th>Contents</th></tr></thead><tbody>${storage.categories.map((item) => html`<tr><td>${item.label}</td><td>${item.size}</td><td>${item.detail}</td></tr>`)}</tbody></table>
         ${storage.drafts || storage.unresolved ? html`<p class="cleanup-warning">This review has ${storage.drafts} unsent draft${storage.drafts === 1 ? "" : "s"} and ${storage.unresolved} unresolved feedback thread${storage.unresolved === 1 ? "" : "s"}.</p>` : nothing}
         <p>Deletion removes this review’s local data. Source files, branches, implementation artifacts, published metadata, and archives are preserved.</p>
-        ${!storage.deletionPending ? html`<p>${storage.unusedSize} in ${storage.unusedCount} unused files or folders can be cleaned separately. Cleanup keeps files referenced by messages, drafts, or approvals, and skips uploads and snapshots less than an hour old. Nothing is deleted automatically.</p>` : nothing}
+        <p>${storage.unusedSize} in ${storage.unusedCount} unused files or folders can be cleaned separately. Cleanup keeps files referenced by messages, drafts, or approvals, and skips uploads and snapshots less than an hour old. Nothing is deleted automatically.</p>
         ${storage.referenceError ? html`<p role="alert">${storage.referenceError}</p>` : nothing}` : nothing}
       ${view.busy ? html`<p role="status">Working…</p>` : nothing}${view.message ? html`<p role="status">${view.message}</p>` : nothing}${view.error ? html`<p role="alert">${view.error}</p>` : nothing}
       <div class="cleanup-actions"><button class="tb-btn" type="button" data-cleanup="cancel" autofocus ?disabled=${view.busy}>Cancel</button>
         <button class="tb-btn" type="button" data-cleanup="refresh" ?disabled=${view.busy}>Refresh details</button>
-        ${storage && !storage.deletionPending ? html`<button class="tb-btn" type="button" data-cleanup="unused" ?disabled=${view.busy || !storage.unusedCount || Boolean(storage.referenceError)}>Clean unused files</button>` : nothing}
-        <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ?disabled=${view.busy || !storage}>${storage?.deletionPending ? "Retry file removal" : "Delete review data"}</button></div>`;
+        ${storage ? html`<button class="tb-btn" type="button" data-cleanup="unused" ?disabled=${view.busy || !storage.unusedCount || Boolean(storage.referenceError)}>Clean unused files</button>` : nothing}
+        <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ?disabled=${view.busy || !storage}>Delete review data</button></div>`;
 }

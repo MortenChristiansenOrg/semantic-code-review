@@ -81,7 +81,7 @@ import {
 } from "./shared/artifact-store.js";
 import { errorMessage, isStringArray, type JsonRecord } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
-import { reviewId, withReviewLock } from "./shared/review-store.js";
+import { reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
@@ -906,6 +906,8 @@ function initialize(root: string, options: Options): void {
   const draft = new ArtifactDraft(undefined);
   draft.writeJson(`requirements/${specification.id}.json`, specification);
   writeManifest(draft, { manifest, stages: new Map() });
+  // Private to the active artifact: every worktree of the repository shares the review.
+  writeReviewId(draft, root, implementationId);
   validateArtifact({ root }, { quiet: true }, draft);
   commitArtifact(root, undefined, draft);
   rememberImplementation(root, implementationId);

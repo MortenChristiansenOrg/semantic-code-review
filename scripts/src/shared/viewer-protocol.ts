@@ -333,6 +333,7 @@ export interface FeedbackThread {
 export interface RemoteInfo {
   sourceRoot: string;
   remoteName: string;
+  url?: string;
   branch: string;
   targetBranch: string;
   headRevision?: string;
@@ -791,8 +792,6 @@ export interface ReviewSummary extends ReviewIdentity {
   available: boolean;
   /** Empty when available. */
   unavailableReason: string;
-  /** Present (true) only for reviews whose deletion has not finished. */
-  deletionPending?: true;
 }
 
 /** GET `/api/reviews` response, newest first. */
@@ -821,9 +820,6 @@ export interface ReviewStorage {
   /** Owned files and folders that can be cleaned. */
   unused: { path: string; bytes: number }[];
   unusedBytes: number;
-  deletionPending: boolean;
-  /** Why a pending deletion has not finished. */
-  error?: string;
 }
 
 /** POST `/api/reviews/storage` response; the request is a `ReviewTarget`. */
@@ -837,9 +833,6 @@ export interface ReviewStorageActionRequest extends ReviewTarget {
 /** POST `/api/reviews/delete` response. */
 export type ReviewDeleteResponse = ApiResult<{
   deleted: true;
-  /** The review can no longer be used, but some files remain to be removed. */
-  cleanupPending: boolean;
-  error?: string;
 }>;
 
 /** POST `/api/reviews/clean-unused` response. */
