@@ -4903,6 +4903,75 @@ test('Markdown titles show in the viewer tooltip, and a link names the titles of
   expect(errors).toEqual([]);
 });
 
+test('a Markdown link collects the titles of the parts it holds without copying them again for each part', async ({ page }) => {
+  const errors = await mount(page);
+  // Counts the array elements iterated, as by spreading, while rendering a
+  // link that holds `size` titled images: linear work grows with the size.
+  const iterated = (size) => page.evaluate((size) => {
+    const source = `[${Array.from({ length: size }, (_, i) => `![Image](https://example.com/i.png "Title ${i}")`).join(' ')}](https://example.com/ "Outer")`;
+    const values = Array.prototype[Symbol.iterator];
+    let count = 0;
+    Array.prototype[Symbol.iterator] = function* () { for (const value of values.call(this)) { count++; yield value; } };
+    try { window.renderMarkdownPreview(source, () => null); } finally { Array.prototype[Symbol.iterator] = values; }
+    return count;
+  }, size);
+  const small = await iterated(500), large = await iterated(2000);
+  expect(large).toBeLessThan(small * 6);
+  expect(errors).toEqual([]);
+});
+
+// A table whose title repeats its text, and whose cells need more width than a narrow viewport gives.
+const tableCells = Array.from({ length: 24 }, (_, i) => `Cell${i}`);
+const clippedTableText = tableCells.join('');
+const clippedTableMarkdown = `<table title="${clippedTableText}"><tbody><tr>${tableCells.map((cell) => `<td>${cell}</td>`).join('')}</tr></tbody></table>`;
+async function previewMarkdown(page, content) {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.markdown-preview table')).toBeVisible();
+  return errors;
+}
+const isClipped = (locator) => locator.evaluate((el) => el.scrollWidth > el.clientWidth);
+
+test('a tooltip opened on a cut-off Markdown table closes once the table fits and the pointer leaves', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  const errors = await previewMarkdown(page, clippedTableMarkdown);
+  const table = page.locator('.markdown-preview table'), tooltip = page.locator('#review-tooltip');
+  expect(await isClipped(table)).toBe(true);
+  await expect(async () => {
+    await page.mouse.move(0, 0); await table.hover();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(clippedTableText, { timeout: 1000 });
+  }).toPass();
+  await expect(table).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await page.setViewportSize({ width: 2400, height: 700 });
+  await expect.poll(() => isClipped(table)).toBe(false);
+  await page.mouse.move(0, 0);
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(table).not.toHaveAttribute('aria-describedby');
+  expect(errors).toEqual([]);
+});
+
+test('a Markdown link names the title of a table it holds while the table is cut off', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  const errors = await previewMarkdown(page, `<a href="https://example.com/t" title="Link title">\n${clippedTableMarkdown}\n</a>`);
+  const link = page.locator('.markdown-preview a'), table = link.locator('table'), tooltip = page.locator('#review-tooltip');
+  const shows = (target, expected, by) => expect(async () => {
+    await page.mouse.move(0, 0); await page.evaluate(() => document.activeElement?.blur()); await target[by]();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(expected, { timeout: 1000 });
+  }).toPass();
+  expect(await isClipped(table)).toBe(true);
+  await shows(link, `Link title · ${clippedTableText}`, 'focus');
+  await shows(table, clippedTableText, 'hover');
+  await page.setViewportSize({ width: 2400, height: 700 });
+  await expect.poll(() => isClipped(table)).toBe(false);
+  await shows(link, 'Link title', 'focus');
+  expect(errors).toEqual([]);
+});
+
 test('a cut-off specification reference is a keyboard stop naming it in full', async ({ page }) => {
   const data = fixture();
   const reference = 'A plain reference that runs on well past the width the specification gives it '.repeat(3).trim();

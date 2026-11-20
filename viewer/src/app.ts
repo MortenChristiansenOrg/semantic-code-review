@@ -2875,6 +2875,11 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       if (el.matches(".tag-face[data-tagpop]") || tooltipText(el)) return el;
     return null;
   }
+  /** The element whose tooltip leaving `target` closes: the open tooltip's
+   * owner, even once it has no hint to show, or else the target's own. */
+  function leftTooltipTarget(target) {
+    return popOwner?.contains(target) ? popOwner : tooltipTarget(target);
+  }
   function clearPopDescription() {
     if (!popOwner) return;
     const ids = (popOwner.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== "review-tooltip");
@@ -2958,7 +2963,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     showPop(b);
   });
   document.addEventListener("pointerout", (e) => {
-    const b = tooltipTarget(e.target);
+    const b = leftTooltipTarget(e.target);
     if (b && !b.contains(e.relatedTarget) && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
@@ -2966,7 +2971,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     if (b) showPop(b);
   });
   document.addEventListener("focusout", (e) => {
-    const b = tooltipTarget(e.target);
+    const b = leftTooltipTarget(e.target);
     if (b && !popSticky) scheduleHide();
   });
   document.addEventListener("click", (e) => {

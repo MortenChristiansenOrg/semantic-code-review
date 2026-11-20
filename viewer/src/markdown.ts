@@ -1,6 +1,6 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { joinHints, labelHint } from './tooltips';
+import { joinHintList, labelHint } from './tooltips';
 
 /** Resolves a repository-relative link or image target to a viewer URL, or null when unavailable. */
 export type MarkdownResourceUrl = (target: string, image: boolean) => string | null;
@@ -46,23 +46,29 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
 };
 
 // The viewer shows titles in its own tooltip (see tooltips.ts). A link is the
-// keyboard stop for the hints of the parts it holds, such as an image.
+// keyboard stop for the hints of the parts it holds, such as an image, and also
+// names a part whose title repeats its text while the layout cuts that part off.
 function showTitlesAsTooltips(root: DocumentFragment): void {
-  const hints = new Map<Element, string[]>();
-  for (const element of root.querySelectorAll('[title]')) {
+  const titled = [...root.querySelectorAll('[title]')];
+  // Per link, the hints of its parts that always show, and all of them.
+  const parts = new Map<Element, { shown: string[]; all: string[] }>();
+  for (const element of titled) {
     const owner = element.parentElement?.closest('a');
-    const own = labelHint(element.getAttribute('title') || '', element.textContent || '').tooltip;
-    if (owner && own) hints.set(owner, [...(hints.get(owner) || []), own]);
+    const own = labelHint(element.getAttribute('title') || '', element.textContent || '');
+    const hint = own.tooltip || own.clipped;
+    if (!owner || !hint) continue;
+    let held = parts.get(owner);
+    if (!held) parts.set(owner, held = { shown: [], all: [] });
+    if (own.tooltip) held.shown.push(hint);
+    held.all.push(hint);
   }
-  for (const element of root.querySelectorAll('[title]')) {
-    const hint = labelHint(element.getAttribute('title') || '', element.textContent || '', hints.get(element));
+  for (const element of new Set([...titled, ...parts.keys()])) {
+    const title = element.getAttribute('title') || '';
+    const { shown = [], all = [] } = parts.get(element) || {};
+    const hint = labelHint(title, element.textContent || '', shown);
     element.removeAttribute('title');
     if (hint.tooltip) element.setAttribute('data-tooltip', hint.tooltip);
-    if (hint.clipped) { element.setAttribute('data-tooltip-clipped', hint.clipped); element.setAttribute('data-clippable', ''); }
-  }
-  // A link without a title of its own shows only the hints of its parts.
-  for (const [owner, ownerHints] of hints) {
-    if (!owner.hasAttribute('data-tooltip') && !owner.hasAttribute('data-tooltip-clipped'))
-      owner.setAttribute('data-tooltip', joinHints(...ownerHints));
+    if (hint.clipped || all.length > shown.length) element.setAttribute('data-tooltip-clipped', joinHintList([title, ...all]));
+    if (hint.clipped) element.setAttribute('data-clippable', '');
   }
 }

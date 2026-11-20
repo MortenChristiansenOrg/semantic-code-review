@@ -12,6 +12,11 @@ export function repeatsLabel(hint: string, label: string): boolean {
 
 /** Joins hints, each once, leaving out empty ones. */
 export function joinHints(...hints: readonly (string | null | undefined)[]): string {
+  return joinHintList(hints);
+}
+
+/** Joins a list of hints of any length, each once, leaving out empty ones. */
+export function joinHintList(hints: readonly (string | null | undefined)[]): string {
   return [...new Set(hints.filter(Boolean))].join(" · ");
 }
 
@@ -29,5 +34,5 @@ export interface LabelHint {
  */
 export function labelHint(own: string, label: string, hints: readonly string[] = []): LabelHint {
   const repeats = Boolean(own) && repeatsLabel(own, label);
-  return { tooltip: joinHints(repeats ? "" : own, ...hints), clipped: repeats ? joinHints(own, ...hints) : "" };
+  return { tooltip: joinHintList([repeats ? "" : own, ...hints]), clipped: repeats ? joinHintList([own, ...hints]) : "" };
 }
