@@ -253,10 +253,10 @@ export function completeReviewDeletion(id: string) {
  * a missing active artifact or an unrelated repository at the recorded location
  * proves nothing, since the repository may have moved: "unknown", as while the
  * repository cannot be reached or an archive's claim holds the ID. A worktree
- * that reaches the review, when given, decides; the recorded locators only when
- * it is not given or no longer a checkout. The first cleanup that finds the
- * recorded Git directory missing records when, as for any review. */
-function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committed" | "uncommitted" | "unknown" {
+ * found to hold the ID, when given, proves the deletion did not commit. The
+ * first cleanup that finds the recorded Git directory missing records when, as
+ * for any review. */
+function interruptedDeletionOutcome(id: string, holdingRoot?: string): "committed" | "uncommitted" | "unknown" {
   if (fs.existsSync(retiredMarker(id))) return "committed";
   let record: ReviewRecord;
   const file = path.join(pendingDeletionDirectory(id), "review.json");
@@ -264,22 +264,12 @@ function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committ
   catch { return "unknown"; }
   if (record.id !== id) return "unknown";
   if (record.remote) return "committed";
-  // A worktree known to reach the review decides, however long the recorded
-  // location has been gone: it becomes the recorded location, so a later cleanup
-  // that cannot see the worktree does not count the old location's absence. One
-  // whose archive claims the ID, or whose refs cannot be read or confirmed, may
-  // still hold it once a failing archive puts the snapshot back: wait.
-  const verifiedDirectory = reachingRoot === undefined ? undefined : gitCommonDirectoryOf(reachingRoot);
-  if (verifiedDirectory !== undefined) {
-    try {
-      const { missingSince: _cleared, ...current } = record;
-      atomicJson(file, { ...current, repositoryRoot: fs.realpathSync(reachingRoot!), gitCommonDir: verifiedDirectory });
-    } catch { return "unknown"; }
-    let holder: ReturnType<typeof reviewIdHolder>;
-    try { holder = reviewIdHolder(verifiedDirectory, record.implementationId, id); }
-    catch { return "unknown"; }
-    return holder === "active" ? "uncommitted" : holder === "replaced" ? "committed" : "unknown";
-  }
+  // Registration read, under the review's lock, that this worktree's active
+  // artifact holds the ID. A deletion commits only by replacing that ID, under
+  // the same lock, so it did not commit, however long the recorded location has
+  // been gone. Moving the folder back loses nothing even if an archive claims the
+  // implementation right after: its review then remains like any archived one's.
+  if (holdingRoot !== undefined) return "uncommitted";
   const presence = repositoryPresence(record);
   if (presence === "missing" && missingLongEnough(record)) return "committed";
   try {
@@ -301,11 +291,11 @@ function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committ
 /** Settles a deletion of id that a crash interrupted, before anything else uses
  * the ID, by what the repository records: one that committed is completed, one
  * whose implementation still holds the ID is rolled back, and one that cannot be
- * told yet keeps its pending folder. reachingRoot is a worktree known to reach
- * the review. Caller holds the lock. */
-export function recoverInterruptedDeletion(id: string, reachingRoot?: string) {
+ * told yet keeps its pending folder. holdingRoot is a worktree whose active
+ * artifact the caller found, under the lock, to hold id. Caller holds the lock. */
+export function recoverInterruptedDeletion(id: string, holdingRoot?: string) {
   if (!fs.existsSync(pendingDeletionDirectory(id)) || fs.existsSync(reviewDirectory(id))) return;
-  const outcome = interruptedDeletionOutcome(id, reachingRoot);
+  const outcome = interruptedDeletionOutcome(id, holdingRoot);
   if (outcome === "committed") completeReviewDeletion(id);
   else if (outcome === "uncommitted") rollBackReviewDeletion(id);
 }
