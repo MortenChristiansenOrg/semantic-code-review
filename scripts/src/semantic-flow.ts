@@ -1480,6 +1480,9 @@ function npmInvocation(): { executable: string; args: string[] } {
   fail("npm was not found on PATH.");
 }
 
+/** Replaces the installed skill with a verified copy of the built one. Once the
+ * new installation is in place and verified it stays, even when the previous
+ * installation cannot be deleted: that is reported as a leftover folder. */
 function replaceInstalledSkill(
   builtSkill: string,
   installedSkill: string,
@@ -1500,7 +1503,6 @@ function replaceInstalledSkill(
     installedMoved = true;
     fs.renameSync(temporary, installedSkill);
     compareSkillFiles(builtSkill, installedSkill, requiredFiles);
-    fs.rmSync(backup, { recursive: true, force: true });
   } catch (error) {
     if (installedMoved && fs.existsSync(backup)) {
       if (fs.existsSync(installedSkill)) {
@@ -1512,6 +1514,13 @@ function replaceInstalledSkill(
       fs.rmSync(temporary, { recursive: true, force: true });
     }
     throw error;
+  }
+  // Outside the rollback: a file in use, on Windows for example, can stop the
+  // deletion partway, which must not touch the new installation.
+  try {
+    fs.rmSync(backup, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  } catch (error) {
+    console.warn(`The previous installation could not be deleted (${errorMessage(error)}). Delete ${backup} once nothing uses it.`);
   }
 }
 
