@@ -395,6 +395,23 @@ files have paged changes and full-context views; line-thread navigation loads
 the relevant page. Reopening review reuses a healthy viewer for the same worktree,
 implementation, and installed viewer version.
 
+Each link the review command prints or opens works once and for ten minutes. A
+tab keeps working across reloads while its viewer runs. A new tab, a bookmark,
+or a tab left open while the viewer restarted (for example after an update)
+shows that the page needs a fresh link: run the review again to get one.
+
+On Linux and macOS the review command opens the browser through a private file
+in `~/.semantic-flow` that forwards to the link, because other users of the
+machine can see the arguments of the program that opens the browser. On Windows
+it opens the link directly. Set `SEMANTIC_VIEW_OPEN_URL=1` to open the link
+directly on any platform, for example when the browser is sandboxed and cannot
+read `~/.semantic-flow` (such as Firefox installed as a snap), or when `.html`
+files open in an editor instead of the browser. The link then appears in that
+program's arguments while it starts.
+
+The viewer trusts other software serving on the machine's loopback address
+(`127.0.0.1`), so do not use it on a host shared with untrusted users.
+
 ## 7. Send feedback
 
 In **Review queue**, add notes containing change instructions or questions.

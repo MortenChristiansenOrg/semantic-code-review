@@ -22,13 +22,20 @@ import { fileURLToPath } from "node:url";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import {
+  KEY_HEADER,
   probeViewer,
+  probeViewerAccess,
+  requestLaunchCode,
   stopViewerAndWait,
   VIEWER_APP_ID,
   VIEWER_HOST,
   viewerPort,
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
+import {
+  browserOpener, COMMON_HEADERS, createViewerAccess, FRESH_LINK_MESSAGE, LAUNCH_CODE_LIFETIME_MS, launchUrl, opensLaunchUrl, originFormTarget, ownApiCaller, ownHost, PAGE_HEADERS,
+  sameSecret, sweepLaunchFiles, writeLaunchFile, type ViewerAccess,
+} from "./shared/viewer-access.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
 import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, removeOrphanedReviews, reviewDeletionConfirmed, setReviewCompleted } from "./shared/review-store.js";
@@ -56,7 +63,7 @@ import { git } from "./shared/git.js";
 import { readUnvalidatedImplementation } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
-import type { ReviewRecord } from "./shared/review-store.js";
+import type { ReviewRecord, ViewerRecord } from "./shared/review-store.js";
 import { assertKnownOptions, option, parseArguments } from "./shared/arguments.js";
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 import type * as Wire from "./shared/viewer-protocol.js";
@@ -1316,7 +1323,7 @@ export function createViewerDataSource(
   const captureGit = options.gitCapture || gitCapture;
   const stageCache = new Map<string, StageRecord>();
   let cachedRevision = "";
-  let cachedScript = "";
+  let cachedScript: string | undefined;
   let cachedData: ImplementationData | null = null;
   const snapshotReader = createSnapshotReader(repoRoot);
 
@@ -1367,7 +1374,7 @@ export function createViewerDataSource(
         captureGit,
       ));
       cachedData = data;
-      cachedScript = implementationScript(data);
+      cachedScript = undefined;
       cachedRevision = snapshot.revision;
       snapshot = snapshotReader(true);
     }
@@ -1389,8 +1396,10 @@ export function createViewerDataSource(
       return { mediaType, content: bytes.toString("base64") };
     },
     implementationData,
+    /** The data as a script that sets `window.SEMANTIC_IMPLEMENTATION`; tests read it. */
     implementationDataScript() {
-      implementationData();
+      const data = implementationData();
+      cachedScript ??= implementationScript(data);
       return cachedScript;
     },
     snapshot: snapshotReader,
@@ -1547,12 +1556,25 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
   });
 }
 
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
-};
+/** The bundled files the viewer serves, by request path, with their content types. */
+const STATIC_FILES: ReadonlyMap<string, string> = new Map([
+  ["/index.html", "text/html; charset=utf-8"],
+  ["/boot.js", "text/javascript; charset=utf-8"],
+  ["/app.js", "text/javascript; charset=utf-8"],
+  ["/markdown.js", "text/javascript; charset=utf-8"],
+  ["/styles.css", "text/css; charset=utf-8"],
+  ["/favicon.svg", "image/svg+xml"],
+]);
+
+/** The API routes whose GET requests the read token also authorizes: the
+ * resources the browser loads by URL, which cannot send the key header. */
+function readTokenRoute(pathname: string, url: URL): boolean {
+  return pathname === "/api/evidence" || /^\/api\/attachments\/[^/]+$/.test(pathname) ||
+    (pathname === "/api/file-content" && url.searchParams.get("raw") === "1");
+}
+
+/** Routes that need no review scope: they serve the viewer itself, not one request of its review. */
+const UNSCOPED_ROUTES = new Set(["/api/whoami", "/api/shutdown", "/api/session", "/api/launch", "/api/bootstrap"]);
 
 function readRequestBody(request: http.IncomingMessage, limit = 8 * 1024 * 1024): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -1991,11 +2013,9 @@ export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: s
   });
 }
 
-// Reject cross-origin drivers. A local page served by this server has no
-// Origin (same-origin fetch) or an Origin matching our own host; a third-party
-// web page attempting a request will carry a foreign Origin. Combined with the
-// required application/json content type (which forces a CORS preflight this
-// server never approves), this blocks drive-by requests from other sites.
+// Every API request has already passed the Host, Origin, fetch metadata and key
+// checks. POST requests also need the application/json content type, which a
+// cross-origin page cannot send without a CORS preflight this server never approves.
 function isTrustedRequest(request: http.IncomingMessage, port: number) {
   const contentType = String(request.headers["content-type"] || "");
   if (!contentType.toLowerCase().startsWith("application/json")) return false;
@@ -2202,7 +2222,7 @@ export function reviewSessionUnavailable(context: ReviewContext) {
  * review: the review still records the worktree the launch serves. A launch that
  * read the review before another launch recorded a different worktree is
  * outdated, and the viewer of the recorded worktree is the one to keep. */
-export function viewerLaunchCurrent(context: ReviewContext) {
+export function viewerLaunchCurrent(context: Pick<ReviewContext, "reviewId" | "generation" | "repositoryRoot">) {
   try {
     const record = readReview(context.reviewId);
     return record.generation === context.generation && record.repositoryRoot === context.repositoryRoot;
@@ -2231,6 +2251,7 @@ export function reviewRetirementCheck(context: ReviewContext) {
 interface ViewerServerOptions {
   viewerDir: string;
   port: number;
+  access: ViewerAccess;
   repoRoot: string;
   implementationId: string;
   dataSource: ViewerWorker;
@@ -2241,6 +2262,7 @@ interface ViewerServerOptions {
 function serveViewer({
   viewerDir,
   port,
+  access,
   repoRoot,
   implementationId,
   dataSource,
@@ -2254,22 +2276,79 @@ function serveViewer({
     if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
     return management;
   };
+  const plain = (response: http.ServerResponse, status: number, text: string) => {
+    response.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    response.end(text);
+  };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
-    const url = new URL(request.url ?? "/", `http://${VIEWER_HOST}`);
-    let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+    for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
+    // Only requests addressed to this viewer by its own name are served.
+    if (!ownHost(request, port)) { plain(response, 421, "Misdirected request."); return; }
+    const target = request.url;
+    if (!originFormTarget(target)) { plain(response, 400, "Bad request."); return; }
+    let url: URL;
+    try { url = new URL(target, `http://${VIEWER_HOST}:${port}`); }
+    catch { plain(response, 400, "Bad request."); return; }
+    const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const param = (key: string) => url.searchParams.get(key);
     const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) =>
       sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra });
 
+    if (pathname.startsWith("/api/")) {
+      if (!ownApiCaller(request, port)) {
+        sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: "Only the review page can use this service." }); return;
+      }
+      // A launch code takes the place of the key when the page starts.
+      const exchange = request.method === "POST" && pathname === "/api/session";
+      const keyed = sameSecret(request.headers[KEY_HEADER], access.key);
+      const readable = request.method === "GET" && readTokenRoute(pathname, url) && sameSecret(param("read"), access.read);
+      if (!exchange && !keyed && !readable) {
+        sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: FRESH_LINK_MESSAGE, keyRequired: true }); return;
+      }
+    }
+
     // Every review API request is explicitly scoped, even on a dedicated server.
     // Management/probing routes do not execute commands against the launch repo.
-    if (pathname.startsWith("/api/") && !["/api/whoami", "/api/shutdown"].includes(pathname)) {
+    if (pathname.startsWith("/api/") && !UNSCOPED_ROUTES.has(pathname)) {
       const scope: QueryText<Wire.ReviewQuery> = { review: param("review"), generation: param("generation") };
       if (scope.review !== context.reviewId || scope.generation !== context.generation) {
         sendJson<Wire.ApiFailure>(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
       catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+    }
+
+    if (pathname === "/api/session" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Starting a session requires an application/json request.");
+        const { code } = await readRequestFields(request, 4096);
+        if (!access.redeem(code)) {
+          sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: FRESH_LINK_MESSAGE, keyRequired: true }); return;
+        }
+        sendJson<Wire.SessionResponse>(response, 200, { ok: true, key: access.key, read: access.read });
+      } catch (error) { failure(400, error); }
+      return;
+    }
+    if (pathname === "/api/launch" && request.method === "POST") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Launch codes require an application/json request.");
+        await readRequestFields(request, 4096);
+        sendJson<Wire.LaunchResponse>(response, 200, { ok: true, code: access.mintCode() });
+      } catch (error) { failure(400, error); }
+      return;
+    }
+    if (pathname === "/api/bootstrap" && request.method === "GET") {
+      let implementation: Wire.ImplementationData | Wire.UnavailableImplementationData;
+      try { implementation = await dataSource.call("implementation"); }
+      catch (error) {
+        const code = errorCode(error);
+        if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) { failure(500, error); return; }
+        // The saved-review manager remains usable after deletion or worktree removal.
+        implementation = { implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
+          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" };
+      }
+      sendJson<Wire.BootstrapResponse>(response, 200, { ok: true, implementation, context: { reviewId: context.reviewId, generation: context.generation } });
+      return;
     }
 
     if (review.remote && (pathname.startsWith("/api/feedback/") || pathname.startsWith("/api/agent/"))) {
@@ -2547,48 +2626,14 @@ function serveViewer({
       return;
     }
 
-    if (pathname === "/implementation-data.js") {
-      let script: string;
-      try { script = await dataSource.call("implementationDataScript"); }
-      catch (error) {
-        const code = errorCode(error);
-        if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
-          response.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
-          response.end(cliErrorMessage(error)); return;
-        }
-        // The saved-review manager remains usable after deletion or worktree removal.
-        const unavailable: Wire.UnavailableImplementationData = { implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
-          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" };
-        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(unavailable)};`;
-      }
-      const reviewContext: Wire.ReviewContext = { reviewId: context.reviewId, generation: context.generation };
-      const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify(reviewContext)};\n`, "utf8");
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "content-length": body.length, "cache-control": "no-store" });
-      response.end(body); return;
-    }
-
-    const safe = path
-      .normalize(pathname)
-      .replace(/^(\.\.[/\\])+/, "")
-      .replace(/^[/\\]+/, "");
-    const filePath = path.join(viewerDir, safe);
-    if (!filePath.startsWith(viewerDir)) {
-      response.writeHead(403);
-      response.end("Forbidden");
-      return;
-    }
-    fs.readFile(filePath, (error, content) => {
-      if (error) {
-        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
-        response.end("Not found");
-        return;
-      }
-      response.writeHead(200, {
-        "content-type": CONTENT_TYPES[path.extname(filePath)] || "application/octet-stream",
-        "content-length": content.length,
-        "cache-control": "no-store",
-      });
-      response.end(content);
+    if (pathname.startsWith("/api/")) { failure(404, new Error("Unknown request.")); return; }
+    const contentType = STATIC_FILES.get(pathname);
+    if (!contentType) { plain(response, 404, "Not found"); return; }
+    if (request.method !== "GET" && request.method !== "HEAD") { plain(response, 405, "Method not allowed."); return; }
+    fs.readFile(path.join(viewerDir, pathname.slice(1)), (error, content) => {
+      if (error) { plain(response, 404, "Not found"); return; }
+      response.writeHead(200, { ...PAGE_HEADERS, "content-type": contentType, "content-length": content.length, "cache-control": "no-store" });
+      response.end(request.method === "HEAD" ? undefined : content);
     });
   };
 
@@ -2605,6 +2650,8 @@ function serveViewer({
         }
       }, 1000);
       retirement.unref(); httpServer.once("close", () => clearInterval(retirement));
+      const expiry = setInterval(() => { access.expire(); sweepLaunchFiles(context.reviewId, LAUNCH_CODE_LIFETIME_MS); }, 60_000);
+      expiry.unref(); httpServer.once("close", () => clearInterval(expiry));
       resolve(httpServer);
     });
   });
@@ -2657,7 +2704,7 @@ function createViewerWorker<Management extends boolean>(repoRoot: string, contex
   function call<Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>): Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
   function call(method: string, ...args: unknown[]): Promise<unknown> {
     if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
-    const key = ["snapshot", "fileDiff", "fileContent", "implementation", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
+    const key = ["snapshot", "fileDiff", "fileContent", "implementation"].includes(method) ? JSON.stringify([method, args]) : null;
     const shared = key ? reads.get(key) : undefined;
     if (shared) return shared;
     if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
@@ -2744,7 +2791,6 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
       return source.fileContent(query.stage, query.path, query.base, query.head, query.target);
     },
     implementation: (): Wire.ImplementationData => { review(); return source.implementationData(); },
-    implementationDataScript: () => { review(); return source.implementationDataScript(); },
     evidenceFile: (query: QueryText<Wire.EvidenceQuery>) => { review(); return source.evidenceFile(query.stage, query.item, query.index); },
     refreshRemote: (implementationId: string) => { implementation(implementationId); refreshRemoteReview(context.reviewId, context.generation); },
     resolveDraftSnapshots: (implementationId: string, fields: JsonRecord): (Wire.DraftSnapshot | null)[] => {
@@ -2819,19 +2865,77 @@ if (!isMainThread && parentPort && isRecord(startup) && typeof startup.repoRoot 
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function openBrowser(url: string) {
-  if (process.env.SEMANTIC_VIEW_NO_OPEN) return;
+const browserOpening = () => !process.env.SEMANTIC_VIEW_NO_OPEN;
+
+/** Opens the viewer in the browser with a launch code of its own. Where other
+ * users can list process arguments, the browser opens a private launch file that
+ * forwards to the launch URL, so the code never appears in an argument. */
+function openBrowser(reviewId: string, port: number, code: string) {
   try {
-    if (process.platform === "win32") {
-      execFileSync("cmd", ["/c", "start", "", url], { stdio: "ignore", windowsHide: true });
-    } else if (process.platform === "darwin") {
-      execFileSync("open", [url], { stdio: "ignore", windowsHide: true });
-    } else {
-      execFileSync("xdg-open", [url], { stdio: "ignore", windowsHide: true });
-    }
+    const target = opensLaunchUrl() ? launchUrl(port, code) : writeLaunchFile(reviewId, port, code);
+    const { command, args, cwd } = browserOpener(target);
+    execFileSync(command, args, { cwd, stdio: "ignore", windowsHide: true });
   } catch {
     // Non-fatal: the URL is printed for manual use.
   }
+}
+
+/** Whether a process is running. */
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return errorCode(error) === "EPERM"; }
+}
+
+/** The viewer on `port`, read with the key this review records for that port.
+ * A viewer that refuses the key is not this review's, except while this review's
+ * record names no viewer on that port: a concurrent launch of the same review
+ * records its key right after it starts listening, so the record is read again
+ * for about two seconds. A server that is no keyed viewer, and a viewer on a port
+ * that another review records for its running viewer, are foreign at once. */
+export async function identifyOccupant(context: Pick<ReviewContext, "reviewId">, port: number): Promise<ViewerIdentity | null> {
+  const recorded = () => {
+    try { const viewer = readReview(context.reviewId).viewer; return viewer?.port === port ? viewer : undefined; }
+    catch { return undefined; }
+  };
+  const viewer = recorded();
+  const probe = await probeViewerAccess(port, { key: viewer?.key });
+  if (!probe.refused || viewer) return probe.identity;
+  let otherReview = false;
+  try { otherReview = listReviews().some((review) => review.id !== context.reviewId && review.viewer?.port === port && processAlive(review.viewer.processId)); }
+  catch { /* Unreadable records name no viewer. */ }
+  if (otherReview) return null;
+  for (const deadline = Date.now() + 2000; Date.now() < deadline;) {
+    await delay(100);
+    const next = recorded();
+    if (next) return next.key ? probeViewer(port, { key: next.key }) : null;
+  }
+  return null;
+}
+
+/** Records this process as the review's viewer. When the record already names a
+ * running viewer of the same review on another port that `reusable` accepts, a
+ * concurrent launch got there first: that viewer is returned and the record is
+ * left alone. The record is written only while it is unchanged since it was read
+ * and the review still records the worktree this launch serves; a launch that a
+ * later launch outdated fails and leaves the record to that launch's viewer. */
+export async function claimViewerRecord<Running extends ViewerIdentity>(
+  context: Pick<ReviewContext, "reviewId" | "generation" | "repositoryRoot">,
+  viewer: ViewerRecord,
+  reusable: (occupant: ViewerIdentity | null) => occupant is Running,
+): Promise<Running | null> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const current = readReview(context.reviewId).viewer ?? null;
+    if (current && current.port !== viewer.port && current.key && processAlive(current.processId)) {
+      const occupant = await probeViewer(current.port, { key: current.key });
+      if (reusable(occupant)) return occupant;
+    }
+    const recorded = withReviewLock(context.reviewId, () => {
+      if (!viewerLaunchCurrent(context)) throw new Error("The review changed while this viewer started, so another viewer serves it now. Launch the review again to open it.");
+      return recordViewer(context.reviewId, context.generation, viewer, current);
+    });
+    if (recorded) return null;
+  }
+  throw new Error("The review's viewer record kept changing during startup. Launch the review again.");
 }
 
 function implementationSummary(repoRoot: string) {
@@ -2913,29 +3017,45 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
   startupWorker = dataSource;
   const fingerprint = createHash("sha256");
   fingerprint.update(viewerReleaseVersion);
-  for (const file of [fileURLToPath(import.meta.url), ...["app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))]) {
+  for (const file of [fileURLToPath(import.meta.url), ...["boot.js", "app.js", "markdown.js", "styles.css", "index.html"].map((name) => path.join(viewerDir, name))]) {
     fingerprint.update(fs.readFileSync(file));
   }
   const viewerVersion = fingerprint.digest("hex");
 
+  const access = createViewerAccess(context.reviewId);
   let port = registered.viewer?.port || viewerPort();
   let server: http.Server | null = null;
   const fallback = 20000 + (Number.parseInt(context.reviewId.slice(-64, -56), 16) % 40000);
   // A viewer of this review is recognized by the review, not by the worktree it
   // serves: one serving a worktree the review no longer records is replaced.
   const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome();
+  const reusable = (occupant: ViewerIdentity | null): occupant is ViewerIdentity & { key: string; port: number } =>
+    matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.repositoryRoot === context.repositoryRoot && Boolean(occupant.key) && Boolean(occupant.port);
+  /** Hands the launch to a running viewer of this review. */
+  const reuse = async ({ port: running, key, processId }: ViewerIdentity & { key: string; port: number }) => {
+    // The printed URL and the opened browser each get their own code, so
+    // opening the browser does not spend the printed link.
+    const code = await requestLaunchCode(running, key);
+    if (!code) throw new Error(`The viewer running at http://${VIEWER_HOST}:${running}/ did not provide a link. Launch the review again.`);
+    const url = launchUrl(running, code);
+    // `key` is read by tests that start `viewer serve` directly (workflow-helper.test.mjs).
+    notifyLauncher({ type: "ready", url, key, repositoryRoot: repoRoot, reviewId: context.reviewId, processId, implementation });
+    console.log(`Reusing semantic review viewer: ${url}`);
+    if (browserOpening()) {
+      const browserCode = await requestLaunchCode(running, key);
+      if (browserCode) openBrowser(context.reviewId, running, browserCode);
+    }
+  };
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {
-      server = await serveViewer({ viewerDir, port, repoRoot, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
+      server = await serveViewer({ viewerDir, port, access, repoRoot, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
       if (!["EADDRINUSE", "EACCES"].includes(errorCode(error) ?? "")) throw error;
-      const occupant = await probeViewer(port);
-      if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.repositoryRoot === context.repositoryRoot) {
+      const occupant = await identifyOccupant(context, port);
+      if (reusable(occupant)) {
         await dataSource.close();
-        const url = `http://${VIEWER_HOST}:${port}/`;
-        notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation });
-        console.log(`Reusing semantic review viewer: ${url}`);
-        openBrowser(url); return;
+        await reuse(occupant);
+        return;
       }
       if (process.env.SEMANTIC_VIEW_NO_REPLACE) throw new Error(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
       if (matching(occupant)) {
@@ -2955,8 +3075,25 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
     }
   }
   if (!server) throw new Error("No viewer port could be allocated. Try launching the review again.");
-  recordViewer(context.reviewId, context.generation, { port, processId: process.pid, viewerVersion, skillDirectory: path.resolve(scriptDir, "..") });
-  const url = `http://${VIEWER_HOST}:${port}/`;
+  const listening: http.Server = server;
+  const close = () => new Promise<void>((resolve) => { listening.close(() => resolve()); listening.closeAllConnections(); });
+  let running;
+  try {
+    running = await claimViewerRecord(context, { port, processId: process.pid, viewerVersion, skillDirectory: path.resolve(scriptDir, ".."), key: access.key }, reusable);
+  } catch (error) {
+    // Without its record no launch finds this viewer: stop listening.
+    await close();
+    throw error;
+  }
+  if (running) {
+    await close();
+    await dataSource.close();
+    await reuse(running);
+    return;
+  }
+  // Launch files of an earlier viewer of this review hold codes it alone knew.
+  sweepLaunchFiles(context.reviewId, 0);
+  const url = launchUrl(port, access.mintCode());
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);
   console.log(
@@ -2966,10 +3103,12 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
   notifyLauncher({
     type: "ready",
     url,
+    // Read by tests that start `viewer serve` directly (workflow-helper.test.mjs).
+    key: access.key,
     repositoryRoot: repoRoot,
     processId: process.pid,
     reviewId: context.reviewId,
     implementation,
   });
-  openBrowser(url);
+  if (browserOpening()) openBrowser(context.reviewId, port, access.mintCode());
 }

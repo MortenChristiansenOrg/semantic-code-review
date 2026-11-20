@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/app.js', import.meta.url), 'utf8');
+const bootSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/boot.js', import.meta.url), 'utf8');
 const markdownSource = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/markdown.js', import.meta.url), 'utf8');
 const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';
@@ -41,7 +42,9 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('http://localhost/**', async (route) => {
     const url = new URL(route.request().url());
-    const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || url.pathname.slice(1))) || data;
+    // The page path names the review; its start request carries no review scope.
+    const pagePath = url.pathname === '/api/bootstrap' ? new URL(route.request().frame().url()).pathname : url.pathname;
+    const currentData = allData.find((item) => (item.reviewId || item.implementationId) === (url.searchParams.get('review') || pagePath.slice(1))) || data;
     const currentId = currentData.reviewId || currentData.implementationId;
     const json = (body) => route.fulfill({ json: body });
     if (url.pathname === '/api/reviews') return json({ ok: true, reviews: records });
@@ -59,7 +62,9 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
       return json({ ok: true, deleted: true });
     }
     if (deleted.has(currentId) && ['/api/review-state', '/api/revision', '/api/attachments'].includes(url.pathname)) return route.fulfill({ status: 409, json: { ok: false, reviewUnavailable: true, error: 'Review data was deleted.' } });
-    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}` });
+    if (url.pathname === '/api/reviews/open') return json({ ok: true, url: `http://localhost/${route.request().postDataJSON().reviewId}#launch=code` });
+    if (url.pathname === '/api/session') return json({ ok: true, key: 'test-key', read: 'test-read' });
+    if (url.pathname === '/api/bootstrap') return json({ ok: true, implementation: currentData, context: { reviewId: currentId, generation: 'test' } });
     if (url.pathname === '/api/reviews/completion') {
       const payload = route.request().postDataJSON();
       records.find((r) => r.id === payload.reviewId).completedAt = payload.completed ? '2026-09-11T11:00:00Z' : null;
@@ -125,11 +130,12 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     }
     if (url.pathname === '/markdown.js') return route.fulfill({ contentType: 'text/javascript', body: markdownSource });
     if (url.pathname === '/app.js') return route.fulfill({ contentType: 'text/javascript', body: source });
+    if (url.pathname === '/boot.js') return route.fulfill({ contentType: 'text/javascript', body: bootSource });
     if (url.pathname === '/styles.css') return route.fulfill({ contentType: 'text/css', body: styles });
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
-    return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: '<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script src="/boot.js"></script>' });
   });
-  await page.goto('http://localhost/');
+  await page.goto('http://localhost/#launch=code');
   await expect(page.locator('.stage')).toHaveCount(data.stages.length);
   expect(errors).toEqual([]);
   return errors;
@@ -174,6 +180,114 @@ for (const skillVersion of ['0.2.0', undefined]) {
     await expect(page.locator('.hero-skill-version')).toHaveText("Viewer version: 0.8.1");
   });
 }
+
+/** Pauses the page clock before the page starts, so only the test advances it, and
+ * counts the revision polls the page made. `failed` answers only once every poll
+ * has its answer or failure: the page handles the rest of a poll before its next
+ * task, so the clock's next tick finds the poll finished. */
+async function controlRevisionPolls(page) {
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: start });
+  // No page timer exists yet, so the jump fires none.
+  await page.clock.pauseAt(start + 60_000);
+  await page.addInitScript(() => {
+    const fetch = window.fetch;
+    const polls = window.revisionPolls = { issued: 0, settled: 0, failed: 0 };
+    window.fetch = (input, init) => {
+      if (!String(input).includes('/api/revision')) return fetch(input, init);
+      polls.issued += 1;
+      // The body is read here, so the page reads a copy without waiting for the network.
+      return fetch(input, init).then(async (response) => {
+        const body = await response.arrayBuffer();
+        polls.settled += 1;
+        return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }, (error) => { polls.settled += 1; polls.failed += 1; throw error; });
+    };
+  });
+  return {
+    issued: () => page.evaluate(() => window.revisionPolls.issued),
+    failed: () => page.evaluate(() => { const polls = window.revisionPolls; return polls.issued === polls.settled ? polls.failed : -1; }),
+  };
+}
+
+test('the page asks for a fresh link only after the server stays unreachable', async ({ page }) => {
+  const polls = await controlRevisionPolls(page);
+  await mount(page);
+  // The poll the page makes as it starts succeeds.
+  await expect.poll(polls.issued).toBe(1);
+  await expect.poll(polls.failed).toBe(0);
+  await page.route('http://localhost/api/revision**', (route) => route.abort('connectionrefused'));
+  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(polls.failed).toBe(count); };
+  await poll(1);
+  // A background tab stops polling: a failure long after the last one starts a new outage.
+  await page.evaluate(() => {
+    window.testHidden = true;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.testHidden });
+  });
+  await page.clock.runFor(10_000);
+  expect(await polls.failed()).toBe(1);
+  await page.evaluate(() => { window.testHidden = false; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(polls.failed).toBe(2);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  for (let count = 3; count <= 6; count++) await poll(count);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  // Five seconds of failures in a row.
+  await poll(7);
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.');
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+});
+
+test('a poll that never answers counts as the server being unreachable', async ({ page }) => {
+  await mount(page);
+  // The page polls every second; each poll gives up after three seconds.
+  await page.route('http://localhost/api/revision**', () => {});
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.', { timeout: 20_000 });
+});
+
+test('without session storage a fresh link reloads a running page, which redeems the link', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
+  });
+  await mount(page);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await page.route('http://localhost/api/session', (route) => route.fulfill({ json: { ok: true, key: 'second-key', read: 'second-read' } }));
+  const exchanged = page.waitForResponse((response) => response.url().endsWith('/api/session'));
+  await page.evaluate(() => { window.sameDocument = true; window.location.hash = '#launch=second'; });
+  await exchanged;
+  // The link may come from another review that took the port, so the page loads anew.
+  await expect.poll(() => page.evaluate(() => window.SEMANTIC_ACCESS?.key)).toBe('second-key');
+  expect(await page.evaluate(() => window.sameDocument)).toBeUndefined();
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+});
+
+test('a launch code exchange that never answers asks for a fresh link', async ({ page }) => {
+  await page.clock.install();
+  await mount(page);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await page.route('http://localhost/api/session', () => {});
+  await page.evaluate(() => sessionStorage.clear());
+  const exchange = page.waitForRequest((request) => request.url().endsWith('/api/session'));
+  // A new page, not a fragment change of the running one.
+  await page.goto('about:blank');
+  await page.goto('http://localhost/#launch=stalled');
+  await exchange;
+  await page.clock.runFor(10_000);
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.');
+});
+
+test('review data that never arrives shows that it could not be loaded', async ({ page }) => {
+  await page.clock.install();
+  await mount(page);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await page.route('http://localhost/api/bootstrap**', () => {});
+  const bootstrap = page.waitForRequest((request) => request.url().includes('/api/bootstrap'));
+  await page.goto('about:blank');
+  await page.goto('http://localhost/#launch=again');
+  await bootstrap;
+  await page.clock.runFor(30_000);
+  await expect(page.locator('#app')).toHaveText('Review data could not be loaded. Reload to retry.');
+});
 
 test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {
   const name = '"><img src=x onerror="window.injected=1">\r.js';

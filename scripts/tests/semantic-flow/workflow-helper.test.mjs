@@ -13,10 +13,10 @@ import {
   createImplementationWithStages,
   createRepository,
   flowCli,
-  implementationFromScript,
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
+import { viewerBase, viewerFetch, viewerKey } from "../helpers/viewer-client.mjs";
 import { ArtifactDraft, commitArtifact, rememberImplementation, removeArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 
 /** The active artifact of a worktree that is not a test repository, read and
@@ -47,13 +47,13 @@ function reserveViewerPort() {
   });
 }
 
-async function stopViewer(port, pid) {
+async function stopViewer(port, pid, key = viewerKey(port)) {
   try {
-    await fetch(`http://127.0.0.1:${port}/api/shutdown`, {
+    await viewerFetch(`http://127.0.0.1:${port}/api/shutdown`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
-    });
+    }, key);
   } catch {
     // The assertion or viewer startup may have failed before a server existed.
   }
@@ -140,7 +140,7 @@ test("review launched from another worktree of the repository reuses the running
     return Number(started[1]);
   };
   const first = launch();
-  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const identity = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(identity.processId, first);
   assert.equal(identity.repositoryRoot, repository.root);
   assert.equal(launch(), first);
@@ -175,7 +175,7 @@ test("review launched after the recorded worktree stopped reaching the review re
   const second = launch(repository.root);
   assert.notEqual(second, first);
   assert.throws(() => process.kill(first, 0), (error) => error.code === "ESRCH");
-  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const identity = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(identity.processId, second);
   assert.equal(identity.repositoryRoot, repository.root);
 });
@@ -206,7 +206,7 @@ test("review leaves a detached viewer running after the command exits", async (t
   assert.ok(started, launch.stdout);
   viewerPid = Number(started[1]);
 
-  const response = await fetch(`http://127.0.0.1:${port}/api/whoami`);
+  const response = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`);
   assert.equal(response.status, 200);
   const identity = await response.json();
   assert.equal(identity.app, "semantic-flow-review-viewer");
@@ -218,10 +218,10 @@ test("review leaves a detached viewer running after the command exits", async (t
     env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
   });
   assert.equal(reopened.status, 0, reopened.stderr);
-  const reused = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const reused = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(reused.processId, identity.processId);
   assert.match(reused.viewerVersion, /^[0-9a-f]{64}$/);
-  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation?review=${identity.reviewId}&generation=${identity.generation}`).then((response) => response.json());
+  const payload = await viewerFetch(`http://127.0.0.1:${port}/api/implementation?review=${identity.reviewId}&generation=${identity.generation}`).then((response) => response.json());
   assert.equal(payload.ok, true);
   assert.equal(payload.implementation.implementationId, "persistent-review");
 
@@ -568,7 +568,7 @@ test("update rebuilds and replaces a copied installation", async (t) => {
     "9.9.9\n",
   );
   assert.ok(result.stdout.includes(`${builtSkillVersion} -> 9.9.9`));
-  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
+  await assert.rejects(viewerFetch(`http://127.0.0.1:${port}/api/whoami`));
 });
 
 test("explicit source update replaces an installation outside Git", async (t) => {
@@ -578,7 +578,7 @@ test("explicit source update replaces an installation outside Git", async (t) =>
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), "9.9.9\n");
   assert.match(result.stdout, /Updated semantic-flow/);
-  await assert.rejects(fetch(`http://127.0.0.1:${port}/api/whoami`));
+  await assert.rejects(viewerFetch(`http://127.0.0.1:${port}/api/whoami`));
 });
 
 test("update restarts a matching linked-worktree viewer without changing artifacts", async (t) => {
@@ -599,12 +599,12 @@ test("update restarts a matching linked-worktree viewer without changing artifac
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
   const launch = fixture.run(["review", "--project", linked], env);
   assert.equal(launch.status, 0, launch.stderr);
-  const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const before = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = before.processId;
   assert.equal(before.skillDirectory, fixture.installedSkill);
   const result = await fixture.update(env);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const after = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = after.processId;
   assert.notEqual(after.processId, before.processId);
   assert.throws(() => process.kill(before.processId, 0), { code: "ESRCH" });
@@ -631,7 +631,7 @@ test("viewer serves its installed release version and replaces an older running 
     const result = fixture.run(["review", "--project", fixture.target], env);
     assert.equal(result.status, 0, result.stderr);
   };
-  const identity = () => fetch(`http://127.0.0.1:${port}/api/whoami`).then(response => response.json());
+  const identity = () => viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then(response => response.json());
   launch();
   const before = await identity(); viewerPid = before.processId;
   assert.equal(before.viewerReleaseVersion, builtSkillVersion);
@@ -642,11 +642,11 @@ test("viewer serves its installed release version and replaces an older running 
   assert.notEqual(after.processId, before.processId);
   assert.notEqual(after.viewerVersion, before.viewerVersion);
   const query = new URLSearchParams({ review: after.reviewId, generation: after.generation });
-  const payload = await fetch(`http://127.0.0.1:${port}/api/implementation?${query}`).then(response => response.json());
+  const payload = await viewerFetch(`http://127.0.0.1:${port}/api/implementation?${query}`).then(response => response.json());
   assert.equal(payload.implementation.viewerReleaseVersion, "9.9.9");
   assert.equal(payload.implementation.skillVersion, "0.2.0");
-  const script = await fetch(`http://127.0.0.1:${port}/implementation-data.js`).then(response => response.text());
-  assert.equal(implementationFromScript(script).viewerReleaseVersion, "9.9.9");
+  const bootstrap = await viewerFetch(`http://127.0.0.1:${port}/api/bootstrap`).then(response => response.json());
+  assert.equal(bootstrap.implementation.viewerReleaseVersion, "9.9.9");
   assert.deepEqual(storedArtifact.read(fixture.target, "manifest.json"), original);
 });
 
@@ -712,7 +712,7 @@ test("update waits for a legacy viewer process to exit before restarting", async
   const { child } = await startUpdateViewerFixture(t, fixture, port);
   const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const identity = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = identity.processId;
   assert.notEqual(identity.processId, child.pid);
   assert.throws(() => process.kill(child.pid, 0), { code: "ESRCH" });
@@ -731,7 +731,7 @@ for (const scenario of ["another repository", "another installation", "another i
     const { child, messages } = await startUpdateViewerFixture(t, fixture, port, { identity });
     const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+    const after = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
     assert.equal(after.processId, child.pid);
     assert.deepEqual(messages, ["ready"]);
   });
@@ -771,7 +771,7 @@ test("update restarts the old viewer when installation replacement fails", async
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
   const launch = fixture.run(["review"], env);
   assert.equal(launch.status, 0, launch.stderr);
-  const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const before = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = before.processId;
   const preload = path.join(fixture.root, "fail-replacement.mjs");
   fs.writeFileSync(preload, `
@@ -787,7 +787,7 @@ fs.renameSync = (source, destination) => {
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Injected replacement failure/);
-  const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const after = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = after.processId;
   assert.notEqual(after.processId, before.processId);
   assert.equal(after.viewerVersion, before.viewerVersion);
@@ -806,7 +806,7 @@ test("updated viewer restart refuses to replace a new port occupant", async (t) 
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /refusing to replace it/);
-  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const identity = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(identity.processId, child.pid);
   assert.deepEqual(messages, ["ready"]);
 });
@@ -819,7 +819,7 @@ test("update never sends shutdown to a replacement on a new connection", async (
   const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port) });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Could not request viewer shutdown/);
-  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const identity = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   assert.equal(identity.implementationId, "replacement");
   assert.deepEqual(messages, ["ready"]);
   assert.equal(fs.readFileSync(path.join(fixture.installedSkill, "VERSION"), "utf8"), `${builtSkillVersion}\n`);
@@ -837,7 +837,7 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
   viewerPid = previous.child.pid;
   const result = await fixture.update({ SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" });
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  const current = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  const current = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
   viewerPid = current.processId;
   assert.ok(previous.messages.includes("shutdown"));
   assert.equal(current.skillDirectory, fs.realpathSync.native(fixture.installedSkill));
@@ -845,7 +845,7 @@ test("update recognizes a matching viewer through a filesystem alias", async (t)
 
 test("concurrent review services isolate commands and reopen registered worktrees", async (t) => {
   const viewers = [];
-  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId); });
+  t.after(async () => { for (const viewer of viewers) await stopViewer(viewer.port, viewer.processId, viewer.key); });
   const { repository: a } = createImplementationWithStages(t);
   const b = createRepository(t, "concurrent-review-b-");
   initializeImplementation(b); // Deliberately the same implementation ID.
@@ -865,16 +865,17 @@ test("concurrent review services isolate commands and reopen registered worktree
     });
     const [message] = await once(child, "message");
     assert.equal(message.type, "ready", JSON.stringify(message));
-    const identity = await fetch(new URL("api/whoami", message.url)).then((r) => r.json());
-    viewers.push(identity); child.unref();
-    return { ...identity, url: message.url };
+    assert.match(message.key, /^[\w-]{43}$/);
+    const identity = await viewerFetch(new URL("api/whoami", message.url), {}, message.key).then((r) => r.json());
+    viewers.push({ ...identity, key: message.key }); child.unref();
+    return { ...identity, url: viewerBase(message.url), key: message.key };
   };
   const first = await start(a.root), second = await start(b.root), third = await start(linked, true);
   assert.equal(new Set([first.port, second.port, third.port]).size, 3);
   assert.equal(new Set([first.reviewId, second.reviewId, third.reviewId]).size, 3);
-  const request = (viewer, route, body, review = viewer.reviewId) => fetch(new URL(`${route}?review=${review}&generation=${viewer.generation}`, viewer.url), {
+  const request = (viewer, route, body, review = viewer.reviewId) => viewerFetch(new URL(`${route}?review=${review}&generation=${viewer.generation}`, viewer.url), {
     ...(body ? { method: "POST", headers: { "content-type": "application/json", origin: new URL(viewer.url).origin }, body: JSON.stringify(body) } : {}),
-  });
+  }, viewer.key);
   assert.equal((await request(first, "api/implementation", null, third.reviewId)).status, 409);
   assert.equal((await request({ ...third, generation: "previous-session" }, "api/implementation")).status, 409);
   const implementation = await request(third, "api/implementation").then((r) => r.json());
@@ -894,7 +895,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.match(download.headers.get("content-disposition"), /^attachment/);
   assert.equal(Buffer.from(await download.arrayBuffer()).toString("base64"), upload.data);
   const previewUrl = new URL(`api/attachments/${attached.attachment.id}?review=${third.reviewId}&generation=${third.generation}&preview=1`, third.url);
-  const preview = await fetch(previewUrl); assert.equal(preview.headers.get("content-type"), "image/png");
+  const preview = await viewerFetch(previewUrl, {}, third.key); assert.equal(preview.headers.get("content-type"), "image/png");
   assert.equal(preview.headers.get("x-content-type-options"), "nosniff");
   assert.equal((await request(first, `api/attachments/${attached.attachment.id}`)).status, 404);
   assert.equal((await request(third, "api/attachments", { ...upload, filename: "../escape" })).status, 400);
@@ -950,29 +951,32 @@ test("concurrent review services isolate commands and reopen registered worktree
     assert.throws(() => module.runReviewCommand(context, "git", ["status"], { workingWorktree: b.root }), /another repository/);
   } finally { if (oldLowerGit === undefined) delete process.env.git_dir; else process.env.git_dir = oldLowerGit; if (oldGit === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = oldGit; }
   const opened = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
-  assert.equal(opened.url, third.url);
-  await stopViewer(third.port, third.processId);
+  assert.equal(viewerBase(opened.url), third.url);
+  await stopViewer(third.port, third.processId, third.key);
   viewers.pop();
   const restarted = await request(first, "api/reviews/open", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
   assert.equal(restarted.ok, true, JSON.stringify(restarted));
-  const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
+  const restartedKey = viewerKey(new URL(restarted.url).port);
+  const recovered = await viewerFetch(new URL("api/whoami", restarted.url), {}, restartedKey).then((r) => r.json()); viewers.push({ ...recovered, key: restartedKey });
   assert.equal(recovered.reviewId, third.reviewId);
   assert.notEqual(recovered.processId, third.processId);
   const originalManifest = storedArtifact.read(linked, "manifest.json");
   // The manifest keeps the implementation ID that names the artifact, but nothing else.
   storedArtifact.write(linked, "manifest.json", '{"implementationId": "test-implementation"}');
-  const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
-  assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
+  const bootstrapOf = (url) => viewerFetch(new URL("api/bootstrap", url), {}, restartedKey);
+  const failedBootstrap = await bootstrapOf(restarted.url);
+  assert.equal(failedBootstrap.status, 500); assert.equal((await failedBootstrap.json()).implementation, undefined);
   storedArtifact.write(linked, "manifest.json", originalManifest);
-  assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
+  assert.equal((await bootstrapOf(restarted.url)).status, 200);
   // The linked directory stays, as the restarted viewer runs in it, but it is no longer a checkout.
   fs.rmSync(path.join(linked, ".git"));
-  const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
-  assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
+  const unavailableBootstrap = await bootstrapOf(restarted.url);
+  assert.equal(unavailableBootstrap.status, 200);
+  assert.deepEqual((await unavailableBootstrap.json()).context, { reviewId: recovered.reviewId, generation: recovered.generation });
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
-  assert.equal((await request({ ...recovered, url: restarted.url }, "api/feedback/export", payload)).status, 409);
+  const missingViewer = { ...recovered, url: viewerBase(restarted.url), key: restartedKey };
+  assert.equal((await request(missingViewer, "api/feedback/export", payload)).status, 409);
   assert.equal((await request(first, "api/implementation")).status, 200);
-  const missingViewer = { ...recovered, url: restarted.url };
   const saved = await request(missingViewer, "api/review-state", { reviewId: recovered.reviewId, generation: recovered.generation, changes: [{ path: ['draft'], before: { present: false }, after: { present: true, value: 'Retain after removal' } }] });
   assert.equal(saved.status, 200, await saved.text());
   const list = await request(missingViewer, "api/reviews").then((r) => r.json());
@@ -986,10 +990,10 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.equal((await request(missingViewer, "api/attachments", upload)).status, 409);
   assert.equal((await request(missingViewer, "api/review-state", { reviewId: third.reviewId, generation: third.generation, changes: [] })).status, 409);
   assert.equal((await request(missingViewer, "api/reviews")).status, 200);
-  const bootstrap = await fetch(new URL("implementation-data.js", missingViewer.url)).then((r) => r.text());
-  assert.match(bootstrap, /SEMANTIC_REVIEW_CONTEXT/); assert.match(bootstrap, /"stages":\[\]/);
+  const bootstrap = await bootstrapOf(missingViewer.url).then((r) => r.json());
+  assert.equal(bootstrap.context.reviewId, recovered.reviewId); assert.deepEqual(bootstrap.implementation.stages, []);
   await delay(1200);
-  assert.equal((await fetch(new URL("api/whoami", missingViewer.url)).then((r) => r.json())).healthy, false);
+  assert.equal((await viewerFetch(new URL("api/whoami", missingViewer.url), {}, restartedKey).then((r) => r.json())).healthy, false);
   assert.equal((await request(first, "api/implementation")).status, 200);
 
 });

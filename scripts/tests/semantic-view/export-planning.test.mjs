@@ -686,9 +686,10 @@ test("viewer client refreshes data without reloading the page", () => {
   const viewerSources = new URL("../../../viewer/src/", import.meta.url);
   const api = fs.readFileSync(new URL("api.ts", viewerSources), "utf8");
   // The page's modules: everything bundled into app.js except its request module.
+  // boot.ts starts the page before app.js loads and may reload it for a new launch link.
   const pageModules = fs.readdirSync(viewerSources, { recursive: true })
     .map((name) => String(name).replaceAll("\\", "/"))
-    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts").sort();
+    .filter((name) => name.endsWith(".ts") && name !== "api.ts" && name !== "markdown.ts" && name !== "boot.ts").sort();
   assert.ok(pageModules.includes("app.ts"));
   const app = pageModules.map((name) => fs.readFileSync(new URL(name, viewerSources), "utf8")).join("\n");
   const styles = fs.readFileSync(
@@ -696,7 +697,7 @@ test("viewer client refreshes data without reloading the page", () => {
     "utf8",
   );
   assert.match(app, /api\.getRevision\(\)/);
-  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision"\)/);
+  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision", POLL_DEADLINE_MS\)/);
   assert.match(app, /api\.getDiff\(query\)/);
   assert.match(api, /getJson<DiffResponse>\(`\/api\/diff\?\$\{params\}`\)/);
   assert.match(app, /Loading diff…/);
@@ -716,7 +717,7 @@ test("viewer client refreshes data without reloading the page", () => {
   for (const file of modules) {
     assert.doesNotMatch(fs.readFileSync(path.join(fileURLToPath(viewerSources), file), "utf8"), directRequest, file);
   }
-  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
+  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation", IMPLEMENTATION_DEADLINE_MS\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);

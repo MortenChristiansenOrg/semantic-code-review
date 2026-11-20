@@ -56,7 +56,9 @@ complete `semantic-flow` folder in the skills directory used by your harness.
 
 For an existing source-based installation, first stop its matching viewer through
 `POST http://127.0.0.1:29180/api/shutdown` with `Content-Type: application/json`
-and body `{}` (use its configured port). Wait for it to exit. Keep the old skill
+and body `{}` (use its configured port). Viewers that record a `viewer.key` in
+their review's `~/.semantic-flow/reviews/<review-id>/review.json` also need that
+key in the `X-Semantic-Flow-Key` header. Wait for it to exit. Keep the old skill
 folder as a backup, replace the entire folder, then run the new skill's `version`
 and `review` commands. Restore the backup if installation fails. Old updater
 instructions can alternatively use an explicitly authorized local build of this
@@ -76,7 +78,8 @@ folder by hand. Later updates use `/semantic-flow update` again.
 After installation, ask for `/semantic-flow update`. It displays release notes,
 including skipped versions, verifies the download and all file digests, and then
 replaces the installed directory. A matching viewer is stopped only after
-validation and restarted at the same URL. Current browser drafts stay in place.
+validation and restarted on the same port. Open pages then need a fresh link: run
+the review again to get one. Drafts saved by the viewer stay in place.
 Repository code, artifact files, and feedback files are untouched.
 
 For a chosen version, run `node /path/to/semantic-flow/scripts/semantic-flow.mjs update --version X.Y.Z`.

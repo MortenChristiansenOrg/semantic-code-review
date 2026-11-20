@@ -2255,3 +2255,13 @@ html:has(.file-search[open]) { overflow: hidden; }
   border: 1px solid rgba(255, 255, 255, .25); border-radius: 6px; padding: 2px 8px;
 }
 .agent-round button[data-action="dismiss-round"] { border: 0; padding: 2px 4px; }
+
+/* Shown when the page has no working key: it needs a fresh launch link. */
+.fresh-link-notice {
+  position: sticky; top: 0; z-index: 1000;
+  margin: 0; padding: 14px 20px;
+  background: var(--panel); color: var(--text);
+  border-bottom: 1px solid var(--warn); box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.fresh-link-notice strong { color: var(--warn); }
+.fresh-link-notice p { margin: 4px 0 0; color: var(--muted); }
