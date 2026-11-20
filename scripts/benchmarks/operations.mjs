@@ -90,7 +90,8 @@ try {
     capturedGitBytes += Buffer.byteLength(output); return output;
   } });
   source.implementationDataScript();
-  const stage = viewer.readJson('.semantic-review/stages/implementation.json');
+  // The only stage starts at main and ends at the checked-out stage head, in every skill version.
+  const stage = { change: { baseRevision: viewer.git('rev-parse', 'main'), headRevision: viewer.git('rev-parse', 'HEAD') } };
   const start = performance.now(); capturedGitBytes = 0;
   const tiny = await source.fileDiff('implementation', 'small.txt', stage.change.baseRevision, stage.change.headRevision);
   results.push({ operation: 'open small file beside 14 MB mostly unchanged file', elapsedMs: Math.round(performance.now() - start), capturedGitBytes, returnedRows: tiny.lines.length });

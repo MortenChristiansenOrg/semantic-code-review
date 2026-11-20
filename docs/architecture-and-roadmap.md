@@ -25,12 +25,13 @@ prepares final local branch refs.
 ### Git and artifacts
 
 Git stores cumulative stage branches. `.semantic-review/` stores intent and
-immutable snapshots without duplicating diffs. The default branch family is:
+the ordered stage head revisions without duplicating diffs; branch names, bases
+and file inventories are derived from them. The default branch family is:
 
 ```text
 semantic-flow/<implementation-id>/
-  01-<stage>
-  02-<stage>
+  stages/<stage-id>
+  stages/<stage-id>
   metadata
 ```
 

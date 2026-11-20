@@ -11,6 +11,13 @@ import {
   scriptsDirectory,
   semanticCli,
 } from "./helpers/repository.mjs";
+import {
+  MANIFEST_SCHEMA_ID,
+  SPECIFICATION_SCHEMA_ID,
+  STAGE_SCHEMA_ID,
+} from "../src/shared/documents.ts";
+import { stageBranchName } from "../src/shared/implementation.ts";
+import { readDocument } from "../src/shared/schema-validation.ts";
 
 // Each command group runs inside the one executable; the key is the group
 // prefix typed after it ("" for the workflow commands).
@@ -36,6 +43,7 @@ const commands = new Map([
       "restack",
       "repair",
       "publish",
+      "export",
       "validate-stack",
       "prepare-branch",
       "archive",
@@ -208,26 +216,29 @@ test("CLI subprocess launches hide Windows console windows", () => {
   assert.deepEqual(failures, [], "Subprocess launches must set windowsHide: true");
 });
 
-test("the bundled example conforms to the published schemas", (t) => {
+test("the bundled example conforms to the published schemas", () => {
+  // The example is a published artifact: the full form, in which each stage
+  // records the change the active artifact derives from Git.
   const repositoryRoot = path.resolve(scriptsDirectory, "..", "..", "..");
-  const example = path.join(
-    repositoryRoot,
-    "examples",
-    "order-cancellation",
-    ".semantic-review",
+  const example = path.join(repositoryRoot, "examples", "order-cancellation", ".semantic-review");
+  const document = (file) => path.join(example, file);
+  const manifest = readDocument(MANIFEST_SCHEMA_ID, document("manifest.json"));
+  for (const id of manifest.requirements) {
+    assert.equal(readDocument(SPECIFICATION_SCHEMA_ID, document(`requirements/${id}.json`)).id, id);
+  }
+  let baseBranch = manifest.targetBranch, baseRevision = manifest.baseRevision;
+  for (const id of manifest.stages) {
+    const stage = readDocument(STAGE_SCHEMA_ID, document(`stages/${id}.json`));
+    assert.equal(stage.id, id);
+    assert.equal(stage.change.branch, stageBranchName(manifest.branchPrefix, id));
+    assert.equal(stage.change.baseBranch, baseBranch);
+    assert.equal(stage.change.baseRevision, baseRevision);
+    ({ branch: baseBranch, headRevision: baseRevision } = stage.change);
+  }
+  assert.deepEqual(
+    fs.readdirSync(document("stages")).sort(),
+    manifest.stages.map((id) => `${id}.json`).sort(),
   );
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-example-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  fs.cpSync(example, path.join(root, ".semantic-review"), { recursive: true });
-  execFileSync("git", ["init", "-b", "main"], { cwd: root, stdio: "ignore" });
-
-  const result = spawnSync(
-    process.execPath,
-    [...semanticCli, "validate", "--schema-only"],
-    { cwd: root, encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /schema validation passed/);
 });
 
 test("skill indexes command-specific workflows", () => {

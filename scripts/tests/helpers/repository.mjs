@@ -1,4 +1,5 @@
 import { feedbackDirectory } from "../../src/shared/review-store.ts";
+import { ArtifactDraft, commitArtifact, hasIncompleteArtifact, readArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -160,6 +161,35 @@ export function createRepository(t, prefix = "semantic-flow-") {
     },
     existsAbsolute(file) { return fs.existsSync(absoluteFeedbackPath(file)); },
     removeAbsolute(file) { fs.rmSync(absoluteFeedbackPath(file), { recursive: true, force: true }); },
+    /** The active artifact as the CLI stores it, read and written through the
+     * artifact store. Paths are relative to the artifact's root, such as
+     * "manifest.json" or "stages/<id>.json". Stored stage documents omit what
+     * loading derives; implementation() returns the full form. */
+    artifact: {
+      /** Whether anything of an active artifact is stored, even an incomplete one. */
+      present: () => readArtifact(root) !== undefined || hasIncompleteArtifact(root),
+      exists: (file) => readArtifact(root)?.type(file) !== undefined,
+      list: (directory = "") => requireArtifact(root).list(directory),
+      read: (file) => requireArtifact(root).read(file).toString("utf8"),
+      readBytes: (file) => requireArtifact(root).read(file),
+      readJson: (file) => JSON.parse(requireArtifact(root).read(file).toString("utf8")),
+      /** Writes a file; an object is stored as formatted JSON. */
+      write(file, contents) {
+        const snapshot = requireArtifact(root), draft = new ArtifactDraft(snapshot);
+        if (typeof contents === "string" || Buffer.isBuffer(contents)) draft.write(file, contents);
+        else draft.writeJson(file, contents);
+        commitArtifact(root, snapshot, draft);
+      },
+      remove(file) {
+        const snapshot = requireArtifact(root), draft = new ArtifactDraft(snapshot);
+        draft.remove(file);
+        commitArtifact(root, snapshot, draft);
+      },
+      /** The artifact in its full form, as `implementation export` prints it. */
+      implementation: () => JSON.parse(repository.semantic("export")),
+      /** A finalized stage in its full form, including its derived change. */
+      stage: (id) => JSON.parse(repository.semantic("export")).stages[id],
+    },
     commitFile(relativePath, contents, message) {
       repository.write(relativePath, contents);
       repository.git("add", relativePath);
@@ -274,16 +304,15 @@ export function organizeStage(
     itemLinks,
   } = {},
 ) {
-  const workStage = repository.readJson(
-    `.semantic-review/.work/stages/${id}.json`,
-  );
-  const manifest = repository.readJson(".semantic-review/manifest.json");
-  const previousStageId = manifest.stages.at(-1);
-  const baseRevision = previousStageId
-    ? repository.readJson(
-        `.semantic-review/stages/${previousStageId}.json`,
-      ).change.headRevision
-    : manifest.baseRevision;
+  const implementation = repository.artifact.implementation();
+  const workStage = implementation.workingStages[id] ?? implementation.stages[id];
+  const { manifest } = implementation;
+  const previousStageId = manifest.stages.filter((stageId) => stageId !== id).at(-1);
+  const baseRevision = implementation.stages[id]
+    ? implementation.stages[id].change.baseRevision
+    : previousStageId
+      ? implementation.stages[previousStageId].change.headRevision
+      : manifest.baseRevision;
   const files = repository
     .git("diff", "--name-only", baseRevision, "HEAD")
     .split(/\r?\n/)

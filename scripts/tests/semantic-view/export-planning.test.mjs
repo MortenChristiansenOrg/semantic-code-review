@@ -16,8 +16,44 @@ import {
   scriptsDirectory,
   sourceLoader,
 } from "../helpers/repository.mjs";
+import { ArtifactDraft, commitArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 
 const moduleUrl = new URL("../../src/semantic-view.ts", import.meta.url).href;
+
+/** Records a new head for a stage, and optionally a new base for the stack,
+ * as if the stage branch had been revised; the inventory is derived from it. */
+function recordStageHead(repository, id, headRevision, baseRevision) {
+  const manifest = repository.artifact.readJson("manifest.json");
+  manifest.stages = manifest.stages.map((entry) => (entry.id === id ? { ...entry, headRevision } : entry));
+  if (baseRevision) manifest.baseRevision = baseRevision;
+  repository.artifact.write("manifest.json", manifest);
+}
+
+/** Replaces the finalized stages by the given [id, headRevision, nodeChanges]
+ * stack; each stage is based on the head below it. */
+function seedStages(repository, stages) {
+  const template = repository.artifact.readJson("stages/implementation.json");
+  repository.artifact.remove("stages/implementation.json");
+  for (const [id, , paths] of stages) {
+    repository.artifact.write(`stages/${id}.json`, {
+      ...template,
+      id,
+      nodes: [{ id: "change", description: "Change", changes: paths.map((path) => ({ path, classification: "behavior" })) }],
+    });
+  }
+  const manifest = repository.artifact.readJson("manifest.json");
+  repository.artifact.write("manifest.json", {
+    ...manifest,
+    stages: stages.map(([id, headRevision]) => ({ id, headRevision })),
+  });
+}
+
+/** Copies the active artifact of one worktree into another through the store. */
+function copyArtifact(from, to) {
+  const snapshot = requireArtifact(from), draft = new ArtifactDraft(undefined);
+  for (const file of snapshot.list()) draft.write(file, snapshot.read(file));
+  commitArtifact(to, undefined, draft);
+}
 const {
   buildFeedbackTargetData,
   createImplementationDataScript,
@@ -334,42 +370,45 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
   assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
 });
 
-test("viewer refreshes repaired inventory without discarding unrelated immutable diffs", async (t) => {
+test("viewer refreshes a revised inventory without discarding unrelated immutable diffs", async (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository);
-  repository.write("first.txt", "first\n");
-  repository.write("second.txt", "second\n");
-  repository.git("add", ".");
-  repository.git("commit", "-m", "Add inventory fixture");
+  repository.commitFile("first.txt", "first\n", "Add first fixture");
   organizeStage(repository);
   repository.semantic("stage", "finish");
-  const file = ".semantic-review/stages/implementation.json";
-  const complete = repository.readJson(file);
-  const incomplete = structuredClone(complete);
-  incomplete.change.files = incomplete.change.files.filter((entry) => entry.path === "first.txt");
-  repository.write(file, JSON.stringify(incomplete));
+  const original = repository.artifact.stage("implementation");
   let gitCalls = 0;
-  const source = createViewerDataSource(repository.root, {
+  const source = createViewerDataSource(repository.root);
+  const counting = createViewerDataSource(repository.root, {
     gitCapture(cwd, args) {
       if (args.includes("diff")) gitCalls++;
       return execFileSync("git", args, { cwd, encoding: "utf8" });
     },
   });
-  source.implementationDataScript();
-  const diff = (name) => source.fileDiff(complete.id, name, complete.change.baseRevision, complete.change.headRevision);
-  await diff("first.txt");
-  await assert.rejects(diff("second.txt"), /not changed/);
+  counting.implementationDataScript();
+  const diff = (name, head) => counting.fileDiff(original.id, name, original.change.baseRevision, head);
+  await diff("first.txt", original.change.headRevision);
+  await assert.rejects(diff("second.txt", original.change.headRevision), /not changed/);
 
-  repository.write(file, JSON.stringify(complete));
-  source.implementationDataScript();
-  assert.equal((await diff("second.txt")).lines[0].s, "second");
-  const repairedCalls = gitCalls;
-  complete.summary += " Updated review explanation.";
-  repository.write(file, JSON.stringify(complete));
-  source.implementationDataScript();
-  assert.equal((await diff("second.txt")).lines[0].s, "second");
-  assert.equal(gitCalls, repairedCalls, "explanation-only refresh keeps immutable diff caches");
+  // The inventory follows the recorded head; nothing else records it.
+  const head = repository.commitFile("second.txt", "second\n", "Add second fixture");
+  const stage = repository.artifact.readJson("stages/implementation.json");
+  stage.nodes[0].changes.push({ path: "second.txt", classification: "behavior" });
+  repository.artifact.write("stages/implementation.json", stage);
+  recordStageHead(repository, "implementation", head);
+  assert.deepEqual(
+    implementationFromScript(source.implementationDataScript()).stages[0].files.map((file) => file.path),
+    ["first.txt", "second.txt"],
+  );
+  counting.implementationDataScript();
+  assert.equal((await diff("second.txt", head)).lines[0].s, "second");
+  const revisedCalls = gitCalls;
+  stage.summary += " Updated review explanation.";
+  repository.artifact.write("stages/implementation.json", stage);
+  counting.implementationDataScript();
+  assert.equal((await diff("second.txt", head)).lines[0].s, "second");
+  assert.equal(gitCalls, revisedCalls, "explanation-only refresh keeps immutable diff caches");
 });
 
 test("lazy stage diff preserves renamed file content changes", async (t) => {
@@ -437,10 +476,7 @@ test("file revisions ignore unrelated changes in the same stage", (t) => {
   repository.write("second.txt", "second updated\n");
   repository.git("add", "second.txt");
   repository.git("commit", "-m", "Update second fixture");
-  const stagePath = ".semantic-review/stages/implementation.json";
-  const stage = repository.readJson(stagePath);
-  stage.change.headRevision = repository.git("rev-parse", "HEAD");
-  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+  recordStageHead(repository, "implementation", repository.git("rev-parse", "HEAD"));
 
   const refreshed = readData();
   const refreshedRevisions = new Map(
@@ -465,10 +501,7 @@ test("lazy diff stays bound to the metadata stage revision", async (t) => {
   repository.write("implementation.txt", "changed after viewer load\n");
   repository.git("add", "implementation.txt");
   repository.git("commit", "-m", "Advance stage after viewer load");
-  const stagePath = ".semantic-review/stages/implementation.json";
-  const currentStage = repository.readJson(stagePath);
-  currentStage.change.headRevision = repository.git("rev-parse", "HEAD");
-  repository.write(stagePath, `${JSON.stringify(currentStage, null, 2)}\n`);
+  recordStageHead(repository, "implementation", repository.git("rev-parse", "HEAD"));
 
   const diff = await dataSource.fileDiff(
     "implementation",
@@ -732,23 +765,18 @@ test("feedback target stays present when it leaves the current stage diff", (t) 
     "Updated test repository\n",
     "Update unrelated stage file",
   );
-  const stagePath = ".semantic-review/stages/implementation.json";
-  const stage = repository.readJson(stagePath);
-  stage.change.baseRevision = commits.get("implementation");
-  stage.change.headRevision = newHead;
-  stage.change.files = [
-    {
-      path: "README.md",
-      kind: "modified",
-    },
-  ];
+  // implementation.txt moves below the stage: the stack is now based on the
+  // commit that adds it.
+  const stagePath = "stages/implementation.json";
+  const stage = repository.artifact.readJson(stagePath);
   stage.nodes[0].changes = [
     {
       path: "README.md",
       classification: "behavior",
     },
   ];
-  repository.write(stagePath, `${JSON.stringify(stage, null, 2)}\n`);
+  repository.artifact.write(stagePath, stage);
+  recordStageHead(repository, "implementation", newHead, commits.get("implementation"));
 
   const script = createImplementationDataScript(repository.root);
   const data = implementationFromScript(script);
@@ -798,7 +826,7 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
   const linked = first.root + "-linked";
   first.git("worktree", "add", "--detach", linked, "HEAD");
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
-  fs.cpSync(first.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  copyArtifact(first.root, linked);
   const roots = [first.root, linked, otherRepo.root];
   const ids = roots.map((repoRoot) => {
     const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot) },
@@ -834,7 +862,8 @@ test("concurrent first submissions initialize shared feedback once and deduplica
 
 test("snapshot reads reject an implementation switch instead of changing feedback stores", (t) => {
   const { repository } = createImplementationWithStages(t);
-  const manifestPath = repository.path(".semantic-review", "manifest.json");
+  // The store reads the manifest from this file; the mock swaps its content between reads.
+  const manifestPath = requireArtifact(repository.root).describe("manifest.json");
   const originalRead = fs.readFileSync;
   const initial = JSON.parse(originalRead(manifestPath, "utf8"));
   let reads = 0;
@@ -852,55 +881,48 @@ test("snapshot reads reject an implementation switch instead of changing feedbac
 test("viewer release version is independent of artifact creation metadata", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
-  const manifest = repository.readJson(".semantic-review/manifest.json");
+  const manifest = repository.artifact.readJson("manifest.json");
   const source = createViewerDataSource(repository.root);
   const data = () => implementationFromScript(source.implementationDataScript());
   manifest.skillVersion = "0.2.0";
-  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  repository.artifact.write("manifest.json", manifest);
   // This test loads the viewer from source, which has no installed VERSION file.
   // The workflow helper tests check the served bundle reports the built version.
   const runningVersion = "unversioned";
   assert.equal(data().skillVersion, "0.2.0");
   assert.equal(data().viewerReleaseVersion, runningVersion);
-  assert.equal(repository.readJson(".semantic-review/manifest.json").skillVersion, "0.2.0");
+  assert.equal(repository.artifact.readJson("manifest.json").skillVersion, "0.2.0");
   delete manifest.skillVersion;
-  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  repository.artifact.write("manifest.json", manifest);
   assert.equal(data().skillVersion, null);
   assert.equal(data().viewerReleaseVersion, runningVersion);
-  assert.equal("skillVersion" in repository.readJson(".semantic-review/manifest.json"), false);
+  assert.equal("skillVersion" in repository.artifact.readJson("manifest.json"), false);
 });
 
-test("repeated files compare with their last stage across gaps, renames, and cumulative bases", async (t) => {
+test("repeated files compare with their last stage across gaps and renames", async (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
-  const base = repository.git('rev-parse', 'HEAD');
   beginStage(repository);
   const first = repository.commitFile('repeat.txt', 'first\nstable\n', 'First occurrence');
   organizeStage(repository);
   repository.semantic('stage', 'finish');
-  const template = repository.readJson('.semantic-review/stages/implementation.json');
   const gap = repository.commitFile('other.txt', 'other\n', 'Intervening file');
   const second = repository.commitFile('repeat.txt', 'second\nstable\n', 'Second occurrence');
   repository.git('mv', 'repeat.txt', 'renamed.txt');
   repository.git('commit', '-m', 'Rename file');
   const renamed = repository.git('rev-parse', 'HEAD');
   const last = repository.commitFile('renamed.txt', 'third\nstable\n', 'Update renamed file');
-  const stages = [
-    ['first', first, [{ path: 'repeat.txt', kind: 'added' }]],
-    ['gap', gap, [{ path: 'other.txt', kind: 'added' }]],
-    ['second', second, [{ path: 'repeat.txt', kind: 'added' }, { path: 'other.txt', kind: 'added' }]],
-    ['rename', renamed, [{ path: 'renamed.txt', previousPath: 'repeat.txt', kind: 'renamed' }]],
-    ['last', last, [{ path: 'renamed.txt', previousPath: 'repeat.txt', kind: 'renamed' }]],
-  ];
-  for (const [id, headRevision, files] of stages) repository.write(`.semantic-review/stages/${id}.json`, JSON.stringify({
-    ...template, id, change: { ...template.change, baseRevision: base, headRevision, files },
-    nodes: [{ id: 'change', description: 'Change', changes: files.map(({ path }) => ({ path, classification: 'behavior' })) }],
-  }));
-  const manifest = repository.readJson('.semantic-review/manifest.json');
-  repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
+  seedStages(repository, [
+    ['first', first, ['repeat.txt']],
+    ['gap', gap, ['other.txt']],
+    ['second', second, ['repeat.txt']],
+    ['rename', renamed, ['renamed.txt']],
+    ['last', last, ['renamed.txt']],
+  ]);
   const source = createViewerDataSource(repository.root);
   const data = implementationFromScript(source.implementationDataScript());
   const stage = data.stages[2], file = stage.files[0];
+  assert.deepEqual(stage.files.map((entry) => entry.path), ['repeat.txt']);
   assert.equal(file.baseRevision, first);
   assert.equal(file.previousStageId, 'first');
   assert.equal(file.kind, 'modified');
@@ -909,10 +931,6 @@ test("repeated files compare with their last stage across gaps, renames, and cum
     const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
     assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['first', 'second']);
   }
-  // An unchanged repeated file must not receive another file's patch.
-  const unchanged = stage.files[1];
-  const empty = await source.fileDiff(stage.id, unchanged.path, unchanged.baseRevision, stage.headRevision);
-  assert.deepEqual(empty.lines, []);
   const renameFile = data.stages[3].files[0], lastFile = data.stages[4].files[0];
   assert.equal(renameFile.baseRevision, second); assert.equal(renameFile.previousPath, 'repeat.txt');
   assert.equal(lastFile.baseRevision, renamed); assert.equal(lastFile.previousPath, undefined);
@@ -928,25 +946,20 @@ test("a rename follows its source history when the destination was previously de
   const first = repository.commitFile('source.txt', 'original\nstable one\nstable two\nstable three\n', 'Add source');
   organizeStage(repository);
   repository.semantic('stage', 'finish');
-  const template = repository.readJson('.semantic-review/stages/implementation.json');
   const destination = repository.commitFile('destination.txt', 'unrelated\n', 'Old destination');
   repository.git('rm', 'destination.txt'); repository.git('commit', '-m', 'Delete destination');
   const deleted = repository.git('rev-parse', 'HEAD');
   const updated = repository.commitFile('source.txt', 'updated\nstable one\nstable two\nstable three\n', 'Update source');
   repository.git('mv', 'source.txt', 'destination.txt'); repository.git('commit', '-m', 'Rename source');
   const renamed = repository.git('rev-parse', 'HEAD');
-  const stages = [
-    ['source', template.change.baseRevision, first, { path: 'source.txt', kind: 'added' }],
-    ['delete', destination, deleted, { path: 'destination.txt', kind: 'deleted' }],
-    ['update', deleted, updated, { path: 'source.txt', kind: 'modified' }],
-    ['rename', updated, renamed, { path: 'destination.txt', previousPath: 'source.txt', kind: 'renamed' }],
-  ];
-  for (const [id, baseRevision, headRevision, file] of stages) repository.write(`.semantic-review/stages/${id}.json`, JSON.stringify({
-    ...template, id, change: { ...template.change, baseRevision, headRevision, files: [file] },
-    nodes: [{ id: 'change', description: 'Change', changes: [{ path: file.path, classification: 'behavior' }] }],
-  }));
-  const manifest = repository.readJson('.semantic-review/manifest.json');
-  repository.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: stages.map(([id]) => id) }));
+  seedStages(repository, [
+    ['source', first, ['source.txt']],
+    ['destination', destination, ['destination.txt']],
+    ['delete', deleted, ['destination.txt']],
+    ['update', updated, ['source.txt']],
+    ['rename', renamed, ['destination.txt']],
+  ]);
+  assert.deepEqual(repository.artifact.stage('rename').change.files, [{ path: 'destination.txt', kind: 'renamed', previousPath: 'source.txt' }]);
   const source = createViewerDataSource(repository.root);
   const data = implementationFromScript(source.implementationDataScript());
   const file = data.stages.at(-1).files[0];
@@ -966,28 +979,27 @@ test("file revisions detect base and head mode changes without blob changes", (t
   initializeImplementation(repository); beginStage(repository);
   repository.commitFile('code.txt', 'head\n', 'Head content');
   organizeStage(repository); repository.semantic('stage', 'finish');
-  const stagePath = '.semantic-review/stages/implementation.json', stage = repository.readJson(stagePath);
+  const stage = repository.artifact.stage('implementation');
   const source = createViewerDataSource(repository.root);
   const revision = () => implementationFromScript(source.implementationDataScript()).stages[0].files[0].revision;
   const original = revision(), branch = repository.git('branch', '--show-current');
   const baseBlob = repository.git('rev-parse', `${stage.change.baseRevision}:code.txt`);
   repository.git('switch', 'main'); repository.git('update-index', '--chmod=+x', 'code.txt');
   repository.git('commit', '-m', 'Executable base');
-  stage.change.baseRevision = repository.git('rev-parse', 'HEAD');
+  const executableBase = repository.git('rev-parse', 'HEAD');
   assert.equal(repository.git('rev-parse', 'HEAD:code.txt'), baseBlob);
-  repository.git('switch', branch); repository.write(stagePath, JSON.stringify(stage));
+  repository.git('switch', branch); recordStageHead(repository, 'implementation', stage.change.headRevision, executableBase);
   const baseChanged = revision(); assert.notEqual(baseChanged, original);
   const headBlob = repository.git('rev-parse', 'HEAD:code.txt');
   repository.git('update-index', '--chmod=+x', 'code.txt'); repository.git('commit', '-m', 'Executable head');
-  stage.change.headRevision = repository.git('rev-parse', 'HEAD'); repository.write(stagePath, JSON.stringify(stage));
+  recordStageHead(repository, 'implementation', repository.git('rev-parse', 'HEAD'));
   assert.equal(repository.git('rev-parse', 'HEAD:code.txt'), headBlob);
   assert.notEqual(revision(), baseChanged);
 });
 
 test("line drafts survive unrelated restacks and reject actual file changes", (t) => {
   const { repository } = createImplementationWithStages(t);
-  const stagePath = '.semantic-review/stages/implementation.json';
-  const stage = repository.readJson(stagePath), original = buildFeedbackTargetData(repository.root).stages[0];
+  const original = buildFeedbackTargetData(repository.root).stages[0];
   const snapshot = { base: original.baseRevision, head: original.headRevision };
   const legacy = { kind: 'line', id: 'l:implementation:new:1:implementation.txt', body: 'Check this line', snapshot };
   const modern = { ...legacy, snapshot: { ...snapshot, fileRevision: original.files[0].revision } };
@@ -995,8 +1007,7 @@ test("line drafts survive unrelated restacks and reject actual file changes", (t
   repository.git('switch', 'main');
   const base = repository.commitFile('unrelated.txt', 'unrelated\n', 'Unrelated lower change');
   repository.git('switch', branch); repository.git('rebase', 'main');
-  stage.change.baseRevision = base; stage.change.headRevision = repository.git('rev-parse', 'HEAD');
-  repository.write(stagePath, JSON.stringify(stage));
+  recordStageHead(repository, 'implementation', repository.git('rev-parse', 'HEAD'), base);
   const current = buildFeedbackTargetData(repository.root);
   const migrated = resolveLineDraftSnapshots(repository.root, [legacy])[0];
   assert.deepEqual(migrated.snapshot, modern.snapshot, 'migration preserves the original commit anchor');
@@ -1005,8 +1016,7 @@ test("line drafts survive unrelated restacks and reject actual file changes", (t
   assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.exported.length, 2);
   const thread = readFeedbackThread(repository.root, result.exported[0].threadId);
   assert.equal(thread.target.kind, 'line'); assert.equal(thread.target.path, 'implementation.txt');
-  stage.change.headRevision = repository.commitFile('implementation.txt', 'changed\n', 'Change the commented file');
-  repository.write(stagePath, JSON.stringify(stage));
+  recordStageHead(repository, 'implementation', repository.commitFile('implementation.txt', 'changed\n', 'Change the commented file'));
   const rejected = exportFeedback({ repoRoot: repository.root, implementation: buildFeedbackTargetData(repository.root) }, [legacy, modern]);
   assert.equal(rejected.ok, false); assert.equal(rejected.skipped.length, 2);
   assert.match(rejected.skipped[0].reason, /file changed/);
@@ -1110,15 +1120,15 @@ test("viewer snapshots skip listed thread IDs that are not feedback IDs", (t) =>
 
 test("stored __proto__ keys stay ordinary data on the viewer page", (t) => {
   const { repository } = createImplementationWithStages(t);
-  const [specificationId] = repository.readJson(".semantic-review/manifest.json").requirements;
-  const specificationPath = `.semantic-review/requirements/${specificationId}.json`;
-  const specification = repository.readJson(specificationPath);
+  const [specificationId] = repository.artifact.readJson("manifest.json").requirements;
+  const specificationPath = `requirements/${specificationId}.json`;
+  const specification = repository.artifact.readJson(specificationPath);
   // In a JavaScript object literal this key would set the prototype, so the page would inherit a reference it cannot render.
-  repository.write(specificationPath, JSON.stringify({ ...specification, source: { kind: "local", nested: { kept: false }, url: 1 } })
+  repository.artifact.write(specificationPath, JSON.stringify({ ...specification, source: { kind: "local", nested: { kept: false }, url: 1 } })
     .replace('"kind":"local"', '"kind":"local","__proto__":{"reference":{"toString":1}}'));
-  const stagePath = ".semantic-review/stages/implementation.json";
-  const stage = repository.readJson(stagePath);
-  repository.write(stagePath, JSON.stringify({ ...stage, summary: "</script><script>", nodes: stage.nodes.map((node, index) => index ? node : { ...node, description: "PLACEHOLDER" }) })
+  const stagePath = "stages/implementation.json";
+  const stage = repository.artifact.readJson(stagePath);
+  repository.artifact.write(stagePath, JSON.stringify({ ...stage, summary: "</script><script>", nodes: stage.nodes.map((node, index) => index ? node : { ...node, description: "PLACEHOLDER" }) })
     .replace('"PLACEHOLDER"', '{"__proto__":{"inherited":true},"text":"</script><script>"}'));
   const script = createViewerDataSource(repository.root).implementationDataScript();
   assert.doesNotMatch(script, /<\/script/i);

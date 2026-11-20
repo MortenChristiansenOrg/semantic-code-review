@@ -17,6 +17,25 @@ import {
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
+import { ArtifactDraft, commitArtifact, removeArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
+
+/** The active artifact of a worktree that is not a test repository, read and
+ * written through the artifact store. */
+const storedArtifact = {
+  read: (root, file) => requireArtifact(root).read(file),
+  write(root, file, contents) {
+    const snapshot = requireArtifact(root), draft = new ArtifactDraft(snapshot);
+    draft.write(file, contents);
+    commitArtifact(root, snapshot, draft);
+  },
+  /** Gives another worktree, which has no artifact, a copy of the artifact. */
+  copy(from, to) {
+    const source = requireArtifact(from), draft = new ArtifactDraft(undefined);
+    for (const file of source.list()) draft.write(file, source.read(file));
+    commitArtifact(to, undefined, draft);
+  },
+  remove: (root) => removeArtifact(root, requireArtifact(root)),
+};
 
 const builtSkillVersion = fs.readFileSync(path.join(scriptsDirectory, "../VERSION"), "utf8").trim();
 
@@ -139,8 +158,8 @@ test("review starts the viewer for a manifest without a title", async (t) => {
   t.after(() => stopViewer(port, viewerPid));
   const repository = createRepository(t, "semantic-flow-review-");
   initializeImplementation(repository, { implementationId: "untitled-review" });
-  const { title, ...manifest } = repository.readJson(".semantic-review/manifest.json");
-  repository.write(".semantic-review/manifest.json", JSON.stringify(manifest));
+  const { title, ...manifest } = repository.artifact.readJson("manifest.json");
+  repository.artifact.write("manifest.json", manifest);
 
   const launch = spawnSync(process.execPath, [flowCli, "review"], {
     cwd: repository.root, encoding: "utf8", timeout: 10_000,
@@ -216,10 +235,8 @@ test("feedback automatically restacks after the target branch advances", (t) => 
     "behavior",
   );
 
-  const before = repository.readJson(".semantic-review/manifest.json");
-  const behaviorBefore = repository.readJson(
-    ".semantic-review/stages/behavior.json",
-  );
+  const before = repository.artifact.readJson("manifest.json");
+  const behaviorBefore = repository.artifact.stage("behavior");
   repository.git("switch", "main");
   const targetHead = repository.commitFile(
     "trunk.txt",
@@ -229,13 +246,9 @@ test("feedback automatically restacks after the target branch advances", (t) => 
   repository.git("switch", behaviorBefore.change.branch);
 
   const result = JSON.parse(repository.flow("feedback", "--json"));
-  const after = repository.readJson(".semantic-review/manifest.json");
-  const foundation = repository.readJson(
-    ".semantic-review/stages/foundation.json",
-  );
-  const behavior = repository.readJson(
-    ".semantic-review/stages/behavior.json",
-  );
+  const after = repository.artifact.readJson("manifest.json");
+  const foundation = repository.artifact.stage("foundation");
+  const behavior = repository.artifact.stage("behavior");
 
   assert.notEqual(before.baseRevision, targetHead);
   assert.equal(after.baseRevision, targetHead);
@@ -260,17 +273,13 @@ test("feedback automatically restacks after the target branch advances", (t) => 
 
 test("feedback advances a detached stage checkout during target restacking", (t) => {
   const { repository } = createImplementationWithStages(t);
-  const stageBefore = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stageBefore = repository.artifact.stage("implementation");
   repository.git("switch", "main");
   repository.commitFile("trunk.txt", "advanced\n", "Advance trunk");
   repository.git("switch", "--detach", stageBefore.change.headRevision);
 
   const result = JSON.parse(repository.flow("feedback", "--json"));
-  const stageAfter = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stageAfter = repository.artifact.stage("implementation");
 
   assert.equal(repository.git("branch", "--show-current"), "");
   assert.equal(repository.git("rev-parse", "HEAD"), stageAfter.change.headRevision);
@@ -280,9 +289,7 @@ test("feedback advances a detached stage checkout during target restacking", (t)
 
 test("feedback does not restack an implementation already landed on target", (t) => {
   const { repository } = createImplementationWithStages(t);
-  const stage = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stage = repository.artifact.stage("implementation");
   repository.git("switch", "main");
   repository.git("merge", "--ff-only", stage.change.branch);
 
@@ -343,14 +350,14 @@ test("status leaves criteria without IDs out of coverage", (t) => {
   const repository = createRepository(t, "semantic-flow-status-");
   initializeImplementation(repository);
   beginStage(repository);
-  const stageFile = ".semantic-review/.work/stages/implementation.json";
-  const stage = repository.readJson(stageFile);
+  const stageFile = ".work/stages/implementation.json";
+  const stage = repository.artifact.readJson(stageFile);
   stage.specificationRefs = ["story#undefined"];
-  repository.write(stageFile, JSON.stringify(stage));
-  const file = ".semantic-review/requirements/story.json";
-  const specification = repository.readJson(file);
+  repository.artifact.write(stageFile, stage);
+  const file = "requirements/story.json";
+  const specification = repository.artifact.readJson(file);
   specification.acceptanceCriteria.push(null);
-  repository.write(file, JSON.stringify(specification));
+  repository.artifact.write(file, specification);
 
   const status = JSON.parse(repository.flow("status", "--json"));
   assert.equal(status.criteria.total, 1);
@@ -505,13 +512,14 @@ test("update restarts a matching linked-worktree viewer without changing artifac
   t.after(() => stopViewer(port, viewerPid));
   const fixture = createUpdateFixture(t);
   fixture.initialize();
-  const original = fs.readFileSync(path.join(fixture.target, ".semantic-review", "manifest.json"), "utf8");
+  const original = storedArtifact.read(fixture.target, "manifest.json");
   const linked = path.join(fixture.root, "linked");
   const worktree = spawnSync("git", ["worktree", "add", "-b", "review-work", linked], {
     cwd: fixture.target, encoding: "utf8",
   });
   assert.equal(worktree.status, 0, worktree.stderr);
-  fs.renameSync(path.join(fixture.target, ".semantic-review"), path.join(linked, ".semantic-review"));
+  storedArtifact.copy(fixture.target, linked);
+  storedArtifact.remove(fixture.target);
   fs.appendFileSync(path.join(fixture.source, "skills", "semantic-flow", "viewer", "styles.css"), "\n/* updated */\n");
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
   const launch = fixture.run(["review", "--project", linked], env);
@@ -528,7 +536,7 @@ test("update restarts a matching linked-worktree viewer without changing artifac
   assert.notEqual(after.viewerVersion, before.viewerVersion);
   assert.equal(after.repositoryRoot, linked);
   assert.equal(after.implementationId, before.implementationId);
-  assert.equal(fs.readFileSync(path.join(linked, ".semantic-review", "manifest.json"), "utf8"), original);
+  assert.deepEqual(storedArtifact.read(linked, "manifest.json"), original);
   assert.ok(result.stdout.includes(`Updated semantic-flow ${builtSkillVersion} -> 9.9.9`));
 });
 
@@ -539,11 +547,10 @@ test("viewer serves its installed release version and replaces an older running 
   t.after(() => stopViewer(port, viewerPid));
   const fixture = createUpdateFixture(t);
   fixture.initialize();
-  const manifestPath = path.join(fixture.target, ".semantic-review", "manifest.json");
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const manifest = JSON.parse(storedArtifact.read(fixture.target, "manifest.json"));
   manifest.skillVersion = "0.2.0";
-  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
-  const original = fs.readFileSync(manifestPath, "utf8");
+  storedArtifact.write(fixture.target, "manifest.json", JSON.stringify(manifest));
+  const original = storedArtifact.read(fixture.target, "manifest.json");
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
   const launch = () => {
     const result = fixture.run(["review", "--project", fixture.target], env);
@@ -565,7 +572,7 @@ test("viewer serves its installed release version and replaces an older running 
   assert.equal(payload.implementation.skillVersion, "0.2.0");
   const script = await fetch(`http://127.0.0.1:${port}/implementation-data.js`).then(response => response.text());
   assert.equal(implementationFromScript(script).viewerReleaseVersion, "9.9.9");
-  assert.equal(fs.readFileSync(manifestPath, "utf8"), original);
+  assert.deepEqual(storedArtifact.read(fixture.target, "manifest.json"), original);
 });
 
 async function startUpdateViewerFixture(t, fixture, port, overrides = {}) {
@@ -769,7 +776,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   initializeImplementation(b); // Deliberately the same implementation ID.
   const linked = a.path("../", path.basename(a.root) + "-linked");
   a.git("worktree", "add", "--detach", linked, "HEAD");
-  fs.cpSync(a.path(".semantic-review"), path.join(linked, ".semantic-review"), { recursive: true });
+  storedArtifact.copy(a.root, linked);
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
   const deniedPortHook = a.path("denied-port.cjs");
@@ -853,13 +860,13 @@ test("concurrent review services isolate commands and reopen registered worktree
   const recovered = await fetch(new URL("api/whoami", restarted.url)).then((r) => r.json()); viewers.push(recovered);
   assert.equal(recovered.reviewId, third.reviewId);
   assert.notEqual(recovered.processId, third.processId);
-  const manifestPath = path.join(linked, ".semantic-review", "manifest.json"), originalManifest = fs.readFileSync(manifestPath);
-  fs.writeFileSync(manifestPath, '{broken JSON');
+  const originalManifest = storedArtifact.read(linked, "manifest.json");
+  storedArtifact.write(linked, "manifest.json", '{broken JSON');
   const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
   assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
-  fs.writeFileSync(manifestPath, originalManifest);
+  storedArtifact.write(linked, "manifest.json", originalManifest);
   assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
-  fs.rmSync(path.join(linked, ".semantic-review"), { recursive: true });
+  storedArtifact.remove(linked);
   const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
   assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);
@@ -892,7 +899,7 @@ test('a viewer-triggered feedback init cannot recreate data deleted after its in
   const { repository } = createImplementationWithStages(t); repository.feedback('init');
   const module = await import('../../src/semantic-view.ts');
   const { reviewFeedback } = await import('../../src/review-feedback.ts');
-  const manifest = repository.readJson('.semantic-review/manifest.json');
+  const manifest = repository.artifact.readJson('manifest.json');
   const id = module.reviewId(repository.root, manifest.implementationId), review = module.readReview(id);
   const context = module.captureReviewContext(id);
   const record = path.join(module.reviewDirectory(id), 'review.json');

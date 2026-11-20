@@ -65,7 +65,7 @@ and selected characters. Reopening the same viewer reused its process ID.
 
 | Entry point | Checks and reuse |
 | --- | --- |
-| `stage begin` / `finish` | Existing full artifact, branch, ancestry, clean-tree and organization checks; begin also owns the numbered-branch collision guard. Optional JSON returns next-step snapshots. The skill omits a redundant standalone validate immediately after finish. |
+| `stage begin` / `finish` | Existing full artifact, branch, ancestry, clean-tree and organization checks; begin also refuses an existing stage branch of the same ID. Optional JSON returns next-step snapshots. The skill omits a redundant standalone validate immediately after finish. |
 | `stage record-batch` | Validates existing artifact, applies insight/evidence edits in memory, validates the result, then writes once. Invalid input leaves the stage unchanged. Individual commands remain. |
 | `stage plan` | Validates artifact and checked-out stage identity; returns scoped inventory, optional hunk geometry, and unlinked IDs. The agent still assigns semantic ownership. |
 | `flow validate [--publish] [--stack]` | Resolves the artifact worktree once; validates feedback when present and the complete artifact/stack. `--publish` additionally requires resolved feedback and publication readiness; it does not publish. |
@@ -78,7 +78,7 @@ and selected characters. Reopening the same viewer reused its process ID.
 | Application tests and review reads | Reuse only for the same tree, scope, dependencies/configuration and relevant environment. Restacks, changed inputs, inconclusive results and new required coverage trigger another check. |
 
 Regression tests cover shared-blob reads and invalidation after restack, partial
-batch retries and invalid stores, atomic authoring, ordinal collisions, combined
+batch retries and invalid stores, atomic authoring, stage branch collisions, combined
 workflow feedback gates and landed archival, external snapshot edits/deletion and
 failed scans, distant diff pages/line jumps and rename/recreated-path separation,
 single-CLI mixed-validity export, and focused/full API contract drift checks.

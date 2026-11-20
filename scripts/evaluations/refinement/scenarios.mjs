@@ -146,8 +146,11 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
   run('stack', cli('implementation', 'validate-stack', '--json'), repo);
   let manifest, stages;
   try {
-    manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));
-    stages = manifest.stages.map(id => readJson(path.join(repo, '.semantic-review/stages', `${id}.json`)));
+    const exported = run('artifact-export', cli('implementation', 'export'), repo);
+    if (exported.exitCode !== 0) throw new Error(`The artifact could not be exported: ${exported.stderr}`);
+    const artifact = JSON.parse(exported.stdout);
+    manifest = artifact.manifest;
+    stages = manifest.stages.map(id => artifact.stages[id]);
   } catch (error) {
     add('artifact-readable', false, error.message);
     return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };

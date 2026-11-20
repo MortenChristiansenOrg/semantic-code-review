@@ -133,7 +133,12 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    experimental note during `0.x`. The first release that ships only
    `semantic-flow.mjs` must say prominently under Breaking changes and Updating
    that earlier updaters reject it and that the skill folder is replaced once by
-   hand, as described in “Installing and updating”. Generated GitHub notes are
+   hand, as described in “Installing and updating”. The first release that
+   derives stage data and names stage branches `<prefix>/stages/<stage-id>`
+   must say prominently under Breaking changes and Updating that
+   implementations in progress cannot continue across the update: archive
+   finished ones and discard or finish the others with the old version first.
+   Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed
    file because GitHub already displays the version as the release title. All

@@ -7,6 +7,7 @@ import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
+import { ArtifactDraft, commitArtifact } from '../../src/shared/artifact-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 
@@ -174,8 +175,9 @@ test('relative user-store overrides cannot change meaning between CLI worktrees'
 
 test('registry lifecycle is explicit, generation guarded, and retains unavailable entries', (t) => {
   const root = setup(t), repo = path.join(root, 'a');
-  fs.mkdirSync(path.join(repo, '.semantic-review'));
-  fs.writeFileSync(path.join(repo, '.semantic-review', 'manifest.json'), JSON.stringify({ implementationId: 'id' }));
+  const artifact = new ArtifactDraft(undefined);
+  artifact.writeJson('manifest.json', { implementationId: 'id' });
+  commitArtifact(repo, undefined, artifact);
   const review = registerReview(repo, 'id', 'Review');
   assert.equal(registeredReviews()[0].available, true);
   assert.equal(setReviewCompleted(review.id, review.generation, true, null).completedAt, readReview(review.id).updatedAt);

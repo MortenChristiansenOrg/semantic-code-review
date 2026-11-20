@@ -44,7 +44,7 @@ temporary recovery branch:
    head, and original stage branch.
 5. Require a clean worktree before continuing.
 
-Do not use a numbered branch or move a CLI-owned stage ref while capturing the
+Do not use a stage branch or move a CLI-owned stage ref while capturing the
 tree. Keep the recovery branch until reconciliation and validation succeed. If
 capture fails, leave the user's edits intact and stop.
 

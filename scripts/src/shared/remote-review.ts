@@ -3,10 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, hasPendingDeletion, readReview, reviewDirectory, reviewId, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, hasPendingDeletion, projectionDirectory, readReview, reviewDirectory, reviewId, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
-import { hasFile, readPublishedArtifact, replaceArtifactFiles, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
+import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
 import { isDocument } from "./schema-validation.js";
 import { reviewEnvironment } from "./review-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
@@ -140,9 +140,9 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   }
   const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
   let checkoutStarted = false;
-  // The checkout and the artifact stay on the same revision: a failed refresh
-  // checks the previous revision out again before its artifact is restored.
-  replaceArtifactFiles(root, files(), reviewDirectory(record.id), () => {
+  // The checkout and the projection stay on the same revision: a failed
+  // refresh checks the previous revision out again and keeps the previous projection.
+  replaceArtifactDirectory(projectionDirectory(record.id), files(), () => {
     checkoutStarted = true;
     git(root, ["checkout", "--force", "--detach", head]);
   }, () => {

@@ -67,6 +67,19 @@ export interface ArchiveImplementationOptions {
  * @command implementation archive
  */
 export declare function archiveImplementation(options?: ArchiveImplementationOptions): void;
+export interface ExportImplementationOptions {
+    /** New or empty directory to write the artifact's files into. Without it, the artifact is printed as JSON. */
+    destination?: string;
+}
+/**
+ * Shows the active artifact in its full form, with the branch, base revision
+ * and file inventory of each stage derived from Git, for inspection. Prints
+ * one JSON object, or writes the files that publication would store plus any
+ * working stage. Changing the written files does not change the artifact.
+ * @cli semantic-flow.mjs
+ * @command implementation export
+ */
+export declare function exportImplementation(options?: ExportImplementationOptions): void;
 export interface ValidateArtifactOptions {
     /** Validates JSON schemas only and skips semantic and Git validation. */
     "schema-only"?: true;

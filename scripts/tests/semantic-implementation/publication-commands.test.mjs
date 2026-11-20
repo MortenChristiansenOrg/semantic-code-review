@@ -102,13 +102,22 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   repository.git(
     "merge",
     "--ff-only",
-    "semantic-flow/publish-implementation/01-implementation",
+    "semantic-flow/publish-implementation/stages/implementation",
   );
   repository.expectSemanticFailure(
     "does not publish the current semantic implementation",
     "archive",
   );
   repository.semantic("publish");
+  // Publication and archives store the full form, readable without the repository.
+  const full = repository.artifact.implementation();
+  const publishedJson = (file) => JSON.parse(repository.git("show", `${metadataBranch}:.semantic-review/${file}`));
+  assert.deepEqual(publishedJson("manifest.json"), full.manifest);
+  assert.deepEqual(full.manifest.stages, ["implementation"]);
+  assert.deepEqual(publishedJson("stages/implementation.json"), full.stages.implementation);
+  assert.equal(full.stages.implementation.change.branch, "semantic-flow/publish-implementation/stages/implementation");
+  assert.equal(full.stages.implementation.change.headRevision, stageTip);
+  assert.deepEqual(full.stages.implementation.change.files, [{ path: "implementation.txt", kind: "added" }]);
   repository.expectSemanticFailure(
     "Archive destination must",
     "archive",
@@ -123,13 +132,12 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     "--message",
     "Archive test implementation",
   );
-  assert.equal(repository.exists(".semantic-review"), false);
-  assert.equal(
-    repository.exists(
-      ".semantic-review-history/publish-implementation/.semantic-review/manifest.json",
-    ),
-    true,
-  );
+  assert.equal(repository.artifact.present(), false);
+  const archived = (file) => repository.readJson(`.semantic-review-history/publish-implementation/.semantic-review/${file}`);
+  assert.deepEqual(archived("manifest.json"), full.manifest);
+  assert.deepEqual(archived("stages/implementation.json"), full.stages.implementation);
+  assert.deepEqual(archived("requirements/story.json"), full.requirements.story);
+  assert.equal(repository.exists(".semantic-review-history/publish-implementation/.semantic-review/.work"), false);
   assert.doesNotMatch(
     repository.git("show", "-s", "--format=%B", "HEAD"),
     /Co-authored-by: Copilot/,
@@ -156,7 +164,7 @@ test("repeat preparation updates the bound PR branch and metadata atomically", (
   repository.semantic("restack", "--from", "implementation");
   const revisedHead = repository.git(
     "rev-parse",
-    "semantic-flow/stable-pr/01-implementation",
+    "semantic-flow/stable-pr/stages/implementation",
   );
   assert.notEqual(revisedHead, originalHead);
 
@@ -308,10 +316,10 @@ test("publication rejects target drift until the stack is restacked", (t) => {
   );
 
   const refs = () => repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads");
-  const before = { refs: refs(), manifest: repository.read(".semantic-review/manifest.json") };
+  const before = { refs: refs(), manifest: repository.artifact.read("manifest.json") };
   repository.expectSemanticFailure("Option --json is a flag", "restack", "--base", "main", "--json=false");
   assert.equal(refs(), before.refs);
-  assert.equal(repository.read(".semantic-review/manifest.json"), before.manifest);
+  assert.equal(repository.artifact.read("manifest.json"), before.manifest);
 
   repository.semantic("restack", "--base", "main");
   repository.semantic("validate", "--publish");

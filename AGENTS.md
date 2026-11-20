@@ -92,10 +92,12 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   implementation: its manifest, requirements, and stages.
 - **Manifest**: The single entry-point document (`manifest.json`) that indexes
   the requirements and stages and records implementation-level fields.
-- **Stage branch**: The persistent branch whose head represents the cumulative
+- **Stage branch**: The persistent branch, named
+  `<branch-prefix>/stages/<stage-id>`, whose head represents the cumulative
   implementation through one stage, based on the branch immediately below it.
-  The stage's own changes are the diff between its recorded base and head
-  revisions.
+  The stage's own changes are the diff between its base and head revisions.
+  The artifact records only the head; the branch name, base and file inventory
+  are derived from the stage order.
 - **Stage stack**: The linear chain of stage branches from the target branch
   upward.
 - **Target branch**: The repository branch the implementation is built on top of and

@@ -24,8 +24,9 @@ function working(t) {
   repo.commitFile("src/feature.js", "export const feature = 1;\n", "Add feature");
   return repo;
 }
-const artifactFile = (repo, ...parts) => path.join(repo.root, ".semantic-review", ...parts);
-const workStage = (repo, id = "implementation") => JSON.parse(fs.readFileSync(artifactFile(repo, ".work", "stages", `${id}.json`), "utf8"));
+const workStage = (repo, id = "implementation") => repo.artifact.readJson(`.work/stages/${id}.json`);
+/** The names of the files directly in an evidence directory of the artifact. */
+const evidenceFiles = (repo, id) => repo.artifact.list(`evidence/${id}`).map((file) => file.split("/").at(-1));
 const record = (repo, ...args) => repo.semantic("stage", "evidence", "--item-id", "shot", "--kind", "screenshot", "--summary", "New button shows", ...args);
 
 test("evidence copies attachments into the artifact, outside the stage diff", t => {
@@ -35,7 +36,7 @@ test("evidence copies attachments into the artifact, outside the stage diff", t 
   const [item] = workStage(repo).evidence;
   assert.equal("headRevision" in item, false);
   assert.deepEqual(item.attachments, [{ path: `evidence/${workStage(repo).id}/${sha256}.png`, mediaType: "image/png", sha256, caption: "The new button", role: "after" }]);
-  assert.deepEqual(fs.readFileSync(artifactFile(repo, ...item.attachments[0].path.split("/"))), PNG);
+  assert.deepEqual(repo.artifact.readBytes(item.attachments[0].path), PNG);
   assert.equal(repo.git("status", "--porcelain"), "");
   assert.ok(Date.parse(item.capturedAt));
 });
@@ -52,7 +53,7 @@ test("evidence is refused unless it can be tied to the committed stage head", t 
   assert.throws(() => record(repo, "--file", file), /clean worktree/);
   fs.rmSync(path.join(repo.root, "dirty.txt"));
   assert.deepEqual(workStage(repo).evidence, []);
-  assert.deepEqual(fs.existsSync(artifactFile(repo, "evidence", workStage(repo).id)) ? fs.readdirSync(artifactFile(repo, "evidence", workStage(repo).id)) : [], []);
+  assert.deepEqual(evidenceFiles(repo, workStage(repo).id), []);
 });
 
 test("replacing and removing evidence removes files nothing else uses", t => {
@@ -60,13 +61,12 @@ test("replacing and removing evidence removes files nothing else uses", t => {
   const first = capture(t, "first.png"), second = capture(t, "second.png", Buffer.concat([PNG, Buffer.from([1])]));
   record(repo, "--file", first);
   assert.throws(() => record(repo, "--file", second), /already has evidence/);
-  const directory = artifactFile(repo, "evidence", workStage(repo).id);
-  assert.equal(fs.readdirSync(directory).length, 1);
+  const id = workStage(repo).id;
+  assert.equal(evidenceFiles(repo, id).length, 1);
   record(repo, "--file", second, "--replace");
-  assert.equal(fs.readdirSync(directory).length, 1);
-  assert.equal(fs.readdirSync(directory)[0], workStage(repo).evidence[0].attachments[0].path.split("/").at(-1));
+  assert.deepEqual(evidenceFiles(repo, id), [workStage(repo).evidence[0].attachments[0].path.split("/").at(-1)]);
   repo.semantic("stage", "evidence-remove", "--item-id", "shot");
-  assert.equal(fs.existsSync(directory), false);
+  assert.equal(repo.artifact.exists(`evidence/${id}`), false);
   assert.deepEqual(workStage(repo).evidence, []);
 });
 
@@ -74,33 +74,32 @@ test("full validation detects damaged, missing and stray evidence files", t => {
   const repo = working(t);
   record(repo, "--file", capture(t, "shot.png"));
   const id = workStage(repo).id, [{ attachments: [{ path: stored }] }] = workStage(repo).evidence;
-  const file = artifactFile(repo, ...stored.split("/"));
   repo.semantic("validate");
-  fs.writeFileSync(file, "tampered");
+  repo.artifact.write(stored, "tampered");
   assert.throws(() => repo.semantic("validate"), /does not match its recorded hash/);
-  fs.rmSync(file);
+  repo.artifact.remove(stored);
   assert.throws(() => repo.semantic("validate"), /is missing/);
   // A lost capture must not block the edits that repair it, or unrelated ones.
   repo.semantic("stage", "record", "--kind", "risk", "--item-id", "unrelated", "--summary", "Still recordable");
-  fs.writeFileSync(file, PNG);
-  fs.writeFileSync(artifactFile(repo, "evidence", id, "stray.png"), PNG);
+  repo.artifact.write(stored, PNG);
+  repo.artifact.write(`evidence/${id}/stray.png`, PNG);
   assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file/);
-  fs.rmSync(artifactFile(repo, "evidence", id, "stray.png"));
+  repo.artifact.remove(`evidence/${id}/stray.png`);
   repo.semantic("validate");
 
   // Anything under evidence/ gets published, not only what sits beside a known stage.
-  fs.mkdirSync(artifactFile(repo, "evidence", "abandoned"));
-  fs.writeFileSync(artifactFile(repo, "evidence", "abandoned", "old.png"), PNG);
+  repo.artifact.write("evidence/abandoned/old.png", PNG);
   assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file evidence\/abandoned\/old\.png/);
-  fs.rmSync(artifactFile(repo, "evidence", "abandoned"), { recursive: true });
-  fs.writeFileSync(artifactFile(repo, "evidence", "loose.png"), PNG);
+  repo.artifact.remove("evidence/abandoned");
+  repo.artifact.write("evidence/loose.png", PNG);
   assert.throws(() => repo.semantic("validate"), /Unreferenced evidence file evidence\/loose\.png/);
 });
 
 test("a symlinked evidence directory is refused and nothing outside the artifact is touched", { skip: process.platform === "win32" }, t => {
   const repo = working(t);
   record(repo, "--file", capture(t, "shot.png"));
-  const id = workStage(repo).id, directory = artifactFile(repo, "evidence", id);
+  // The active artifact is a folder here; a symbolic link in it must not lead writes outside it.
+  const id = workStage(repo).id, directory = path.join(repo.root, ".semantic-review", "evidence", id);
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-outside-"));
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));
   for (const name of fs.readdirSync(directory)) fs.renameSync(path.join(directory, name), path.join(outside, name));
@@ -119,12 +118,11 @@ test("a capture damaged by a crash is rewritten, and a lost one can be removed",
   const source = capture(t, "shot.png");
   record(repo, "--file", source);
   const [{ attachments: [{ path: stored }] }] = workStage(repo).evidence;
-  const file = artifactFile(repo, ...stored.split("/"));
-  fs.writeFileSync(file, "truncated");
+  repo.artifact.write(stored, "truncated");
   record(repo, "--file", source, "--replace");
-  assert.deepEqual(fs.readFileSync(file), PNG);
+  assert.deepEqual(repo.artifact.readBytes(stored), PNG);
   repo.semantic("validate");
-  fs.rmSync(file);
+  repo.artifact.remove(stored);
   repo.semantic("stage", "evidence-remove", "--item-id", "shot");
   repo.semantic("validate");
 });
@@ -170,9 +168,9 @@ test("range requests select the bytes a video player asks for", () => {
 test("the schema rejects attachment paths that leave the evidence directory", t => {
   const repo = working(t);
   record(repo, "--file", capture(t, "shot.png"));
-  const id = workStage(repo).id, file = artifactFile(repo, ".work", "stages", `${id}.json`), stage = workStage(repo);
+  const id = workStage(repo).id, file = `.work/stages/${id}.json`, stage = workStage(repo);
   stage.evidence[0].attachments[0].path = `evidence/${id}/../../manifest.json`;
-  fs.writeFileSync(file, `${JSON.stringify(stage, null, 2)}\n`);
+  repo.artifact.write(file, stage);
   assert.throws(() => repo.semantic("validate"), /schema|pattern|must match/i);
 });
 
@@ -199,7 +197,7 @@ test("publication and the viewer carry the evidence", t => {
   record(repo, "--file", capture(t, "shot.png"));
   organizeStage(repo, { id });
   repo.semantic("stage", "finish", "--id", id);
-  const [{ attachments: [{ path: stored }] }] = JSON.parse(fs.readFileSync(artifactFile(repo, "stages", `${id}.json`), "utf8")).evidence;
+  const [{ attachments: [{ path: stored }] }] = repo.artifact.readJson(`stages/${id}.json`).evidence;
   repo.semantic("publish");
   const metadata = repo.git("for-each-ref", "--format=%(refname)", "refs/heads/").split("\n").find(ref => ref.endsWith("/metadata"));
   assert.match(repo.git("ls-tree", "-r", "--name-only", metadata, ".semantic-review/evidence"), new RegExp(stored.split("/").at(-1)));
@@ -218,6 +216,6 @@ test("publication and the viewer carry the evidence", t => {
   assert.deepEqual(Buffer.from(served.content, "base64"), PNG);
   assert.equal(served.mediaType, "image/png");
   assert.throws(() => source.evidenceFile(id, "shot", "1"), /does not exist/);
-  fs.writeFileSync(artifactFile(repo, ...stored.split("/")), "tampered");
+  repo.artifact.write(stored, "tampered");
   assert.throws(() => source.evidenceFile(id, "shot", "0"), /damaged/);
 });

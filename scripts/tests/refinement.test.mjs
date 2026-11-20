@@ -13,6 +13,7 @@ import { adapterFor, checkPins, driveBeside, launch, loadSession, prepare, runEv
 import { collectResults, grade, invalidate, redact, report, validateGrades } from '../evaluations/refinement/grading.mjs';
 import { gradeSchema } from '../evaluations/refinement/grade-schema.mjs';
 import { sandboxProbeCommand } from '../evaluations/refinement/preflight.mjs';
+import { ArtifactDraft, commitArtifact } from '../src/shared/artifact-store.ts';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), skill = path.join(source, 'skills/semantic-flow');
 const sample = () => readJson(path.join(source, '.agents/skills/refine-semantic-flow/assets/baseline.json'));
@@ -21,8 +22,7 @@ function temp(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'refinemen
 function fixture(t, scenario) { const root = temp(t), env = environment(root); return { root, env, fixture: prepareFixture(root, skill, scenario, env) }; }
 
 function completeCompatible(f, env) {
-  const r = repository(f.repo, skill, env), manifest = readJson(path.join(f.repo, '.semantic-review/manifest.json'));
-  const stage = readJson(path.join(f.repo, '.semantic-review/stages/notifications.json'));
+  const r = repository(f.repo, skill, env), { manifest, stages: { notifications: stage } } = JSON.parse(r.cli('implementation', 'export'));
   const finalBranch = r.git('branch', '--show-current');
   // Evaluator-controlled known-good completion: replay the stage onto the updated target.
   const rebase = execute(['git', 'rebase', '--onto', 'main', manifest.baseRevision, stage.change.branch], f.repo, env);
@@ -134,9 +134,9 @@ test('compatible feedback verifier uses artifact publication gate and never reso
 });
 
 test('category fixture injects the intended real contract failure without leaving a corrupt decision', t => {
-  const { fixture: f } = fixture(t, 'cli-recovery-category');
+  const { env, fixture: f } = fixture(t, 'cli-recovery-category');
   assert.match(f.request, /category must be equal to one of the allowed values/);
-  const stage = readJson(path.join(f.repo, '.semantic-review/.work/stages/discount.json'));
+  const stage = JSON.parse(repository(f.repo, skill, env).cli('implementation', 'export')).workingStages.discount;
   assert.deepEqual(stage.decisions, []);
 });
 
@@ -373,7 +373,7 @@ test('acceptance checks the final cumulative head when a lower stage is checked 
 
 test('malformed agent artifact is a failed check, not an evaluator infrastructure error', t => {
   const { root, env, fixture: f } = fixture(t, 'implement-small');
-  fs.mkdirSync(path.join(f.repo, '.semantic-review')); fs.writeFileSync(path.join(f.repo, '.semantic-review/manifest.json'), '{broken');
+  const draft = new ArtifactDraft(undefined); draft.write('manifest.json', '{broken'); commitArtifact(f.repo, undefined, draft);
   const checks = verifyFixture(f, root, skill, 'implement-small', env);
   assert.equal(checks.checks.find(c => c.id === 'artifact-publication').passed, false);
 });

@@ -186,9 +186,12 @@ export async function verify({ fixture, root, skill, env, capabilities }) {
   for (const [id, args] of [['artifact-publication', ['validate', '--publish']], ['stack', ['validate-stack', '--json']]]) { const result = invoke(id, cli('implementation', ...args), repo); add(id, result.exitCode === 0 && !result.error, result); }
   let manifest, stages, head;
   try {
-    manifest = readJson(path.join(repo, '.semantic-review/manifest.json'));
+    const exported = invoke('artifact-export', cli('implementation', 'export'), repo);
+    if (exported.exitCode !== 0) throw new Error(`The artifact could not be exported: ${exported.stderr}`);
+    const artifact = JSON.parse(exported.stdout);
+    manifest = artifact.manifest;
     if (!Array.isArray(manifest.stages) || !manifest.stages.length || manifest.stages.some(id => typeof id !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(id))) throw new Error('Missing/unsafe finalized stage ids');
-    stages = manifest.stages.map(id => readJson(path.join(repo, '.semantic-review/stages', `${id}.json`)));
+    stages = manifest.stages.map(id => artifact.stages[id]);
     head = stages.at(-1).change.headRevision;
     if (!/^[a-f0-9]{40}$/.test(head) || selected.workingStageIds.length) throw new Error('Implementation has no final immutable head or still has working stages');
     const exists = git('cat-file', '-t', head);

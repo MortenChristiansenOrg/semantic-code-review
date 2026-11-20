@@ -10,7 +10,7 @@ branch immediately below it.
 | --- | --- |
 | `.semantic-review/` | Active requirements, stages, branch snapshots, reasoning, and validation |
 | `.semantic-review/.work/` | Current unfinished stage |
-| `semantic-flow/<implementation-id>/<NN>-<stage-id>` | Cumulative stage branch |
+| `semantic-flow/<implementation-id>/stages/<stage-id>` | Cumulative stage branch |
 | `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
 | `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
@@ -201,13 +201,13 @@ Place long mutation options in JSON:
 The command creates and checks out:
 
 ```text
-semantic-flow/customer-order-cancellation/01-add-cancellation-policy
+semantic-flow/customer-order-cancellation/stages/add-cancellation-policy
 ```
 
 A later stage might be:
 
 ```text
-semantic-flow/customer-order-cancellation/02-persist-cancellation
+semantic-flow/customer-order-cancellation/stages/persist-cancellation
 ```
 
 It starts at stage 1's head and records stage 1 as its base branch.
@@ -350,9 +350,9 @@ Record observed validation and link it to the relevant nodes:
 A stage may contain several linear commits. Finalization rejects merge commits,
 requires the recorded stage branch to be checked out, and captures:
 
-- Stage and base branch.
-- Immutable base and head revisions.
-- Exact changed-file inventory for the stage-only diff.
+- The immutable head revision. The stage and base branch, the base revision and
+  the exact changed-file inventory of the stage-only diff follow from it and
+  from the stage below.
 - Descriptive nodes with classified whole-file, hunk, or line-range ownership.
 - Node references on all recorded insights and validation evidence.
 
@@ -393,7 +393,7 @@ stale anchor after restacking.
 The agent or user may check out any stage branch and commit a correction:
 
 ```text
-git switch semantic-flow/customer-order-cancellation/01-add-cancellation-policy
+git switch semantic-flow/customer-order-cancellation/stages/add-cancellation-policy
 # edit, test
 git commit -am "Handle paid pending orders"
 <semantic-flow> implementation restack --from add-cancellation-policy
@@ -574,7 +574,10 @@ comments about the implementation being reviewed still use Semantic Flow feedbac
 - `restack --from <stage>`: lower stage branch changed.
 - `restack --base <target>`: trunk changed.
 - `repair`: interrupted artifact file mutation with an unambiguous recovery.
-- `validate`: explain schema, reference, branch, ancestry, or inventory drift.
+- `validate`: explain schema, reference, branch, or ancestry problems.
+- `implementation export [--destination <directory>]`: show the artifact in its
+  full form, with each stage's branch, base revision and file inventory, for
+  inspection.
 
 File and line notes keep the step in which they were created. For submitted
 feedback, the viewer retains that context through the browser's exported-note

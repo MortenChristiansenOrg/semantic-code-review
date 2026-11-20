@@ -117,7 +117,7 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   them to satisfy the workflow.
 - Require a clean worktree before commands that switch branches, create
   branches, restack, publish, prepare, or archive.
-- Treat numbered branches below the manifest's `branchPrefix` as CLI-owned
+- Treat stage branches (`<branchPrefix>/stages/<stage-id>`) as CLI-owned
   stage refs. Never create, rename, copy, reset, force-move, or delete them
   with raw Git ref-management commands. `stage begin` creates stage refs and
   `restack` rewrites them. The guarded update explicitly prescribed in
@@ -128,12 +128,12 @@ Run artifact and feedback commands from the resolved artifact worktree root.
   preparation state. `prepare-branch` uses them to guard updates to a stable
   cumulative branch.
 - A branch ref does not define a stage boundary. The manifest order and each
-  stage's recorded base and head revisions do. An extra numbered branch can
-  point inside another stage's range and make its commits appear in that
+  stage's recorded base and head revisions do. An extra branch below the prefix
+  can point inside another stage's range and make its commits appear in that
   stage.
 - Before making an implementation commit, require an active working stage and
   verify that its recorded branch is checked out. Do not commit stage work on
-  an unregistered, preparatory, or future numbered branch.
+  an unregistered, preparatory, or future stage branch.
 - Semantic metadata must not be committed on implementation stage branches.
 - Keep the stage branch chain linear. Merge commits are unsupported.
 - Record only observed insights and review-relevant validation evidence. Never
