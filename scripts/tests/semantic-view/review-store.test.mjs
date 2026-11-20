@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact } from '../../src/shared/artifact-store.ts';
@@ -175,6 +175,8 @@ test('relative user-store overrides cannot change meaning between CLI worktrees'
 
 test('registry lifecycle is explicit, generation guarded, and retains unavailable entries', (t) => {
   const root = setup(t), repo = path.join(root, 'a');
+  // The artifact is stored in the repository's Git refs.
+  fs.mkdirSync(repo, { recursive: true }); execFileSync('git', ['init', '-q'], { cwd: repo });
   const artifact = new ArtifactDraft(undefined);
   artifact.writeJson('manifest.json', { implementationId: 'id' });
   commitArtifact(repo, undefined, artifact);

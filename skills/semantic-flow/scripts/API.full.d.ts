@@ -2,7 +2,7 @@
  * shared: global options and shared vocabulary
  * implementation: init and specification add
  * stages: stage authoring and finalization
- * history: restack, repair, validation, publication, preparation, archive
+ * history: restack, validation, publication, preparation, archive
  * feedback: review thread operations
  * workflow: worktree selection and workflow helpers
  */
@@ -375,12 +375,6 @@ export interface RestackOptions {
  * @command implementation restack
  */
 export declare function restack(options: RestackOptions): void;
-/**
- * Repairs unambiguous interrupted artifact mutations.
- * @cli semantic-flow.mjs
- * @command implementation repair
- */
-export declare function repairArtifact(): void;
 export interface PublishArtifactOptions {
     /** Metadata commit message. @defaultValue "Publish <implementation-id> semantic implementation" */
     message?: string;

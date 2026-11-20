@@ -14,7 +14,7 @@ extra user approval is needed for that inspection or a missing required argument
 Apply `../docs/user-decisions.md` if the correction reveals an unresolved
 behavior choice or safety condition. Stop unsafe writes without asking users
 to approve technical mechanics. A missing argument is not evidence of an artifact migration problem;
-do not update the skill, run `repair`, or hand-edit artifacts to address it.
+do not update the skill or hand-edit artifacts to address it.
 
 `<semantic-flow>` means `node` followed by the quoted script path
 `scripts/semantic-flow.mjs` under the installed skill root.
@@ -191,8 +191,7 @@ node coverage no longer matches their rewritten diff.
 ## Restack conflicts
 
 If restack reports a conflict, read `../docs/restack-conflicts.md` completely
-and follow it. This is not an interrupted artifact write. Do not run `repair`
-or ask for permission merely because Git reported a conflict. The entire
+and follow it. Do not ask for permission merely because Git reported a conflict. The entire
 prescribed recovery is part of applying feedback, including its guarded update.
 Apply `../docs/user-decisions.md` to any remaining ambiguity or blocker; ask in
 the viewer about the desired code behavior, never whether to run recovery commands.

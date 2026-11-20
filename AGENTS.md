@@ -88,8 +88,14 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
 
 ### Artifacts and storage
 
-- **Implementation artifact**: The `.semantic-review/` JSON data describing an
-  implementation: its manifest, requirements, and stages.
+- **Implementation artifact**: The JSON data describing an implementation: its
+  manifest, requirements, and stages. While active it is stored in Git under
+  the private ref `refs/semantic-review/active/<implementation-id>`, shared by
+  every worktree; published and archived copies live in a `.semantic-review/`
+  folder of a commit.
+- **Snapshot**: One commit of the active ref, whose tree is the whole artifact.
+  Every change writes a new one; its parents are the superseded stage heads,
+  which keeps them reachable.
 - **Manifest**: The single entry-point document (`manifest.json`) that indexes
   the requirements and stages and records implementation-level fields.
 - **Stage branch**: The persistent branch, named
@@ -122,10 +128,12 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   later reviewed changes.
 - **Archive**: Storing a landed implementation's artifact under
   `.semantic-review-history/<implementation-id>/` so its provenance remains
-  available if stage branches are later deleted. Archiving does not delete
-  branches.
-- **Artifact worktree**: The repository worktree that contains the active
-  artifact and from which artifact and feedback commands operate.
+  available if stage branches are later deleted, and removing its active ref.
+  Archiving does not delete branches.
+- **Artifact worktree**: The repository worktree from which artifact and
+  feedback commands operate on an active implementation: the one with its
+  stage branch checked out, or else the one where it was last initialized or
+  begun.
 - **Anchor**: A stage head snapshot a feedback thread is attached to. Pending
   non-line anchors may refresh when the exact target still exists; line anchors
   remain immutable. An anchor is **stale** when it no longer matches and cannot

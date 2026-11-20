@@ -1,5 +1,5 @@
 import { feedbackDirectory } from "../../src/shared/review-store.ts";
-import { ArtifactDraft, commitArtifact, hasIncompleteArtifact, readArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
+import { ArtifactDraft, commitArtifact, readArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 import assert from "node:assert/strict";
 import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -166,8 +166,8 @@ export function createRepository(t, prefix = "semantic-flow-") {
      * "manifest.json" or "stages/<id>.json". Stored stage documents omit what
      * loading derives; implementation() returns the full form. */
     artifact: {
-      /** Whether anything of an active artifact is stored, even an incomplete one. */
-      present: () => readArtifact(root) !== undefined || hasIncompleteArtifact(root),
+      /** Whether an active artifact is stored. */
+      present: () => readArtifact(root) !== undefined,
       exists: (file) => readArtifact(root)?.type(file) !== undefined,
       list: (directory = "") => requireArtifact(root).list(directory),
       read: (file) => requireArtifact(root).read(file).toString("utf8"),

@@ -55,7 +55,7 @@ user hypotheses, and agent hypotheses. An agent-behavior report needs relevant
 instructions and observable outputs, not inferred private reasoning. Mark an
 intermittent or untested reproduction honestly.
 
-Use read-only diagnostics first. Do not run restack, repair, reset, update, or
+Use read-only diagnostics first. Do not run restack, reset, update, or
 other mutations just to gather evidence from active work. If necessary, propose
 an isolated reproduction with separately authorized mutations. Never hand-edit
 review artifacts or clear browser storage during diagnosis.

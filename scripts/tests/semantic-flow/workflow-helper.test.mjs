@@ -17,7 +17,7 @@ import {
   initializeImplementation,
   scriptsDirectory,
 } from "../helpers/repository.mjs";
-import { ArtifactDraft, commitArtifact, removeArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
+import { ArtifactDraft, commitArtifact, rememberImplementation, removeArtifact, requireArtifact } from "../../src/shared/artifact-store.ts";
 
 /** The active artifact of a worktree that is not a test repository, read and
  * written through the artifact store. */
@@ -27,12 +27,6 @@ const storedArtifact = {
     const snapshot = requireArtifact(root), draft = new ArtifactDraft(snapshot);
     draft.write(file, contents);
     commitArtifact(root, snapshot, draft);
-  },
-  /** Gives another worktree, which has no artifact, a copy of the artifact. */
-  copy(from, to) {
-    const source = requireArtifact(from), draft = new ArtifactDraft(undefined);
-    for (const file of source.list()) draft.write(file, source.read(file));
-    commitArtifact(to, undefined, draft);
   },
   remove: (root) => removeArtifact(root, requireArtifact(root)),
 };
@@ -518,8 +512,8 @@ test("update restarts a matching linked-worktree viewer without changing artifac
     cwd: fixture.target, encoding: "utf8",
   });
   assert.equal(worktree.status, 0, worktree.stderr);
-  storedArtifact.copy(fixture.target, linked);
-  storedArtifact.remove(fixture.target);
+  // Every worktree of the repository sees the same artifact; the linked one now works on it.
+  rememberImplementation(linked, "test-implementation");
   fs.appendFileSync(path.join(fixture.source, "skills", "semantic-flow", "viewer", "styles.css"), "\n/* updated */\n");
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: "1" };
   const launch = fixture.run(["review", "--project", linked], env);
@@ -775,8 +769,8 @@ test("concurrent review services isolate commands and reopen registered worktree
   const b = createRepository(t, "concurrent-review-b-");
   initializeImplementation(b); // Deliberately the same implementation ID.
   const linked = a.path("../", path.basename(a.root) + "-linked");
+  // The linked worktree sees the same artifact as a.root.
   a.git("worktree", "add", "--detach", linked, "HEAD");
-  storedArtifact.copy(a.root, linked);
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
   const deniedPortHook = a.path("denied-port.cjs");
@@ -861,12 +855,14 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.equal(recovered.reviewId, third.reviewId);
   assert.notEqual(recovered.processId, third.processId);
   const originalManifest = storedArtifact.read(linked, "manifest.json");
-  storedArtifact.write(linked, "manifest.json", '{broken JSON');
+  // The manifest keeps the implementation ID that names the artifact, but nothing else.
+  storedArtifact.write(linked, "manifest.json", '{"implementationId": "test-implementation"}');
   const failedBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
   assert.equal(failedBootstrap.status, 500); assert.doesNotMatch(await failedBootstrap.text(), /SEMANTIC_IMPLEMENTATION/);
   storedArtifact.write(linked, "manifest.json", originalManifest);
   assert.equal((await fetch(new URL("implementation-data.js", restarted.url))).status, 200);
-  storedArtifact.remove(linked);
+  // The linked directory stays, as the restarted viewer runs in it, but it is no longer a checkout.
+  fs.rmSync(path.join(linked, ".git"));
   const unavailableBootstrap = await fetch(new URL("implementation-data.js", restarted.url));
   assert.equal(unavailableBootstrap.status, 200); assert.match(await unavailableBootstrap.text(), /SEMANTIC_REVIEW_CONTEXT/);
   assert.throws(() => module.runReviewCommand(context, "git", ["status"]), /unavailable/);

@@ -16,14 +16,14 @@ implementation; no branch mode distinguishes those uses.
 
 1. Use the Git repository containing the active working directory unless the
    user supplied another project path.
-2. Before running artifact discovery or changing Git state, require that the
-   active working directory does not contain
-   `.semantic-review/manifest.json`. If it does, stop and direct the user to
-   the command matching that active implementation.
-3. If `.semantic-review/` exists without a manifest and is not empty, stop and
-   inspect it read-only. Explain that existing review data prevents starting a
-   new review safely under `../docs/user-decisions.md`. Do not reuse or overwrite
-   it, or ask permission for an opaque artifact cleanup.
+2. Before changing Git state, run `semantic-flow inspect --json`. If it selects
+   an active implementation whose worktree is the active working directory,
+   stop and direct the user to the command matching that implementation.
+3. If a command reports a `.semantic-review/` folder written by an earlier
+   Semantic Flow version, stop and inspect it read-only. Explain that existing
+   review data prevents starting a new review safely under
+   `../docs/user-decisions.md`. Do not reuse or overwrite it, or ask permission
+   for an opaque artifact cleanup.
 4. Require a clean working tree, including no staged, unstaged, or untracked
    files. Require the completed implementation to be committed.
 5. Record the source branch and immutable source `HEAD`. Do not move, rewrite,
@@ -131,8 +131,8 @@ author chose an approach unless the source material says so.
 
 1. Compare the final stage tree with the temporary snapshot. They must contain
    identical application content, including added, renamed, and deleted files.
-   Exclude `.semantic-review/` from this comparison. Private feedback lives
-   outside the repository and must not be copied into either tree.
+   The artifact and private feedback live outside the worktree and must not be
+   copied into either tree.
 2. Confirm the source branch and source commit are unchanged.
 3. Confirm the target branch still points to the recorded target commit. If it
    moved, retain the snapshot and stop; do not silently change the simulated

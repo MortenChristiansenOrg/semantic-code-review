@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { activeImplementationId, listJsonIds, readArtifact, readArtifactJson, requireArtifact } from "./shared/artifact-store.js";
+import { claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -158,14 +158,14 @@ function worktreeRoots(root: string): string[] {
     .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
-function artifactCandidate(root: string): ArtifactCandidate | null {
-  const snapshot = readArtifact(root);
+/** The active implementation as seen from the worktree that works on it. */
+function artifactCandidate(root: string, implementationId: string): ArtifactCandidate | null {
+  const snapshot = readArtifact(root, implementationId);
   if (!snapshot) {
     return null;
   }
   // Inspection reports on possibly invalid artifacts, so read only what is present.
   const manifest = readArtifactJson(snapshot, "manifest.json");
-  const implementationId = activeImplementationId(root, snapshot);
   return {
     worktree: root,
     implementationId,
@@ -210,10 +210,20 @@ function inspect(options: Options): Inspection {
   const project = option(options, "project");
   const implementationId = option(options, "implementation-id");
   const root = repositoryRoot(path.resolve(project ?? process.cwd()));
-  const candidates = worktreeRoots(root)
-    .map(artifactCandidate)
+  // Every worktree sees every active implementation; each is reported from the
+  // worktree that has claimed it, or else from the inspected one.
+  const actives = listActiveImplementations(root);
+  const worktrees = actives.length === 0 ? [] : worktreeRoots(root);
+  const claimedIn = (worktree: string) => claimedImplementation(worktree, actives)?.implementationId;
+  const claims = new Map(worktrees.map((worktree) => [worktree, claimedIn(worktree)]));
+  const candidates = actives
+    .map(({ implementationId }) => {
+      const claiming = [...claims].filter(([, claimed]) => claimed === implementationId).map(([worktree]) => worktree);
+      const worktree = claiming.find((candidate) => samePath(candidate, root)) ?? claiming[0] ?? root;
+      return artifactCandidate(worktree, implementationId);
+    })
     .filter((candidate): candidate is ArtifactCandidate => candidate !== null)
-    .sort((left, right) => left.worktree.localeCompare(right.worktree));
+    .sort((left, right) => left.worktree.localeCompare(right.worktree) || left.implementationId.localeCompare(right.implementationId));
   const matching = implementationId
     ? candidates.filter((candidate) => candidate.implementationId === implementationId)
     : candidates;
@@ -260,6 +270,8 @@ function resolveSingle(
   );
   const inspection = inspect(selectionOptions);
   if (inspection.selected) {
+    // The commands the workflow runs act on the selected implementation.
+    selectImplementation(inspection.selected.implementationId);
     return inspection.selected;
   }
   const implementationId = option(selectionOptions, "implementation-id");
@@ -370,7 +382,7 @@ function arrayField(value: unknown, key: string): unknown[] {
 
 async function status(options: Options): Promise<void> {
   const candidate = resolveSingle(options, "status");
-  const artifact = requireArtifact(candidate.worktree);
+  const artifact = requireArtifact(candidate.worktree, candidate.implementationId);
   // Status reports on possibly invalid artifacts; the validation below reports their errors.
   const manifest = readArtifactJson(artifact, "manifest.json");
   const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
@@ -778,7 +790,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     git(["switch", "--detach", targetHead], { cwd: candidate.worktree });
   }
 
-  const found = artifactCandidate(candidate.worktree);
+  const found = artifactCandidate(candidate.worktree, candidate.implementationId);
   if (!found) {
     fail(`Semantic implementation disappeared from ${candidate.worktree}.`);
   }
@@ -1500,8 +1512,7 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
     if (viewer.skillDirectory !== undefined &&
         (typeof viewer.skillDirectory !== "string" ||
          !samePath(viewer.skillDirectory, skillDirectory))) continue;
-    const snapshot = readArtifact(viewerRoot);
-    if (!snapshot || activeImplementationId(viewerRoot, snapshot) !== viewer.implementationId) continue;
+    if (typeof viewer.implementationId !== "string" || !readArtifact(viewerRoot, viewer.implementationId)) continue;
     found.push({ ...viewer, repositoryRoot: viewerRoot });
   }
   return found;

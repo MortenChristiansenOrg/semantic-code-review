@@ -51,7 +51,8 @@ import { agentStatus, liveSession, markSending, readAgentState, respondToRequest
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { activeImplementationId, readArtifactJson, type ArtifactSnapshot } from "./shared/artifact-store.js";
+import { activeImplementationId, readArtifactJson, selectImplementation, type ArtifactSnapshot } from "./shared/artifact-store.js";
+import { git } from "./shared/git.js";
 import { readUnvalidatedImplementation } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
@@ -103,14 +104,10 @@ function resolveRepositoryRoot(positional: string[]) {
     fail(VIEWER_USAGE);
   }
   const start = path.resolve(process.cwd(), positional[0] ?? ".");
-  for (let directory = start; ; directory = path.dirname(directory)) {
-    if (readReviewArtifact(directory)) return directory;
-    if (path.dirname(directory) === directory) break;
-  }
-  fail(
-    `no .semantic-review/manifest.json found in ${start} or any parent directory.`,
-  );
-  return "";
+  const top = fs.existsSync(start) ? git(["rev-parse", "--show-toplevel"], { cwd: start, allowFailure: true }) : null;
+  const root = top ? path.resolve(top) : undefined;
+  if (root && readReviewArtifact(root)) return root;
+  fail(`no active semantic implementation found for ${start}.`);
 }
 
 function gitCapture(cwd: string, args: string[]): string {
@@ -2879,6 +2876,8 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
 
 async function serve(repoRoot: string, requested: RequestedReview | null) {
   const viewerDir = locateViewerDir();
+  // The viewer, its workers and the commands it runs act on the reviewed implementation.
+  if (requested) selectImplementation(readReview(requested.reviewId).implementationId);
   const implementation = implementationSummary(repoRoot);
   const registered = requested
     ? readReview(requested.reviewId)

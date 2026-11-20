@@ -21,7 +21,7 @@ The broad set is six independent requests: `implement-small`,
 
 Implementation validation runs from the actual registered artifact worktree. Tests
 and independent acceptance use an export of its immutable final cumulative commit.
-Unused setup directories and arbitrary `.semantic-review` discoveries do not count.
+Unused setup directories and leftover artifact files in worktrees do not count.
 
 Every transcript-check ID has an explicit pass/fail and applicability rule in
 `transcriptCriteria`, supplied only to graders. IDs alone are not acceptance

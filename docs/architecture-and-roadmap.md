@@ -24,9 +24,12 @@ prepares final local branch refs.
 
 ### Git and artifacts
 
-Git stores cumulative stage branches. `.semantic-review/` stores intent and
+Git stores cumulative stage branches. The active artifact stores intent and
 the ordered stage head revisions without duplicating diffs; branch names, bases
-and file inventories are derived from them. The default branch family is:
+and file inventories are derived from them. It is itself stored in Git, as
+snapshot commits of the private ref
+`refs/semantic-review/active/<implementation-id>`, so every worktree sees it
+and cleaning a worktree cannot lose it. The default branch family is:
 
 ```text
 semantic-flow/<implementation-id>/

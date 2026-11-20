@@ -30,6 +30,6 @@ Report failures in actionable groups such as schema, missing references,
 specification coverage, branch identity, ancestry, moved heads, file inventory,
 node organization, feedback targets, stale snapshots, and open threads.
 
-Do not automatically run `repair`, restack, edit metadata, switch branches, or
+Do not automatically restack, edit metadata, switch branches, or
 change implementation code. Recommend `continue`, `feedback`, or `report` according to the failure.
 Use `report` for a suspected defect in Semantic Flow itself.

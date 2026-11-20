@@ -134,10 +134,13 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    `semantic-flow.mjs` must say prominently under Breaking changes and Updating
    that earlier updaters reject it and that the skill folder is replaced once by
    hand, as described in “Installing and updating”. The first release that
-   derives stage data and names stage branches `<prefix>/stages/<stage-id>`
-   must say prominently under Breaking changes and Updating that
-   implementations in progress cannot continue across the update: archive
-   finished ones and discard or finish the others with the old version first.
+   derives stage data, names stage branches `<prefix>/stages/<stage-id>` and
+   stores the active artifact in Git (`refs/semantic-review/active/`) instead
+   of `.semantic-review/` must say prominently under Breaking changes and
+   Updating that implementations in progress cannot continue across the
+   update: archive finished ones and discard or finish the others with the old
+   version first. The new version reports a leftover `.semantic-review/` folder
+   instead of reading it; remove the folder once its work is done.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

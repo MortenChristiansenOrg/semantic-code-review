@@ -83,7 +83,7 @@ function moveLegacyProjection(owner: string, root: string, directory: string): v
 }
 /** The artifact a review of root shows: the projection a remote review made for
  * its managed checkout, or else the active artifact of root. */
-export function readReviewArtifact(root: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
+export function readReviewArtifact(root: string, implementationId?: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
   const owner = managedCheckoutOwner(root);
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
@@ -92,7 +92,7 @@ export function readReviewArtifact(root: string): { files: ArtifactSnapshot; pro
     const projection = readArtifactDirectory(root, directory);
     return projection && { files: projection, projection: true };
   }
-  const active = readArtifact(root);
+  const active = readArtifact(root, implementationId);
   return active && { files: active, projection: false };
 }
 /** Resolves private feedback without registering a review or creating files. */

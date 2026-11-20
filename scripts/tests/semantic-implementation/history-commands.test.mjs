@@ -10,31 +10,6 @@ import {
   organizeStage,
 } from "../helpers/repository.mjs";
 
-test("repair removes unambiguous interrupted writes", (t) => {
-  const repository = createRepository(t);
-  initializeImplementation(repository);
-  beginStage(repository);
-
-  repository.artifact.write("stages/implementation.json", "{}\n");
-  repository.semantic("repair");
-  assert.equal(
-    repository.artifact.exists("stages/implementation.json"),
-    false,
-  );
-  assert.equal(
-    repository.artifact.exists(".work/stages/implementation.json"),
-    true,
-  );
-
-  repository.semantic("repair");
-  repository.artifact.remove(".work/stages/implementation.json");
-  repository.artifact.write("stages/orphan.json", "{}\n");
-  repository.expectSemanticFailure(
-    "Repair is ambiguous",
-    "repair",
-  );
-});
-
 test("restack refreshes an edited stage branch and rebuilds branches above it", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);

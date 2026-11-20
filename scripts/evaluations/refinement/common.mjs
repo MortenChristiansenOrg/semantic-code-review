@@ -122,5 +122,6 @@ export function snapshot(repo, reviewHome) {
     return [name, !fs.existsSync(file) ? null : hash(fs.lstatSync(file).isSymbolicLink() ? fs.readlinkSync(file) : fs.readFileSync(file))];
   }));
   return { refs: git('show-ref').replaceAll('\r\n', '\n'), head: git('rev-parse', 'HEAD'), branch: git('branch', '--show-current'),
-    content, artifact: inventory(path.join(repo, '.semantic-review')), review: inventory(reviewHome) };
+    // An active artifact is a snapshot commit; its tree identifies the content.
+    content, artifact: git('for-each-ref', '--format=%(refname) %(tree)', 'refs/semantic-review/active/').replaceAll('\r\n', '\n'), review: inventory(reviewHome) };
 }

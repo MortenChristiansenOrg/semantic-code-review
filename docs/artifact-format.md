@@ -32,9 +32,11 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
 ```
 
 Readers load only IDs indexed by the manifest. Unlisted JSON files are invalid.
-Active metadata SHOULD be ignored locally. It MUST NOT be committed on a stage
-branch because that would pollute its implementation diff and make branch/head bindings
-self-referential. A writer MAY publish it on a separate metadata branch.
+The active artifact MUST NOT be committed on a stage branch because that would
+pollute its implementation diff and make branch/head bindings self-referential.
+The reference tooling keeps it outside every worktree (see
+[Active storage](#active-storage)). A writer MAY publish it on a separate
+metadata branch.
 
 ## Common rules
 
@@ -187,9 +189,37 @@ full schemas; the viewer narrows each field itself, so it can still show an
 artifact that validation rejects. Storing a derived field in the active form is an error.
 `semantic-flow implementation export` shows the full form.
 
+## Active storage
+
+The reference tooling stores the active artifact in the repository's Git
+object store, not in a worktree:
+
+- The private ref `refs/semantic-review/active/<implementation-id>` points at
+  a snapshot commit whose tree is the whole artifact in its active form. Files
+  are stored byte for byte, whatever the line-ending and attribute settings.
+- Every change writes a new snapshot commit and moves the ref only if it still
+  points at the snapshot the command read, so a concurrent writer fails
+  instead of overwriting. The ref keeps a reflog.
+- A snapshot's parents are not earlier snapshots but the superseded stage
+  heads: every head a snapshot recorded for a stage and a later one replaced.
+  Each snapshot carries them forward, so commits that feedback anchors may
+  still refer to survive garbage collection.
+- A command that also moves stage branches, such as `stage begin`, `stage
+  discard` or `restack`, moves them and the artifact's ref in one transaction.
+- Every worktree of the repository sees the same artifacts, and cleaning a
+  worktree cannot remove them. Active implementations are found by listing
+  `refs/semantic-review/active/`. With several, a command acts on the one whose
+  stage branch is checked out in its worktree, or else the one last initialized
+  or begun there.
+- `refs/semantic-review/archive/` is reserved.
+
+An earlier tooling version kept the active artifact in a worktree's
+`.semantic-review/` folder. Such a folder is reported, not read: an
+implementation cannot be continued across that change.
+
 ## Working stage
 
-Tooling may store one working stage under `.semantic-review/.work/stages/`.
+Tooling may store one working stage under `.work/stages/` of the active artifact.
 In its full form it includes the deterministic `branch` but no canonical
 `change`. `stage begin` creates and checks out that branch at the current stack
 tip. Finalization records the branch head and removes the working document.

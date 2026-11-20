@@ -37,6 +37,7 @@ The command stores the active artifact under:
 .semantic-review-history/<implementation-id>/.semantic-review/
 ```
 
-and records the archive on the target branch. It must not delete stage
-branches, metadata branches, feedback history, remote refs, or worktrees.
+and records the archive on the target branch, then removes the active
+artifact. It must not delete stage branches, metadata branches, feedback
+history, remote refs, or worktrees.
 Branch cleanup is a separate explicit operation.
