@@ -694,6 +694,18 @@ for (const reducedMotion of ['no-preference', 'reduce']) test(`a tooltip taller 
   await next.focus();
   await expect(tooltip).toBeVisible();
   expect(await tooltip.evaluate((el) => el.scrollTop)).toBe(0);
+  // End pressed before the opening frame, as on a busy machine, still ends at
+  // the last line once that frame adds the key hint.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await next.blur();
+  await next.evaluate((el) => {
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+  });
+  await expect(hint).toBeVisible();
+  await expect.poll(atEnd).toBe(true);
+  expect(await lastLineShown()).toBe(true);
 
   // Escape closes it and gives the keys back to the page.
   await page.keyboard.press('Escape');

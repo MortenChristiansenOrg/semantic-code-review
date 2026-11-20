@@ -126,15 +126,29 @@ export function forceHidePop(): void {
 function popOverflows(): boolean {
   return Boolean(popEl?.classList.contains("is-shown") && popEl.scrollHeight > popEl.clientHeight);
 }
+/**
+ * Runs a change to the tooltip's content and keeps the reader's place: a
+ * tooltip scrolled to its end stays at its end when the change makes it
+ * taller, such as the key hint appearing after End was pressed in the frame
+ * before the tooltip showed. Not for resizes, which clamp the scroll first.
+ */
+function keepPopScroll(change: () => void): void {
+  if (!popEl) { change(); return; }
+  const scrollTop = popEl.scrollTop;
+  const atEnd = scrollTop > 0 && scrollTop + popEl.clientHeight >= popEl.scrollHeight - 1;
+  change();
+  popEl.scrollTop = atEnd ? popEl.scrollHeight : scrollTop;
+}
 /** Shows the scrolling keys on a cut-off tooltip while focus is on what it describes. */
 export function markKeyScrollable(): void {
-  if (!popEl || !popHint) return;
-  const scrollTop = popEl.scrollTop;
-  popHint.textContent = "";
-  const focused = document.activeElement;
-  // While the tooltip is hidden, its description would include hidden text.
-  if (popEl.style.visibility !== "hidden" && popOwner && focused && popOwner.contains(focused) && popOverflows()) popHint.textContent = "\u2191\u2193 PgUp PgDn to scroll";
-  popEl.scrollTop = scrollTop;
+  const pop = popEl, hint = popHint;
+  if (!pop || !hint) return;
+  keepPopScroll(() => {
+    hint.textContent = "";
+    const focused = document.activeElement;
+    // While the tooltip is hidden, its description would include hidden text.
+    if (pop.style.visibility !== "hidden" && popOwner && focused && popOwner.contains(focused) && popOverflows()) hint.textContent = "\u2191\u2193 PgUp PgDn to scroll";
+  });
 }
 const POP_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
 /**
@@ -198,7 +212,9 @@ export function installPopover(): void {
     if (!popOwner?.isConnected) return;
     if (!popOwner.matches(".tag-face[data-tagpop]")) {
       if (!tooltipText(popOwner)) { forceHidePop(); return; }
-      // Filling resets the tooltip's classes, so it is shown again where it was read to.
+      // Filling resets the tooltip's classes, so it is shown again where it was
+      // read to. The scroll is already clamped to the new size, so it is
+      // restored as it is rather than read as having reached the end.
       const scrollTop = popEl?.scrollTop ?? 0;
       fillPop(popOwner);
       popEl?.classList.add("is-shown");
