@@ -145,7 +145,12 @@ export function changedFiles(root: string, parent: string, commit: string): File
  * result. When Git fails, each range is derived alone, so the error names it. */
 export function changedFilesOfRanges(root: string, ranges: ReadonlyArray<readonly [string, string]>): FileChange[][] {
   const valid = ranges.every(([parent, commit]) => /^[0-9a-f]{40}$/.test(parent) && /^[0-9a-f]{40}$/.test(commit));
-  const distinct = [...new Map(ranges.map(([parent, commit]) => [`${commit} ${parent}`, [parent, commit] as const])).values()];
+  const unique = [...new Map(ranges.map(([parent, commit]) => [`${commit} ${parent}`, [parent, commit] as const])).values()];
+  // Git heads each batched inventory with its commit alone, so a head shared by
+  // two ranges is ambiguous; such ranges are derived one by one.
+  const heads = new Map<string, number>();
+  for (const [, commit] of unique) heads.set(commit, (heads.get(commit) ?? 0) + 1);
+  const distinct = unique.filter(([, commit]) => heads.get(commit) === 1);
   const derived = new Map<string, FileChange[]>();
   if (valid && distinct.length > 1) {
     // Each line names a commit and the one parent to compare it with.

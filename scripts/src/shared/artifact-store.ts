@@ -360,14 +360,47 @@ export function removeArtifact(root: string, base: ArtifactSnapshot): void {
   fs.rmSync(path.join(root, ACTIVE_DIRECTORY), { recursive: true, force: true });
 }
 
-/** Writes every file of an artifact below a directory of the worktree, byte for byte. */
-export function exportArtifactFiles(files: ArtifactFiles, destination: string): void {
-  for (const file of files.list()) {
-    if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
-    const target = path.join(destination, ...file.split("/"));
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, files.read(file), { flag: "wx" });
+/** Writes every file of an artifact below a directory, byte for byte, and
+ * returns a function that removes what it wrote. A failed write removes it. */
+export function exportArtifactFiles(files: ArtifactFiles, destination: string): () => void {
+  const createdFiles: string[] = [];
+  const createdDirectories: string[] = [];
+  const makeDirectory = (directory: string) => {
+    const first = fs.mkdirSync(directory, { recursive: true });
+    if (first === undefined) return;
+    for (let current = directory; ; current = path.dirname(current)) {
+      createdDirectories.push(current);
+      if (current === first || path.dirname(current) === current) break;
+    }
+  };
+  // Removes only what this call created, so a concurrent writer's files and
+  // anything else placed beside them are kept.
+  const remove = () => {
+    for (const file of createdFiles.reverse()) fs.rmSync(file, { force: true });
+    for (const directory of createdDirectories.sort((left, right) => right.length - left.length)) {
+      try { fs.rmdirSync(directory); } catch { /* Not empty, or already gone. */ }
+    }
+  };
+  try {
+    makeDirectory(destination);
+    for (const file of files.list()) {
+      if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
+      const target = path.join(destination, ...file.split("/"));
+      makeDirectory(path.dirname(target));
+      try {
+        fs.writeFileSync(target, files.read(file), { flag: "wx" });
+      } catch (error) {
+        // A file that already existed belongs to someone else; one this write created does not.
+        if (errorCode(error) !== "EEXIST") createdFiles.push(target);
+        throw error;
+      }
+      createdFiles.push(target);
+    }
+  } catch (error) {
+    remove();
+    throw error;
   }
+  return remove;
 }
 
 /** A thrown value's message; describing it never throws. */

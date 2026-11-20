@@ -126,11 +126,7 @@ function projection(record: ReviewRecord, remote: RemoteReview, head: string) {
 function refresh(record: ReviewRecord, remote: RemoteReview) {
   const root = record.repositoryRoot;
   git(root, ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
-  return install(record, remote, git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]));
-}
-/** Checks out head and installs its projection as the review's artifact. */
-function install(record: ReviewRecord, remote: RemoteReview, head: string) {
-  const root = record.repositoryRoot;
+  const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
   const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
   // Evidence is read one file at a time, as the projection is written.
   function* files(): Generator<[string, Buffer]> {
@@ -181,14 +177,7 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   return withReviewLock(id, () => {
     const directory = reviewDirectory(id), recordFile = path.join(directory, "review.json");
     if (hasPendingDeletion(id)) throw new Error("Finish pending review deletion before starting a fresh review.");
-    if (fs.existsSync(recordFile)) {
-      // Opening preserves the reviewed snapshot; refresh is explicit.
-      const record = readReview(id);
-      if (!record.remote || fs.existsSync(path.join(projectionDirectory(id), "manifest.json"))) return record;
-      // An earlier version kept the projection inside the checkout: project the reviewed head again.
-      fs.rmSync(path.join(record.repositoryRoot, ".semantic-review"), { recursive: true, force: true });
-      return record.remote.headRevision ? install(record, record.remote, record.remote.headRevision) : refresh(record, record.remote);
-    }
+    if (fs.existsSync(recordFile)) return readReview(id); // Opening preserves the reviewed snapshot; refresh is explicit.
     // An interrupted first clone has no registered state and can be retried.
     fs.rmSync(directory, { recursive: true, force: true });
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });

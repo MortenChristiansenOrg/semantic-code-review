@@ -11,7 +11,7 @@ import {
   organizeStage,
 } from "../helpers/repository.mjs";
 import { readArtifact } from "../../src/shared/artifact-store.ts";
-import { readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
+import { changedFilesOfRanges, readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
 
 test("init and specification add create complete specification metadata", (t) => {
   const repository = createRepository(t);
@@ -1002,8 +1002,29 @@ test("implementation export prints and writes the full form without changing the
   fs.writeFileSync(path.join(destination, "manifest.json"), "{}\n");
   repository.expectSemanticFailure(/Export destination .* must be a new or empty directory/, "export", "--destination", destination);
   repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(repository.root, ".semantic-review", "evidence"));
+  if (process.platform !== "win32") {
+    // A link outside the artifact that leads into it is refused too.
+    fs.mkdirSync(path.join(repository.root, ".semantic-review", "empty"));
+    const link = path.join(path.dirname(destination), `${path.basename(destination)}-link`);
+    fs.symlinkSync(path.join(repository.root, ".semantic-review", "empty"), link);
+    t.after(() => fs.rmSync(link, { force: true }));
+    repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(link, "out"));
+    fs.rmdirSync(path.join(repository.root, ".semantic-review", "empty"));
+  }
   assert.deepEqual(Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)])), before);
   repository.semantic("validate");
+});
+
+test("ranges that share a head keep their own inventories", (t) => {
+  const repository = createRepository(t);
+  const base = repository.git("rev-parse", "HEAD");
+  const head = repository.commitFile("feature.txt", "feature\n", "Add feature");
+  // The empty range comes first, so a batch could hand it the other range's inventory.
+  assert.throws(() => changedFilesOfRanges(repository.root, [[head, head], [base, head]]), /has no changes relative to/);
+  assert.deepEqual(changedFilesOfRanges(repository.root, [[base, head], [base, head]]), [
+    [{ path: "feature.txt", kind: "added" }],
+    [{ path: "feature.txt", kind: "added" }],
+  ]);
 });
 
 test("a base revision that is not a commit ID never reaches Git", (t) => {

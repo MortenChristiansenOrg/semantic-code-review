@@ -70,7 +70,13 @@ export function readReviewArtifact(root: string): { files: ArtifactSnapshot; pro
   const owner = managedCheckoutOwner(root);
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
-    const projection = readArtifactDirectory(root, projectionDirectory(owner));
+    const directory = projectionDirectory(owner);
+    const legacy = path.join(root, ".semantic-review");
+    if (!fs.existsSync(directory) && fs.existsSync(path.join(legacy, "manifest.json"))) {
+      // An earlier version kept the projection inside the checkout; it moves out whole.
+      try { fs.renameSync(legacy, directory); } catch { /* Another reader moved it first, or it stays unavailable. */ }
+    }
+    const projection = readArtifactDirectory(root, directory);
     return projection && { files: projection, projection: true };
   }
   const active = readArtifact(root);

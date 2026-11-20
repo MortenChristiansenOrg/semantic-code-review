@@ -2801,6 +2801,19 @@ function archiveImplementation(
   }
 }
 
+/** A path with every existing ancestor's links resolved, so containment checks see where it leads. */
+function resolvedPath(file: string): string {
+  const missing: string[] = [];
+  let existing = path.resolve(file);
+  while (!fs.existsSync(existing) && path.dirname(existing) !== existing) {
+    missing.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  let real = existing;
+  try { real = fs.realpathSync.native(existing); } catch { /* An unavailable root stays as written. */ }
+  return path.join(real, ...missing);
+}
+
 function exportImplementation(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "export"));
   const artifact = loadImplementation(workspace.root, workspace.snapshot);
@@ -2815,8 +2828,9 @@ function exportImplementation(workspace: Workspace, options: Options): void {
     return;
   }
   const target = path.resolve(process.cwd(), destination);
-  const active = path.join(workspace.root, ".semantic-review");
-  if (target === active || target.startsWith(`${active}${path.sep}`)) {
+  const active = resolvedPath(path.join(workspace.root, ".semantic-review"));
+  const resolvedTarget = resolvedPath(target);
+  if (resolvedTarget === active || resolvedTarget.startsWith(`${active}${path.sep}`)) {
     fail(`Export destination ${target} must be outside the active artifact.`);
   }
   if (fs.existsSync(target) && (!fs.statSync(target).isDirectory() || fs.readdirSync(target).length > 0)) {
@@ -2824,18 +2838,8 @@ function exportImplementation(workspace: Workspace, options: Options): void {
   }
   const files = fullFormFiles(artifact, workspace.snapshot);
   for (const stage of artifact.workStages.values()) files.writeJson(stageFile(stage), stage);
-  // A failed export removes what it wrote, so it can be retried.
-  let created = target;
-  while (!fs.existsSync(path.dirname(created))) created = path.dirname(created);
-  const existed = fs.existsSync(target);
-  fs.mkdirSync(target, { recursive: true });
-  try {
-    exportArtifactFiles(files, target);
-  } catch (error) {
-    if (existed) for (const entry of fs.readdirSync(target)) fs.rmSync(path.join(target, entry), { recursive: true, force: true });
-    else fs.rmSync(created, { recursive: true, force: true });
-    throw error;
-  }
+  // A failed export removes only what it wrote, so it can be retried.
+  exportArtifactFiles(files, target);
   console.log(`Exported ${artifact.manifest.implementationId} to ${target}.`);
 }
 
