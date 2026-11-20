@@ -607,11 +607,14 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   }
 
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
+  // The revisions and view mode a diff page is requested for.
+  const diffIdentity = (entry) => JSON.stringify([fileBaseRevision(entry), entry.stage.headRevision, entry.file.revision,
+    fileViewMode(entry.id) === "full" ? "full" : "changes"]);
   const diffRequests = new Map();
   async function ensureFileDiff(entry, offset = 0, force = false, target = null, pageScroll = null) {
     if (!entry) return;
     if (diffRequests.has(entry.id)) {
-      if (target || force) entry.file._queuedDiff = { offset, force, target, pageScroll };
+      if (target || force) entry.file._queuedDiff = { offset, force, target, pageScroll, identity: diffIdentity(entry) };
       return;
     }
     const mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
@@ -626,16 +629,16 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       mode, offset: String(offset),
       ...(target ? { side: target.side, line: String(target.line) } : {}),
     };
-    const revision = entry.file.revision;
-    // A live update replaces the file objects while a page loads. The response
-    // belongs to the file that now holds the path, if that is still the
-    // requested base, head and file revision; otherwise it is stale.
+    const identity = diffIdentity(entry);
+    // A live update replaces the file objects while a page loads, and the
+    // reviewer may switch the view mode. The response, or its error, belongs to
+    // the file that now holds the path if it is still the requested base, head,
+    // file revision and mode; otherwise it is stale.
     const currentFile = () => {
       const current = fileById.get(entry.id);
-      return current && fileBaseRevision(current) === query.base && current.stage.headRevision === query.head &&
-        current.file.revision === revision ? current.file : null;
+      return current && diffIdentity(current) === identity ? current.file : null;
     };
-    let pageLoaded = false;
+    let pageLoaded = false, stale = false;
     const request = api.getDiff(query)
       .then(async (response) => {
         const payload = await response.json();
@@ -646,7 +649,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
           throw new Error("Diff response did not include lines.");
         }
         const file = currentFile();
-        if (!file || (fileViewMode(entry.id) === "full" ? "full" : "changes") !== mode) return;
+        if (!file) { stale = true; return; }
         const additions = Number(payload.additions) || 0, deletions = Number(payload.deletions) || 0, binary = Boolean(payload.binary);
         const shownChanged = file.additions !== additions || file.deletions !== deletions || Boolean(file.binary) !== binary;
         file.lines = payload.lines;
@@ -664,16 +667,23 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       .catch((error) => {
         const file = currentFile();
         if (file) file._diffError = error.message || "Diff could not be loaded.";
+        else stale = true;
       })
       .finally(() => {
-        const file = fileById.get(entry.id)?.file;
+        const current = fileById.get(entry.id), file = current?.file;
         entry.file._diffLoading = false;
         if (file) file._diffLoading = false;
         diffRequests.delete(entry.id);
-        const queued = file?._queuedDiff || entry.file._queuedDiff;
+        let queued = file?._queuedDiff || entry.file._queuedDiff;
         delete entry.file._queuedDiff;
         if (file) delete file._queuedDiff;
-        if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target, queued.pageScroll);
+        // A queued page belongs to the revisions and mode it was asked for; a
+        // request for a line asks again for that line, and a page is dropped.
+        if (queued && (!current || queued.identity !== diffIdentity(current)))
+          queued = queued.target ? { offset: 0, force: true, target: queued.target, pageScroll: null } : null;
+        // A stale request for a line asks again for that line in the current file.
+        if (!queued && stale && target) queued = { offset: 0, force: true, target, pageScroll: null };
+        if (queued) ensureFileDiff(current, queued.offset, queued.force, queued.target, queued.pageScroll);
         render();
         if (pageLoaded && pageScroll && !queued) scrollDiffPage(entry.id, pageScroll);
       });

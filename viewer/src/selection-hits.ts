@@ -62,15 +62,16 @@ function originalRange(folded: Folded, start: number, end: number): [number, num
 // A code row's text is split across the spans of its syntax highlighting, so
 // matches are found in the row's combined text and mapped back to the text
 // nodes where they start and end; a highlight range may span several nodes.
+// Matches come in increasing order, so one cursor walks the nodes once for the
+// starts and another for the ends.
 interface Piece { node: Text; start: number }
-function point(pieces: Piece[], offset: number, end: boolean): [Text, number] {
-  // A match ends in the node it ends inside, not at the start of the next one.
-  let piece = pieces[0];
-  for (const candidate of pieces) {
-    if (end ? candidate.start >= offset : candidate.start > offset) break;
-    piece = candidate;
-  }
-  return [piece.node, offset - piece.start];
+function cursor(pieces: Piece[], end: boolean): (offset: number) => [Text, number] {
+  let index = 0;
+  return (offset) => {
+    // A match ends in the node it ends inside, not at the start of the next one.
+    while (index + 1 < pieces.length && (end ? pieces[index + 1].start < offset : pieces[index + 1].start <= offset)) index++;
+    return [pieces[index].node, offset - pieces[index].start];
+  };
 }
 
 /** Highlights each case-insensitive occurrence of `term` in the code of `grid`, except the selected one. */
@@ -89,12 +90,12 @@ export function highlightSelectionHits(grid: Element, term: string, selected: Ra
       text += node.data;
     }
     if (!pieces.length) continue;
-    const folded = fold(text);
+    const folded = fold(text), start = cursor(pieces, false), end = cursor(pieces, true);
     for (let index = folded.text.indexOf(needle); index !== -1; index = folded.text.indexOf(needle, index + needle.length)) {
       const bounds = originalRange(folded, index, index + needle.length);
       if (!bounds || bounds[1] <= bounds[0] || bounds[1] > text.length) continue;
-      const [startContainer, startOffset] = point(pieces, bounds[0], false);
-      const [endContainer, endOffset] = point(pieces, bounds[1], true);
+      const [startContainer, startOffset] = start(bounds[0]);
+      const [endContainer, endOffset] = end(bounds[1]);
       const match = new StaticRange({ startContainer, startOffset, endContainer, endOffset });
       if (!overlaps(selected, match)) highlight.add(match);
     }

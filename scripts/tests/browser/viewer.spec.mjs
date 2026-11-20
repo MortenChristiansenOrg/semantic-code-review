@@ -2670,6 +2670,91 @@ test('a diff response after a live snapshot updates the open file search, or is 
   expect(errors).toEqual([]);
 });
 
+test('a diff request that fails after the view mode changes does not stop the new mode loading', async ({ page }) => {
+  const data = fixture(), { lines } = data.stages[0].files[0];
+  delete data.stages[0].files[0].lines;
+  const errors = await mount(page, data);
+  const pending = await holdDiffRequests(page);
+  await openFile(page);
+  await expect.poll(() => pending.length).toBe(1);
+  const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+  await panel.locator('[data-action="set-view"][data-mode="full"]').click();
+  // The Changes request fails once the reviewer has switched to Full file.
+  await pending[0].fulfill({ status: 500, json: { ok: false, error: 'Changes failed' } });
+  await expect.poll(() => pending.length).toBe(2);
+  expect(new URL(pending[1].request().url()).searchParams.get('mode')).toBe('full');
+  await expect(panel).not.toContainText('Could not load diff');
+  await pending[1].fulfill({ json: { ok: true, lines, additions: 2 } });
+  await expect(panel.locator('[data-line-id="l:first:new:1:shared.js"]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+for (const change of ['mode', 'restack']) {
+  test(`a queued diff page is dropped when the ${change === 'mode' ? 'view mode' : 'stage head'} changes`, async ({ page }) => {
+    const data = fixture(), file = data.stages[0].files[0];
+    const long = Array.from({ length: 1900 }, (_, i) => ({ t: 'add', n: i + 1, s: `const row${i + 1} = ${i + 1};`, h: 1 }));
+    const short = file.lines;
+    file.lines = long.slice(0, 900); file.nextOffset = 900;
+    const errors = await mount(page, data, { fileView: { [fileId]: 'full' } });
+    // The full file is long; its changes, and the restacked file, are short.
+    const respond = (route) => {
+      const params = new URL(route.request().url()).searchParams, offset = Number(params.get('offset'));
+      const rows = params.get('mode') === 'full' && params.get('head') === 'b'.repeat(40) ? long : short;
+      return route.fulfill({ json: { ok: true, lines: rows.slice(offset, offset + 900), offset,
+        nextOffset: offset + 900 < rows.length ? offset + 900 : null, additions: rows.length } });
+    };
+    const pending = await holdDiffRequests(page);
+    await openFile(page);
+    const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+    const next = panel.getByRole('button', { name: 'Next page', exact: true });
+    await next.evaluate((el) => el.click());
+    await expect.poll(() => pending.length).toBe(1);
+    // A second click waits for the first page.
+    await next.evaluate((el) => el.click());
+    if (change === 'mode') await panel.getByRole('button', { name: 'Changes', exact: true }).click();
+    else {
+      // The server sends a file's lines only in diff responses.
+      delete file.lines; delete file.nextOffset;
+      data.stages[0].headRevision = 'c'.repeat(40); data.viewerRevision = 'restacked';
+      await expect(page.locator('.review-update')).toHaveText('Review updated', { timeout: 15000 });
+    }
+    await respond(pending[0]);
+    await expect.poll(() => pending.length).toBe(2);
+    await respond(pending[1]);
+    await expect(panel.locator('[data-line-id="l:first:new:1:shared.js"]')).toHaveCount(1);
+    await expect(panel).not.toContainText('No line changes recorded');
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a request for a line that a restack makes stale asks again for that line', async ({ page }) => {
+  const data = fixture(), file = data.stages[0].files[0];
+  const rows = Array.from({ length: 1900 }, (_, i) => ({ t: 'ctx', o: i + 1, n: i + 1, s: `const row${i + 1} = ${i + 1};` }));
+  file.lines = rows.slice(0, 900); file.nextOffset = 900;
+  data.feedback = [thread('far', 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1200, label: 'shared.js:1200' })];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const respond = (route) => {
+    const params = new URL(route.request().url()).searchParams, line = Number(params.get('line'));
+    const offset = line ? Math.floor((line - 1) / 900) * 900 : Number(params.get('offset'));
+    return route.fulfill({ json: { ok: true, lines: rows.slice(offset, offset + 900), offset,
+      nextOffset: offset + 900 < rows.length ? offset + 900 : null, additions: 0 } });
+  };
+  const pending = await holdDiffRequests(page);
+  await showNotes(page);
+  await page.locator('.side.notes [data-action="jump-to"][data-kind="line"]').click();
+  await expect.poll(() => pending.length).toBe(1);
+  // The stage head changes while the line's page loads; the file is unchanged.
+  // The server sends a file's lines only in diff responses.
+  delete file.lines; delete file.nextOffset;
+  data.stages[0].headRevision = 'c'.repeat(40); data.viewerRevision = 'restacked';
+  await expect(page.locator('.review-update')).toHaveText('Review updated', { timeout: 15000 });
+  await respond(pending[0]);
+  await expect.poll(() => pending.length).toBe(2);
+  await respond(pending[1]);
+  await expect(page.locator('.cinema-diff [data-line-id="l:first:new:1200:shared.js"]')).toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
 test('file search requires a contiguous current filename substring and completes inline', async ({ page }) => {
   const data = fixture();
   const file = (path, kind = 'added', previousPath) => ({ path, kind, previousPath, additions: 3, deletions: 1, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
@@ -4893,6 +4978,23 @@ test('selection matches span the syntax highlighting of a line', async ({ page }
   expect(nodes).toBeGreaterThan(0);
   await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const first', line: 'l:first:new:3:shared.js', code: true, connected: true }]);
   expect(await page.evaluate(() => { const [range] = CSS.highlights.get('sel-hit'); return range.startContainer !== range.endContainer; })).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('selection matches in a row of many highlighted tokens are mapped in linear time', async ({ page }) => {
+  // Each token is its own highlighted span. Mapping each match by scanning the
+  // row's text nodes from the start takes most of a minute for this row; a
+  // single pass takes about a second, so the poll times out only for the
+  // quadratic mapping.
+  const count = 96000;
+  const data = fixture(), lines = data.stages[0].files[0].lines;
+  lines[0].s = 'const first = this;'; lines[2].s = Array(count).fill('this').join(',');
+  const errors = await mount(page, data); await openFile(page);
+  expect(await page.locator('[data-line-id="l:first:new:3:shared.js"] code span').count()).toBeGreaterThanOrEqual(count);
+  // Record the matches instead of painting them, which takes seconds on its own.
+  await page.evaluate(() => { CSS.highlights.set = (name, highlight) => { window.highlighted = highlight.size; return CSS.highlights; }; });
+  await selectInLine(page, 'l:first:new:1:shared.js', 'this');
+  await expect.poll(() => page.evaluate(() => window.highlighted), { timeout: 15000 }).toBe(count);
   expect(errors).toEqual([]);
 });
 
