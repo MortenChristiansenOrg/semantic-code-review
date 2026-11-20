@@ -794,10 +794,9 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   } finally {
     // A pending restack still has to move the branch, so the checkout stays
     // detached until it completes; the worktree remembers which implementation it continues.
-    if (detachedBranch !== null) {
-      if (restackPending(candidate)) rememberImplementation(candidate.worktree, candidate.implementationId);
-      else git(["switch", detachedBranch], { cwd: candidate.worktree });
-    }
+    const pending = restackPending(candidate);
+    if (pending) rememberImplementation(candidate.worktree, candidate.implementationId);
+    else if (detachedBranch !== null) git(["switch", detachedBranch], { cwd: candidate.worktree });
   }
 
   if (detachedStageId) {

@@ -311,6 +311,21 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   assert.equal(stage.change.branch, "semantic-flow/test-implementation/stages/behavior");
 });
 
+test("a sync conflict from a detached stage checkout remembers the implementation to continue", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("shared.txt", "base\n", "Base shared file");
+  initializeImplementation(repository);
+  beginStage(repository, { id: "behavior" });
+  finalizeStage(repository, { id: "behavior", file: "shared.txt", contents: "stage\n" });
+  addUpstream(t, repository).commitFile("shared.txt", "upstream\n", "Conflicting upstream");
+  repository.git("switch", "--detach");
+  const selection = repository.git("rev-parse", "--path-format=absolute", "--git-path", "semantic-review-implementation");
+  fs.rmSync(selection, { force: true });
+
+  expectSyncFailure(repository, /stopped at a conflict in shared\.txt/);
+  assert.equal(fs.readFileSync(selection, "utf8").trim(), "test-implementation");
+});
+
 test("refresh-target fast-forwards a target before new work and keeps local-only states", (t) => {
   const repository = createRepository(t, "semantic-refresh-");
   const refresh = (...args) => JSON.parse(repository.flow("refresh-target", "--json", "--target-branch", "main", ...args));
