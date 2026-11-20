@@ -3070,7 +3070,8 @@ async function countRenders(page) {
     window.renders = 0;
     const query = Element.prototype.querySelectorAll;
     Element.prototype.querySelectorAll = function (selector) {
-      if (selector === 'details.node[open]') window.renders++;
+      // Every render prepares the disclosures it rendered for animation.
+      if (selector === 'details > summary') window.renders++;
       return query.call(this, selector);
     };
   });
@@ -3705,6 +3706,36 @@ test('steps keep their disclosure, focus and open diff across live updates that 
   for (const toggle of await stage.locator('[data-action="toggle-stage"]').all()) await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(two).toHaveJSProperty('open', true);
   await expect(one).toHaveJSProperty('open', false);
+  expect(errors).toEqual([]);
+});
+
+test('the page keeps its scroll position across live updates that grow, reorder and open content', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 600 });
+  const data = fixture(); data.feedback = [thread('t1')];
+  const errors = await mount(page, data, { openStages: { first: true, second: true } });
+  for (const node of ['first-one', 'first-two', 'second-one', 'second-two']) await page.locator(`details[data-node="${node}"] summary`).click();
+  await page.locator('details[data-node="second-one"] .frow-open').click();
+  await expect(page.locator('details[data-node="second-one"] .cinema-diff')).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 900); });
+  const scrollY = () => page.evaluate(() => window.scrollY);
+  await expect.poll(scrollY).toBe(900);
+  // A new step and a longer summary above the view, then stages and steps in a new order.
+  data.stages[0].nodes.unshift({ id: 'first-zero', title: 'Step zero', description: 'A new step. '.repeat(30) });
+  data.stages[0].summary = 'A much longer summary. '.repeat(40);
+  data.viewerRevision = 'grown';
+  await expect(page.locator('details[data-node="first-zero"]')).toHaveCount(1);
+  expect(await scrollY()).toBe(900);
+  data.stages.reverse(); data.stages[0].nodes.reverse(); data.viewerRevision = 'reordered';
+  await expect(page.locator('.stage').first()).toHaveAttribute('data-stage', 'second');
+  await expect(page.locator('.stage[data-stage="second"] details.node').first()).toHaveAttribute('data-node', 'second-two');
+  expect(await scrollY()).toBe(900);
+  // Local renders: the notes panel and coverage open and close.
+  for (const action of ['toggle-notes', 'toggle-notes', 'toggle-coverage', 'toggle-coverage']) {
+    const toggle = page.locator(`.tb-btn[data-action="${action}"]`), expanded = await toggle.getAttribute('aria-expanded');
+    await toggle.evaluate((el) => el.click());
+    await expect(toggle).not.toHaveAttribute('aria-expanded', expanded);
+    expect(await scrollY()).toBe(900);
+  }
   expect(errors).toEqual([]);
 });
 

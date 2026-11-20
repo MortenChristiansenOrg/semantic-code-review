@@ -3817,24 +3817,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     scheduleSelectionRefresh();
   });
 
-  // Preserve disclosures and scroll when live artifact updates change the layout.
-  function captureOpen() {
-    const keys = new Set();
-    app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`));
-    return keys;
-  }
-  function restoreOpen(keys) {
-    if (!keys || !keys.size) return;
-    app.querySelectorAll("details.node").forEach((d) => { if (keys.has(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`)) d.open = true; });
-  }
-  function restoreWindowScroll(left, top) {
-    const root = document.documentElement;
-    const previousBehavior = root.style.scrollBehavior;
-    root.style.scrollBehavior = "auto";
-    window.scrollTo(left, top);
-    root.style.scrollBehavior = previousBehavior;
-  }
-
   // The scrolling parts of an open file's diff.
   const fileScrollers = [".diff-scroll", ".markdown-preview"];
   const _render = render;
@@ -3853,9 +3835,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
         ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
         : null;
     const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-    const open = captureOpen();
-    // Preserve scroll so a re-render never yanks the reviewer's position.
-    const winScroll = { left: window.scrollX, top: window.scrollY };
     // Each open file's diff has its own inner scroll; capture it per file so
     // adding a line note (or any re-render) never resets where the reviewer is
     // looking within the diff.
@@ -3875,7 +3854,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       }
     });
     _render();
-    restoreOpen(open);
     Object.keys(state.activeFiles).forEach((fid) => {
       if (!activeFileNodeId(fid)) return;
       const row = fileRowElement(fid);
@@ -3892,13 +3870,10 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       }
     });
     document.body.classList.toggle("no-scroll", state.notesOpen);
-    if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
-      restoreWindowScroll(winScroll.left, winScroll.top);
     // Moving a node, as a keyed list does when it reorders, blurs it although it survives.
     const focusLost = !document.activeElement || document.activeElement === document.body;
     if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
       focused.focus({ preventScroll: true });
-      if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
     } else if (!focused?.isConnected && focusLost && focusSelector) {
       // A closed panel stays in the page, inert; only a usable control takes focus.
       const replacement = [...app.querySelectorAll(focusSelector)].find((el) => !el.closest("[inert]"));
