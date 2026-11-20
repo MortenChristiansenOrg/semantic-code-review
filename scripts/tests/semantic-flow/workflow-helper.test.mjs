@@ -915,8 +915,15 @@ test("concurrent review services isolate commands and reopen registered worktree
     const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
     assert.equal(responsive.status, 200);
   } finally {
-    // A waiter may briefly hold a file open in it, which delays removal on Windows.
-    fs.rmSync(heldLock, { recursive: true, maxRetries: 10, retryDelay: 50 });
+    // Moved aside before removal: removing it in place could remove a lock a waiter
+    // has just taken at the same path. A waiter may briefly hold a file open in it,
+    // which makes the move fail on Windows, so it is retried.
+    const released = `${heldLock}-released`;
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(heldLock, released); break; }
+      catch (error) { if (attempt >= 40) throw error; await delay(25); }
+    }
+    fs.rmSync(released, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
   assert.equal((await blockedStorage).status, 200);
   const linkedFeedback = module.feedbackDirectory(linked);
