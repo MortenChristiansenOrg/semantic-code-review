@@ -12,7 +12,7 @@ branch immediately below it.
 | `semantic-flow/<implementation-id>/stages/<stage-id>` | Cumulative stage branch |
 | `~/.semantic-flow/reviews/<review-id>/feedback/` | Local open and resolved feedback threads shared by viewer and CLI |
 | `semantic-flow/<implementation-id>/metadata` | Published metadata outside implementation branches |
-| `.semantic-review-history/<implementation-id>/` | Archived artifact after landing |
+| `refs/semantic-review/archive/<implementation-id>` | Archived artifact and its landing record |
 
 The default shared prefix uses `/`, so GitKraken presents the related branches
 as a collapsible folder.
@@ -587,12 +587,35 @@ tool does not assume how reviews are created or merged.
 
 ## 11. Archive after landing
 
-After the chosen remote workflow has landed the code and the target branch is
-current:
+After the chosen remote workflow has landed the code:
 
 ```text
-<semantic-flow> archive
+<semantic-flow> archive [--landed <revision|base..head>]
 ```
+
+Archiving needs no checkout and adds nothing to the target branch. It publishes
+the artifact if the metadata branch does not hold it yet, stores it under
+`refs/semantic-review/archive/<implementation-id>` with a landing record, and
+removes the active artifact. Stage and metadata branches are kept.
+
+Landing is found when the target branch contains the final stage head, as after
+a fast-forward or merge. After a squash or rebase merge it is unknown unless you
+name the landing commit or range with `--landed`; the command may suggest a
+target commit whose changes match, which you confirm before recording it:
+
+```text
+<semantic-flow> implementation archive landing --id <implementation-id> --landed <revision|base..head>
+```
+
+To share the archive, create its annotated tag and push it:
+
+```text
+<semantic-flow> implementation archive share --id <implementation-id>
+git push <remote> refs/tags/semantic-review/archive/<implementation-id>
+```
+
+The tag never moves, so record landing first. Pushing it sends the artifact, its
+evidence and the stage commits.
 
 ## Recovery
 

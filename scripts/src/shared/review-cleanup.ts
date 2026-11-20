@@ -91,7 +91,7 @@ export function inspectReviewStorage(id: string, generation: string): ReviewStor
  * from then on, then gives its implementation a fresh review ID, so nothing
  * reaches the deleted review again and the next review of the implementation
  * starts empty. Only then is the folder removed. When the repository cannot be
- * reached, or an archive's claim holds the old ID, the old ID is marked retired
+ * reached, or its ref keeps changing, the old ID is marked retired
  * instead, and the next registration that finds it in the artifact replaces it. When either step fails, the folder is
  * moved back and nothing has changed. When no snapshot holds the old ID, the mark
  * records that the deletion committed until the folder is removed, since an
@@ -101,7 +101,7 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
     recoverInterruptedDeletion(id);
     if (pathMissing(path.join(reviewDirectory(id), "review.json"))) {
       if (!pathMissing(reviewDirectory(id))) throw new Error("The review's folder has no review record, so it cannot be deleted safely. Open the review from its repository, then retry deletion.");
-      if (!pathMissing(pendingDeletionDirectory(id))) throw new Error("An earlier deletion of this review was interrupted and cannot be settled yet: its repository cannot be reached at the recorded location, or an archive of its implementation is in progress. Run a Semantic Flow command from a worktree of the repository, or finish the archive, then retry deletion.");
+      if (!pathMissing(pendingDeletionDirectory(id))) throw new Error("An earlier deletion of this review was interrupted and cannot be settled yet: its repository cannot be reached at the recorded location. Run a Semantic Flow command from a worktree of the repository, then retry deletion.");
       return { deleted: true }; // Exact retry after completion.
     }
     const preview = inspect(id, generation);
@@ -111,8 +111,8 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
     let retirement: ReturnType<typeof retireReviewId>;
     try {
       retirement = retireReviewId(record);
-      // The old ID may still be stored, or come back with a failed archive: the
-      // next registration that finds it replaces it first. A remote review's ID
+      // The old ID may still be stored: the next registration that finds it
+      // replaces it first. A remote review's ID
       // is held by nothing but its folder.
       if (retirement === "unconfirmed" || retirement === "unreachable") markReviewIdRetired(id);
     } catch (error) {

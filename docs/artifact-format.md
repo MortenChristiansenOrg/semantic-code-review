@@ -211,12 +211,9 @@ object store, not in a worktree:
   `refs/semantic-review/active/`. With several, a command acts on the one whose
   stage or metadata branch is checked out in its worktree, or else the one last
   initialized or begun there.
-- While an implementation is archived, its snapshot moves from the active ref
-  to `refs/semantic-review/archiving/<implementation-id>` until the archive
-  commit exists. A failed archive moves it back; an interrupted one leaves the
-  claim, which keeps the ID from being reused, and commands that find no
-  active implementation explain how to restore it.
-- `refs/semantic-review/archive/` is reserved.
+- Archiving removes the active ref in the same transaction that creates the
+  archive ref (see [Publication and archive](#publication-and-archive)). An
+  archived implementation's ID cannot be used again.
 
 An earlier tooling version kept the active artifact in a worktree's
 `.semantic-review/` folder. Such a folder is reported, not read: an
@@ -314,14 +311,45 @@ It contains one metadata-only commit parented by the final stage head, with the
 artifact in its full form and without working stages. Keeping it separate
 prevents implementation metadata from appearing in implementation diffs.
 
-After the result is landed, the artifact may be archived under:
+Once the work is finished, normally after it landed, the artifact may be
+archived under the private ref:
 
 ```text
-.semantic-review-history/<implementation-id>/.semantic-review/
+refs/semantic-review/archive/<implementation-id>
 ```
 
-Archived artifacts store the full form, so they preserve branch and revision
-provenance even if stage branches are later deleted.
+It points at an archive commit whose only parent is the metadata commit that
+publishes the artifact, and whose tree adds one file, `.semantic-review/landing.json`.
+Archiving adds nothing to the target branch. The archive keeps the published
+artifact in its full form and, through the metadata commit, the final head of
+every stage, so it preserves branch and revision provenance even if stage
+branches are later deleted. Stage heads that earlier snapshots superseded are
+not kept.
+
+The landing record (`landing.schema.json`) names the target branch and the
+final stage head and has one of three outcomes:
+
+| `outcome` | Meaning |
+| --- | --- |
+| `ancestry` | `targetRevision`, a head of the target branch, contains the final stage head. |
+| `supplied` | The reviewer named `landedCommits`: a commit, such as a squash merge, or a Git range `<base>..<head>`, such as a rebase merge. |
+| `unknown` | Neither. |
+
+Matching the implementation's changes against target commits also succeeds when
+the target made the same edits independently, so tooling MAY use it only to
+suggest `landedCommits` to the reviewer. Landing may be recorded after
+archiving: the archive ref then moves to a new archive commit on the same
+metadata commit.
+
+An archive is shared as the annotated tag:
+
+```text
+refs/tags/semantic-review/archive/<implementation-id>
+```
+
+The tag MUST NOT be moved once it was pushed; the reference tooling never moves
+it, so landing is recorded before sharing. Pushing it sends the artifact, its
+evidence and the stage commits, but nothing reaches the target branch.
 
 ## Deliberate exclusions
 
