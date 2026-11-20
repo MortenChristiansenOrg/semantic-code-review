@@ -654,7 +654,11 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   pointer-events: none;
 }
 .tag-pop-float.is-above { transform-origin: bottom left; transform: translateY(6px) scale(.985); }
-.tag-pop-float.is-shown { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+.tag-pop-float.is-shown {
+  opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+  /* Visible at once when shown, so what it describes never reads as hidden. */
+  transition: opacity .16s var(--ease), transform .16s var(--ease), visibility 0s;
+}
 .tag-pop-float .tag-pop-kind { display: block; margin-bottom: 6px; }
 .tag-pop-float strong {
   font-family: var(--sans); font-size: 12px; font-weight: 400; display: block; line-height: 1.32;

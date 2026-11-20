@@ -88,6 +88,8 @@ export function showPop(btn: HTMLElement): void {
   clearTimeout(popTimer);
   if (popOwner === btn && popEl?.classList.contains("is-shown")) return;
   clearPopDescription();
+  // A hint left from the last tooltip would join this description while hidden.
+  if (popHint) popHint.textContent = "";
   popOwner = btn;
   const ids = new Set((btn.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean));
   ids.add("review-tooltip");
@@ -108,12 +110,14 @@ export function scheduleHide(): void { clearTimeout(popTimer); popTimer = setTim
 export function hidePop(): void {
   if (popSticky) return;
   if (popEl) popEl.classList.remove("is-shown", "is-above");
+  if (popHint) popHint.textContent = "";
   clearPopDescription();
   popOwner = null;
 }
 export function forceHidePop(): void {
   popSticky = false;
   if (popEl) popEl.classList.remove("is-shown", "is-above");
+  if (popHint) popHint.textContent = "";
   clearPopDescription();
   popOwner = null;
 }

@@ -635,6 +635,11 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
     el.focus();
     return document.querySelector('#review-tooltip .pop-scroll-hint').textContent;
   })).toBe('');
+  // Nor once the opening frame shows it, before its fade has finished.
+  expect(await label.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
+    const pop = document.querySelector('#review-tooltip');
+    done(pop.querySelector('.pop-scroll-hint').textContent === '' || getComputedStyle(pop).visibility === 'visible');
+  }))))).toBe(true);
   await expect(tooltip).toBeVisible();
   await expect(tooltip.locator('strong')).toHaveText(data.stages[0].rationale);
   // Screen readers still get the full text, without the visible key hint.
@@ -696,6 +701,15 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   expect(await tooltip.evaluate((el) => el.scrollTop)).toBe(0);
 
   // Escape closes it and gives the keys back to the page.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  // Reopening it by pointer leaves no earlier key hint to describe while it is hidden.
+  expect(await next.evaluate((el) => {
+    el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    return document.querySelector('#review-tooltip .pop-scroll-hint').textContent;
+  })).toBe('');
+  await expect(tooltip).toBeVisible();
+  await expect(next).toHaveAccessibleDescription(data.stages[1].rationale);
   await page.keyboard.press('Escape');
   await expect(tooltip).toBeHidden();
   await keyTaken();
