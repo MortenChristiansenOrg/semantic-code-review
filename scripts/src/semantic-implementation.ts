@@ -1683,15 +1683,15 @@ function evidenceInputs(options: Options): EvidenceInput[] {
   });
 }
 
-// Recording writes files before saving and prunes after, so concurrent evidence
-// edits must not interleave: one's rollback could delete the other's capture.
-function withEvidenceLock<T>(workspace: Workspace, write: () => T): T {
+// Evidence edits wait for each other instead of failing as concurrent writes:
+// the artifact is read again once the lock is held.
+function withEvidenceLock<T>(workspace: Workspace, write: (current: Workspace) => T): T {
   const manifest = parseDocument(MANIFEST_SCHEMA_ID, readArtifactJson(workspace.snapshot, "manifest.json"), workspace.snapshot.describe("manifest.json"));
-  return withArtifactLock(workspace, manifest.implementationId, write);
+  return withArtifactLock(workspace, manifest.implementationId, () => write(openWorkspace(workspace.root)));
 }
 
 function recordEvidence(workspace: Workspace, options: Options): void {
-  withEvidenceLock(workspace, () => writeEvidence(workspace, options));
+  withEvidenceLock(workspace, (current) => writeEvidence(current, options));
 }
 
 function writeEvidence(workspace: Workspace, options: Options): void {
@@ -1737,7 +1737,7 @@ function writeEvidence(workspace: Workspace, options: Options): void {
 }
 
 function removeEvidence(workspace: Workspace, options: Options): void {
-  withEvidenceLock(workspace, () => deleteEvidence(workspace, options));
+  withEvidenceLock(workspace, (current) => deleteEvidence(current, options));
 }
 
 function deleteEvidence(workspace: Workspace, options: Options): void {

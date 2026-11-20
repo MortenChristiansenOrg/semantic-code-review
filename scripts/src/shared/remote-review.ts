@@ -128,20 +128,27 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   git(root, ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
   const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
   const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
-  const files = new Map<string, Buffer>();
-  for (const s of projected.stages) files.set(`stages/${s.id}.json`, jsonBytes(s));
-  for (const r of projected.requirements) files.set(`requirements/${r.id}.json`, jsonBytes(r));
-  for (const [file, { files: source, source: sourcePath, sha256 }] of projected.evidenceFiles) {
-    const bytes = source.read(sourcePath);
-    if (sha256Hex(bytes) === sha256) files.set(file, bytes);
+  // Evidence is read one file at a time, as the projection is written.
+  function* files(): Generator<[string, Buffer]> {
+    for (const s of projected.stages) yield [`stages/${s.id}.json`, jsonBytes(s)];
+    for (const r of projected.requirements) yield [`requirements/${r.id}.json`, jsonBytes(r)];
+    for (const [file, { files: source, source: sourcePath, sha256 }] of projected.evidenceFiles) {
+      const bytes = source.read(sourcePath);
+      if (sha256Hex(bytes) === sha256) yield [file, bytes];
+    }
+    yield ["manifest.json", jsonBytes(projected.manifest)];
   }
-  files.set("manifest.json", jsonBytes(projected.manifest));
   const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
+  let checkoutStarted = false;
   try {
-    replaceArtifactFiles(root, files, reviewDirectory(record.id), () => git(root, ["checkout", "--force", "--detach", head]));
+    replaceArtifactFiles(root, files(), reviewDirectory(record.id), () => {
+      checkoutStarted = true;
+      git(root, ["checkout", "--force", "--detach", head]);
+    });
   } catch (error) {
-    // The checkout and the artifact stay on the same revision.
-    if (previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
+    // The checkout and the artifact stay on the same revision. A failure before
+    // the checkout started left both unchanged.
+    if (checkoutStarted && previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
     throw error;
   }
   record.remote = { ...remote, headRevision: head, refreshedAt: new Date().toISOString() };

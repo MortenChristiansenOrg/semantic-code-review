@@ -101,7 +101,7 @@ class FolderFiles implements ArtifactSnapshot {
     const hash = createHash("sha256");
     for (const file of this.list()) {
       const stat = fs.lstatSync(this.absolute(file), { bigint: true });
-      hash.update(`${file}\0${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ino}\0`);
+      hash.update(`${file}\0${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}\0`);
     }
     this.#version = hash.digest("hex");
   }
@@ -329,12 +329,15 @@ export function commitArtifact(
       const type = folder.type(file);
       if (type === "other" && bytes) fail(`${absolute} is not a regular file.`);
       const previous = type === "file" ? folder.read(file) : undefined;
+      if (type === undefined && !bytes) continue;
+      // The restore is recorded before the change, so a change that fails
+      // halfway, such as a removal whose directory cleanup fails, is undone too.
+      if (type !== "other") restores.push(previous ? () => writeFileAtomically(absolute, previous) : () => fs.rmSync(absolute, { force: true }));
       if (bytes) writeFileAtomically(absolute, bytes);
-      else if (type !== undefined) {
+      else {
         fs.rmSync(absolute, { force: true });
         removeEmptyDirectories(folder.directory, absolute);
-      } else continue;
-      if (type !== "other") restores.push(previous ? () => writeFileAtomically(absolute, previous) : () => fs.rmSync(absolute, { force: true }));
+      }
     }
   } catch (error) {
     try { updateRefs(root, reversed(refUpdates)); } catch { /* The write's own error says more. */ }
@@ -364,11 +367,12 @@ export function exportArtifactFiles(files: ArtifactFiles, destination: string): 
 /** Replaces the artifact of a managed review checkout with new files. The
  * change runs in between, while no artifact is present, and the previous
  * artifact is restored when anything fails. */
-export function replaceArtifactFiles(root: string, files: ReadonlyMap<string, Buffer>, scratch: string, change: () => void): void {
+export function replaceArtifactFiles(root: string, files: Iterable<readonly [string, Buffer]>, scratch: string, change: () => void): void {
   const next = path.join(scratch, ".artifact-next");
   const backup = path.join(scratch, ".artifact-previous");
   const active = path.join(root, ACTIVE_DIRECTORY);
   fs.rmSync(next, { recursive: true, force: true });
+  // Each file is written before the next is produced, so large files are not all held at once.
   for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
   fs.rmSync(backup, { recursive: true, force: true });
   if (fs.existsSync(active)) fs.renameSync(active, backup);
@@ -381,7 +385,8 @@ export function replaceArtifactFiles(root: string, files: ReadonlyMap<string, Bu
     if (fs.existsSync(backup)) fs.renameSync(backup, active);
     throw error;
   }
-  fs.rmSync(backup, { recursive: true, force: true });
+  // The new artifact is in place; a backup left behind is removed by the next replacement.
+  try { fs.rmSync(backup, { recursive: true, force: true }); } catch { /* See above. */ }
 }
 
 // --- Artifacts stored in Git trees ------------------------------------------
@@ -453,17 +458,21 @@ class TreeFiles implements ArtifactFiles {
   read(file: string): Buffer {
     const entry = this.entries.get(file);
     if (entry?.type !== "file") fail(`Cannot read ${this.describe(file)}: it is not a regular file.`);
-    let bytes = this.#blobs.get(entry.oid);
-    if (!bytes) {
-      // Captured evidence can be large, even as JSON, so only documents are read together.
-      const isDocument = (name: string) => name.endsWith(".json") && !isBelow(name, "evidence");
-      const documents = isDocument(file)
-        ? [...this.entries].filter(([name, other]) => other.type === "file" && isDocument(name)).map(([, other]) => other.oid)
-        : [entry.oid];
-      for (const [oid, blob] of readBlobs(this.run, documents)) this.#blobs.set(oid, blob);
-      bytes = this.#blobs.get(entry.oid);
+    // Documents are read together on first use and kept. Any other file, such
+    // as captured evidence, can be large, so it is read alone and not kept.
+    const isDocument = (name: string) => name === "manifest.json" ||
+      /^(requirements|stages|\.work\/stages)\/[^/]+\.json$/.test(name);
+    if (!isDocument(file)) {
+      const bytes = readBlobs(this.run, [entry.oid]).get(entry.oid);
       if (!bytes) fail(`Cannot read ${this.describe(file)}.`);
+      return bytes;
     }
+    if (!this.#blobs.has(entry.oid)) {
+      const documents = [...this.entries].filter(([name, other]) => other.type === "file" && isDocument(name)).map(([, other]) => other.oid);
+      for (const [oid, blob] of readBlobs(this.run, documents)) this.#blobs.set(oid, blob);
+    }
+    const bytes = this.#blobs.get(entry.oid);
+    if (!bytes) fail(`Cannot read ${this.describe(file)}.`);
     return bytes;
   }
 
@@ -534,8 +543,8 @@ export function buildArtifactTree(root: string, files: ArtifactFiles, parent: st
   try {
     gitRaw(["read-tree", parent], { cwd: root, env });
     gitRaw(["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", directory], { cwd: root, env });
-    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${directory}/${file}\n`).join("");
-    gitRaw(["update-index", "--add", "--index-info"], { cwd: root, env, input: entries });
+    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${directory}/${file}\0`).join("");
+    gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
     return gitRaw(["write-tree"], { cwd: root, env });
   } finally {
     fs.rmSync(indexFile, { force: true });
