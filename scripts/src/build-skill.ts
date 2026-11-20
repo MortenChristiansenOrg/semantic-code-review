@@ -4,8 +4,14 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { compileApiModules } from "./api-contract-check.js";
 import { cliApis } from "./command-api.js";
+import { MINIMUM_NODE_MAJOR } from "./shared/distribution.js";
 import { parseJson } from "./shared/json.js";
 import { stringField } from "./shared/narrow.js";
+
+// A source update builds with whatever Node.js runs it; npm treats engines as advice.
+if (Number(process.versions.node.split(".")[0]) < MINIMUM_NODE_MAJOR) {
+  throw new Error(`Building the skill requires Node.js ${MINIMUM_NODE_MAJOR} or newer; this is ${process.version}.`);
+}
 
 const scriptsRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
