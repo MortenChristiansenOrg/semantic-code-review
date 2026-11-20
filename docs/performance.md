@@ -143,6 +143,22 @@ each:
 The other measured operations are unchanged: validation already listed each
 stage's commits, and now also counts them.
 
+## Restack by cherry-pick (#177)
+
+Restack replays each stage with `git cherry-pick --no-commit` in a scratch
+worktree instead of applying its patch with `git apply --3way` to a temporary
+index, so renames and moved directories merge as Git merges them. The
+worktree is checked out once per restack, which is what a larger checkout
+pays for. Ten stages restacked onto an advanced target, before (patch replay,
+one-commit stages) and after, Linux, Node 24.20.0, two runs each:
+
+| Operation / fixture | Before | After |
+| --- | ---: | ---: |
+| Restack, small checkout | 139 Git calls, 958–970 ms | 175 Git calls, 1,107–1,123 ms |
+| Restack, 2,000-file checkout | 139 Git calls, 1,013–1,037 ms | 175 Git calls, 1,497–1,750 ms |
+
+A restack in which every stage already sits on its parent creates no worktree.
+
 ## Functional effects and limits
 
 - API references are grouped under `scripts/api/`; `API.d.ts` is the small index
