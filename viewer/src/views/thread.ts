@@ -6,6 +6,7 @@ import { repeat } from "lit-html/directives/repeat.js";
 import { attachmentEditor, attachmentList, type AttachmentEditorView, type AttachmentView } from "./attachments";
 import { commentBody } from "./comment-body";
 import { arrowIcon, caretIcon } from "./icons";
+import { labelHint } from "../tooltips";
 
 /** Where a jump control leads: the element a thread or note is about. */
 export interface JumpView {
@@ -164,9 +165,8 @@ function threadJump(jump: ThreadView["jump"]): TemplateResult | typeof nothing {
 }
 
 /** The header's hint names everything its icons show, and the title's full
- * form where the title shows less. Rendered as data-tooltip, so it follows the
- * thread's state instead of the page converting it once. `clipped` gives the
- * hint for when the title is cut off and so shows less than its full form. */
+ * form where the title shows less. `clipped` gives the hint for when the title
+ * is cut off and so shows less than its full form. */
 function headerTooltip(thread: ThreadView, clipped = false): string {
   const parts = [thread.collapsed ? "Expand thread" : "Collapse thread", thread.kindLabel,
     thread.title && (clipped || thread.title.tooltip !== thread.title.text) ? thread.title.tooltip : "",
@@ -240,6 +240,11 @@ export function threadView(thread: ThreadView): TemplateResult {
     </article>`;
 }
 
+function noteLabel(label: { text: string; title: string }): TemplateResult {
+  const hint = labelHint(label.title, label.text);
+  return html`<strong class="tthread-title" data-clippable data-tooltip=${hint.tooltip || nothing} data-tooltip-clipped=${hint.clipped || nothing}>${label.text}</strong>`;
+}
+
 /** A browser-local note. Drafts can be edited and deleted; a sent note waiting
  * for its thread to load is read-only. */
 export function localNoteView(note: LocalNoteView): TemplateResult {
@@ -248,7 +253,7 @@ export function localNoteView(note: LocalNoteView): TemplateResult {
         <div class="tthread-h tnote-h">
           <span class="tnote-mode">${feedback ? "Feedback" : "Personal"}</span>
           ${feedback ? html`<span class="tnote-state">${note.sent ? "Sent" : note.sending ? "Sending…" : "Draft"}</span>` : nothing}
-          ${note.label ? html`<strong class="tthread-title" title=${note.label.title}>${note.label.text}</strong>` : nothing}${note.jump ? jumpButton(note.jump, "Show note target") : nothing}
+          ${note.label ? noteLabel(note.label) : nothing}${note.jump ? jumpButton(note.jump, "Show note target") : nothing}
         </div>
         ${note.missing ? html`<p class="tthread-stale">${note.missing}</p>` : nothing}
         <div class="tmsg tmsg-user ${feedback && !note.sent ? "tmsg-draft" : ""}"><div class="tmsg-h"><span class="tmsg-who">You</span><time>${note.time}</time>${note.sent || note.sending ? nothing : html`<div class="tnote-act">
@@ -307,6 +312,6 @@ export function fileNotesView(view: ThreadListView): TemplateResult {
 /** The notes on one diff line, shown beneath it. */
 export function lineThreadView(view: ThreadListView): TemplateResult {
   return html`<div class="line-thread" data-thread=${view.id} data-thread-list=${view.listKey}><div class="line-thread-h"><span class="line-thread-where">Line notes</span>${view.entries.length
-      ? html`<button class="line-thread-hide" data-action="line-note" data-id=${view.id} type="button" title="Hide these notes">Hide</button>`
+      ? html`<button class="line-thread-hide" data-action="line-note" data-id=${view.id} type="button" data-tooltip="Hide these notes">Hide</button>`
       : nothing}</div>${threadEntries(view.entries)}${addNote(view)}</div>`;
 }

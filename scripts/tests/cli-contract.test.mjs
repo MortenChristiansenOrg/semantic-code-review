@@ -467,7 +467,6 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.match(editorConfig, /^end_of_line = lf$/m);
   assert.match(editorConfig, /^charset = utf-8$/m);
   assert.match(viewerApp, /t\.anchorStale/);
-  assert.match(viewerApp, /root\.style\.scrollBehavior = "auto"/);
   assert.doesNotMatch(viewerApp, /approveBtn\("node"/);
   assert.match(viewerApp, /nodeApprovalState\(stage, node\)/);
   assert.match(viewerApp, /toggleCinema\(btn\.dataset\.id, btn\.dataset\.nodeId\)/);

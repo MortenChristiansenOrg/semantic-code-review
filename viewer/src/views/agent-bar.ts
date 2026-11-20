@@ -85,7 +85,7 @@ function agentQuestions(questions: readonly AgentQuestionView[], minimized: bool
   if (minimized) return html`<button class="agent-questions-show" data-action="show-agent-questions" type="button">${heading} · Show</button>`;
   return html`<div class="agent-questions" role="region" aria-label="Questions from the agent">
       <div class="agent-questions-h"><p class="agent-question-h">${heading}</p>
-        <button class="tb-btn" data-action="minimize-agent-questions" type="button" title="Hide the question to read the review. It stays waiting for your answer.">Minimize</button></div>
+        <button class="tb-btn" data-action="minimize-agent-questions" type="button" data-tooltip="Hide the question to read the review. It stays waiting for your answer.">Minimize</button></div>
       ${repeat(questions, (question) => question.id, agentQuestion)}</div>`;
 }
 

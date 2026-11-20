@@ -79,7 +79,7 @@ function exportFoot(view: NotesExportView): TemplateResult {
           <button class="notes-export" data-action="export-feedback" type="button" ?disabled=${!view.pending || view.working}>
             ${view.working ? "Sending…" : `Prepare feedback${view.pending ? ` (${view.pending})` : ""}`}
           </button>
-          ${view.autoSend === null ? nothing : html`<label class="notes-auto-send" title=${AUTO_SEND}><input type="checkbox" name="auto-send" .checked=${live(view.autoSend)}><span>Send automatically</span></label>`}
+          ${view.autoSend === null ? nothing : html`<label class="notes-auto-send" data-tooltip=${AUTO_SEND}><input type="checkbox" name="auto-send" .checked=${live(view.autoSend)}><span>Send automatically</span></label>`}
         </div>
         ${view.message ? html`<p class="notes-export-msg ${view.outcome ? `is-${view.outcome}` : ""}">${view.message}</p>`
           : html`<p class="notes-export-hint">${view.hint}</p>`}

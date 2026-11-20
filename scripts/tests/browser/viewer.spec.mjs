@@ -621,6 +621,17 @@ test('valid changed and renamed file approvals remain stale', async ({ page }) =
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
 });
 
+test('loading the viewer moves approvals to renamed files and revokes unfinished stage approvals', async ({ page }) => {
+  const data = fixture();
+  Object.assign(data.stages[0].files[0], { kind: 'renamed', previousPath: 'old.js' });
+  const previous = approvalKey('first', 'first-one', 'old.js');
+  // No snapshot is adopted after loading, as the revision stays the same.
+  await saveAction(page, () => mount(page, data, { approvals: { [previous]: { rev: 'previous', at: 1 }, first: { rev: null, at: 1 } } }),
+    (state) => !state.approvals[previous] && !state.approvals.first && state.approvals[approvalKey('first', 'first-one')]?.rev === 'previous');
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await expect(page.locator('.stage[data-stage="first"]')).not.toHaveClass(/is-approved/);
+});
+
 
 test('unfinished message text survives a reload and failed saves stay visible', async ({ page }) => {
   await mount(page);
@@ -3059,7 +3070,8 @@ async function countRenders(page) {
     window.renders = 0;
     const query = Element.prototype.querySelectorAll;
     Element.prototype.querySelectorAll = function (selector) {
-      if (selector === 'details.node[open]') window.renders++;
+      // Every render prepares the disclosures it rendered for animation.
+      if (selector === 'details > summary') window.renders++;
       return query.call(this, selector);
     };
   });
@@ -3694,6 +3706,36 @@ test('steps keep their disclosure, focus and open diff across live updates that 
   for (const toggle of await stage.locator('[data-action="toggle-stage"]').all()) await expect(toggle).toHaveAttribute('aria-expanded', 'true');
   await expect(two).toHaveJSProperty('open', true);
   await expect(one).toHaveJSProperty('open', false);
+  expect(errors).toEqual([]);
+});
+
+test('the page keeps its scroll position across live updates that grow, reorder and open content', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 600 });
+  const data = fixture(); data.feedback = [thread('t1')];
+  const errors = await mount(page, data, { openStages: { first: true, second: true } });
+  for (const node of ['first-one', 'first-two', 'second-one', 'second-two']) await page.locator(`details[data-node="${node}"] summary`).click();
+  await page.locator('details[data-node="second-one"] .frow-open').click();
+  await expect(page.locator('details[data-node="second-one"] .cinema-diff')).toBeVisible();
+  await page.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 900); });
+  const scrollY = () => page.evaluate(() => window.scrollY);
+  await expect.poll(scrollY).toBe(900);
+  // A new step and a longer summary above the view, then stages and steps in a new order.
+  data.stages[0].nodes.unshift({ id: 'first-zero', title: 'Step zero', description: 'A new step. '.repeat(30) });
+  data.stages[0].summary = 'A much longer summary. '.repeat(40);
+  data.viewerRevision = 'grown';
+  await expect(page.locator('details[data-node="first-zero"]')).toHaveCount(1);
+  expect(await scrollY()).toBe(900);
+  data.stages.reverse(); data.stages[0].nodes.reverse(); data.viewerRevision = 'reordered';
+  await expect(page.locator('.stage').first()).toHaveAttribute('data-stage', 'second');
+  await expect(page.locator('.stage[data-stage="second"] details.node').first()).toHaveAttribute('data-node', 'second-two');
+  expect(await scrollY()).toBe(900);
+  // Local renders: the notes panel and coverage open and close.
+  for (const action of ['toggle-notes', 'toggle-notes', 'toggle-coverage', 'toggle-coverage']) {
+    const toggle = page.locator(`.tb-btn[data-action="${action}"]`), expanded = await toggle.getAttribute('aria-expanded');
+    await toggle.evaluate((el) => el.click());
+    await expect(toggle).not.toHaveAttribute('aria-expanded', expanded);
+    expect(await scrollY()).toBe(900);
+  }
   expect(errors).toEqual([]);
 });
 
@@ -4831,6 +4873,133 @@ test('Markdown preview validates link and image targets and keeps its content ac
   expect(errors).toEqual([]);
 });
 
+test('Markdown titles show in the viewer tooltip, and a link names the titles of the images it holds', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  const content = '[Titled](https://example.com/a "Link title") [Same](https://example.com/b "Same") [Script](javascript:alert(1))\n\n'
+    + '[![Logo](https://example.com/i.png "Image title")](https://example.com/c "Outer title")';
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.markdown-preview');
+  await expect(preview.getByText('Titled', { exact: true })).toBeVisible();
+  await expect(preview.locator('[title]')).toHaveCount(0);
+  const tooltip = page.locator('#review-tooltip');
+  // Every render closes the tooltip, so focus or hover again if a late one, such as a loaded diff, closed it.
+  const shows = (target, text, by = 'focus') => expect(async () => {
+    await page.mouse.move(0, 0); await target.blur(); await target[by]();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(text, { timeout: 1000 });
+    await expect(target).toHaveAttribute('aria-describedby', 'review-tooltip', { timeout: 1000 });
+  }).toPass();
+  await shows(preview.getByText('Titled', { exact: true }), 'Link title');
+  await shows(preview.getByRole('link').filter({ has: page.getByRole('img', { name: 'Logo' }) }), 'Outer title · Image title');
+  // A link without a usable target is no keyboard stop.
+  await shows(preview.getByText('Script', { exact: true }), 'Target unavailable in this preview', 'hover');
+  // A title that repeats the visible text adds nothing while the text shows in full.
+  await page.mouse.move(0, 0);
+  await preview.getByText('Same', { exact: true }).focus();
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  expect(errors).toEqual([]);
+});
+
+test('a Markdown link collects the titles of the parts it holds without copying them again for each part', async ({ page }) => {
+  const errors = await mount(page);
+  // Counts the array elements iterated, as by spreading, while rendering a
+  // link that holds `size` titled images: linear work grows with the size.
+  const iterated = (size) => page.evaluate((size) => {
+    const source = `[${Array.from({ length: size }, (_, i) => `![Image](https://example.com/i.png "Title ${i}")`).join(' ')}](https://example.com/ "Outer")`;
+    const values = Array.prototype[Symbol.iterator];
+    let count = 0;
+    Array.prototype[Symbol.iterator] = function* () { for (const value of values.call(this)) { count++; yield value; } };
+    try { window.renderMarkdownPreview(source, () => null); } finally { Array.prototype[Symbol.iterator] = values; }
+    return count;
+  }, size);
+  const small = await iterated(500), large = await iterated(2000);
+  expect(large).toBeLessThan(small * 6);
+  expect(errors).toEqual([]);
+});
+
+// A table whose title repeats its text, and whose cells need more width than a narrow viewport gives.
+const tableCells = Array.from({ length: 24 }, (_, i) => `Cell${i}`);
+const clippedTableText = tableCells.join('');
+const clippedTableMarkdown = `<table title="${clippedTableText}"><tbody><tr>${tableCells.map((cell) => `<td>${cell}</td>`).join('')}</tr></tbody></table>`;
+async function previewMarkdown(page, content) {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(page.locator('.markdown-preview table')).toBeVisible();
+  return errors;
+}
+const isClipped = (locator) => locator.evaluate((el) => el.scrollWidth > el.clientWidth);
+
+test('a tooltip opened on a cut-off Markdown table closes once the table fits and the pointer leaves', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  const errors = await previewMarkdown(page, clippedTableMarkdown);
+  const table = page.locator('.markdown-preview table'), tooltip = page.locator('#review-tooltip');
+  expect(await isClipped(table)).toBe(true);
+  await expect(async () => {
+    await page.mouse.move(0, 0); await table.hover();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(clippedTableText, { timeout: 1000 });
+  }).toPass();
+  await expect(table).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await page.setViewportSize({ width: 2400, height: 700 });
+  await expect.poll(() => isClipped(table)).toBe(false);
+  // The table now shows its whole text, so its hint ends while the pointer still rests on it.
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(table).not.toHaveAttribute('aria-describedby');
+  await page.mouse.move(0, 0);
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(table).not.toHaveAttribute('aria-describedby');
+  expect(errors).toEqual([]);
+});
+
+test('a Markdown link names the title of a table it holds while the table is cut off', async ({ page }) => {
+  await page.setViewportSize({ width: 800, height: 700 });
+  const errors = await previewMarkdown(page, `<a href="https://example.com/t" title="Link title">\n${clippedTableMarkdown}\n</a>`);
+  const link = page.locator('.markdown-preview a'), table = link.locator('table'), tooltip = page.locator('#review-tooltip');
+  const shows = (target, expected, by) => expect(async () => {
+    await page.mouse.move(0, 0); await page.evaluate(() => document.activeElement?.blur()); await target[by]();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(expected, { timeout: 1000 });
+  }).toPass();
+  expect(await isClipped(table)).toBe(true);
+  await shows(link, `Link title · ${clippedTableText}`, 'focus');
+  await shows(table, clippedTableText, 'hover');
+  // The focused link's open tooltip follows a resize that uncovers the table.
+  await shows(link, `Link title · ${clippedTableText}`, 'focus');
+  await page.setViewportSize({ width: 2400, height: 700 });
+  await expect.poll(() => isClipped(table)).toBe(false);
+  await expect(tooltip).toHaveText('Link title');
+  await expect(tooltip).toHaveClass(/is-shown/);
+  await expect(link).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await shows(link, 'Link title', 'focus');
+  expect(errors).toEqual([]);
+});
+
+test('a cut-off specification reference is a keyboard stop naming it in full', async ({ page }) => {
+  const data = fixture();
+  const reference = 'A plain reference that runs on well past the width the specification gives it '.repeat(3).trim();
+  data.requirements = [
+    { id: 'long', title: 'Long', summary: 'Summary', source: { kind: 'text', reference }, acceptance: [] },
+    { id: 'short', title: 'Short', summary: 'Summary', source: { kind: 'text', reference: 'Ticket 7' }, acceptance: [] },
+  ];
+  const errors = await mount(page, data);
+  for (const spec of await page.locator('.specification summary').all()) await spec.click();
+  const ref = (id) => page.locator(`.specification[data-req-id="${id}"] .req-src-ref`);
+  expect(await ref('long').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await ref('short').hover();
+  await expect(page.locator('#review-tooltip.is-shown')).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await ref('long').focus();
+  await expect(page.locator('#review-tooltip')).toHaveText(reference);
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('dialogs and tooltips show hostile artifact text literally', async ({ page }) => {
   const data = fixture();
   const name = hostileName('file'), path = `src/${name}`;
@@ -5154,5 +5323,16 @@ test('a pinned insight popover stays open while an inline insight highlights its
   await page.mouse.move(0, 0);
   await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
   await expect(tooltip).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('file approval buttons and notes toggles are named for assistive technology', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('named')];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  await expect(one.getByRole('button', { name: 'Approve file' })).toHaveCount(1);
+  await expect(page.locator('.stage[data-stage="first"]').getByRole('button', { name: '1 thread, 1 open' })).toHaveCount(1);
   expect(errors).toEqual([]);
 });

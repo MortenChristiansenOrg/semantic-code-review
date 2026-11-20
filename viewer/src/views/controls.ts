@@ -22,8 +22,6 @@ export function approveButton(view: ApproveButtonView, size = "", subject = ""):
   const of = subject ? ` ${subject}` : "";
   const stale = !view.blocked && view.state === "stale";
   const on = !view.blocked && view.state === "approved";
-  // A tooltip that comes and goes is rendered as data-tooltip: the page turns
-  // titles into tooltips once, so a removed title would leave a stale one.
   const tooltip = view.blocked || (stale ? "Changed since you approved it — click to re-approve" : "");
   return html`<button class="approve ${size} ${stale ? "is-stale" : ""} ${on ? "is-on" : ""}" data-action="approve" data-kind=${view.kind} data-id=${view.id} type="button"
       aria-pressed=${String(on)} aria-label=${view.label ?? nothing} ?disabled=${Boolean(view.blocked)} data-tooltip=${tooltip || nothing}><span class="check">${stale ? "!" : on ? "✓" : ""}</span>${stale ? "Re-approve" : on ? "Approved" : "Approve"}${of}</button>`;
@@ -44,7 +42,7 @@ export interface NotesToggleView {
 export function notesToggle(view: NotesToggleView | null): TemplateResult | typeof nothing {
   if (!view) return nothing;
   const title = `${view.total} thread${view.total === 1 ? "" : "s"}${view.open ? `, ${view.open} open` : ", all resolved"}`;
-  return html`<button class="notes-toggle ${view.expanded ? "is-open" : ""} ${view.open ? "" : "all-resolved"}" data-action="toggle-thread" data-kind=${view.kind} data-id=${view.id} data-stage=${view.stageId} type="button" aria-expanded=${String(view.expanded)} title=${title}>${bubbleIcon}<b>${view.total}</b>${view.open ? html`<i class="nt-dot"></i>` : nothing}</button>`;
+  return html`<button class="notes-toggle ${view.expanded ? "is-open" : ""} ${view.open ? "" : "all-resolved"}" data-action="toggle-thread" data-kind=${view.kind} data-id=${view.id} data-stage=${view.stageId} type="button" aria-expanded=${String(view.expanded)} aria-label=${title} data-tooltip=${title}>${bubbleIcon}<b>${view.total}</b>${view.open ? html`<i class="nt-dot"></i>` : nothing}</button>`;
 }
 
 export interface NoteTargetView {

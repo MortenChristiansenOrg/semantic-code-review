@@ -389,6 +389,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     requirements.splice(0, requirements.length, ...(data.requirements || []));
     allAcceptance.splice(0, allAcceptance.length, ...requirements.flatMap((r) => (r.acceptance || []).map((a) => ({ ...a, reqId: r.id, ref: `${r.id}#${a.id}` }))));
     artifactThreads.splice(0, artifactThreads.length, ...(data.feedback || []));
+    reconcileApprovals();
   }
 
   const INSIGHT = {
@@ -611,6 +612,16 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   const diffIdentity = (entry) => JSON.stringify([fileBaseRevision(entry), entry.stage.headRevision, entry.file.revision,
     fileViewMode(entry.id) === "full" ? "full" : "changes"]);
   const diffRequests = new Map();
+  // An open file shows its diff once loaded. Run after each render, so a file
+  // opened, restored with the review, or adopted without its lines loads the
+  // diff its rendered row now waits for; the load renders again when done.
+  function loadOpenDiffs() {
+    Object.keys(state.activeFiles).forEach((fid) => {
+      const entry = fileById.get(fid);
+      if (!entry || !activeFileNodeId(fid) || !fileRowElement(fid)) return;
+      if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError) ensureFileDiff(entry);
+    });
+  }
   async function ensureFileDiff(entry, offset = 0, force = false, target = null, pageScroll = null) {
     if (!entry) return;
     if (diffRequests.has(entry.id)) {
@@ -1025,10 +1036,17 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
           }
         }
       } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${error.message}`); }
-      finally { approvalOps.delete(id); render(); }
+      finally { approvalOps.delete(id); reconcileApprovals(); render(); }
     });
     approvalOps.set(id, operation); render();
     return operation;
+  }
+  // Approvals follow the implementation they were given for. Run whenever the
+  // implementation or the approvals change: when the viewer starts, adopts a
+  // snapshot, or finishes an approval change.
+  function reconcileApprovals() {
+    retainApprovalRenames();
+    revokeInvalidStageApprovals();
   }
   // Retain each observed rename edge by moving the reference, never the captured endpoint.
   function retainApprovalRenames() {
@@ -2402,7 +2420,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const active = reviewsDialog.contains(document.activeElement) ? document.activeElement : null;
     const action = active?.dataset.action, reviewId = active?.dataset.reviewId;
     const top = reviewsDialog.scrollTop;
-    renderLit(reviewsPanelView(reviewsPanelModel()), reviewsDialog); enhanceTooltips(reviewsDialog);
+    renderLit(reviewsPanelView(reviewsPanelModel()), reviewsDialog);
     reviewsDialog.scrollTop = top;
     // Rendering keeps the focused button unless it became disabled.
     if (action && document.activeElement !== active) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
@@ -2664,8 +2682,89 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const t = labelFor(c.kind, c.id, c.stageId);
     return { text: t, title: t };
   }
+  /* ---- what rendering cannot keep ---------------------------------------
+     lit keeps every element a keyed template still renders, and with it the
+     element's draft text, caret and selection, the open state of a disclosure
+     and the page's scroll position. Two things are lost even so, and so are
+     carried across each render here:
+     - Focus. Moving an element, as a keyed list does when it reorders, blurs
+       it although it survives; a control rendered anew, as a draft's editor is
+       when it moves between its inline thread and the notes panel, starts
+       unfocused. The browser tests for agent answers, Markdown previews, moved
+       file buttons and drafts in the notes panel fail without it.
+     - The scroll of an open file's diff or Markdown preview, which moving or
+       recreating the element around it, as keyed lists do when stages, steps
+       or groups change, resets. The browser test for a Markdown preview whose
+       group is renamed fails without it. */
+  function captureFocus() {
+    const focused = document.activeElement;
+    // A control replaced by the render passes focus to the one that matches
+    // all it is identified by: its data attributes other than tooltips, and
+    // its name and value. A control for something else, such as another
+    // draft's Delete, never matches, so focus then stays where it fell.
+    const selector = focused?.matches?.("[data-action], textarea[name], input[name]")
+      ? [...focused.attributes].filter(({ name }) => name === "name" || name === "value" || name.startsWith("data-") && !name.startsWith("data-tooltip"))
+        .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
+      : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
+        ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
+        : null;
+    // A moved element keeps its caret; a replacement takes the old one's.
+    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+    return { focused, selector, caret };
+  }
+  function restoreFocus({ focused, selector, caret }) {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    if (focused?.isConnected && focused !== document.body && typeof focused.focus === "function") {
+      focused.focus({ preventScroll: true });
+    } else if (!focused?.isConnected && selector) {
+      // A closed panel stays in the page, inert; only a usable control takes focus.
+      const replacement = [...app.querySelectorAll(selector)].find((el) => !el.closest("[inert]"));
+      if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
+    }
+  }
+  // The scrolling parts of an open file's diff. Only a visible scroller reports
+  // its position, and only the same scroller, still visible, gets it back.
+  const fileScrollers = [".diff-scroll", ".markdown-preview"];
+  function captureFileScrolls() {
+    const scrolls = new Map();
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!activeFileNodeId(fid)) return;
+      const holder = fileRowElement(fid)?.nextElementSibling;
+      if (!holder?.classList.contains("cinema-diff")) return;
+      for (const selector of fileScrollers) {
+        const scroller = holder.querySelector(selector);
+        if (scroller?.getClientRects().length) scrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
+      }
+    });
+    return scrolls;
+  }
+  function restoreFileScrolls(scrolls) {
+    if (!scrolls.size) return;
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!activeFileNodeId(fid) || !fileById.has(fid)) return;
+      const holder = cinemaHolder(fid);
+      for (const selector of fileScrollers) {
+        const saved = scrolls.get(`${fid}\0${selector}`);
+        const scroller = saved && holder?.querySelector(selector);
+        if (scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
+      }
+    });
+  }
+
   /* ---- render ----------------------------------------------------------- */
   function render() {
+    // A render may move, replace or change what the open tooltip describes,
+    // so it closes; pointer or focus opens it again on what is there now.
+    forceHidePop();
+    const focus = captureFocus(), scrolls = captureFileScrolls();
+    renderView();
+    restoreFileScrolls(scrolls);
+    document.body.classList.toggle("no-scroll", state.notesOpen);
+    restoreFocus(focus);
+    loadOpenDiffs();
+    resumePendingLazyJump();
+  }
+  function renderView() {
     if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
     selectedThreadLists = threadListsInSelection();
     heldThreadLists = new Set();
@@ -2760,35 +2859,26 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
 
   /* ---- reasoning popover (portal, escapes clipped containers) ----------- */
   let popEl = null, popSticky = false, popOwner = null, popTimer = null;
-  const tooltipOwner = 'button, a, summary, [role="button"], [data-tooltip-focus]';
-  function enhanceTooltips(root = app) {
-    const owners = new Set(root.querySelectorAll("[data-tooltip-hints]"));
-    root.querySelectorAll("[title]").forEach((el) => {
-      const title = el.getAttribute("title");
-      el.removeAttribute("title");
-      delete el.dataset.tooltip;
-      delete el.dataset.tooltipTitle;
-      if (!title) return;
-      const normalized = (value) => value.replace(/\s+/g, " ").trim();
-      const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
-      if (labels.some((label) => normalized(title) === normalized(label.textContent) && label.scrollWidth <= label.clientWidth)) return;
-      el.dataset.tooltip = title;
-      el.dataset.tooltipTitle = title;
-      const owner = el.parentElement?.closest(tooltipOwner);
-      if (owner) { owner.dataset.tooltipHints = ""; owners.add(owner); }
-      else if (el.hasAttribute("data-tooltip-focus")) el.tabIndex = 0;
-    });
-    // Decorative hints share their existing control's keyboard stop. A kept
-    // control may have lost or changed a hint, so its tooltip is rebuilt from
-    // the hints it holds now.
-    owners.forEach((owner) => {
-      const hints = [...owner.querySelectorAll("[data-tooltip-title]")]
-        .filter((hint) => hint.parentElement?.closest(tooltipOwner) === owner)
-        .map((hint) => hint.dataset.tooltipTitle);
-      const tooltip = [...new Set([owner.dataset.tooltipTitle, ...hints].filter(Boolean))].join(" · ");
-      if (tooltip) owner.dataset.tooltip = tooltip;
-      else delete owner.dataset.tooltip;
-    });
+  // Templates render hints as data-tooltip, and as data-tooltip-clipped where
+  // the hint only names a label in full while the layout cuts it off.
+  const TOOLTIP_TARGET = ".tag-face[data-tagpop], [data-tooltip], [data-tooltip-clipped]";
+  /** The plain hint an element shows now; empty when it has none. */
+  function tooltipText(el) {
+    const { tooltip = "", tooltipClipped } = el.dataset;
+    if (!tooltipClipped) return tooltip;
+    const labels = [...(el.matches("[data-clippable]") ? [el] : []), ...el.querySelectorAll("[data-clippable]")];
+    return labels.some((label) => label.scrollWidth > label.clientWidth) ? tooltipClipped : tooltip;
+  }
+  /** The nearest element at `target` with a popover or a hint to show now. */
+  function tooltipTarget(target) {
+    for (let el = target.closest?.(TOOLTIP_TARGET); el; el = el.parentElement?.closest(TOOLTIP_TARGET))
+      if (el.matches(".tag-face[data-tagpop]") || tooltipText(el)) return el;
+    return null;
+  }
+  /** The element whose tooltip leaving `target` closes: the open tooltip's
+   * owner, even once it has no hint to show, or else the target's own. */
+  function leftTooltipTarget(target) {
+    return popOwner?.contains(target) ? popOwner : tooltipTarget(target);
   }
   function clearPopDescription() {
     if (!popOwner) return;
@@ -2810,11 +2900,10 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   function fillPop(btn) {
     const d = btn.dataset;
     const el = ensurePop();
-    if (d.tooltip) {
+    const text = tooltipText(btn);
+    if (text) {
       el.className = "tag-pop-float is-tooltip";
-      // A label the layout cuts off is named in full by the owner's fuller hint.
-      const clipped = d.tooltipClipped && [...btn.querySelectorAll("[data-clippable]")].some((label) => label.scrollWidth > label.clientWidth);
-      renderLit(tooltipView(clipped ? d.tooltipClipped : d.tooltip), el);
+      renderLit(tooltipView(text), el);
       return;
     }
     const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
@@ -2868,21 +2957,21 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     popOwner = null;
   }
   document.addEventListener("pointerover", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (!b) return;
     if (popSticky && popOwner !== b) return;
     showPop(b);
   });
   document.addEventListener("pointerout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = leftTooltipTarget(e.target);
     if (b && !b.contains(e.relatedTarget) && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (b) showPop(b);
   });
   document.addEventListener("focusout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = leftTooltipTarget(e.target);
     if (b && !popSticky) scheduleHide();
   });
   document.addEventListener("click", (e) => {
@@ -2899,7 +2988,17 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     if (!popEl || !popEl.classList.contains("is-shown")) return;
     if (popOwner && popOwner.isConnected) positionPop(popOwner); else forceHidePop();
   }, true);
-  window.addEventListener("resize", () => { if (popOwner && popOwner.isConnected) positionPop(popOwner); });
+  // A resize can uncover or cut off a label, which changes or ends its hint.
+  window.addEventListener("resize", () => {
+    if (!popOwner?.isConnected) return;
+    if (!popOwner.matches(".tag-face[data-tagpop]")) {
+      if (!tooltipText(popOwner)) { forceHidePop(); return; }
+      // Filling resets the tooltip's classes, so it is shown again.
+      fillPop(popOwner);
+      popEl.classList.add("is-shown");
+    }
+    positionPop(popOwner);
+  });
 
   /* ---- events ----------------------------------------------------------- */
   // Keep the hit area stable: highlighting only changes paint, never layout or
@@ -3307,8 +3406,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
-  // The render wrapper preserves scroll and drafts while refreshing every count
-  // and grouped list after a successful mutation.
+  // Rendering keeps scroll and drafts while refreshing every count and grouped
+  // list after a successful mutation.
   async function threadAction(threadId, kind) {
     const thread = artifactThreadById(threadId);
     if (!thread) return;
@@ -3824,99 +3923,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     scheduleSelectionRefresh();
   });
 
-  // Preserve disclosures and scroll when live artifact updates change the layout.
-  function captureOpen() {
-    const keys = new Set();
-    app.querySelectorAll("details.node[open]").forEach((d) => keys.add(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`));
-    return keys;
-  }
-  function restoreOpen(keys) {
-    if (!keys || !keys.size) return;
-    app.querySelectorAll("details.node").forEach((d) => { if (keys.has(`node:${d.closest(".stage")?.dataset.stage}:${d.dataset.node}`)) d.open = true; });
-  }
-  function restoreWindowScroll(left, top) {
-    const root = document.documentElement;
-    const previousBehavior = root.style.scrollBehavior;
-    root.style.scrollBehavior = "auto";
-    window.scrollTo(left, top);
-    root.style.scrollBehavior = previousBehavior;
-  }
-
-  // The scrolling parts of an open file's diff.
-  const fileScrollers = [".diff-scroll", ".markdown-preview"];
-  const _render = render;
-  render = function () {
-    forceHidePop();
-    const focused = document.activeElement;
-    // A control replaced by the render, as a draft's editor is when it moves
-    // between its inline thread and the notes panel, passes focus to the one
-    // that matches all it is identified by: its data attributes other than
-    // tooltips, and its name and value. A control for something else, such as
-    // another draft's Delete, never matches, so focus then stays where it fell.
-    const focusSelector = focused?.matches?.("[data-action], textarea[name], input[name]")
-      ? [...focused.attributes].filter(({ name }) => name === "name" || name === "value" || name.startsWith("data-") && !name.startsWith("data-tooltip"))
-        .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
-      : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
-        ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
-        : null;
-    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-    retainApprovalRenames();
-    revokeInvalidStageApprovals();
-    const open = captureOpen();
-    // Preserve scroll so a re-render never yanks the reviewer's position.
-    const winScroll = { left: window.scrollX, top: window.scrollY };
-    // Each open file's diff has its own inner scroll; capture it per file so
-    // adding a line note (or any re-render) never resets where the reviewer is
-    // looking within the diff.
-    // Moving or recreating an element, as keyed lists do when stages, steps
-    // or groups change, also resets the scroll of the diff or Markdown preview
-    // inside it. Only a visible scroller reports its position, and only the
-    // same scroller, still visible, gets it back after this render.
-    const pendingDiffs = [];
-    const viewScrolls = new Map();
-    Object.keys(state.activeFiles).forEach((fid) => {
-      if (!activeFileNodeId(fid)) return;
-      const holder = fileRowElement(fid)?.nextElementSibling;
-      if (!holder?.classList.contains("cinema-diff")) return;
-      for (const selector of fileScrollers) {
-        const scroller = holder.querySelector(selector);
-        if (scroller?.getClientRects().length) viewScrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
-      }
-    });
-    _render();
-    restoreOpen(open);
-    Object.keys(state.activeFiles).forEach((fid) => {
-      if (!activeFileNodeId(fid)) return;
-      const row = fileRowElement(fid);
-      const entry = fileById.get(fid);
-      if (row && entry) {
-        const holder = cinemaHolder(fid);
-        if (!Array.isArray(entry.file.lines) && !entry.file._diffLoading && !entry.file._diffError)
-          pendingDiffs.push(entry);
-        for (const selector of fileScrollers) {
-          const saved = viewScrolls.get(`${fid}\0${selector}`);
-          const scroller = saved && holder?.querySelector(selector);
-          if (scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
-        }
-      }
-    });
-    document.body.classList.toggle("no-scroll", state.notesOpen);
-    if (window.scrollX !== winScroll.left || window.scrollY !== winScroll.top)
-      restoreWindowScroll(winScroll.left, winScroll.top);
-    // Moving a node, as a keyed list does when it reorders, blurs it although it survives.
-    const focusLost = !document.activeElement || document.activeElement === document.body;
-    if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
-      focused.focus({ preventScroll: true });
-      if (caret && focused.setSelectionRange) focused.setSelectionRange(...caret);
-    } else if (!focused?.isConnected && focusLost && focusSelector) {
-      // A closed panel stays in the page, inert; only a usable control takes focus.
-      const replacement = [...app.querySelectorAll(focusSelector)].find((el) => !el.closest("[inert]"));
-      if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
-    }
-    pendingDiffs.forEach((entry) => ensureFileDiff(entry));
-    enhanceTooltips();
-    resumePendingLazyJump();
-  };
 
   const legacyDrafts = [...state.comments, compose].filter(note => note?.kind === "line" && !note.exported && note.snapshot && !note.snapshot.fileRevision);
   if (legacyDrafts.length && !reviewDeleted) {
@@ -3938,6 +3944,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       .map((comment) => String(comment.createdAt || "")).sort().at(-1) || "";
     persist();
   }
+  reconcileApprovals();
   const recoveredStage = compose && noteStage(compose);
   if (recoveredStage) state.openStages[recoveredStage.id] = true;
   // Follow the preference across tabs only once the viewer is ready to render.

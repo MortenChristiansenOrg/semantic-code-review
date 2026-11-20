@@ -1,5 +1,6 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { joinHintList, labelHint } from './tooltips';
 
 /** Resolves a repository-relative link or image target to a viewer URL, or null when unavailable. */
 export type MarkdownResourceUrl = (target: string, image: boolean) => string | null;
@@ -40,5 +41,34 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
       if (!image) element.setAttribute('aria-disabled', 'true');
     }
   }
+  showTitlesAsTooltips(template.content);
   return template.innerHTML;
 };
+
+// The viewer shows titles in its own tooltip (see tooltips.ts). A link is the
+// keyboard stop for the hints of the parts it holds, such as an image, and also
+// names a part whose title repeats its text while the layout cuts that part off.
+function showTitlesAsTooltips(root: DocumentFragment): void {
+  const titled = [...root.querySelectorAll('[title]')];
+  // Per link, the hints of its parts that always show, and all of them.
+  const parts = new Map<Element, { shown: string[]; all: string[] }>();
+  for (const element of titled) {
+    const owner = element.parentElement?.closest('a');
+    const own = labelHint(element.getAttribute('title') || '', element.textContent || '');
+    const hint = own.tooltip || own.clipped;
+    if (!owner || !hint) continue;
+    let held = parts.get(owner);
+    if (!held) parts.set(owner, held = { shown: [], all: [] });
+    if (own.tooltip) held.shown.push(hint);
+    held.all.push(hint);
+  }
+  for (const element of new Set([...titled, ...parts.keys()])) {
+    const title = element.getAttribute('title') || '';
+    const { shown = [], all = [] } = parts.get(element) || {};
+    const hint = labelHint(title, element.textContent || '', shown);
+    element.removeAttribute('title');
+    if (hint.tooltip) element.setAttribute('data-tooltip', hint.tooltip);
+    if (hint.clipped || all.length > shown.length) element.setAttribute('data-tooltip-clipped', joinHintList([title, ...all]));
+    if (hint.clipped) element.setAttribute('data-clippable', '');
+  }
+}

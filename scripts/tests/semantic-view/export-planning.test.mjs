@@ -664,7 +664,7 @@ test("viewer client refreshes data without reloading the page", () => {
   assert.match(app, /api\.getDiff\(query\)/);
   assert.match(api, /getJson<DiffResponse>\(`\/api\/diff\?\$\{params\}`\)/);
   assert.match(app, /Loading diff…/);
-  assert.match(app, /pendingDiffs\.forEach/);
+  assert.match(app, /loadOpenDiffs\(\);/);
   assert.match(app, /replies: sendable\.map/);
   assert.doesNotMatch(app, /\/api\/feedback\/reply-batch/);
   assert.doesNotMatch(api, /\/api\/feedback\/reply-batch/);
