@@ -101,12 +101,13 @@ const SHARING_VIOLATIONS = ["EPERM", "EACCES", "EBUSY"];
  * replace a file while another process has it open, which readers of review data
  * do briefly, so there the move is retried until the readers are done. */
 export function replaceFile(source: string, destination: string): void {
-  const deadline = Date.now() + REPLACE_WAIT_MS;
+  const deadline = performance.now() + REPLACE_WAIT_MS;
   for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
     try { fs.renameSync(source, destination); return; }
     catch (error) {
-      if (process.platform !== "win32" || !SHARING_VIOLATIONS.includes(errorCode(error) ?? "") || Date.now() >= deadline) throw error;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pause);
+      const remaining = deadline - performance.now();
+      if (process.platform !== "win32" || !SHARING_VIOLATIONS.includes(errorCode(error) ?? "") || remaining <= 0) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(pause, remaining));
     }
   }
 }

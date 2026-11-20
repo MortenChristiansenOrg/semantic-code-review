@@ -422,7 +422,8 @@ test('saving review data reports a replacement that stays refused or fails other
     return Date.now() - started;
   };
   // Only Windows sharing violations are waited out, and only for a bounded time.
-  assert.ok(refused('win32', 'EPERM') >= REPLACE_WAIT_MS);
+  const waited = refused('win32', 'EPERM');
+  assert.ok(waited >= REPLACE_WAIT_MS && waited < REPLACE_WAIT_MS + 1000, String(waited));
   assert.ok(refused('win32', 'ENOSPC') < REPLACE_WAIT_MS);
   assert.ok(refused('linux', 'EPERM') < REPLACE_WAIT_MS);
   assert.equal(fs.readFileSync(file, 'utf8'), '{}\n');
