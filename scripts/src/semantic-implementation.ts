@@ -2117,15 +2117,19 @@ export interface RestackSummary {
  * current head starts there; one rebuilt on an earlier correction below starts
  * at the newest commit it shares with that stage. Either way the correction is
  * not replayed as the stage's own change. Otherwise it starts at its recorded
- * base. When the stage below took in this stage's recorded commit, no start
- * tells their changes apart, so the restack stops before moving anything. */
+ * base. When the stage below took in this stage's recorded commit other than
+ * through the target, no start tells their changes apart, so the restack stops
+ * before moving anything. */
 function rebuiltStageBase(
   root: string,
   stage: { id: string; recordedBase: string; recordedHead: string; head: string },
   below: { id: string; head: string } | undefined,
+  target: string,
 ): string {
   const { recordedBase, recordedHead, head } = stage;
   if (below === undefined || below.head === recordedBase) return recordedBase;
+  // A target that merged this stage passes its commit to a stage rebuilt on it; the stage replays from its recorded base.
+  if (isAncestor(root, recordedHead, target)) return recordedBase;
   if (isAncestor(root, recordedHead, below.head)) {
     fail(`Stage ${below.id} holds the commit ${recordedHead} of stage ${stage.id}, so restack cannot tell their changes apart. No refs were changed. Remove that commit from ${below.id}'s branch, or move its changes into one of the stages.`);
   }
@@ -2250,6 +2254,7 @@ function restackStages(
         workspace.root,
         { id, recordedBase: stage.change.baseRevision, recordedHead: stage.change.headRevision, head: actualHead },
         observedBelow === undefined ? undefined : { id: artifact.manifest.stages[index - 1], head: observedBelow },
+        newBase,
       );
       if (isAncestor(workspace.root, parentHead, actualHead)) {
         nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);

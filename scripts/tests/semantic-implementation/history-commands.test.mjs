@@ -155,6 +155,28 @@ test("restack stops when the stage below took in a stage's commit", (t) => {
   assert.equal(repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"), before);
 });
 
+test("restack onto a target that merged a stage is not refused when a stage below was rebuilt on it", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const prefix = "semantic-flow/test-implementation/stages";
+  beginStage(repository, { id: "a" });
+  finalizeStage(repository, { id: "a", file: "settings.txt", contents: "a\n" });
+  beginStage(repository, { id: "b", dependencies: ["a"] });
+  const b = finalizeStage(repository, { id: "b", file: "b.txt", contents: "b\n" });
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", b);
+  repository.commitFile("settings.txt", "main\n", "Edit the settings on the target");
+  repository.git("rm", "--quiet", "b.txt");
+  repository.git("commit", "--quiet", "-m", "Remove b on the target");
+  // The stage below is rebuilt on the target, which holds stage b's commit.
+  repository.git("switch", `${prefix}/a`);
+  repository.git("reset", "--quiet", "--hard", "main");
+  repository.commitFile("settings.txt", "resolved\n", "Resolve the settings");
+  repository.git("switch", "--detach");
+  repository.semantic("restack", "--base", "main");
+  assert.equal(repository.git("show", `${prefix}/a:settings.txt`), "resolved");
+});
+
 test("restack accepts several edited stage heads in one pass", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
