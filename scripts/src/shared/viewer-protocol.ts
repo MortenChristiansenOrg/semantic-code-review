@@ -422,8 +422,9 @@ export interface InsightReviewRecord {
 export interface DraftSnapshot {
   base: string;
   head: string;
-  /** `StageFile.revision`; legacy line drafts lack it until `/api/draft-snapshots` resolves it. */
-  fileRevision?: string;
+  /** `StageFile.revision`. Legacy line drafts lack it, or hold null, until
+   * `/api/draft-snapshots` resolves it from `base` and `head`. */
+  fileRevision?: string | null;
 }
 
 /** The element a note is attached to. IDs: stage ID, node ID, `f:<stage>:<path>`,
@@ -504,7 +505,9 @@ export interface ReviewState {
   /** A boolean is a legacy approval without a revision; the page discards it. */
   approvals?: Record<string, ApprovalRecord | boolean>;
   insightReviews?: Record<string, InsightReviewRecord>;
+  /** The page keeps an entry it cannot read in its place and saves it back unchanged. */
   comments?: (DraftNote | LegacyDraftNote)[];
+  /** Older viewers saved reply drafts without `attachments`. */
   replyDrafts?: ReplyDraft[];
   editor?: EditorState;
   /** Stage ID -> expanded. */

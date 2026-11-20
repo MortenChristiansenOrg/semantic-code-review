@@ -11,7 +11,7 @@ import { adoptViewerSnapshot } from "./polling";
 import { render } from "./render";
 import { persist, state } from "./state";
 import { labelFor } from "./thread-models";
-import { artifactThreadsForElement, heldThreadCopies, localVisibleForElement, pendingFeedback, pendingReplies, threadCollapsed, threadOps } from "./threads";
+import { artifactThreadsForElement, heldThreadCopies, localVisibleForElement, noteAt, pendingFeedback, pendingReplies, threadCollapsed, threadOps } from "./threads";
 import { errorMessage, failureOf } from "./narrow";
 import type { Note } from "./types";
 import { cssEsc } from "./util";
@@ -95,7 +95,7 @@ export function toggleThreadCollapse(id: string, header: Element | null | undefi
 export async function exportFeedback(only: DraftSelection | null = null): Promise<void> {
   if (exportState.phase === "working") return;
   // A draft open in an editor waits until its edit is saved.
-  const editingNote = compose?.editIndex != null ? state.comments[compose.editIndex] : null;
+  const editingNote = compose?.editIndex != null ? noteAt(compose.editIndex) : null;
   const pending = pendingFeedback().filter(({ c }) => c !== editingNote && (!only || only.notes.has(c)));
   const replies = pendingReplies().filter((draft) => draft.id !== replyEditId && (!only || only.replies.has(draft.id)));
   if (!pending.length && !replies.length) return;

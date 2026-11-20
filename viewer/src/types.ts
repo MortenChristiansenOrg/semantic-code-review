@@ -5,6 +5,7 @@ import type {
   ApprovalRecord, DiffLine, DiffMode, DiffSide, DraftNote, FeedbackTargetKind, FeedbackThread, FileMembership, ImplementationData, InsightReviewRecord,
   LegacyDraftNote, NoteMode, ReplyDraft, ReviewState, Stage, StageFile,
 } from "../../scripts/src/shared/viewer-protocol";
+import type { UnusableNote } from "./stored-state";
 
 /** A diff page asked for while another request for the same file runs. */
 export interface QueuedDiff {
@@ -93,12 +94,20 @@ export interface HeldList {
 /** A note or feedback draft saved in the review state, possibly by an older viewer. */
 export type Note = DraftNote | LegacyDraftNote;
 
+/** An entry of the review state's notes: a note, or a saved value the page keeps but cannot use. */
+export type SavedNote = Note | UnusableNote;
+
+/** The review state's named fields, without the keys older viewers wrote. */
+type ReviewStateFields = { [K in keyof ReviewState as string extends K ? never : K]: ReviewState[K] };
+
 /** The review state as the page holds it: the saved state with every field the
  * page keeps present, and the keys older viewers wrote kept as they were. */
-export interface ViewerState extends ReviewState {
+export interface ViewerState extends Omit<ReviewStateFields, "comments"> {
+  [legacyKey: string]: unknown;
   approvals: Record<string, ApprovalRecord | boolean>;
   insightReviews: Record<string, InsightReviewRecord>;
-  comments: Note[];
+  /** Indexed by `ComposeDraft.editIndex` and sent feedback refs, so entries keep their places. */
+  comments: SavedNote[];
   openStages: Record<string, boolean>;
   openThreads: Record<string, boolean>;
   lastNoteMode: NoteMode;

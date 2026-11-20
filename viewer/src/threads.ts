@@ -5,6 +5,7 @@ import { app } from "./context";
 import { activeFileNodeId, artifactThreadById, artifactThreads, currentFileEntry, fileById, fileByPreviousId, fileKey, insightKey, lineKey, parseLineId } from "./lookups";
 import { render } from "./render";
 import { state } from "./state";
+import { isUsableNote } from "./stored-state";
 import type { FileEntry, HeldList, IndexedNote, Note, NoteTarget, ThreadNote } from "./types";
 
 /** A server action on a thread: running, or its error. */
@@ -23,8 +24,22 @@ export function threadCollapsed(t: FeedbackThread): boolean {
   return t.status === "resolved";
 }
 
+/** The saved notes the page can use, each with its index in `state.comments`. */
+export function indexedNotes(): IndexedNote[] {
+  return state.comments.flatMap((c, i) => isUsableNote(c) ? [{ c, i }] : []);
+}
+/** The saved notes the page can use. */
+export function usableNotes(): Note[] {
+  return state.comments.filter(isUsableNote);
+}
+/** The saved note at `index`, unless there is none or the page cannot use it. */
+export function noteAt(index: number): Note | undefined {
+  const note = state.comments.at(index);
+  return note && isUsableNote(note) ? note : undefined;
+}
+
 export function elementNotes(id: string): IndexedNote[] {
-  return state.comments.map((c, i) => ({ c, i })).filter(({ c }) => {
+  return indexedNotes().filter(({ c }) => {
     if (c.id === id) return true;
     return id.startsWith("f:") && (c.kind === "file" || renamedLineNote(c)) && noteFileEntry(c.kind, c.id)?.id === id;
   });
@@ -50,7 +65,7 @@ export function noteNodeId(note: NoteTarget): string | null {
 }
 export function threadNote(t: FeedbackThread): ThreadNote {
   const target = t.target;
-  const local = state.comments.find((c) => c.threadId === t.id);
+  const local = usableNotes().find((c) => c.threadId === t.id);
   return {
     kind: target.kind,
     id: target.kind === "file" ? fileKey(target.stageId, target.path)
@@ -137,9 +152,7 @@ export function fileNoteCounts(id: string, nodeId: string): { file: number; line
   return counts;
 }
 export function visibleLocalNotes(list: HeldList | null = null): IndexedNote[] {
-  return state.comments
-    .map((c, i) => ({ c, i }))
-    .filter(({ c }) => sentNoteWaiting(c, list));
+  return indexedNotes().filter(({ c }) => sentNoteWaiting(c, list));
 }
 export function activeNoteCount(): number {
   return artifactThreads.filter((t) => t.status !== "resolved").length + visibleLocalNotes().length;
@@ -199,9 +212,7 @@ export function heldThreadCopies(id: string): FeedbackThread[] {
 }
 
 export function pendingFeedback(): IndexedNote[] {
-  return state.comments
-    .map((c, i) => ({ c, i }))
-    .filter(({ c }) => c.mode === "feedback" && !c.exported);
+  return indexedNotes().filter(({ c }) => c.mode === "feedback" && !c.exported);
 }
 // Reviewer replies are held as revisable local drafts (like unsent feedback
 // notes) and only sent to the artifact when the reviewer prepares feedback.

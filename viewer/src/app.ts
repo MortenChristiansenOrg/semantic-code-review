@@ -22,7 +22,7 @@ import { render } from "./render";
 import { initSavedReviews, refreshReviews } from "./saved-reviews";
 import { installSelection } from "./selection";
 import { initState, installUnloadGuard, persist, reviewDeleted, state, type SavedReview } from "./state";
-import { installHeldThreadLists } from "./threads";
+import { installHeldThreadLists, usableNotes } from "./threads";
 import { cssEsc } from "./util";
 
 
@@ -62,7 +62,7 @@ import { cssEsc } from "./util";
   installKeyboard();
   installSelection();
 
-  const drafts: Draft[] = compose ? [...state.comments, compose] : [...state.comments];
+  const drafts: Draft[] = compose ? [...usableNotes(), compose] : usableNotes();
   const legacyDrafts = drafts.filter(note => note.kind === "line" && !("exported" in note && note.exported) && note.snapshot && !note.snapshot.fileRevision);
   if (legacyDrafts.length && !reviewDeleted) {
     try {

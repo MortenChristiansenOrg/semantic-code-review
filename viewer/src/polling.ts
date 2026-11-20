@@ -13,7 +13,7 @@ import { render } from "./render";
 import { markReviewDeleted } from "./saved-reviews";
 import { flushReviewState, reviewDeleted, state } from "./state";
 import { errorMessage, failureOf } from "./narrow";
-import { threadOps } from "./threads";
+import { threadOps, usableNotes } from "./threads";
 
 export function adoptViewerSnapshot(snapshot: Partial<ViewerSnapshot> | undefined): void {
   // A local feedback write changes what the page shows, so no server
@@ -110,7 +110,7 @@ export async function refreshRemote(): Promise<void> {
 }
 
 export function adoptImplementation(next: ImplementationData): void {
-  state.comments.filter((note) => !note.exported).forEach(rememberDraftSnapshot);
+  usableNotes().filter((note) => !note.exported).forEach(rememberDraftSnapshot);
   if (compose) rememberDraftSnapshot(compose);
   const previousFiles = new Map(fileById);
   Object.assign(data, next);

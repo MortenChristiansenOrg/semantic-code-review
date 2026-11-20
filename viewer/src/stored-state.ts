@@ -5,7 +5,7 @@ import type {
   ApprovalRecord, Attachment, ComposeDraft, DraftSnapshot, EditorState, InsightReviewRecord, LegacyDraftNote, ReplyDraft, StoredReviewState,
 } from "../../scripts/src/shared/viewer-protocol";
 import { arrayOf, isBoolean, isNumber, isRecord, isString, oneOf, optional } from "./narrow";
-import type { ViewerState } from "./types";
+import type { Note, ViewerState } from "./types";
 
 export const isNoteKind = oneOf("stage", "node", "file", "line", "insight");
 export const isFeedbackTargetKind = oneOf("specification", "criterion", "stage", "node", "insight", "file", "line");
@@ -17,8 +17,11 @@ function isAttachment(value: unknown): value is Attachment {
 }
 const isAttachments = arrayOf(isAttachment);
 
+const isNullableString = (value: unknown): value is string | null => value === null || isString(value);
+
+// Older line drafts saved a null file revision, which `/api/draft-snapshots` resolves.
 function isSnapshot(value: unknown): value is DraftSnapshot {
-  return isRecord(value) && isString(value.base) && isString(value.head) && optional(isString)(value.fileRevision);
+  return isRecord(value) && isString(value.base) && isString(value.head) && optional(isNullableString)(value.fileRevision);
 }
 
 // Older viewers saved notes with `at` and without a mode; their optional fields are checked as well.
@@ -29,9 +32,22 @@ function isNote(value: unknown): value is LegacyDraftNote {
     optional(isSnapshot)(value.snapshot) && optional(isBoolean)(value.exported) && optional(isString)(value.threadId);
 }
 
-function isReplyDraft(value: unknown): value is ReplyDraft {
-  return isRecord(value) && isString(value.id) && isString(value.threadId) && isString(value.body) &&
-    isAttachments(value.attachments) && isNumber(value.createdAt);
+/** A saved note the page cannot use, such as one the first viewer wrote for a
+ * "step". It keeps its place in the notes, whose indices the open composer and
+ * sent feedback refer to, and is saved back as it was. */
+export class UnusableNote {
+  readonly saved: unknown;
+  constructor(saved: unknown) { this.saved = saved; }
+  toJSON(): unknown { return this.saved; }
+}
+export const isUsableNote = (note: Note | UnusableNote): note is Note => !(note instanceof UnusableNote);
+
+/** A saved reply draft; older viewers saved them without attachments. */
+function replyDraft(value: unknown): ReplyDraft | undefined {
+  if (!isRecord(value) || !isString(value.id) || !isString(value.threadId) || !isString(value.body) ||
+    !optional(isAttachments)(value.attachments) || !isNumber(value.createdAt)) return undefined;
+  const { id, threadId, body, attachments, createdAt } = value;
+  return { ...value, id, threadId, body, attachments: attachments ?? [], createdAt };
 }
 
 function isApproval(value: unknown): value is ApprovalRecord | boolean {
@@ -44,8 +60,6 @@ function isApproval(value: unknown): value is ApprovalRecord | boolean {
 function isInsightReview(value: unknown): value is InsightReviewRecord {
   return isRecord(value) && isString(value.fingerprint) && isNumber(value.at);
 }
-
-const isNullableString = (value: unknown): value is string | null => value === null || isString(value);
 
 /** A composer saved by any viewer; fields an older one did not save take their defaults. */
 function composeDraft(value: unknown): ComposeDraft | null | undefined {
@@ -102,7 +116,7 @@ export function readState(stored: StoredReviewState): ViewerState {
     ...(dismissedTargetRefresh === undefined ? {} : { dismissedTargetRefresh }),
     approvals: mapOf(stored.approvals, isApproval) ?? emptyMap(),
     insightReviews: mapOf(stored.insightReviews, isInsightReview) ?? emptyMap(),
-    comments: Array.isArray(stored.comments) ? stored.comments.filter(isNote) : [],
+    comments: Array.isArray(stored.comments) ? stored.comments.map((note) => isNote(note) ? note : new UnusableNote(note)) : [],
     openStages: mapOf(stored.openStages, isBoolean) ?? emptyMap(),
     openThreads: mapOf(stored.openThreads, isBoolean) ?? emptyMap(),
     lastNoteMode: ifValid(stored.lastNoteMode, isNoteMode) ?? "personal",
@@ -122,6 +136,6 @@ export function readState(stored: StoredReviewState): ViewerState {
     activeFiles: mapOf(stored.activeFiles, (entry): entry is string | null | boolean => entry === null || isString(entry) || isBoolean(entry)) ?? emptyMap(),
     approvalComparisons: mapOf(stored.approvalComparisons, isBoolean) ?? emptyMap(),
     notesFilter: ifValid(stored.notesFilter, oneOf("active", "resolved")) ?? "active",
-    replyDrafts: Array.isArray(stored.replyDrafts) ? stored.replyDrafts.filter(isReplyDraft) : [],
+    replyDrafts: Array.isArray(stored.replyDrafts) ? stored.replyDrafts.flatMap((draft) => replyDraft(draft) ?? []) : [],
   };
 }

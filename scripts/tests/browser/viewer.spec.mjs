@@ -3337,6 +3337,57 @@ for (const changed of [false, true]) test(`existing line drafts resolve their or
   }
 });
 
+const noEditor = { replyTo: null, replyDraft: '', replyEditId: null, replyAttachments: [] };
+
+test('line drafts saved with a null file revision resolve their snapshot and keep their text', async ({ page }) => {
+  const snapshot = { base: 'c'.repeat(40), head: 'd'.repeat(40), fileRevision: null };
+  const note = { kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', body: 'Existing draft', mode: 'feedback', createdAt: 1, snapshot };
+  const compose = { kind: 'line', id: 'l:first:new:3:shared.js', nodeId: 'first-two', editIndex: null, mode: 'feedback', body: 'Unsaved draft', dirty: true, snapshot };
+  await mount(page, fixture(), { comments: [note], editor: { ...noEditor, compose } });
+  const resolved = [];
+  await page.route('**/api/draft-snapshots*', (route) => {
+    const { notes } = route.request().postDataJSON();
+    resolved.push(notes.map((item) => item.body));
+    return route.fulfill({ json: { ok: true, snapshots: notes.map((item) => ({ ...item.snapshot, fileRevision: 'rev' })) } });
+  });
+  await reload(page);
+  await expect.poll(() => resolved).toEqual([['Existing draft', 'Unsaved draft']]);
+  let stored;
+  await saveAction(page, () => showNotes(page), (state) => { stored = state; return state.notesOpen === true; });
+  expect(stored.comments).toEqual([{ ...note, snapshot: { ...snapshot, fileRevision: 'rev' } }]);
+  expect(stored.editor.compose).toMatchObject({ body: 'Unsaved draft', snapshot: { ...snapshot, fileRevision: 'rev' } });
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
+  await expect(page.locator('.side.notes [data-action="jump-to"][data-kind="line"]')).toHaveCount(1);
+});
+
+test('a recovered note edit saves into its own note when an earlier saved note cannot be shown', async ({ page }) => {
+  // The first viewer saved notes on "steps", which the page no longer shows.
+  const step = { kind: 'step', id: 'first-one', body: 'Step note', mode: 'personal', resolved: false };
+  const second = { kind: 'stage', id: 'first', body: 'Second note', mode: 'personal', createdAt: 2 };
+  const third = { kind: 'stage', id: 'second', body: 'Third note', mode: 'personal', createdAt: 3 };
+  const compose = { kind: 'stage', id: 'first', editIndex: 1, mode: 'personal', body: 'Second note, revised', dirty: true };
+  const errors = await mount(page, fixture(), { comments: [step, second, third], notesOpen: true, editor: { ...noEditor, compose } });
+  const panel = page.locator('.side.notes');
+  await expect(panel.locator('.tnote')).toHaveText([/Third note/]);
+  await expect(panel).not.toContainText('Step note');
+  const editor = panel.locator('textarea[name="nc-body"]');
+  await expect(editor).toHaveValue('Second note, revised');
+  let stored;
+  await saveAction(page, () => editor.press('Control+Enter'), (state) => { stored = state; return state.editor?.compose === null; });
+  expect(stored.comments).toEqual([step, { ...second, body: 'Second note, revised', attachments: [] }, third]);
+  await expect(panel.locator('.tnote')).toHaveText([/Second note, revised/, /Third note/]);
+  expect(errors).toEqual([]);
+});
+
+test('reply drafts saved before attachments existed stay listed', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('t')];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'Reply from an older viewer', createdAt: 2 }] });
+  await showNotes(page);
+  await expect(page.locator('.side.notes [data-thread-id="t"] .tmsg-draft')).toContainText('Reply from an older viewer');
+  expect(errors).toEqual([]);
+});
+
 test('interactive review shows agent presence, round progress, unread replies, and agent questions', async ({ page }) => {
   const now = new Date().toISOString();
   const comment = (id, author, body, extra = {}) => ({ id, author, body, attachments: [], createdAt: '2026-10-08T10:00:00Z', ...extra });

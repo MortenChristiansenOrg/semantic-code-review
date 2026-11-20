@@ -17,7 +17,7 @@ import { render } from "./render";
 import { changeReview, manageReviewData, refreshReviews, reviewListBusy, reviewsOpen, setReviewsOpen } from "./saved-reviews";
 import { oneOf } from "./narrow";
 import { persist, state } from "./state";
-import { artifactThreadsForElement, localVisibleForElement, pendingReplies, threadOps, threadStateKey } from "./threads";
+import { artifactThreadsForElement, localVisibleForElement, noteAt, pendingReplies, threadOps, threadStateKey } from "./threads";
 import { showUnreadReplies } from "./unread-replies";
 import { isFeedbackTargetKind, isNoteKind } from "./stored-state";
 import { cssEsc, focusable } from "./util";
@@ -166,7 +166,8 @@ export function installActions(): void {
       if (opening) { render(); }
       else { collapseThenRender(htmlElement((btn.closest("details.node") || btn.closest(".stage") || app).querySelector(`.thread[data-thread="${cssEsc(id)}"]`))); }
     } else if (a === "edit-note") {
-      if (sendingDrafts.has(state.comments[Number(btn.dataset.index)])) return;
+      const note = noteAt(Number(btn.dataset.index));
+      if (note && sendingDrafts.has(note)) return;
       openNoteEdit(Number(btn.dataset.index));
     } else if (a === "markdown-mode") {
       const id = btn.dataset.id;
@@ -201,7 +202,7 @@ export function installActions(): void {
       render();
     } else if (a === "del-note") {
       const idx = Number(btn.dataset.index);
-      const c = state.comments[idx];
+      const c = noteAt(idx);
       if (c && !c.exported && !sendingDrafts.has(c)) {
         state.comments.splice(idx, 1);
         if (compose?.editIndex === idx) setCompose(null);

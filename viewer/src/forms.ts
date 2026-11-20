@@ -6,6 +6,7 @@ import { compose, draftSnapshots, rememberDraftSnapshot, replyAttachments, saveR
 import { render } from "./render";
 import { persist, state } from "./state";
 import { isNoteMode } from "./stored-state";
+import { noteAt } from "./threads";
 import type { Note } from "./types";
 
 
@@ -59,7 +60,7 @@ export function installForms(): void {
       let saved: Note | null = null;
       if (compose) {
         if (compose.editIndex != null) {
-          const c = state.comments[compose.editIndex];
+          const c = noteAt(compose.editIndex);
           if (c && !c.exported && !sendingDrafts.has(c)) { c.body = body; c.mode = mode; c.attachments = structuredClone(compose.attachments || []); saved = c; }
         } else {
           const note: DraftNote = { kind: compose.kind, id: compose.id, body, mode, attachments: structuredClone(compose.attachments || []), createdAt: Date.now() };

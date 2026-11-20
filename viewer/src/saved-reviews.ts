@@ -6,7 +6,7 @@ import { errorMessage, failureOf } from "./narrow";
 import { forceHidePop } from "./popover";
 import { render } from "./render";
 import { deletedElsewhere, flushReviewState, reviewDeleted, savedReview, setReviewDeleted, state, stopSaving } from "./state";
-import { pendingReplies } from "./threads";
+import { pendingReplies, usableNotes } from "./threads";
 import { cssEsc, focusable, reduced, storageSize } from "./util";
 import { reviewCleanupView, reviewsPanelView, type ReviewsPanelView } from "./views/reviews";
 import { render as renderLit } from "lit-html";
@@ -26,7 +26,7 @@ export function markReviewDeleted(external = false): void {
 }
 // Unsent text the reviewer can copy after another tab deleted this review.
 export function deletedReviewText(): string {
-  return deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
+  return deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...usableNotes().filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
 }
 
 export async function manageReviewData(id: string | undefined): Promise<void> {

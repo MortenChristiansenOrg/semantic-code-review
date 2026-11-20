@@ -7,7 +7,7 @@ import { activeFileNodeId, artifactThreadById, fileBaseRevision, fileById, fileO
 import { setPendingHighlight } from "./navigation";
 import { render } from "./render";
 import { persist, state } from "./state";
-import { elementNodeId, noteFileEntry, noteNodeId, threadStateKey } from "./threads";
+import { elementNodeId, noteAt, noteFileEntry, noteNodeId, threadStateKey, usableNotes } from "./threads";
 import type { Note, NoteTarget, ViewerStage } from "./types";
 
 /** A draft: a saved note or the open composer. */
@@ -59,7 +59,7 @@ export function setReplyDraft(text: string): void { replyDraft = text; replyDirt
 
 export function captureEditor(): void {
   state.editor = { compose, replyTo, replyDraft, replyEditId, replyAttachments: replyTo ? replyAttachments : [] };
-  for (const note of [...state.comments, compose].filter((item) => item !== null)) {
+  for (const note of [...usableNotes(), compose].filter((item) => item !== null)) {
     const snapshot = draftSnapshots.get(note);
     if (snapshot) note.snapshot = snapshot;
   }
@@ -123,7 +123,7 @@ export function openComment(kind: NoteKind, id: string, stageId?: string): void 
 
 // Edit a browser-local draft note in place. Exported notes are immutable.
 export function openNoteEdit(index: number): void {
-  const c = state.comments[index];
+  const c = noteAt(index);
   if (!c || c.exported) return;
   replyTo = null; replyEditId = null; replyDraft = ""; replyAttachments = []; replyDirty = false;
   compose = {
