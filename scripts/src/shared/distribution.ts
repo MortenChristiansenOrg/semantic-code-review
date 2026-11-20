@@ -39,11 +39,13 @@ function requiredFiles(files: Map<string, Buffer>): void {
     "scripts/API.d.ts", "scripts/API.full.d.ts",
     "scripts/semantic-flow.mjs",
     ...["shared", "implementation", "stages", "history", "feedback", "workflow"].map((name) => `scripts/api/${name}.d.ts`),
-    ...["index.html", "boot.js", "app.js", "styles.css", "favicon.svg"].map((name) => `viewer/${name}`),
+    ...["index.html", "app.js", "styles.css", "favicon.svg"].map((name) => `viewer/${name}`),
     ...["common", "manifest", "specification", "stage"].map((name) => `references/schema/${name}.schema.json`),
     ...["common", "manifest", "thread"].map((name) => `references/feedback-schema/${name}.schema.json`),
     "references/work-stage.schema.json", "references/stage-organization.schema.json"];
   for (const match of (files.get("SKILL.md")?.toString() ?? "").matchAll(/`(commands\/[^`]+\.md)`/g)) required.push(match[1]);
+  // Releases before viewer access control have no start script; a page that loads one needs it.
+  if (/<script\s+src="boot\.js"/.test(files.get("viewer/index.html")?.toString() ?? "")) required.push("viewer/boot.js");
   for (const name of required) if (!files.has(name)) throw new Error(`Release is missing ${name}.`);
 }
 

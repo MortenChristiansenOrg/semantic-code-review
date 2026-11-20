@@ -181,6 +181,39 @@ for (const skillVersion of ['0.2.0', undefined]) {
   });
 }
 
+test('the page asks for a fresh link only after the server stays unreachable', async ({ page }) => {
+  await page.clock.install();
+  await mount(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+  let failures = 0;
+  await page.route('http://localhost/api/revision**', (route) => { failures += 1; return route.abort('connectionrefused'); });
+  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(() => failures).toBe(count); };
+  await poll(1);
+  // A background tab stops polling: a failure long after the last one starts a new outage.
+  await page.evaluate(() => {
+    window.testHidden = true;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.testHidden });
+  });
+  await page.clock.runFor(10_000);
+  expect(failures).toBe(1);
+  await page.evaluate(() => { window.testHidden = false; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => failures).toBe(2);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  for (let count = 3; count <= 6; count++) await poll(count);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  // Five seconds of failures in a row.
+  await poll(7);
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.');
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+});
+
+test('a poll that never answers counts as the server being unreachable', async ({ page }) => {
+  await mount(page);
+  // The page polls every second; each poll gives up after three seconds.
+  await page.route('http://localhost/api/revision**', () => {});
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.', { timeout: 20_000 });
+});
+
 test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {
   const name = '"><img src=x onerror="window.injected=1">\r.js';
   const path = `src/${name}`;

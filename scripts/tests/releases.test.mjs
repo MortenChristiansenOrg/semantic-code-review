@@ -31,7 +31,8 @@ function temp(t) {
 function distribution(version = '0.2.0', extraFiles = {}) {
   const root = path.resolve(scriptsDirectory, '..');
   const files = new Map(skillFiles(root).map((name) => [name, fs.readFileSync(path.join(root, name))]));
-  for (const [name, content] of Object.entries(extraFiles)) files.set(name, Buffer.from(content));
+  // A null content removes a file the current skill has.
+  for (const [name, content] of Object.entries(extraFiles)) content === null ? files.delete(name) : files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
   const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: 20,
@@ -132,6 +133,10 @@ test('archive validation rejects wrong versions, missing files, changed contents
   const original = distribution();
   assert.throws(() => validateDistribution(original, '0.3.0'), /does not match/);
   assert.throws(() => validateDistribution(original, '0.2.0', 18), /requires Node/);
+  // A script the page loads must ship with it; older pages load no start script.
+  assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null }), '0.2.0'), /missing viewer\/boot\.js/);
+  const olderPage = '<script src="implementation-data.js"></script>\n<script src="app.js"></script>\n';
+  validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': olderPage }), '0.2.0');
   for (const mutate of [
     (files) => files.delete('viewer/app.js'),
     (files) => files.set('scripts/semantic-flow.mjs', Buffer.from('tampered')),
@@ -287,7 +292,9 @@ test('release downgrade restarts the viewer with the executable the older releas
 fs.writeFileSync(process.env.SEMANTIC_FLOW_TEST_VIEWER_ARGS, JSON.stringify(process.argv.slice(2)));
 process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: process.argv[3], processId: process.pid, implementation: { stageCount: 0, fileCount: 0 } }, () => process.disconnect());
 `;
-  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer } });
+  // Releases before viewer access control have no start script and load the review data by script.
+  const olderPage = '<!doctype html>\n<div id="app"></div>\n<script src="implementation-data.js"></script>\n<script src="markdown.js"></script>\n<script src="app.js"></script>\n';
+  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer, 'viewer/index.html': olderPage, 'viewer/boot.js': null } });
   initializeImplementation(fixture.repository);
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');

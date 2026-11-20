@@ -23,6 +23,7 @@ import { factCache, withValidationContext } from "./shared/validation-context.js
 import { SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import {
   KEY_HEADER,
+  probeViewer,
   probeViewerAccess,
   requestLaunchCode,
   stopViewerAndWait,
@@ -32,7 +33,7 @@ import {
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
 import {
-  COMMON_HEADERS, createViewerAccess, FRESH_LINK_MESSAGE, LAUNCH_CODE_LIFETIME_MS, launchUrl, ownApiCaller, ownHost, PAGE_HEADERS,
+  browserOpener, COMMON_HEADERS, createViewerAccess, FRESH_LINK_MESSAGE, LAUNCH_CODE_LIFETIME_MS, launchUrl, opensLaunchUrl, originFormTarget, ownApiCaller, ownHost, PAGE_HEADERS,
   sameSecret, sweepLaunchFiles, writeLaunchFile, type ViewerAccess,
 } from "./shared/viewer-access.js";
 
@@ -62,7 +63,7 @@ import { git } from "./shared/git.js";
 import { readUnvalidatedImplementation } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
-import type { ReviewRecord } from "./shared/review-store.js";
+import type { ReviewRecord, ViewerRecord } from "./shared/review-store.js";
 import { assertKnownOptions, option, parseArguments } from "./shared/arguments.js";
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 import type * as Wire from "./shared/viewer-protocol.js";
@@ -2283,12 +2284,11 @@ function serveViewer({
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // Only requests addressed to this viewer by its own name are served.
     if (!ownHost(request, port)) { plain(response, 421, "Misdirected request."); return; }
-    const target = request.url ?? "";
+    const target = request.url;
+    if (!originFormTarget(target)) { plain(response, 400, "Bad request."); return; }
     let url: URL;
-    try {
-      if (!target.startsWith("/") || target.startsWith("//")) throw new Error("Invalid request target.");
-      url = new URL(target, `http://${VIEWER_HOST}:${port}`);
-    } catch { plain(response, 400, "Bad request."); return; }
+    try { url = new URL(target, `http://${VIEWER_HOST}:${port}`); }
+    catch { plain(response, 400, "Bad request."); return; }
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const param = (key: string) => url.searchParams.get(key);
     const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) =>
@@ -2650,8 +2650,6 @@ function serveViewer({
         }
       }, 1000);
       retirement.unref(); httpServer.once("close", () => clearInterval(retirement));
-      // Launch files of an earlier viewer of this review hold codes it alone knew.
-      sweepLaunchFiles(context.reviewId, 0);
       const expiry = setInterval(() => { access.expire(); sweepLaunchFiles(context.reviewId, LAUNCH_CODE_LIFETIME_MS); }, 60_000);
       expiry.unref(); httpServer.once("close", () => clearInterval(expiry));
       resolve(httpServer);
@@ -2869,41 +2867,69 @@ const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const browserOpening = () => !process.env.SEMANTIC_VIEW_NO_OPEN;
 
-/** Opens the viewer in the browser with a launch code of its own, through a
- * private launch file, so the code never appears in a process argument. */
+/** Opens the viewer in the browser with a launch code of its own. Where other
+ * users can list process arguments, the browser opens a private launch file that
+ * forwards to the launch URL, so the code never appears in an argument. */
 function openBrowser(reviewId: string, port: number, code: string) {
   try {
-    const file = writeLaunchFile(reviewId, port, code);
-    if (process.platform === "win32") {
-      execFileSync("cmd", ["/c", "start", "", file], { stdio: "ignore", windowsHide: true });
-    } else if (process.platform === "darwin") {
-      execFileSync("open", [file], { stdio: "ignore", windowsHide: true });
-    } else {
-      execFileSync("xdg-open", [file], { stdio: "ignore", windowsHide: true });
-    }
+    const target = opensLaunchUrl() ? launchUrl(port, code) : writeLaunchFile(reviewId, port, code);
+    const [command, args] = browserOpener(target);
+    execFileSync(command, args, { stdio: "ignore", windowsHide: true });
   } catch {
     // Non-fatal: the URL is printed for manual use.
   }
 }
 
-/** Reads the review record until it names the viewer on `port` with a key that
- * viewer accepts, for about two seconds: a concurrent launch of the same review
- * records its key right after it starts listening. */
-async function identifyOccupant(context: ReviewContext, port: number): Promise<ViewerIdentity | null> {
-  const recordedKey = () => {
-    try { const viewer = readReview(context.reviewId).viewer; return viewer?.port === port ? viewer.key : undefined; }
+/** Whether a process is running. */
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return errorCode(error) === "EPERM"; }
+}
+
+/** The viewer on `port`, read with the key this review records for that port.
+ * A viewer that refuses the key is not this review's, except while this review's
+ * record names no viewer on that port: a concurrent launch of the same review
+ * records its key right after it starts listening, so the record is read again
+ * for about two seconds. A server that is no keyed viewer, and a viewer on a port
+ * that another review records for its running viewer, are foreign at once. */
+export async function identifyOccupant(context: Pick<ReviewContext, "reviewId">, port: number): Promise<ViewerIdentity | null> {
+  const recorded = () => {
+    try { const viewer = readReview(context.reviewId).viewer; return viewer?.port === port ? viewer : undefined; }
     catch { return undefined; }
   };
-  let key = recordedKey();
-  let probe = await probeViewerAccess(port, { key });
-  for (const deadline = Date.now() + 2000; probe.refused && Date.now() < deadline;) {
+  const viewer = recorded();
+  const probe = await probeViewerAccess(port, { key: viewer?.key });
+  if (!probe.refused || viewer) return probe.identity;
+  let otherReview = false;
+  try { otherReview = listReviews().some((review) => review.id !== context.reviewId && review.viewer?.port === port && processAlive(review.viewer.processId)); }
+  catch { /* Unreadable records name no viewer. */ }
+  if (otherReview) return null;
+  for (const deadline = Date.now() + 2000; Date.now() < deadline;) {
     await delay(100);
-    const next = recordedKey();
-    if (next === key) continue;
-    key = next;
-    probe = await probeViewerAccess(port, { key });
+    const next = recorded();
+    if (next) return next.key ? probeViewer(port, { key: next.key }) : null;
   }
-  return probe.identity;
+  return null;
+}
+
+/** Records this process as the review's viewer. When the record already names a
+ * running viewer of the same review on another port that `reusable` accepts, a
+ * concurrent launch got there first: that viewer is returned and the record is
+ * left alone. */
+export async function claimViewerRecord<Running extends ViewerIdentity>(
+  context: Pick<ReviewContext, "reviewId" | "generation">,
+  viewer: ViewerRecord,
+  reusable: (occupant: ViewerIdentity | null) => occupant is Running,
+): Promise<Running | null> {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const current = readReview(context.reviewId).viewer ?? null;
+    if (current && current.port !== viewer.port && current.key && processAlive(current.processId)) {
+      const occupant = await probeViewer(current.port, { key: current.key });
+      if (reusable(occupant)) return occupant;
+    }
+    if (recordViewer(context.reviewId, context.generation, viewer, current)) return null;
+  }
+  throw new Error("The review's viewer record kept changing during startup. Launch the review again.");
 }
 
 function implementationSummary(repoRoot: string) {
@@ -2997,25 +3023,32 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
   // A viewer of this review is recognized by the review, not by the worktree it
   // serves: one serving a worktree the review no longer records is replaced.
   const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome();
+  const reusable = (occupant: ViewerIdentity | null): occupant is ViewerIdentity & { key: string; port: number } =>
+    matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.repositoryRoot === context.repositoryRoot && Boolean(occupant.key) && Boolean(occupant.port);
+  /** Hands the launch to a running viewer of this review. */
+  const reuse = async ({ port: running, key, processId }: ViewerIdentity & { key: string; port: number }) => {
+    // The printed URL and the opened browser each get their own code, so
+    // opening the browser does not spend the printed link.
+    const code = await requestLaunchCode(running, key);
+    if (!code) throw new Error(`The viewer running at http://${VIEWER_HOST}:${running}/ did not provide a link. Launch the review again.`);
+    const url = launchUrl(running, code);
+    // `key` is read by tests that start `viewer serve` directly (workflow-helper.test.mjs).
+    notifyLauncher({ type: "ready", url, key, repositoryRoot: repoRoot, reviewId: context.reviewId, processId, implementation });
+    console.log(`Reusing semantic review viewer: ${url}`);
+    if (browserOpening()) {
+      const browserCode = await requestLaunchCode(running, key);
+      if (browserCode) openBrowser(context.reviewId, running, browserCode);
+    }
+  };
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {
       server = await serveViewer({ viewerDir, port, access, repoRoot, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
       if (!["EADDRINUSE", "EACCES"].includes(errorCode(error) ?? "")) throw error;
       const occupant = await identifyOccupant(context, port);
-      if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.repositoryRoot === context.repositoryRoot && occupant.key) {
+      if (reusable(occupant)) {
         await dataSource.close();
-        // The printed URL and the opened browser each get their own code, so
-        // opening the browser does not spend the printed link.
-        const code = await requestLaunchCode(port, occupant.key);
-        if (!code) throw new Error(`The viewer running at http://${VIEWER_HOST}:${port}/ did not provide a link. Launch the review again.`);
-        const url = launchUrl(port, code);
-        notifyLauncher({ type: "ready", url, key: occupant.key, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation });
-        console.log(`Reusing semantic review viewer: ${url}`);
-        if (browserOpening()) {
-          const browserCode = await requestLaunchCode(port, occupant.key);
-          if (browserCode) openBrowser(context.reviewId, port, browserCode);
-        }
+        await reuse(occupant);
         return;
       }
       if (process.env.SEMANTIC_VIEW_NO_REPLACE) throw new Error(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
@@ -3036,7 +3069,24 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
     }
   }
   if (!server) throw new Error("No viewer port could be allocated. Try launching the review again.");
-  recordViewer(context.reviewId, context.generation, { port, processId: process.pid, viewerVersion, skillDirectory: path.resolve(scriptDir, ".."), key: access.key });
+  const listening: http.Server = server;
+  const close = () => new Promise<void>((resolve) => { listening.close(() => resolve()); listening.closeAllConnections(); });
+  let running;
+  try {
+    running = await claimViewerRecord(context, { port, processId: process.pid, viewerVersion, skillDirectory: path.resolve(scriptDir, ".."), key: access.key }, reusable);
+  } catch (error) {
+    // Without its record no launch finds this viewer: stop listening.
+    await close();
+    throw error;
+  }
+  if (running) {
+    await close();
+    await dataSource.close();
+    await reuse(running);
+    return;
+  }
+  // Launch files of an earlier viewer of this review hold codes it alone knew.
+  sweepLaunchFiles(context.reviewId, 0);
   const url = launchUrl(port, access.mintCode());
   console.log(`Semantic review viewer: ${url}`);
   console.log(`Project: ${repoRoot}`);
@@ -3047,6 +3097,7 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
   notifyLauncher({
     type: "ready",
     url,
+    // Read by tests that start `viewer serve` directly (workflow-helper.test.mjs).
     key: access.key,
     repositoryRoot: repoRoot,
     processId: process.pid,

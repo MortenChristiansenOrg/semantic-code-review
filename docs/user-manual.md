@@ -400,6 +400,15 @@ tab keeps working across reloads while its viewer runs. A new tab, a bookmark,
 or a tab left open while the viewer restarted (for example after an update)
 shows that the page needs a fresh link: run the review again to get one.
 
+On Linux and macOS the review command opens the browser through a private file
+in `~/.semantic-flow` that forwards to the link, because other users of the
+machine can see the arguments of the program that opens the browser. On Windows
+it opens the link directly. Set `SEMANTIC_VIEW_OPEN_URL=1` to open the link
+directly on any platform, for example when the browser is sandboxed and cannot
+read `~/.semantic-flow` (such as Firefox installed as a snap), or when `.html`
+files open in an editor instead of the browser. The link then appears in that
+program's arguments while it starts.
+
 ## 7. Send feedback
 
 In **Review queue**, add notes containing change instructions or questions.

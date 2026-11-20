@@ -3,7 +3,7 @@
    carries the review scope from here, so request credentials have one home:
    requests send the viewer key in a header, and only the URLs of evidence,
    attachments and raw file content carry the read token. */
-import { showFreshLinkNotice, storeAccess, type Access } from "./access";
+import { currentAccess, loseAccess, type Access } from "./access";
 import type {
   AgentControlResponse,
   AgentRespondRequest,
@@ -64,20 +64,24 @@ export function configureApi(scope: { reviewId?: string; generation?: string }):
 const KEY_HEADER = "x-semantic-flow-key";
 /** How long the server may stay unreachable before the page asks for a fresh link. */
 const UNREACHABLE_MS = 5000;
+/** Failures further apart than this belong to separate outages: the page polls
+ * every second, and a poll fails at the latest after its deadline. */
+const OUTAGE_GAP_MS = 5000;
+/** How long a poll for a new revision may wait for its answer. */
+const POLL_DEADLINE_MS = 3000;
+/** How long loading a changed implementation may take. */
+const IMPLEMENTATION_DEADLINE_MS = 30_000;
 
-let access: Access | null | undefined;
-const currentAccess = (): Access | null => access === undefined ? (access = window.SEMANTIC_ACCESS ?? null) : access;
-/** Sets the key and read token later requests use. */
-export function configureAccess(next: Access | null): void { access = next; }
-
-let accessLost = false;
-let unreachableSince = 0;
-/** Stops every later request and shows how to get a fresh link. */
-export function loseAccess(): void {
-  if (accessLost) return;
-  accessLost = true;
-  storeAccess(null);
-  showFreshLinkNotice();
+let outageSince = 0;
+let lastFailure = 0;
+/** Counts a request that did not reach the server. A viewer that stopped, for
+ * example for an update, comes back with new secrets, so an outage that lasts
+ * asks for a fresh link. */
+function noteUnreachable(used: Access | null): void {
+  const now = Date.now();
+  if (!outageSince || now - lastFailure > OUTAGE_GAP_MS) outageSince = now;
+  lastFailure = now;
+  if (now - outageSince >= UNREACHABLE_MS) loseAccess(used);
 }
 
 /** Whether a response is the server's refusal of a missing or outdated key. */
@@ -126,29 +130,24 @@ function apiUrl(path: string, query: Query = {}): URL {
   return scoped(url);
 }
 
-/** Issues one request. Nothing else in the page calls fetch. */
+/** Issues one request with the page's key. Nothing else in the page calls fetch,
+ * except the launch code exchange below. */
 async function request(input: string, init: RequestInit = {}): Promise<Response> {
-  if (accessLost) throw new Error("This review page needs a fresh link.");
+  const current = currentAccess();
+  if (!current) throw new Error("This review page needs a fresh link.");
   const url = scoped(new URL(input, window.location.href));
   const headers = new Headers(init.headers);
-  const current = currentAccess();
-  if (current && url.origin === window.location.origin) headers.set(KEY_HEADER, current.key);
+  if (url.origin === window.location.origin) headers.set(KEY_HEADER, current.key);
   let response: Response;
   try { response = await window.fetch(url.href, { ...init, headers }); }
-  catch (error) {
-    // A viewer that stopped, for example for an update, comes back with new secrets.
-    const now = Date.now();
-    if (!unreachableSince) unreachableSince = now;
-    else if (now - unreachableSince >= UNREACHABLE_MS) loseAccess();
-    throw error;
-  }
-  unreachableSince = 0;
-  if (await keyRefused(response)) loseAccess();
+  catch (error) { noteUnreachable(current); throw error; }
+  outageSince = 0;
+  if (await keyRefused(response)) loseAccess(current);
   return response;
 }
 
-function getJson<T>(input: string): Promise<JsonResponse<T>> {
-  return request(input, { cache: "no-store" }) as Promise<JsonResponse<T>>;
+function getJson<T>(input: string, deadlineMs?: number): Promise<JsonResponse<T>> {
+  return request(input, { cache: "no-store", signal: deadlineMs ? AbortSignal.timeout(deadlineMs) : undefined }) as Promise<JsonResponse<T>>;
 }
 
 // Each builder below rebuilds its body field by field as a Body of the protocol
@@ -160,16 +159,19 @@ function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
 }
 
 /* ---- page start -------------------------------------------------------- */
-export const startSession = ({ code }: SessionRequest) =>
-  postJson<SessionResponse>("/api/session", { code } satisfies Body<SessionRequest>);
+/** Exchanges a launch code for the secrets. It needs no key, and its refusal of a
+ * spent or expired code leaves the access the page has alone. */
+export const startSession = ({ code }: SessionRequest) => window.fetch(new URL("/api/session", window.location.href).href, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code } satisfies Body<SessionRequest>),
+}) as Promise<JsonResponse<SessionResponse>>;
 export const getBootstrap = () => getJson<BootstrapResponse>("/api/bootstrap");
 
 /* ---- review session ---------------------------------------------------- */
 export const getReviewState = () => getJson<ReviewStateResponse>("/api/review-state");
 export const saveReviewState = ({ reviewId, generation, changes, saveId }: ReviewStatePatchRequest) =>
   postJson<ReviewStateResponse>("/api/review-state", { reviewId, generation, changes, saveId } satisfies Body<ReviewStatePatchRequest>);
-export const getRevision = () => getJson<RevisionResponse>("/api/revision");
-export const getImplementation = () => getJson<ImplementationResponse>("/api/implementation");
+export const getRevision = () => getJson<RevisionResponse>("/api/revision", POLL_DEADLINE_MS);
+export const getImplementation = () => getJson<ImplementationResponse>("/api/implementation", IMPLEMENTATION_DEADLINE_MS);
 export const refreshRemote = () => postJson<RemoteRefreshResponse>("/api/remote/refresh", {});
 export const resolveDraftSnapshots = ({ notes }: DraftSnapshotsRequest) =>
   postJson<DraftSnapshotsResponse>("/api/draft-snapshots", { notes } satisfies Body<DraftSnapshotsRequest>);

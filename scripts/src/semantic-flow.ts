@@ -524,8 +524,6 @@ interface ViewerLaunchMessage {
   type: "ready" | "error";
   message?: string;
   url?: string;
-  /** The viewer's key, for requests the launching process makes. */
-  key?: string;
   repositoryRoot?: string;
   processId?: number;
   implementation?: {
@@ -546,7 +544,6 @@ function viewerLaunchMessage(value: unknown): ViewerLaunchMessage | undefined {
     type: value.type,
     message: stringField(value, "message"),
     url: stringField(value, "url"),
-    key: stringField(value, "key"),
     repositoryRoot: stringField(value, "repositoryRoot"),
     processId: numberField(value, "processId"),
     // The viewer starts on artifacts that miss optional fields such as the title.

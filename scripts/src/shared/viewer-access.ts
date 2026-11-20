@@ -74,9 +74,18 @@ export function createViewerAccess(reviewId: string, now: () => number = Date.no
 }
 export type ViewerAccess = ReturnType<typeof createViewerAccess>;
 
-/** The two names the viewer answers to. */
+/** The two names the viewer answers to. Browsers leave the default port out of
+ * Host and Origin. */
 function ownHosts(port: number): Set<string> {
-  return new Set([`${VIEWER_HOST}:${port}`, `localhost:${port}`]);
+  const names = [VIEWER_HOST, "localhost"];
+  return new Set([...names.map((name) => `${name}:${port}`), ...(port === 80 ? names : [])]);
+}
+
+/** Whether a request target is a path, as in `GET /path?query`. Other forms
+ * (absolute URLs, `*`, authority form, paths that a URL parser would read as
+ * another host or rewrite) are refused before any parsing. */
+export function originFormTarget(target: string | undefined): target is string {
+  return typeof target === "string" && target.startsWith("/") && !target.startsWith("//") && !target.includes("\\");
 }
 
 /** Whether the Host header names this viewer exactly. Other names, including
@@ -113,6 +122,28 @@ export const PAGE_HEADERS: Readonly<Record<string, string>> = {
   "x-frame-options": "DENY",
   "cross-origin-opener-policy": "same-origin",
 };
+
+/* ---- opening the browser ------------------------------------------------- */
+
+/** Whether the browser opens the launch URL itself rather than a launch file.
+ * Other users cannot read process arguments on Windows. Elsewhere,
+ * `SEMANTIC_VIEW_OPEN_URL=1` opts in for browsers that cannot read the review
+ * home, such as sandboxed ones, or when HTML files open in an editor. */
+export function opensLaunchUrl(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): boolean {
+  return platform === "win32" || env.SEMANTIC_VIEW_OPEN_URL === "1";
+}
+
+/** The program and arguments that open a launch URL or launch file. Each target
+ * is passed as one literal argument; no shell parses it. */
+export function browserOpener(target: string, platform: NodeJS.Platform = process.platform): [string, string[]] {
+  if (platform === "win32") {
+    // rundll32 hands the rest of its command line to the URL handler as is, so
+    // the target must not need quoting: launch URLs consist of safe characters only.
+    if (!/^http:\/\/127\.0\.0\.1:\d+\/#launch=[A-Za-z0-9_-]+$/.test(target)) throw new Error("Only launch URLs open on Windows.");
+    return ["rundll32.exe", ["url.dll,FileProtocolHandler", target]];
+  }
+  return [platform === "darwin" ? "open" : "xdg-open", [target]];
+}
 
 /* ---- launch files -------------------------------------------------------- */
 

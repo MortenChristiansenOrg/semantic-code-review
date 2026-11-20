@@ -760,12 +760,16 @@ function approvalSnapshotIds(state: JsonRecord): Set<string> {
 }
 
 /** Runtime location is discoverable without changing the user's edit timestamp. */
-export function recordViewer(id: string, generation: string, viewer: ReviewRecord["viewer"]) {
+/** Records the review's viewer. With `expected`, only while the record still
+ * names that viewer (or none, for null); returns whether it was recorded. */
+export function recordViewer(id: string, generation: string, viewer: ReviewRecord["viewer"], expected?: ViewerRecord | null): boolean {
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("The review session changed during viewer startup.");
+    if (expected !== undefined && JSON.stringify(record.viewer ?? null) !== JSON.stringify(expected)) return false;
     record.viewer = viewer;
     atomicJson(path.join(reviewDirectory(id), "review.json"), record);
+    return true;
   });
 }
 export function listReviews(): ReviewRecord[] {

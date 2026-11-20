@@ -10,7 +10,9 @@ import path from "node:path";
 import test from "node:test";
 import { beginStage, createRepository, finalizeStage, flowCli, initializeImplementation } from "../helpers/repository.mjs";
 import { KEY_HEADER, viewerBase, viewerKey } from "../helpers/viewer-client.mjs";
-import { createViewerAccess, removeLaunchFile, sweepLaunchFiles, writeLaunchFile } from "../../src/shared/viewer-access.ts";
+import { browserOpener, createViewerAccess, opensLaunchUrl, originFormTarget, ownApiCaller, ownHost, removeLaunchFile, sweepLaunchFiles, writeLaunchFile } from "../../src/shared/viewer-access.ts";
+import { probeViewer, probeViewerAccess, requestLaunchCode, requestViewerShutdown } from "../../src/shared/viewer-lifecycle.ts";
+import { claimViewerRecord, identifyOccupant, readReview, recordViewer } from "../../src/semantic-view.ts";
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -78,6 +80,7 @@ async function startViewer(t) {
   const keyed = { [KEY_HEADER]: viewer.key };
   const identity = (await send(viewer.port, { path: "/api/whoami", headers: keyed })).json;
   viewer.pid = identity.processId;
+  viewer.identity = identity;
   viewer.scope = `review=${encodeURIComponent(identity.reviewId)}&generation=${encodeURIComponent(identity.generation)}`;
   viewer.get = (route, headers = keyed) => send(viewer.port, { path: route, headers });
   viewer.post = (route, body, headers = keyed) => send(viewer.port, { method: "POST", path: route, headers: { "content-type": "application/json", ...headers }, body });
@@ -303,4 +306,137 @@ test("the page and its files are sent with a policy that blocks inline script an
     assert.equal((await viewer.get(route, {})).status, 404, route);
   }
   assert.equal((await send(viewer.port, { path: "http://attacker.example/" })).status, 400);
+});
+
+test("a request target that is not a path is refused before it is parsed", async (t) => {
+  const viewer = await startViewer(t);
+  for (const target of ["/api\\whoami", "/\\attacker.example/", "//attacker.example/", "*"]) {
+    assert.equal((await viewer.get(target, {})).status, 400, target);
+  }
+  assert.equal(originFormTarget("/api/whoami?x=1"), true);
+  for (const target of [undefined, "", "*", "attacker.example:80", "http://127.0.0.1/", "//x/", "/a\\b", "\\a"]) {
+    assert.equal(originFormTarget(target), false, String(target));
+  }
+});
+
+test("on port 80 the viewer accepts the names browsers send without the default port", () => {
+  const request = (headers) => ({ headers });
+  for (const host of ["127.0.0.1", "localhost", "127.0.0.1:80", "LOCALHOST:80"]) assert.equal(ownHost(request({ host }), 80), true, host);
+  for (const origin of ["http://127.0.0.1", "http://localhost", "http://127.0.0.1:80"]) assert.equal(ownApiCaller(request({ origin }), 80), true, origin);
+  // Other ports need theirs.
+  assert.equal(ownHost(request({ host: "127.0.0.1" }), 8080), false);
+  assert.equal(ownApiCaller(request({ origin: "http://127.0.0.1" }), 8080), false);
+  assert.equal(ownHost(request({ host: "127.0.0.1:8080" }), 80), false);
+  assert.equal(ownApiCaller(request({ origin: "http://attacker.example" }), 80), false);
+});
+
+test("the browser opens the launch URL itself on Windows or when asked, and a private file elsewhere", () => {
+  const url = "http://127.0.0.1:29180/#launch=Abc_123-xyz";
+  assert.equal(opensLaunchUrl("win32", {}), true);
+  assert.equal(opensLaunchUrl("linux", {}), false);
+  assert.equal(opensLaunchUrl("darwin", {}), false);
+  assert.equal(opensLaunchUrl("linux", { SEMANTIC_VIEW_OPEN_URL: "1" }), true);
+  assert.equal(opensLaunchUrl("darwin", { SEMANTIC_VIEW_OPEN_URL: "1" }), true);
+  // The URL is one argument that no shell parses.
+  assert.deepEqual(browserOpener(url, "win32"), ["rundll32.exe", ["url.dll,FileProtocolHandler", url]]);
+  for (const unsafe of ["C:\\Users\\a&b\\launch.html", "http://127.0.0.1:29180/#launch=a&calc", "http://127.0.0.1:29180/#launch=a b", 'http://127.0.0.1:29180/#launch="a"']) {
+    assert.throws(() => browserOpener(unsafe, "win32"), /Only launch URLs/, unsafe);
+  }
+  assert.deepEqual(browserOpener("/home/a b/launch.html", "linux"), ["xdg-open", ["/home/a b/launch.html"]]);
+  assert.deepEqual(browserOpener(url, "darwin"), ["open", [url]]);
+});
+
+/** A loopback HTTP server for one test. */
+async function loopback(t, handler) {
+  const server = http.createServer(handler);
+  const sockets = new Set();
+  server.on("connection", (socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  return server.address().port;
+}
+
+test("requests to a viewer port settle when the response breaks off or never finishes", async (t) => {
+  // Sends the headers and part of the body, then closes the connection.
+  const closing = await loopback(t, (request, response) => {
+    response.writeHead(200, { "content-type": "application/json", "content-length": "1000" });
+    response.write('{"app":"semantic-flow-review-viewer",');
+    setTimeout(() => response.socket.destroy(), 50);
+  });
+  // Keeps sending a byte now and then, so no idle timeout ends it.
+  const trickling = await loopback(t, (request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    const timer = setInterval(() => response.write(" "), 200);
+    response.on("close", () => clearInterval(timer));
+  });
+  for (const port of [closing, trickling]) {
+    const started = Date.now();
+    assert.deepEqual(await probeViewerAccess(port, { key: "k" }), { identity: null, refused: false });
+    assert.equal(await requestLaunchCode(port, "k"), null);
+    assert.equal(await requestViewerShutdown(port, { key: "k" }), false);
+    assert.ok(Date.now() - started < 15_000, `port ${port} took ${Date.now() - started} ms`);
+  }
+});
+
+test("a refusing occupant is waited for only while this review may still record it", async (t) => {
+  const viewer = await startViewer(t);
+  const own = { reviewId: viewer.identity.reviewId, generation: viewer.identity.generation };
+  const unrecorded = { reviewId: `other--review--${"b".repeat(64)}` };
+  const timed = async (promise) => { const started = Date.now(); const value = await promise; return { value, elapsed: Date.now() - started }; };
+
+  // Another review records its running viewer on the port.
+  let result = await timed(identifyOccupant(unrecorded, viewer.port));
+  assert.equal(result.value, null);
+  assert.ok(result.elapsed < 1000, `${result.elapsed} ms`);
+  // A server that refuses but is no viewer.
+  const forbidden = await loopback(t, (request, response) => { response.writeHead(403); response.end("Forbidden"); });
+  result = await timed(identifyOccupant(unrecorded, forbidden));
+  assert.equal(result.value, null);
+  assert.ok(result.elapsed < 1000, `${result.elapsed} ms`);
+
+  // A keyed viewer that no record names yet: a concurrent launch of this review
+  // that records it shortly after.
+  const key = "k".repeat(43);
+  let accepts = true;
+  const starting = await loopback(t, (request, response) => {
+    const known = accepts && request.headers[KEY_HEADER] === key;
+    response.writeHead(known ? 200 : 403, { "content-type": "application/json" });
+    response.end(JSON.stringify(known ? { app: "semantic-flow-review-viewer", implementationId: "concurrent", ...own } : { ok: false, error: "Key required.", keyRequired: true }));
+  });
+  const original = readReview(own.reviewId).viewer;
+  t.after(() => recordViewer(own.reviewId, own.generation, original));
+  setTimeout(() => recordViewer(own.reviewId, own.generation, { ...original, port: starting, key }), 300);
+  result = await timed(identifyOccupant(own, starting));
+  assert.equal(result.value?.implementationId, "concurrent");
+  assert.equal(result.value?.key, key);
+  // Once the record names the port, a refusal of its key is final.
+  accepts = false;
+  result = await timed(identifyOccupant(own, starting));
+  assert.equal(result.value, null);
+  assert.ok(result.elapsed < 1000, `${result.elapsed} ms`);
+});
+
+test("a viewer records itself only when no running viewer of its review got there first", async (t) => {
+  const viewer = await startViewer(t);
+  const own = { reviewId: viewer.identity.reviewId, generation: viewer.identity.generation };
+  const original = readReview(own.reviewId).viewer;
+  t.after(() => recordViewer(own.reviewId, own.generation, original));
+  const late = { port: await reservePort(), processId: process.pid, viewerVersion: original.viewerVersion, skillDirectory: original.skillDirectory, key: "l".repeat(43) };
+  const sameReview = (occupant) => occupant?.reviewId === own.reviewId && occupant.generation === own.generation;
+
+  // The running viewer is reused, and its record stays.
+  const running = await claimViewerRecord(own, late, sameReview);
+  assert.equal(running?.port, viewer.port);
+  assert.equal(running?.processId, viewer.pid);
+  assert.deepEqual(readReview(own.reviewId).viewer, original);
+  assert.equal((await probeViewer(viewer.port, { key: viewer.key }))?.processId, viewer.pid);
+
+  // A running viewer the launch cannot use is replaced in the record.
+  assert.equal(await claimViewerRecord(own, late, () => false), null);
+  assert.deepEqual(readReview(own.reviewId).viewer, late);
+  // So is a recorded viewer whose process is gone.
+  const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+  recordViewer(own.reviewId, own.generation, { ...original, processId: gone });
+  assert.equal(await claimViewerRecord(own, late, sameReview), null);
+  assert.deepEqual(readReview(own.reviewId).viewer, late);
 });

@@ -697,7 +697,7 @@ test("viewer client refreshes data without reloading the page", () => {
     "utf8",
   );
   assert.match(app, /api\.getRevision\(\)/);
-  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision"\)/);
+  assert.match(api, /getRevision = \(\) => getJson<RevisionResponse>\("\/api\/revision", POLL_DEADLINE_MS\)/);
   assert.match(app, /api\.getDiff\(query\)/);
   assert.match(api, /getJson<DiffResponse>\(`\/api\/diff\?\$\{params\}`\)/);
   assert.match(app, /Loading diff…/);
@@ -717,7 +717,7 @@ test("viewer client refreshes data without reloading the page", () => {
   for (const file of modules) {
     assert.doesNotMatch(fs.readFileSync(path.join(fileURLToPath(viewerSources), file), "utf8"), directRequest, file);
   }
-  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation"\)/);
+  assert.match(api, /getImplementation = \(\) => getJson<ImplementationResponse>\("\/api\/implementation", IMPLEMENTATION_DEADLINE_MS\)/);
   assert.doesNotMatch(app, /window\.location\.reload/);
 
   assert.doesNotMatch(app, /activeCount\s*=.*pendingReplies\(\)/);

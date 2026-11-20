@@ -1,5 +1,6 @@
 // The secrets the page uses to reach its viewer, and the notice shown when it
-// has none that work. Both boot.js and app.js bundle this module.
+// has none that work. Both boot.js and app.js bundle this module, so the
+// current secrets live on the window, where both bundles see the same ones.
 
 /** The viewer's key and read token, from POST `/api/session`. */
 export interface Access {
@@ -9,7 +10,7 @@ export interface Access {
 
 declare global {
   interface Window {
-    /** Written by boot.js before it loads the app. */
+    /** The secrets requests use; absent until boot.js has them and after the server refused them. */
     SEMANTIC_ACCESS?: Access;
   }
 }
@@ -25,11 +26,36 @@ export function storedAccess(): Access | null {
   return null;
 }
 
-export function storeAccess(access: Access | null): void {
+/** Stores the access for reloads of this tab; false when session storage is unavailable. */
+function storeAccess(access: Access | null): boolean {
   try {
     if (access) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(access));
     else sessionStorage.removeItem(STORAGE_KEY);
-  } catch { /* The page keeps the access in memory only. */ }
+    return true;
+  } catch { return false; }
+}
+
+/** The secrets requests use now, or null when the page has none that work. */
+export function currentAccess(): Access | null {
+  return window.SEMANTIC_ACCESS ?? null;
+}
+
+/** Makes requests use these secrets. Returns whether a reload of this tab keeps
+ * them: without session storage the page holds them in memory only. */
+export function useAccess(access: Access): boolean {
+  window.SEMANTIC_ACCESS = access;
+  document.getElementById("fresh-link-notice")?.remove();
+  return storeAccess(access);
+}
+
+/** Drops the secrets a request used after the server refused them, and shows how
+ * to get a fresh link. Secrets the page adopted since then stay. */
+export function loseAccess(used: Access | null): void {
+  const current = currentAccess();
+  if (current && used && current.key !== used.key) return;
+  delete window.SEMANTIC_ACCESS;
+  storeAccess(null);
+  showFreshLinkNotice();
 }
 
 /** Takes a launch code from the address and removes it from the address bar. */

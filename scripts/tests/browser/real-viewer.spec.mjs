@@ -4,6 +4,7 @@
 import { test, expect } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -173,6 +174,8 @@ test('a Markdown image at the viewer\'s own address is refused while repository 
   await expect(pixel).toHaveAttribute('src', /[?&]read=/);
   await expect.poll(() => pixel.evaluate((image) => image.complete && image.naturalWidth)).toBe(1);
   expect(requests.some((url) => url.endsWith('/api/whoami'))).toBe(false);
+  // A link loads nothing until it is followed, so it keeps its target.
+  await expect(preview.getByRole('link', { name: 'Own link' })).toHaveAttribute('href', reviews.a.base);
   // Without the read token the server refuses the same image.
   const tokenless = await pixel.evaluate((image) => { const url = new URL(image.src); url.searchParams.delete('read'); return url.href; });
   expect(await page.evaluate((src) => new Promise((resolve) => {
@@ -233,4 +236,122 @@ test('a page whose viewer restarted asks for a fresh link, and a fresh link in t
   expect(await violations(page)).toEqual([]);
   expect(errors).toEqual([]);
   await context.close();
+});
+
+/** Opens a launch link in the page; resolves when its code was redeemed or refused. */
+async function openLink(page, url) {
+  const exchanged = page.waitForResponse((response) => response.url().endsWith('/api/session'));
+  await page.goto(url);
+  return (await exchanged).status();
+}
+
+test('a spent link and then a fresh link in the same tab open the review', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  const spent = await freshLaunchUrl(reviews.a);
+  await openLink(page, spent);
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await page.close();
+  const tab = await context.newPage();
+  expect(await openLink(tab, spent)).toBe(403);
+  await expect(tab.locator('#fresh-link-notice')).toContainText(NOTICE);
+  // The fresh link changes only the fragment of this tab.
+  expect(await openLink(tab, await freshLaunchUrl(reviews.a))).toBe(200);
+  await expect(tab.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await expect(tab.locator('#fresh-link-notice')).toHaveCount(0);
+  expect(tab.url()).toBe(reviews.a.base);
+  expect(await violations(tab)).toEqual([]);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('an old link opened in a working tab leaves the review working', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  const old = await freshLaunchUrl(reviews.a);
+  await openLink(page, old);
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  // In the same document, the old link changes only the fragment.
+  expect(await openLink(page, old)).toBe(403);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  const revision = page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
+  await revision;
+  // Loaded anew in the tab, it falls back to the access the tab keeps.
+  await page.goto('about:blank');
+  expect(await openLink(page, old)).toBe(403);
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  expect(page.url()).toBe(reviews.a.base);
+  expect(await violations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('without session storage a fresh link in the same tab keeps the review open', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  await context.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
+  });
+  await openLink(page, await freshLaunchUrl(reviews.a));
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await page.evaluate(() => { window.sameDocument = true; });
+  expect(await openLink(page, await freshLaunchUrl(reviews.a))).toBe(200);
+  // A reload would lose the access the page holds only in memory.
+  await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
+  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  expect(await violations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('a page from another local server cannot read the viewer, and the viewer refuses its requests', async ({ browser }) => {
+  const other = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end('<!doctype html><title>Other local page</title><p>Another local application.</p>');
+  });
+  await new Promise((resolve) => other.listen(0, '127.0.0.1', resolve));
+  const { context, page } = await openPage(browser);
+  try {
+    // The browser keeps blocked responses from the page and from Playwright's
+    // response events; the DevTools protocol still reports what was sent and answered.
+    const devtools = await context.newCDPSession(page);
+    const sent = new Map(), headers = new Map(), answers = [];
+    devtools.on('Network.requestWillBeSent', ({ requestId, request }) => sent.set(requestId, request.url));
+    devtools.on('Network.requestWillBeSentExtraInfo', ({ requestId, headers: actual }) => headers.set(requestId, actual));
+    devtools.on('Network.responseReceivedExtraInfo', ({ requestId, statusCode }) => answers.push({ requestId, statusCode }));
+    await devtools.send('Network.enable');
+    await page.goto(`http://127.0.0.1:${other.address().port}/`);
+    const target = `${reviews.a.base}api/bootstrap`;
+    const attempt = await page.evaluate(async (url) => {
+      const read = await fetch(url).then((response) => response.status, () => 'blocked');
+      const script = await new Promise((resolve) => {
+        const element = document.createElement('script');
+        element.onload = () => resolve('loaded'); element.onerror = () => resolve('blocked');
+        element.src = url;
+        document.body.append(element);
+      });
+      return { read, script };
+    }, target);
+    expect(attempt).toEqual({ read: 'blocked', script: 'blocked' });
+    // Both requests reached the viewer, which refused them itself.
+    const refusals = () => answers.filter(({ requestId }) => sent.get(requestId) === target).map(({ statusCode }) => statusCode);
+    await expect.poll(refusals).toEqual([403, 403]);
+    // The same requests are refused for where they come from even with the key.
+    const { key } = record(reviews.a).viewer;
+    for (const { requestId } of answers.filter(({ requestId }) => sent.get(requestId) === target)) {
+      const browserHeaders = Object.fromEntries(Object.entries(headers.get(requestId)).filter(([name]) => !name.startsWith(':')));
+      expect(browserHeaders['Sec-Fetch-Site'] ?? browserHeaders['sec-fetch-site']).toBe('same-site');
+      const replayed = await new Promise((resolve, reject) => {
+        http.get(target, { headers: { ...browserHeaders, [KEY_HEADER]: key } }, (response) => {
+          let text = '';
+          response.on('data', (chunk) => { text += chunk; });
+          response.on('end', () => resolve({ status: response.statusCode, body: JSON.parse(text) }));
+        }).on('error', reject);
+      });
+      expect(replayed).toEqual({ status: 403, body: { ok: false, error: 'Only the review page can use this service.' } });
+    }
+  } finally {
+    await context.close();
+    other.close();
+  }
 });

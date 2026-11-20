@@ -74,40 +74,62 @@ interface ViewerRequestOptions {
 
 const keyHeaders = (key: string | undefined): Record<string, string> => key ? { [KEY_HEADER]: key } : {};
 
-export function probeViewerAccess(
+/** How long one request to a viewer may take in total. */
+const REQUEST_DEADLINE_MS = 3000;
+
+/** One request to a viewer port: its status and body text, or null when it fails,
+ * the response ends early or the deadline passes. It always settles. */
+function viewerRequest(
+  port: number,
+  options: { method: "GET" | "POST"; path: string; headers: Record<string, string>; agent?: http.Agent },
+  body?: string,
+): Promise<{ status: number; text: string } | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (result: { status: number; text: string } | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      if (!result) request.destroy();
+      resolve(result);
+    };
+    const request = http.request({ host: VIEWER_HOST, port, ...options, timeout: 1500 }, (response) => {
+      let text = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk: string) => (text += chunk));
+      response.on("end", () => settle({ status: response.statusCode ?? 0, text }));
+      // Before "end", these mean the body is incomplete.
+      response.on("aborted", () => settle(null));
+      response.on("error", () => settle(null));
+      response.on("close", () => settle(null));
+    });
+    const deadline = setTimeout(() => settle(null), REQUEST_DEADLINE_MS);
+    request.on("error", () => settle(null));
+    request.on("timeout", () => settle(null));
+    request.on("close", () => settle(null));
+    request.end(body);
+  });
+}
+
+/** Whether a 403 is a viewer's refusal of a missing or wrong key. Other servers
+ * that answer 403 are not viewers. */
+function keyRefusal(text: string): boolean {
+  try { return booleanField(parseJson(text), "keyRequired") === true; } catch { return false; }
+}
+
+export async function probeViewerAccess(
   port = viewerPort(),
   { agent, key }: ViewerRequestOptions = {},
 ): Promise<ViewerProbe> {
-  return new Promise((resolve) => {
-    const request = http.get(
-      {
-        host: VIEWER_HOST,
-        port,
-        path: "/api/whoami",
-        headers: keyHeaders(key),
-        timeout: 1500,
-        agent,
-      },
-      (response) => {
-        let data = "";
-        response.on("data", (chunk) => (data += chunk));
-        response.on("end", () => {
-          if (response.statusCode === 403) { resolve({ identity: null, refused: true }); return; }
-          try {
-            const identity = parseViewerIdentity(parseJson(data), port);
-            resolve({ identity: identity && key ? { ...identity, key } : identity, refused: false });
-          } catch {
-            resolve({ identity: null, refused: false });
-          }
-        });
-      },
-    );
-    request.on("error", () => resolve({ identity: null, refused: false }));
-    request.on("timeout", () => {
-      request.destroy();
-      resolve({ identity: null, refused: false });
-    });
-  });
+  const response = await viewerRequest(port, { method: "GET", path: "/api/whoami", headers: keyHeaders(key), agent });
+  if (!response) return { identity: null, refused: false };
+  if (response.status === 403) return { identity: null, refused: keyRefusal(response.text) };
+  try {
+    const identity = parseViewerIdentity(parseJson(response.text), port);
+    return { identity: identity && key ? { ...identity, key } : identity, refused: false };
+  } catch {
+    return { identity: null, refused: false };
+  }
 }
 
 /** The identity of the viewer on a port, or null when none answers or it refuses the key. */
@@ -120,35 +142,12 @@ export async function probeViewer(
 
 /** POSTs an empty JSON body to a viewer route; the parsed response, or null when
  * the request fails. */
-function postViewer(port: number, route: string, { agent, key }: ViewerRequestOptions): Promise<{ status: number; body: unknown } | null> {
-  return new Promise((resolve) => {
-    const request = http.request(
-      {
-        host: VIEWER_HOST,
-        port,
-        path: route,
-        method: "POST",
-        headers: { "content-type": "application/json", ...keyHeaders(key) },
-        timeout: 1500,
-        agent,
-      },
-      (response) => {
-        let data = "";
-        response.on("data", (chunk) => (data += chunk));
-        response.on("end", () => {
-          let body: unknown = null;
-          try { body = parseJson(data); } catch { /* Not JSON. */ }
-          resolve({ status: response.statusCode ?? 0, body });
-        });
-      },
-    );
-    request.on("error", () => resolve(null));
-    request.on("timeout", () => {
-      request.destroy();
-      resolve(null);
-    });
-    request.end("{}");
-  });
+async function postViewer(port: number, route: string, { agent, key }: ViewerRequestOptions): Promise<{ status: number; body: unknown } | null> {
+  const response = await viewerRequest(port, { method: "POST", path: route, headers: { "content-type": "application/json", ...keyHeaders(key) }, agent }, "{}");
+  if (!response) return null;
+  let body: unknown = null;
+  try { body = parseJson(response.text); } catch { /* Not JSON. */ }
+  return { status: response.status, body };
 }
 
 /** Asks a running viewer for a new single-use launch code. */

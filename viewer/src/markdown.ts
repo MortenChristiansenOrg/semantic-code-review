@@ -10,8 +10,9 @@ declare global {
   interface Window { renderMarkdownPreview?: RenderMarkdownPreview }
 }
 
-// An absolute URL naming this machine could reach this or another review viewer;
-// those take their resources only from the viewer's own resource URLs.
+// An absolute URL naming this machine could reach this or another review viewer.
+// The browser loads images by itself, so those come only from the viewer's own
+// resource URLs; links open only when the reviewer follows them.
 function viewerAddress(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
@@ -38,7 +39,7 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
     const value = element.getAttribute(attr);
     let resolved: string | null = null;
     if (value && !/[\u0000- \u007f\\]/.test(value)) {
-      if (/^https?:\/\//i.test(value)) resolved = viewerAddress(value) ? null : value;
+      if (/^https?:\/\//i.test(value)) resolved = image && viewerAddress(value) ? null : value;
       else if (!image && /^mailto:/i.test(value)) resolved = value;
       else if (!/^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith('//')) resolved = resourceUrl(value, image);
     }
