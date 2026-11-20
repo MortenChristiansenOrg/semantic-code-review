@@ -416,16 +416,24 @@ test('saving review data reports a replacement that stays refused or fails other
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'review.json');
   fs.writeFileSync(file, '{}\n');
+  // The retry's own clock and waits, so the budget is checked without real time;
+  // the wall clock jumps forward to show the budget does not depend on it.
+  let now = 0, wall = 1e12;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(Date, 'now', () => (wall += 60_000));
+  t.mock.method(Atomics, 'wait', (array, index, value, ms) => { now += ms; return 'timed-out'; });
   const refused = (platform, code) => {
-    const started = Date.now();
-    assert.throws(() => withRenames(t, platform, () => code, () => atomicJson(file, { saved: true })), new RegExp(code));
-    return Date.now() - started;
+    let attempts = 0;
+    now = 0;
+    assert.throws(() => withRenames(t, platform, () => { attempts++; return code; }, () => atomicJson(file, { saved: true })), new RegExp(code));
+    return { attempts, waited: now };
   };
-  // Only Windows sharing violations are waited out, and only for a bounded time.
-  const waited = refused('win32', 'EPERM');
-  assert.ok(waited >= REPLACE_WAIT_MS && waited < REPLACE_WAIT_MS + 1000, String(waited));
-  assert.ok(refused('win32', 'ENOSPC') < REPLACE_WAIT_MS);
-  assert.ok(refused('linux', 'EPERM') < REPLACE_WAIT_MS);
+  // Only Windows sharing violations are waited out, and only for the bounded time.
+  const stuck = refused('win32', 'EPERM');
+  assert.equal(stuck.waited, REPLACE_WAIT_MS);
+  assert.ok(stuck.attempts > 2);
+  assert.deepEqual(refused('win32', 'ENOSPC'), { attempts: 1, waited: 0 });
+  assert.deepEqual(refused('linux', 'EPERM'), { attempts: 1, waited: 0 });
   assert.equal(fs.readFileSync(file, 'utf8'), '{}\n');
   assert.deepEqual(fs.readdirSync(directory), ['review.json']);
 });

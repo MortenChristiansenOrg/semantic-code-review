@@ -27,10 +27,16 @@ async function session(t, mode) {
   const context = await setup(t), { root, env, fixture } = context;
   const running = launch([process.execPath, agent, skill, mode], { cwd: fixture.repo, env, prompt: 'Review interactively.',
     stdoutFile: path.join(root, 'agent.out'), stderrFile: path.join(root, 'agent.err'), timeoutMs: 300_000 });
-  const driver = await drive({ ...context, skill, signal: new AbortController().signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) });
+  const agentStderr = () => { try { return fs.readFileSync(path.join(root, 'agent.err'), 'utf8'); } catch { return ''; } };
+  let driver;
+  try { driver = await drive({ ...context, skill, signal: new AbortController().signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) }); }
+  catch (error) {
+    const execution = await running;
+    throw new Error(`The scripted reviewer failed (agent exit code ${execution.exitCode}): ${error.message}\nAgent stderr:\n${agentStderr()}`, { cause: error });
+  }
   const execution = await running;
   const result = await verify({ ...context, skill, driver });
-  return { driver, execution, stderr: fs.readFileSync(path.join(root, 'agent.err'), 'utf8'), checks: Object.fromEntries(result.checks.map(check => [check.id, check])), result };
+  return { driver, execution, stderr: agentStderr(), checks: Object.fromEntries(result.checks.map(check => [check.id, check])), result };
 }
 
 test('prepare finishes three stages and keeps the reviewer script out of the agent request', async t => {
