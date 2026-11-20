@@ -123,7 +123,7 @@ marked the old ID retired, and the folder is moved back while the recorded
 repository still holds the old ID. Anything else proves nothing, since the
 repository may have moved and another one may sit at its old location, so the
 folder stays pending, as it does while an archive claims the implementation, until
-a command runs from the repository or the repository has been missing for 30
+a `review` or `feedback` command runs from the repository or the repository has been missing for 30
 days. When the repository cannot be reached, holds no snapshot with the old ID,
 or an archive in progress claims it, deletion still succeeds and marks the old ID
 retired; the next registration that finds the old ID in the artifact stores a new
@@ -132,7 +132,7 @@ The mark is removed once a new ID is stored and no folder of the deletion is lef
 removed by a later cleanup. A fresh review starts under the new ID.
 Cleanup records when it first finds a local review's Git directory missing and
 removes the review once it has been missing for 30 days; finding the directory
-again, or running a command from the repository, starts that period over. Only a
+again, or running a `review` or `feedback` command from the repository, starts that period over. Only a
 missing path counts; a directory that cannot be checked, for example for lack of
 permission, keeps its review.
 

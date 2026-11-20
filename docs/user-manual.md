@@ -32,14 +32,14 @@ records the new location. Commands that only read the artifact, such as
 normalized and capped at 24 and 40 characters. Changing the display title does not
 rename the folder. Deleting a review gives the implementation a new review ID, so
 the next review starts empty; when the repository cannot be reached at that time,
-the new ID is stored when a command next runs from it. A review whose repository's
+the new ID is stored when a `review` or `feedback` command next runs from it. A review whose repository's
 Git directory has been missing for 30 days is removed when saved reviews are listed
 or another review is started. The period counts from when such a listing or start
 first found the directory missing, however long the review was unused before. A
 repository that is missing only for now, such as one on a drive that is not
 mounted, keeps its review through that period, and a repository moved together
-with its Git directory keeps its review whenever a command runs from the new
-location, which also starts the period over. An implementation started by an unreleased
+with its Git directory keeps its review whenever a `review` or `feedback` command
+runs from the new location, which also starts the period over. An implementation started by an unreleased
 development build may have no review ID; commands then fail and ask to start it
 again. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
@@ -751,7 +751,8 @@ the new review ID cannot be stored, deletion fails without changing anything and
 can be retried. If the folder then cannot be moved back either, the review's data
 is kept under its pending name and the review is unavailable: restore access to
 the folder, then open the review from its repository again, which moves it back. If the repository cannot be reached, deletion succeeds and the new
-review ID is stored when a command next runs from the repository. The error
+review ID is stored when a `review` or `feedback` command next runs from the
+repository. The error
 identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
 Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,

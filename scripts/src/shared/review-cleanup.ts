@@ -100,6 +100,7 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     recoverInterruptedDeletion(id);
     if (pathMissing(path.join(reviewDirectory(id), "review.json"))) {
+      if (!pathMissing(reviewDirectory(id))) throw new Error("The review's folder has no review record, so it cannot be deleted safely. Open the review from its repository, then retry deletion.");
       if (!pathMissing(pendingDeletionDirectory(id))) throw new Error("An earlier deletion of this review was interrupted and cannot be settled yet: its repository cannot be reached at the recorded location, or an archive of its implementation is in progress. Run a Semantic Flow command from a worktree of the repository, or finish the archive, then retry deletion.");
       return { deleted: true }; // Exact retry after completion.
     }
