@@ -125,7 +125,7 @@ export async function preflight({ options = {}, workspace }) {
   const project = fs.realpathSync(options.project ?? '/home/morten/code/chat-app');
   const revision = options.revision ?? pinnedRevision;
   if (!/^[a-f0-9]{40}$/.test(revision)) throw new Error('Chat fixture requires a full pinned source commit');
-  if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node 20+ required');
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ required');
   const tools = Object.fromEntries(['git', 'tar'].map(name => { const file = executable(name); return [name, { path: file, sha256: hash(fs.readFileSync(file)), version: checked([file, '--version'], project).trim() }]; }));
   tools.node = { path: fs.realpathSync(process.execPath), sha256: hash(fs.readFileSync(process.execPath)), version: process.version };
   const resolved = checked([tools.git.path, 'rev-parse', `${revision}^{commit}`], project).trim();

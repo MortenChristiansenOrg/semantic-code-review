@@ -16,6 +16,7 @@ import {
   SPECIFICATION_SCHEMA_ID,
   STAGE_SCHEMA_ID,
 } from "../src/shared/documents.ts";
+import { MINIMUM_NODE_MAJOR } from "../src/shared/distribution.ts";
 import { stageBranchName } from "../src/shared/implementation.ts";
 import { readDocument } from "../src/shared/schema-validation.ts";
 
@@ -508,7 +509,7 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.match(viewerApp, /Approve every step before approving the stage/);
   assert.match(viewerApp, /if \(stage && !stageNodesApproved\(stage\)\) return;/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
-  assert.equal(packageJson.engines.node, ">=20");
+  assert.equal(packageJson.engines.node, ">=22");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);
   assert.doesNotMatch(sourceRepair, /\.\\scripts|<source-repository>\\skills/);
   assert.match(userManual, /<semantic-flow> implementation <command>/);
@@ -579,4 +580,24 @@ test("the typed boundary check finds JSON.parse however it is accessed", () => {
   assert.deepEqual(typedBoundaryViolations("shared/json.ts", 'JSON["parse"](text); const parse = globalThis.JSON.parse;'), []);
   assert.deepEqual(typedBoundaryViolations("example.ts",
     "parseJson(text); JSON.stringify(value); other.parse(text); const { stringify } = JSON; const { parse } = other; JSON.parsed;"), []);
+});
+
+test("the skill, package, build, CI, release and documentation state one Node.js minimum", () => {
+  const skillRoot = path.resolve(scriptsDirectory, "..");
+  const repositoryRoot = path.resolve(skillRoot, "..", "..");
+  const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), "utf8");
+  const minimum = MINIMUM_NODE_MAJOR;
+  assert.equal(JSON.parse(read("scripts", "package.json")).engines.node, `>=${minimum}`);
+  assert.match(read("scripts", "src", "build-skill.ts"), new RegExp(`target: "node${minimum}"`));
+  // The minimum on every operating system, newer lines on Linux.
+  const checks = read(".github", "workflows", "checks.yml");
+  assert.match(checks, new RegExp(`os: \\[ubuntu-latest, windows-latest, macos-latest\\]\\s+node: \\[${minimum}\\]`));
+  for (const node of [...checks.matchAll(/node: (\d+)$/gm)].map((match) => Number(match[1]))) assert.ok(node > minimum);
+  assert.deepEqual([...new Set([...read(".github", "workflows", "release.yml").matchAll(/node-version: (\S+)/g)].map((match) => match[1]))], [String(minimum)]);
+  // The skill's preflight in every platform guide.
+  const guides = fs.readdirSync(path.join(skillRoot, "docs", "os"));
+  assert.ok(guides.length >= 2);
+  for (const guide of guides) assert.match(read("skills", "semantic-flow", "docs", "os", guide), new RegExp(`Node\\.js is version ${minimum} or later`));
+  assert.match(read("README.md"), new RegExp(`Node\\.js ${minimum} or newer is required`));
+  assert.match(read("docs", "releases.md"), new RegExp(`Install Node\\.js ${minimum} or newer`));
 });

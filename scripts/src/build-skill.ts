@@ -47,7 +47,7 @@ const compilation = await build({
   alias: { "jsonc-parser": "jsonc-parser/lib/esm/main.js" },
   format: "esm",
   platform: "node",
-  target: "node20",
+  target: "node22",
   minify: true,
   legalComments: "eof",
   metafile: true,
