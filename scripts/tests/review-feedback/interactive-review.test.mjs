@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -358,4 +358,37 @@ test("a first wait that fails on invalid feedback does not stay listening", asyn
   const { session } = agentState(repository);
   assert.ok(session.endedAt);
   assert.equal(session.endReason, "failed");
+});
+
+test("feedback commands use the review that registration gives an implementation whose review ID was retired", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  /** Leaves the review as a deletion does when it cannot reach the repository:
+   * its folder is gone, and its ID, which the artifact still holds, is marked retired. */
+  const retire = () => {
+    const directory = reviewDirectory(repository), id = path.basename(directory);
+    fs.rmSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(directory), `.retired-${id}`), "");
+    return directory;
+  };
+  const { session } = await waitAsync(repository, "--timeout", "1");
+  // A session of the deleted review cannot be resumed.
+  let retired = retire();
+  const resumed = spawnSync(process.execPath, [flowCli, "feedback", "--json", "--wait", "--session", session, "--timeout", "1"], { cwd: repository.root, encoding: "utf8" });
+  assert.notEqual(resumed.status, 0);
+  assert.match(resumed.stderr, new RegExp(`was deleted, and session ${session} with it\\. Wait again without --session to start a new session\\.`));
+  assert.equal(fs.existsSync(retired), false);
+  // A new session listens on the new review.
+  retired = retire();
+  const fresh = await waitAsync(repository, "--timeout", "1");
+  assert.equal(fresh.timedOut, true);
+  assert.notEqual(reviewDirectory(repository), retired);
+  assert.equal(fs.existsSync(retired), false);
+  assert.equal(agentState(repository).session.id, fresh.session);
+  // Feedback is initialized for the new review.
+  retired = retire();
+  repository.feedback("init");
+  assert.notEqual(reviewDirectory(repository), retired);
+  assert.equal(fs.existsSync(retired), false);
+  assert.ok(fs.existsSync(repository.feedbackPath("manifest.json")));
 });

@@ -19,14 +19,29 @@ as a collapsible folder.
 
 The viewer stores review progress, drafts, personal notes, and preferences under
 `~/.semantic-flow/reviews/<review-id>/`. `SEMANTIC_FLOW_HOME` can override the user
-data root and must be an absolute path. Review identity combines the canonical artifact-worktree path and
-implementation ID, independently of browser ports. Folder names use
-`<worktree>--<implementation>--<sha256>`, for example
+data root and must be an absolute path. Each implementation has one review, with
+a random review ID that `implementation init` stores in the private artifact and
+that publication and archives leave out. All worktrees of the repository share
+the review. The review records a worktree and the repository's Git directory only
+to locate it; when that worktree is moved or removed, the next `review` or
+`feedback` command run from another worktree, or opening the review there,
+records the new location. Commands that only read the artifact, such as
+`implementation export`, do not. Folder names use
+`<repository>--<implementation>--<64 random hex characters>`, for example
 `my-project--order-cancellation--<64 hex characters>`. The readable parts are
-normalized and capped at 24 and 40 characters; the full hash preserves uniqueness
-even when names collide or are shortened. Changing the display title does not
-rename the folder. Moving a worktree creates a new
-review identity; the old data remains available for cleanup. There is no migration
+normalized and capped at 24 and 40 characters. Changing the display title does not
+rename the folder. Deleting a review gives the implementation a new review ID, so
+the next review starts empty; when the repository cannot be reached at that time,
+the new ID is stored when a `review` or `feedback` command next runs from it. A review whose repository's
+Git directory has been missing for 30 days is removed when saved reviews are listed
+or another review is started. The period counts from when such a listing or start
+first found the directory missing, however long the review was unused before. A
+repository that is missing only for now, such as one on a drive that is not
+mounted, keeps its review through that period, and a repository moved together
+with its Git directory keeps its review whenever a `review` or `feedback` command
+runs from the new location, which also starts the period over. An implementation started by an unreleased
+development build may have no review ID; commands then fail and ask to start it
+again. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
 the same field or draft list fail visibly rather than overwrite another tab.
 Unfinished composers are shared review state; preserve conflicting text before
@@ -612,8 +627,9 @@ picker dims and blocks the page behind it; Close, Escape, or clicking outside
 dismisses it without rebuilding the page or losing an unfinished message. Switching
 saves the current draft, starts or reuses the selected review's service, and
 opens its page. If saving or opening fails, the current page and draft remain.
-A removed or changed worktree remains listed with an explanation; its stored
-review data is never silently reassigned to another worktree.
+A review whose recorded worktree was removed, or whose implementation is no
+longer active, remains listed with an explanation until a command from another
+worktree records its new location.
 
 **Mark complete** and **Reopen review** change only the local review's lifecycle.
 Completion does not approve files, land an implementation, stop its service, or
@@ -713,9 +729,10 @@ Open **Reviews → Delete data…** to inspect a review's location, lifecycle st
 storage size, drafts, personal notes, approvals, feedback, attachments, and saved
 snapshots. **Delete review data** confirms removal of that review's local data.
 Unsent drafts and unresolved feedback are highlighted before confirmation.
-Completion never deletes data automatically; unavailable worktrees can be cleaned
-too. Source files, branches, implementation artifacts, publications, and archives
-are preserved.
+Completion never deletes data automatically; unavailable reviews can be cleaned
+too. Only a review whose repository's Git directory has been missing for 30 days
+is removed without asking. Source files, branches, implementation
+artifacts, publications, and archives are preserved.
 
 **Clean unused files** reclaims unreferenced uploads and snapshots separately.
 Files referenced by saved messages, drafts, feedback, or approvals are retained.
@@ -725,21 +742,26 @@ when requested, not automatically when that hour expires. Deleting a whole
 review removes its data regardless of age. If another process
 changes the data after the preview, refresh the details before confirming.
 
-Deletion invalidates the old session before removing files. Stale tabs and CLI
-requests cannot recreate it. If a file is locked or removal is interrupted,
-**Retry deletion…** remains in Saved reviews. The error identifies the failing
-file or folder and filesystem error code. When available, a bounded lookup also
+Deletion moves the review's folder aside, then gives the implementation a new
+review ID, then removes the folder. Once the folder is moved, stale tabs and CLI
+requests fail and cannot recreate the deleted review; an open viewer of the review
+treats it as deleted only once the deletion has completed. Files that cannot be
+removed at once are removed by a later cleanup. If the folder cannot be moved, or
+the new review ID cannot be stored, deletion fails without changing anything and
+can be retried. If the folder then cannot be moved back either, the review's data
+is kept under its pending name and the review is unavailable: restore access to
+the folder, then open the review from its repository again, which moves it back. If the repository cannot be reached, deletion succeeds and the new
+review ID is stored when a `review` or `feedback` command next runs from the
+repository. The error
+identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
 Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,
 or miss a directory-only lock; an unidentified process is not evidence of no lock.
 No processes are terminated automatically.
 
 Close the application or terminal using the reported location, or release the
-lock and check access permissions. Choose **Retry deletion… → Retry file removal**
-afterward. Pending deletion remains retryable even when storage inspection cannot
-read the remaining files; displayed sizes may be the last known preview. The old
-session stays disabled while retired files are removed, so partial disk removal
-cannot become an active, inconsistent review. For **Clean unused files**, saved
+lock and check access permissions. Choose **Delete data…** again afterward. For
+**Clean unused files**, saved
 messages and referenced files stay intact; use the same button again to remove
 remaining retired files. Neither operation requires manual file deletion.
 

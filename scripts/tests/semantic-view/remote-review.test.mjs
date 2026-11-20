@@ -6,6 +6,7 @@ import test from 'node:test';
 import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
+import { remoteIdentity } from '../../src/shared/remote-review.ts';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../src/semantic-view.ts';
@@ -74,7 +75,51 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).deleted, true);
   assert.equal(fs.existsSync(reviewDirectory(review.id)), false); assert.ok(fs.existsSync(source.root)); assert.ok(fs.existsSync(author.root));
   assert.throws(() => refreshRemoteReview(review.id, review.generation), /unavailable|deleted/);
-  const reopened = startRemoteReview(source.root, 'feature'); assert.equal(reopened.id, review.id); assert.notEqual(reopened.generation, review.generation);
+  // A deleted review is started again with a fresh identity.
+  const reopened = startRemoteReview(source.root, 'feature'); assert.notEqual(reopened.id, review.id);
+  assert.equal(startRemoteReview(source.root, 'feature').id, reopened.id);
+});
+
+test('a remote review keeps its identity when opened from another checkout of the repository', (t) => {
+  const { author, source } = setup(t);
+  const review = startRemoteReview(source.root, 'origin/feature');
+  // The remote URL may hold credentials, so the review stores only a hash of it.
+  assert.equal(review.remote.url, undefined);
+  assert.ok(!JSON.stringify(readReview(review.id)).includes(author.root));
+  const linked = source.root + '-linked';
+  source.git('worktree', 'add', '-q', '--detach', linked);
+  t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
+  const clone = createRepository(t, 'remote-reviewer-clone-');
+  clone.git('remote', 'add', 'origin', author.root);
+  patchReviewState(review.id, review.generation, [{ path: ['notes'], before: { present: false }, after: { present: true, value: 'Kept' } }]);
+  assert.equal(startRemoteReview(linked, 'feature').id, review.id);
+  const reopened = startRemoteReview(clone.root, 'feature');
+  assert.equal(reopened.id, review.id);
+  assert.equal(reopened.generation, review.generation);
+  assert.equal(reopened.state.notes, 'Kept');
+  // Another branch of the same remote is another review.
+  author.git('branch', 'other', 'feature');
+  const other = startRemoteReview(clone.root, 'other');
+  assert.notEqual(other.id, review.id);
+  // No checkout started a second review of either branch.
+  const keys = [review.implementationId, other.implementationId];
+  assert.equal(registeredReviews().filter((entry) => entry.remote && keys.includes(entry.implementationId)).length, 2);
+});
+
+test('credentials in a remote URL neither name nor identify its review', () => {
+  const plain = remoteIdentity('https://example.com/team/project.git', 'feature');
+  const first = remoteIdentity('https://user:secret@example.com/team/project.git', 'feature');
+  const rotated = remoteIdentity('https://user:changed@example.com/team/project.git', 'feature');
+  assert.equal(first.key, plain.key);
+  assert.equal(rotated.key, plain.key);
+  assert.equal(first.label, 'project');
+  // A review an earlier version keyed by the URL as configured is still found.
+  const legacy = 'remote-' + createHash('sha256').update(JSON.stringify(['https://user:secret@example.com/team/project.git', 'feature'])).digest('hex').slice(0, 24);
+  assert.deepEqual(first.keys, [plain.key, legacy]);
+  const root = remoteIdentity('https://user:secret@example.com', 'feature');
+  assert.ok(!root.label.includes('secret'), root.label);
+  assert.equal(root.label, 'example.com');
+  assert.deepEqual(plain.keys, [plain.key]);
 });
 
 test('refresh preserves notes and approved snapshots through appends, force-pushes, and failures', (t) => {
@@ -318,7 +363,8 @@ test('remote clones support nested paths under the private review directory', (t
   refreshRemoteReview(review.id, review.generation);
   assert.equal(fs.readFileSync(path.join(review.repositoryRoot, file), 'utf8'), 'refreshed content\n');
   const storage = inspectReviewStorage(review.id, review.generation);
-  assert.equal(deleteReviewData(review.id, review.generation, storage.fingerprint).cleanupPending, false);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, storage.fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
 });
 
 

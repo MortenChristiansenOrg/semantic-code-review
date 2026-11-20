@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, hasPendingDeletion, projectionDirectory, readReview, reviewDirectory, reviewId, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
@@ -172,28 +172,59 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   branchName(sourceRoot, branch);
   let url = git(sourceRoot, ["remote", "get-url", remoteName]);
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !/^[^/]+:/.test(url)) url = path.resolve(sourceRoot, url);
-  const key = `remote-${createHash("sha256").update(JSON.stringify([url, branch])).digest("hex").slice(0, 24)}`;
-  const id = reviewId(sourceRoot, key);
-  return withReviewLock(id, () => {
-    const directory = reviewDirectory(id), recordFile = path.join(directory, "review.json");
-    if (hasPendingDeletion(id)) throw new Error("Finish pending review deletion before starting a fresh review.");
-    if (fs.existsSync(recordFile)) return readReview(id); // Opening preserves the reviewed snapshot; refresh is explicit.
-    // An interrupted first clone has no registered state and can be retried.
-    fs.rmSync(directory, { recursive: true, force: true });
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    try {
-      const root = path.join(directory, "checkout");
-      git(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
-      const targetRef = optional(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
-      const targetBranch = targetRef?.replace(/^refs\/remotes\/origin\//, "") || ["main", "master"].find((name) => optional(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`]));
-      if (!targetBranch) throw new Error("The remote has no default branch. Set its default branch before starting a review.");
-      branchName(root, targetBranch);
-      const now = new Date().toISOString();
-      for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child));
-      const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch };
-      const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: fs.realpathSync(root), implementationId: key,
-        title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, stateRevision: 0, remote };
-      return refresh(record, remote);
-    } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
+  const { key, hash, keys, label } = remoteIdentity(url, branch);
+  // A remote review has a random ID and is found again by what it reviews, so any
+  // checkout opens the same review. This lock name only serializes starting it.
+  const startLock = `remote--${key}--${hash}`;
+  return withReviewLock(startLock, () => {
+    const existing = findRemoteReview(keys);
+    if (existing) return existing; // Opening preserves the reviewed snapshot; refresh is explicit.
+    const id = newReviewId(label, branch);
+    return withReviewLock(id, () => startNewRemoteReview(id, sourceRoot, remoteName, url, branch, key));
   });
+}
+/** What identifies the remote review of a remote URL and branch: its key, a hash
+ * of the URL without credentials and the branch, every key a saved review of them
+ * may have, and the repository name for its review ID. Credentials neither name
+ * nor identify a review, so changing them keeps the review. */
+export function remoteIdentity(url: string, branch: string) {
+  const plain = url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+  const hashOf = (value: string) => createHash("sha256").update(JSON.stringify([value, branch])).digest("hex");
+  const hash = hashOf(plain), key = `remote-${hash.slice(0, 24)}`;
+  // Earlier versions hashed the URL as configured, credentials included.
+  const keys = plain === url ? [key] : [key, `remote-${hashOf(url).slice(0, 24)}`];
+  const label = plain.replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/, "") || "remote";
+  return { key, hash, keys, label };
+}
+/** The remote review with one of the keys, if one is registered. The URL itself
+ * is not stored, since it may hold credentials. Damaged records are skipped, so
+ * one cannot hide the others. */
+function findRemoteReview(keys: readonly string[]): ReviewRecord | undefined {
+  const directory = path.join(reviewHome(), "reviews");
+  if (!fs.existsSync(directory)) return undefined;
+  for (const id of fs.readdirSync(directory).filter(isReviewId).sort()) {
+    let record: ReviewRecord;
+    try { record = readReview(id); } catch { continue; }
+    if (record.remote && keys.includes(record.implementationId)) return record;
+  }
+  return undefined;
+}
+/** Clones the remote into a new review. Caller holds the new review's lock. */
+function startNewRemoteReview(id: string, sourceRoot: string, remoteName: string, url: string, branch: string, key: string) {
+  const directory = reviewDirectory(id);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  try {
+    const root = path.join(directory, "checkout");
+    git(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
+    const targetRef = optional(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
+    const targetBranch = targetRef?.replace(/^refs\/remotes\/origin\//, "") || ["main", "master"].find((name) => optional(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`]));
+    if (!targetBranch) throw new Error("The remote has no default branch. Set its default branch before starting a review.");
+    branchName(root, targetBranch);
+    const now = new Date().toISOString();
+    for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child));
+    const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch };
+    const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: fs.realpathSync(root), implementationId: key,
+      title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, stateRevision: 0, remote };
+    return refresh(record, remote);
+  } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
 }

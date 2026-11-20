@@ -99,6 +99,87 @@ test("validate resolves the artifact and runs both validators", (t) => {
   assert.match(output, /Artifact:/);
 });
 
+test("commands fail without writing when the active artifact has no review ID", (t) => {
+  const repository = createRepository(t, "semantic-flow-no-review-id-");
+  initializeImplementation(repository, { implementationId: "no-review-id" });
+  repository.artifact.remove("review.json");
+  const ref = () => repository.git("rev-parse", "refs/semantic-review/active/no-review-id");
+  const reviews = () => { try { return fs.readdirSync(path.join(process.env.SEMANTIC_FLOW_HOME, "reviews")).sort(); } catch { return []; } };
+  const before = ref(), stored = reviews();
+  for (const command of ["status", "validate", "prepare", "review"]) {
+    const result = repository.result(process.execPath, [flowCli, command]);
+    assert.notEqual(result.status, 0, `${command} succeeded`);
+    assert.match(result.stderr, /The semantic implementation no-review-id has no review identity; it was created by an unreleased development build\. Start it again\./);
+    assert.equal(ref(), before, `${command} wrote the artifact`);
+    assert.deepEqual(reviews(), stored, `${command} wrote review data`);
+  }
+  assert.equal(repository.artifact.exists("review.json"), false);
+});
+
+test("review launched from another worktree of the repository reuses the running viewer", async (t) => {
+  const port = await reserveViewerPort();
+  const pids = new Set();
+  t.after(async () => { for (const pid of pids) await stopViewer(port, pid).catch(() => { try { process.kill(pid); } catch { /* Gone. */ } }); });
+  const repository = createRepository(t, "semantic-flow-shared-viewer-");
+  initializeImplementation(repository, { implementationId: "shared-viewer" });
+  // The review records the main worktree, which keeps reaching it.
+  repository.feedback("init");
+  const linked = path.join(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "semantic-linked-")), "linked");
+  t.after(() => fs.rmSync(path.dirname(linked), { recursive: true, force: true }));
+  repository.git("worktree", "add", "-q", "--detach", linked);
+  rememberImplementation(linked, "shared-viewer");
+  const launch = () => {
+    const result = spawnSync(process.execPath, [flowCli, "review"], {
+      cwd: linked, encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const started = /running persistently in the background \(PID (\d+)\)/.exec(result.stdout);
+    assert.ok(started, result.stdout);
+    pids.add(Number(started[1]));
+    return Number(started[1]);
+  };
+  const first = launch();
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.processId, first);
+  assert.equal(identity.repositoryRoot, repository.root);
+  assert.equal(launch(), first);
+  assert.equal(pids.size, 1);
+});
+
+test("review launched after the recorded worktree stopped reaching the review replaces its viewer", async (t) => {
+  const port = await reserveViewerPort();
+  const pids = new Set();
+  t.after(async () => { for (const pid of pids) await stopViewer(port, pid).catch(() => { try { process.kill(pid); } catch { /* Gone. */ } }); });
+  const repository = createRepository(t, "semantic-flow-relocated-viewer-");
+  initializeImplementation(repository, { implementationId: "relocated-viewer" });
+  const linked = path.join(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "semantic-linked-")), "linked");
+  t.after(() => fs.rmSync(path.dirname(linked), { recursive: true, force: true }));
+  repository.git("worktree", "add", "-q", "--detach", linked);
+  rememberImplementation(linked, "relocated-viewer");
+  const launch = (cwd) => {
+    const result = spawnSync(process.execPath, [flowCli, "review"], {
+      cwd, encoding: "utf8", timeout: 15_000,
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const started = /running persistently in the background \(PID (\d+)\)/.exec(result.stdout);
+    assert.ok(started, result.stdout);
+    pids.add(Number(started[1]));
+    return Number(started[1]);
+  };
+  // The review records the linked worktree, which serves it until it stops being
+  // a checkout. Its folder stays: Windows cannot remove the viewer's directory.
+  const first = launch(linked);
+  fs.rmSync(path.join(linked, ".git"));
+  const second = launch(repository.root);
+  assert.notEqual(second, first);
+  assert.throws(() => process.kill(first, 0), (error) => error.code === "ESRCH");
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.processId, second);
+  assert.equal(identity.repositoryRoot, repository.root);
+});
+
 test("review leaves a detached viewer running after the command exits", async (t) => {
   const port = await reserveViewerPort();
   let viewerPid;
@@ -768,9 +849,11 @@ test("concurrent review services isolate commands and reopen registered worktree
   const { repository: a } = createImplementationWithStages(t);
   const b = createRepository(t, "concurrent-review-b-");
   initializeImplementation(b); // Deliberately the same implementation ID.
-  const linked = a.path("../", path.basename(a.root) + "-linked");
-  // The linked worktree sees the same artifact as a.root.
-  a.git("worktree", "add", "--detach", linked, "HEAD");
+  // All worktrees of a repository share its reviews, so the third review is
+  // registered from a linked worktree of a third repository.
+  const { repository: c } = createImplementationWithStages(t);
+  const linked = c.path("../", path.basename(c.root) + "-linked");
+  c.git("worktree", "add", "--detach", linked, "HEAD");
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   const port = await reserveViewerPort();
   const deniedPortHook = a.path("denied-port.cjs");
@@ -831,15 +914,27 @@ test("concurrent review services isolate commands and reopen registered worktree
     await delay(150);
     const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
     assert.equal(responsive.status, 200);
-  } finally { fs.rmSync(heldLock, { recursive: true }); }
+  } finally {
+    // Moved aside before removal: removing it in place could remove a lock a waiter
+    // has just taken at the same path. A waiter may briefly hold a file open in it,
+    // which makes the move fail on Windows, so it is retried.
+    const released = `${heldLock}-released`;
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(heldLock, released); break; }
+      catch (error) { if (attempt >= 40) throw error; await delay(25); }
+    }
+    fs.rmSync(released, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
   assert.equal((await blockedStorage).status, 200);
   const linkedFeedback = module.feedbackDirectory(linked);
   assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);
   const context = module.captureReviewContext(third.reviewId);
   const oldGit = process.env.GIT_DIR;
   const oldLowerGit = process.env.git_dir;
-  process.env.git_dir = a.path(".git");
-  process.env.GIT_DIR = a.path(".git");
+  // The review's checks in this process read the review's own repository; the
+  // command must still not inherit the variables.
+  process.env.git_dir = c.path(".git");
+  process.env.GIT_DIR = c.path(".git");
   try {
     assert.equal(module.runReviewCommand(context, process.execPath, ["-e", "console.log(process.env.git_dir || process.env.GIT_DIR || 'clear')"]).trim(), "clear");
     assert.equal(module.runReviewCommand(context, "git", ["rev-parse", "--show-toplevel"]).trim(), linked.replaceAll("\\", "/"));
@@ -877,7 +972,7 @@ test("concurrent review services isolate commands and reopen registered worktree
   const storage = await request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation }).then((r) => r.json());
   assert.equal(storage.ok, true, JSON.stringify(storage)); assert.ok(storage.storage.bytes > 0);
   const deleted = await request(first, "api/reviews/delete", { reviewId: third.reviewId, generation: third.generation, fingerprint: storage.storage.fingerprint }).then((r) => r.json());
-  assert.equal(deleted.deleted, true); assert.equal(deleted.cleanupPending, false);
+  assert.deepEqual(deleted, { ok: true, deleted: true });
   assert.equal((await request(missingViewer, "api/review-state")).status, 409);
   assert.equal((await request(missingViewer, "api/attachments", upload)).status, 409);
   assert.equal((await request(missingViewer, "api/review-state", { reviewId: third.reviewId, generation: third.generation, changes: [] })).status, 409);

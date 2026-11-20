@@ -6,8 +6,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
-import { ArtifactDraft, commitArtifact } from '../../src/shared/artifact-store.ts';
+import { registerReview as registerActiveReview, readReview, patchReviewState, reviewDirectory, reviewId as activeReviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
+import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
+import { newReviewId, writeReviewId } from '../../src/shared/review-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 
@@ -16,12 +17,26 @@ function setup(t) {
   const old = process.env.SEMANTIC_FLOW_HOME;
   process.env.SEMANTIC_FLOW_HOME = path.join(directory, 'user-data');
   t.after(() => { if (old === undefined) delete process.env.SEMANTIC_FLOW_HOME; else process.env.SEMANTIC_FLOW_HOME = old; fs.rmSync(directory, { recursive: true, force: true }); });
-  for (const name of ['a', 'b']) fs.mkdirSync(path.join(directory, name));
+  for (const name of ['a', 'b']) {
+    fs.mkdirSync(path.join(directory, name));
+    execFileSync('git', ['init', '-q'], { cwd: path.join(directory, name) });
+  }
   return directory;
 }
+/** Makes the implementation active in the repository at root, as init does. */
+function activate(root, implementationId) {
+  if (readArtifact(root, implementationId)) return;
+  const draft = new ArtifactDraft(undefined);
+  draft.writeJson('manifest.json', { implementationId });
+  writeReviewId(draft, root, implementationId);
+  commitArtifact(root, undefined, draft);
+}
+// A review belongs to an active implementation; these tests make it active first.
+const registerReview = (root, implementationId, title) => { activate(root, implementationId); return registerActiveReview(root, implementationId, title); };
+const reviewId = (root, implementationId) => { activate(root, implementationId); return activeReviewId(root, implementationId); };
 const change = (keys, value, before) => ({ path: keys, before: before === undefined ? { present: false } : { present: true, value: before }, after: { present: true, value } });
 
-test('review identities isolate worktrees and persist across reopening', (t) => {
+test('review identities isolate repositories and persist across reopening', (t) => {
   const root = setup(t);
   const a = registerReview(path.join(root, 'a'), 'same-id', 'Review');
   const b = registerReview(path.join(root, 'b'), 'same-id', 'Review');
@@ -33,28 +48,26 @@ test('review identities isolate worktrees and persist across reopening', (t) => 
   assert.ok(fs.existsSync(path.join(reviewDirectory(a.id), 'snapshots')));
 });
 
-test('review folder names are readable, bounded and retain the full unique identity', (t) => {
+test('review IDs are random, readable, bounded and stored with the active artifact', (t) => {
   const root = setup(t), worktree = path.join(root, 'a');
-  const a = registerReview(worktree, 'Order Cancellation', 'An editable title');
-  const digest = createHash('sha256').update(JSON.stringify([fs.realpathSync(worktree), 'Order Cancellation'])).digest('hex');
-  assert.equal(path.basename(reviewDirectory(a.id)), `a--order-cancellation--${digest}`);
-  assert.equal(reviewId(worktree, 'Order Cancellation'), a.id);
+  const a = registerReview(worktree, 'Order-Cancellation', 'An editable title');
+  assert.match(path.basename(reviewDirectory(a.id)), /^a--order-cancellation--[a-f0-9]{64}$/);
+  assert.deepEqual(JSON.parse(readArtifact(worktree, 'Order-Cancellation').read('review.json')), { reviewId: a.id });
+  assert.equal(reviewId(worktree, 'Order-Cancellation'), a.id);
   const alias = path.join(root, 'alias'); fs.symlinkSync(worktree, alias, process.platform === 'win32' ? 'junction' : 'dir');
-  assert.equal(reviewId(alias, 'Order Cancellation'), a.id);
-  assert.equal(feedbackDirectory(worktree, 'Order Cancellation'), path.join(reviewDirectory(a.id), 'feedback'));
-  assert.equal(registerReview(worktree, 'Order Cancellation', 'A changed title').id, a.id);
-  const collision = registerReview(worktree, 'Order/Cancellation', 'Same readable name');
+  assert.equal(reviewId(alias, 'Order-Cancellation'), a.id);
+  assert.equal(feedbackDirectory(worktree, 'Order-Cancellation'), path.join(reviewDirectory(a.id), 'feedback'));
+  assert.equal(registerReview(worktree, 'Order-Cancellation', 'A changed title').id, a.id);
+  const collision = registerReview(worktree, 'order_cancellation', 'Same readable name');
   assert.ok(collision.id.startsWith('a--order-cancellation--')); assert.notEqual(collision.id, a.id);
-  const duplicateName = path.join(root, 'b', 'a'); fs.mkdirSync(duplicateName);
-  const other = registerReview(duplicateName, 'Order Cancellation', 'Another worktree');
-  assert.ok(other.id.startsWith('a--order-cancellation--')); assert.notEqual(other.id, a.id);
-  const longRoot = path.join(root, 'Long Worktree Name '.repeat(3).trim()); fs.mkdirSync(longRoot);
-  const long = registerReview(longRoot, 'Long Implementation Name '.repeat(20), 'Long');
-  assert.ok(long.id.length <= 132);
-  assert.match(registerReview(worktree, '日本語', 'Unicode').id, /^a--review--[a-f0-9]{64}$/);
-  assert.match(registerReview(worktree, '../Café: cancel?!', 'Escaped').id, /^a--cafe-cancel--[a-f0-9]{64}$/);
-  assert.equal(listReviews().length, 6);
-  for (const invalid of [digest, '../' + a.id, a.id + '/child', a.id.toUpperCase(), a.id + '.']) {
+  const other = registerReview(path.join(root, 'b'), 'Order-Cancellation', 'Another repository');
+  assert.ok(other.id.startsWith('b--order-cancellation--')); assert.notEqual(other.id, a.id);
+  assert.notEqual(newReviewId('a', 'same'), newReviewId('a', 'same'));
+  assert.ok(newReviewId('Long Worktree Name '.repeat(3).trim(), 'Long Implementation Name '.repeat(20)).length <= 132);
+  assert.match(newReviewId('a', '日本語'), /^a--review--[a-f0-9]{64}$/);
+  assert.match(newReviewId('a', '../Café: cancel?!'), /^a--cafe-cancel--[a-f0-9]{64}$/);
+  assert.equal(listReviews().length, 3);
+  for (const invalid of [a.id.slice(-64), '../' + a.id, a.id + '/child', a.id.toUpperCase(), a.id + '.']) {
     assert.throws(() => reviewDirectory(invalid), /Invalid review identity/);
   }
 });
@@ -176,11 +189,8 @@ test('relative user-store overrides cannot change meaning between CLI worktrees'
 test('registry lifecycle is explicit, generation guarded, and retains unavailable entries', (t) => {
   const root = setup(t), repo = path.join(root, 'a');
   // The artifact is stored in the repository's Git refs.
-  fs.mkdirSync(repo, { recursive: true }); execFileSync('git', ['init', '-q'], { cwd: repo });
-  const artifact = new ArtifactDraft(undefined);
-  artifact.writeJson('manifest.json', { implementationId: 'id' });
-  commitArtifact(repo, undefined, artifact);
   const review = registerReview(repo, 'id', 'Review');
+  assert.deepEqual(JSON.parse(readArtifact(repo, 'id').read('review.json')), { reviewId: review.id });
   assert.equal(registeredReviews()[0].available, true);
   assert.equal(setReviewCompleted(review.id, review.generation, true, null).completedAt, readReview(review.id).updatedAt);
   const complete = readReview(review.id);
@@ -189,10 +199,27 @@ test('registry lifecycle is explicit, generation guarded, and retains unavailabl
   assert.throws(() => setReviewCompleted(review.id, review.generation, false, null), /another tab/);
   assert.equal(setReviewCompleted(review.id, review.generation, false, complete.completedAt).completedAt, null);
   assert.throws(() => setReviewCompleted(review.id, 'old-generation', true, null), /replaced/);
-  fs.rmSync(repo, { recursive: true });
-  assert.equal(listReviews().length, 1);
+  // An implementation that is no longer active keeps its review listed as unavailable.
+  execFileSync('git', ['update-ref', '-d', 'refs/semantic-review/active/id'], { cwd: repo });
   assert.equal(registeredReviews()[0].available, false);
   assert.match(registeredReviews()[0].unavailableReason, /unavailable/);
+  assert.equal(listReviews().length, 1);
+});
+
+test('an active artifact without a review ID is an error and reading it never writes', (t) => {
+  const root = setup(t), repo = path.join(root, 'a');
+  const artifact = new ArtifactDraft(undefined);
+  artifact.writeJson('manifest.json', { implementationId: 'id' });
+  commitArtifact(repo, undefined, artifact);
+  const ref = () => execFileSync('git', ['rev-parse', 'refs/semantic-review/active/id'], { cwd: repo, encoding: 'utf8' });
+  const before = ref();
+  const missing = /The semantic implementation id has no review identity; it was created by an unreleased development build\. Start it again\./;
+  assert.throws(() => activeReviewId(repo, 'id'), missing);
+  assert.throws(() => feedbackDirectory(repo, 'id'), missing);
+  assert.throws(() => registerActiveReview(repo, 'id', 'Review'), missing);
+  assert.equal(ref(), before);
+  assert.equal(readArtifact(repo, 'id').type('review.json'), undefined);
+  assert.equal(fs.existsSync(path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews')), false);
 });
 
 test('review edits update activity timestamps while navigation preferences do not', (t) => {

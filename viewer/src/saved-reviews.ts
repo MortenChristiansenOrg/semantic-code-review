@@ -39,11 +39,11 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
   function paint() {
     renderLit(reviewCleanupView({
       title: review.title, location: review.repositoryRoot, id: review.id,
-      status: storage?.deletionPending || review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active",
+      status: review.completedAt ? "Completed" : "Active",
       storage: storage && {
         directory: storage.storageDirectory, size: storageSize(storage.bytes),
         categories: storage.categories.map((item) => ({ label: item.label, size: storageSize(item.bytes), detail: item.detail })),
-        drafts: storage.drafts, unresolved: storage.unresolved, deletionPending: Boolean(storage.deletionPending),
+        drafts: storage.drafts, unresolved: storage.unresolved,
         unusedSize: storageSize(storage.unusedBytes), unusedCount: storage.unused.length, referenceError: storage.referenceError || "",
       },
       busy, message, error,
@@ -53,7 +53,6 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
     const response = await api.inspectReviewStorage(target);
     const result = await response.json(); if (!response.ok || !result.ok) throw new Error(failureOf(result).error || "Could not inspect review storage.");
     storage = result.storage;
-    if (result.storage.error) error = result.storage.error;
   }
   dialog.addEventListener("close", () => dialog.remove());
   dialog.addEventListener("cancel", (event) => { if (busy) event.preventDefault(); });
@@ -72,8 +71,7 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
           const response = await api.deleteReviewData(request);
           const result = await response.json(); if (!response.ok || !result.ok) throw new Error(failureOf(result).error || "Could not clean review data.");
           if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && !reviewDeleted) markReviewDeleted();
-          if (result.deleted && !result.cleanupPending) { dialog.close(); await refreshReviews(true); return; }
-          if (result.cleanupPending) error = result.error ?? "";
+          dialog.close(); await refreshReviews(true); return;
         } else {
           const response = await api.cleanUnusedReviewData(request);
           const result = await response.json(); if (!response.ok || !result.ok) throw new Error(failureOf(result).error || "Could not clean review data.");
@@ -96,13 +94,13 @@ export function reviewsPanelModel(): ReviewsPanelView {
     busy: reviewListBusy, error: reviewListError,
     reviews: reviewList.map((review) => ({
       id: review.id, title: review.title, remote: Boolean(review.remote), current: isCurrentReview(review),
-      status: review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active",
+      status: review.completedAt ? "Completed" : "Active",
       subject: review.remote ? `${review.remote.remoteName}/${review.remote.branch}` : review.implementationId,
       location: review.remote?.sourceRoot || review.repositoryRoot,
       updatedAt: review.updatedAt, updatedText: new Date(review.updatedAt).toLocaleString(),
       unavailable: review.available ? null : String(review.unavailableReason ?? ""),
       canOpen: Boolean(review.available) && !isCurrentReview(review),
-      completed: Boolean(review.completedAt), deletionPending: Boolean(review.deletionPending),
+      completed: Boolean(review.completedAt),
     })),
   };
 }

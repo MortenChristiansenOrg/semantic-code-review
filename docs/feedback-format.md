@@ -4,7 +4,8 @@
 
 Feedback is mutable local workflow state under
 `~/.semantic-flow/reviews/<review-id>/feedback/`. The viewer and CLI use the
-same store, keyed by canonical artifact-worktree path and implementation ID.
+same store, keyed by the review ID stored in the implementation's active artifact,
+so all worktrees of a repository share it.
 `semantic-flow inspect --json` exposes each candidate's resolved `feedbackDirectory`;
 use that output instead of constructing a path. `SEMANTIC_FLOW_HOME` overrides
 the user data root and must be an absolute path. There is no migration or fallback
@@ -109,9 +110,31 @@ A review owns its feedback and files exclusively; identical attachments in
 separate reviews have separate stored copies. Explicit review deletion removes
 local feedback together with drafts, notes, approvals, attachments, and snapshots.
 The implementation artifact and archived or published provenance are unaffected.
-Deletion first records the retired generation under `~/.semantic-flow/deletions/`
-and moves its files into `~/.semantic-flow/trash/`. Pending removal remains
-retryable; a fresh session cannot start until it finishes. Stale writes fail.
+Deletion first moves the review's folder to a pending name, so stale writes fail,
+records in that folder the new review ID it is about to store, stores it in the
+implementation's artifact, and only then removes the folder; when the new ID
+cannot be stored, the folder is moved back and nothing changes. Files are removed
+only once the folder is renamed as deleted, never from a folder whose deletion may
+still roll back. Cleanup, registration and deletion settle an interrupted deletion
+by what the repository records. A registration run from a worktree whose artifact
+still holds the old ID moves the folder back. Otherwise the deletion is completed
+once the active artifact holds the new ID the deletion recorded, or the deletion
+marked the old ID retired, and the folder is moved back while the recorded
+repository still holds the old ID. Anything else proves nothing, since the
+repository may have moved and another one may sit at its old location, so the
+folder stays pending, as it does while an archive claims the implementation, until
+a `review` or `feedback` command runs from the repository or the repository has been missing for 30
+days. When the repository cannot be reached, holds no snapshot with the old ID,
+or an archive in progress claims it, deletion still succeeds and marks the old ID
+retired; the next registration that finds the old ID in the artifact stores a new
+one first, and starts the fresh review even while the folder waits for cleanup.
+The mark is removed once a new ID is stored and no folder of the deletion is left. A folder left behind by a completed deletion is
+removed by a later cleanup. A fresh review starts under the new ID.
+Cleanup records when it first finds a local review's Git directory missing and
+removes the review once it has been missing for 30 days; finding the directory
+again, or running a `review` or `feedback` command from the repository, starts that period over. Only a
+missing path counts; a directory that cannot be checked, for example for lack of
+permission, keeps its review.
 
 Unused-file cleanup keeps every persisted reference and protects fresh uploads
 and snapshots for one hour. Unreferenced files are retired inside the owning

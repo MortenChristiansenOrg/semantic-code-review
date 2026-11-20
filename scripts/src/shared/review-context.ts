@@ -41,9 +41,10 @@ export function assertReviewContext(context: ReviewContext): ReviewRecord {
   const review = readReview(context.reviewId);
   if (review.generation !== context.generation || review.repositoryRoot !== context.repositoryRoot || review.implementationId !== context.implementationId) throw new Error("This review session changed or was deleted. Reopen the review.");
   try {
-    if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The review worktree moved."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     // A worktree root always holds .git; without it the directory is no longer a checkout.
     if (!fs.existsSync(path.join(context.repositoryRoot, ".git"))) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+    // The implementation's artifact names its review; a deleted review's ID was replaced there.
+    if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The implementation has another review now. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     const artifact = readReviewArtifact(context.repositoryRoot, context.implementationId);
     if (!artifact) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     if (activeImplementationId(context.repositoryRoot, artifact.files) !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });

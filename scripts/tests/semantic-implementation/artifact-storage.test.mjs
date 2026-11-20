@@ -46,6 +46,28 @@ test("every worktree of the repository sees the same artifact", (t) => {
   assert.deepEqual(secondExport, exported);
 });
 
+test("the review ID stays private to the active artifact", (t) => {
+  const repo = createRepository(t);
+  initializeImplementation(repo);
+  const { reviewId } = JSON.parse(readArtifact(repo.root).read("review.json"));
+  assert.match(reviewId, /^[a-z0-9-]+--test-implementation--[a-f0-9]{64}$/);
+  beginStage(repo);
+  finalizeStage(repo);
+  repo.semantic("validate", "--publish");
+  assert.doesNotMatch(repo.semantic("export"), new RegExp(reviewId));
+  const destination = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "semantic-export-")), "artifact");
+  t.after(() => fs.rmSync(path.dirname(destination), { recursive: true, force: true }));
+  repo.semantic("export", "--destination", destination);
+  assert.ok(fs.existsSync(path.join(destination, "manifest.json")));
+  assert.equal(fs.existsSync(path.join(destination, "review.json")), false);
+  // Publication stores the same full form.
+  repo.semantic("prepare-branch", "--branch", "review/test-implementation");
+  const published = repo.git("ls-tree", "-r", "--name-only", "semantic-flow/test-implementation/metadata", ".semantic-review").split("\n");
+  assert.ok(published.includes(".semantic-review/manifest.json"));
+  assert.equal(published.some((file) => file.endsWith("review.json")), false);
+  assert.equal(JSON.parse(readArtifact(repo.root).read("review.json")).reviewId, reviewId);
+});
+
 test("the loser of two concurrent writers fails cleanly and leaves a whole artifact", async (t) => {
   const repo = createRepository(t);
   initializeImplementation(repo);

@@ -10,6 +10,7 @@ import {
   beginStage,
   createImplementationWithStages,
   createRepository,
+  feedbackCli,
   flowCli,
   implementationFromScript,
   initializeImplementation,
@@ -61,6 +62,9 @@ const {
   readFeedbackThread,
   viewerSnapshot,
   feedbackDirectory,
+  readReview,
+  registeredReviews,
+  reviewId,
 } = await import(moduleUrl);
 
 const implementation = {
@@ -814,13 +818,13 @@ test("readFeedbackThread reloads one thread without rebuilding implementation da
 });
 
 
-test("viewer and CLI feedback use the selected worktree across identical implementation IDs", (t) => {
+test("viewer and CLI feedback share one review across worktrees and isolate repositories with identical implementation IDs", (t) => {
   const { repository: first } = createImplementationWithStages(t);
   const { repository: otherRepo } = createImplementationWithStages(t);
   const linked = first.root + "-linked";
   first.git("worktree", "add", "--detach", linked, "HEAD");
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
-  // The linked worktree sees the same artifact as first.root.
+  // The linked worktree sees the same artifact, and so the same review, as first.root.
   const roots = [first.root, linked, otherRepo.root];
   const ids = roots.map((repoRoot) => {
     const result = exportFeedback({ repoRoot, implementation: buildFeedbackTargetData(repoRoot) },
@@ -829,17 +833,45 @@ test("viewer and CLI feedback use the selected worktree across identical impleme
     assert.equal(fs.existsSync(path.join(repoRoot, ".semantic-review-feedback")), false);
     return result.exported[0].threadId;
   });
-  assert.equal(new Set(roots.map((root) => feedbackDirectory(root))).size, 3);
+  assert.equal(feedbackDirectory(linked), feedbackDirectory(first.root));
+  assert.notEqual(feedbackDirectory(otherRepo.root), feedbackDirectory(first.root));
   assert.equal(new Set(ids).size, 1); // Same IDs remain isolated by review identity.
   const before = fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8");
-  const replies = exportFeedbackReplies({ repoRoot: linked }, [{ threadId: ids[1], ref: "reply", body: "Only in the linked worktree" }]);
+  const replies = exportFeedbackReplies({ repoRoot: linked }, [{ threadId: ids[1], ref: "reply", body: "Seen from every worktree" }]);
   assert.equal(replies.ok, true);
-  assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [1, 2, 1]);
+  assert.deepEqual(roots.map((root, i) => readFeedbackThread(root, ids[i]).comments.length), [2, 2, 1]);
   // A worktree is selected for the implementation it has claimed.
   rememberImplementation(linked, "test-implementation");
   const inspection = JSON.parse(execFileSync(process.execPath, [flowCli, "inspect", "--project", linked, "--json"], { cwd: first.root, encoding: "utf8" }));
-  assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(linked));
+  assert.equal(inspection.selected.feedbackDirectory, feedbackDirectory(first.root));
   assert.notEqual(fs.readFileSync(path.join(path.dirname(feedbackDirectory(linked)), "review.json"), "utf8"), before);
+});
+
+test("a moved worktree keeps its review and feedback, and commands record the new location", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const linked = fs.realpathSync(path.dirname(repository.root)) + path.sep + path.basename(repository.root) + "-linked";
+  const moved = linked + "-moved";
+  repository.git("worktree", "add", "--detach", linked, "HEAD");
+  t.after(() => { for (const directory of [linked, moved]) fs.rmSync(directory, { recursive: true, force: true }); });
+  const feedback = (cwd, ...args) => execFileSync(process.execPath, [...feedbackCli, ...args], { cwd, encoding: "utf8" });
+  feedback(linked, "init");
+  const id = reviewId(linked, "test-implementation"), registered = readReview(id);
+  assert.equal(registered.repositoryRoot, linked);
+  const thread = exportFeedback({ repoRoot: linked, implementation: buildFeedbackTargetData(linked) },
+    [{ kind: "stage", id: "implementation", body: "Unanswered", clientId: "moved" }]).exported[0].threadId;
+  // A command from another working worktree leaves the recorded location alone.
+  feedback(repository.root, "validate");
+  assert.equal(readReview(id).repositoryRoot, linked);
+  repository.git("worktree", "move", linked, moved);
+  assert.equal(registeredReviews().find((entry) => entry.id === id).available, false);
+  feedback(moved, "validate");
+  const relocated = readReview(id);
+  assert.equal(relocated.repositoryRoot, moved);
+  assert.equal(relocated.generation, registered.generation);
+  assert.equal(relocated.gitCommonDir, fs.realpathSync(repository.path(".git")));
+  assert.equal(reviewId(moved, "test-implementation"), id);
+  assert.equal(readFeedbackThread(moved, thread).comments.length, 1);
+  assert.equal(registeredReviews().find((entry) => entry.id === id).available, true);
 });
 
 test("concurrent first submissions initialize shared feedback once and deduplicate retries", async (t) => {

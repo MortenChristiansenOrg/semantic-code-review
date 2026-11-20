@@ -151,7 +151,8 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
 
 - **Feedback artifact**: The mutable local review workflow state under
   `~/.semantic-flow/reviews/<review-id>/feedback/`, independent from the artifact and never
-  committed on stage branches.
+  committed on stage branches. The review ID is random and stored in the active
+  artifact, so all worktrees of a repository share the review.
 - **Thread**: A single review conversation opened by the user and continued by
   the agent or user, anchored to a target and stage head.
 - **Comment**: One entry in a thread's ordered timeline, authored by the user

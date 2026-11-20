@@ -28,10 +28,10 @@ test('diagnostics report a specific file and process without executing path text
     assert.equal(command, 'lsof'); assert.deepEqual(args, ['-Fpcn', '--', file]);
     return `p123\ncEditor\nn${file}\nn${file}\n`;
   });
-  const result = cleanupFailure(Object.assign(new Error('File is open'), { code: 'EBUSY', path: file }), 'wrong fallback', 'Retry file removal.');
+  const result = cleanupFailure(Object.assign(new Error('File is open'), { code: 'EBUSY', path: file }), 'wrong fallback', 'Retry deletion.');
   assert.ok(result.includes(JSON.stringify(file)));
   assert.match(result, /Editor \(PID 123\)/);
-  assert.match(result, /Retry file removal/);
+  assert.match(result, /Retry deletion/);
   assert.equal(fs.readFileSync(file, 'utf8'), 'keep');
 });
 

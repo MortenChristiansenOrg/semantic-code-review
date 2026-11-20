@@ -31,13 +31,13 @@ import {
 } from "./shared/viewer-lifecycle.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
-import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, removeOrphanedReviews, reviewDeletionConfirmed, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, isolateReviewEnvironment, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
 
 export { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
-import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, pendingReviewDeletions } from "./shared/review-cleanup.js";
+import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "./shared/review-cleanup.js";
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { evidenceRange } from "./shared/evidence.js";
@@ -1719,14 +1719,14 @@ function feedbackFor(context: ReviewContext): ReviewFeedback {
 
 function feedbackContext(repoRoot: string, context: ReviewContext | null | undefined, initialize = false): ReviewContext {
   const implementation = implementationSummary(repoRoot);
-  const id = reviewId(repoRoot, implementation.implementationId);
   if (context) {
     assertReviewContext(context);
-    if (context.reviewId !== id) throw new Error("The feedback command belongs to another review.");
+    if (context.reviewId !== reviewId(repoRoot, implementation.implementationId)) throw new Error("The feedback command belongs to another review.");
     return context;
   }
-  if (initialize) registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
-  return captureReviewContext(id);
+  // Registration may give the implementation a new review ID; use the one it returns.
+  if (initialize) return captureReviewContext(registerReview(repoRoot, implementation.implementationId, implementation.title ?? "").id);
+  return captureReviewContext(reviewId(repoRoot, implementation.implementationId));
 }
 
 function cliErrorMessage(error: unknown): string {
@@ -2153,12 +2153,13 @@ function approvedFileEndpoint(input: ReceivedApprovalEndpoint, data: Implementat
 }
 
 export function registeredReviews(): Wire.ReviewSummary[] {
-  return [...listReviews().map((record) => {
+  removeOrphanedReviews();
+  return listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
     const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
     return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
-  }), ...pendingReviewDeletions()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+  }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
 /** Reopen using a registry identity, with no caller-supplied path or command. */
@@ -2185,9 +2186,27 @@ export async function openRegisteredReview(id: string, generation: string): Prom
   } finally { child.unref(); }
 }
 
+/** Whether the session's review was replaced or deleted. A missing review counts
+ * only once its deletion is confirmed: a deletion still under way may roll back. */
 export function reviewSessionUnavailable(context: ReviewContext) {
-  try { return readReview(context.reviewId).generation !== context.generation; }
-  catch (error) { return errorCode(error) === "REVIEW_UNAVAILABLE"; }
+  const replaced = () => readReview(context.reviewId).generation !== context.generation;
+  try { return replaced(); }
+  catch (error) {
+    if (errorCode(error) !== "REVIEW_UNAVAILABLE") return false;
+    if (reviewDeletionConfirmed(context.reviewId)) return true;
+    // A deletion rolled back while this waited for it.
+    try { return replaced(); } catch { return false; }
+  }
+}
+/** Whether a launch of the session may replace a running viewer of the same
+ * review: the review still records the worktree the launch serves. A launch that
+ * read the review before another launch recorded a different worktree is
+ * outdated, and the viewer of the recorded worktree is the one to keep. */
+export function viewerLaunchCurrent(context: ReviewContext) {
+  try {
+    const record = readReview(context.reviewId);
+    return record.generation === context.generation && record.repositoryRoot === context.repositoryRoot;
+  } catch { return false; }
 }
 /** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
 export function reviewRetirementCheck(context: ReviewContext) {
@@ -2196,14 +2215,14 @@ export function reviewRetirementCheck(context: ReviewContext) {
   let original: string | null | undefined;
   try { original = identity(); } catch (error) { if (errorCode(error) === "ENOENT") original = null; }
   return () => {
-    if (fs.existsSync(reviewDeletionPath(context.reviewId, context.generation))) return true;
     let current: string;
-    try { current = identity(); } catch (error) { return errorCode(error) === "ENOENT"; }
-    if (original === null) return true;
-    if (original === undefined) {
-      // A new generation may have appeared while the initial identity was unreadable.
+    // A missing folder may be a deletion still under way, which may roll back.
+    try { current = identity(); } catch (error) { return errorCode(error) === "ENOENT" && reviewDeletionConfirmed(context.reviewId); }
+    if (original === null || original === undefined) {
+      // A new generation may have appeared while the initial identity was missing or
+      // unreadable; the same generation is the same review, moved back by a rollback.
       try { if (readReview(context.reviewId).generation !== context.generation) return true; }
-      catch (error) { return errorCode(error) === "REVIEW_UNAVAILABLE"; }
+      catch (error) { return errorCode(error) === "REVIEW_UNAVAILABLE" && reviewDeletionConfirmed(context.reviewId); }
       original = current;
     }
     return current !== original;
@@ -2876,16 +2895,20 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
   }
 }
 
-async function serve(repoRoot: string, requested: RequestedReview | null) {
+async function serve(launchRoot: string, requested: RequestedReview | null) {
   const viewerDir = locateViewerDir();
-  const implementation = implementationSummary(repoRoot);
+  const implementation = implementationSummary(launchRoot);
   // A direct start keeps acting on the implementation it found, whatever else becomes active later.
   if (!requested) selectImplementation(implementation.implementationId);
   const registered = requested
     ? readReview(requested.reviewId)
-    : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
+    : registerReview(launchRoot, implementation.implementationId, implementation.title ?? "");
   const context = captureReviewContext(registered.id);
-  if (requested && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
+  if (requested && (reviewId(launchRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
+  // All worktrees of the repository share the review. The viewer serves the one the
+  // review records, whichever worktree launched it, so its identity matches the
+  // review context and a later launch from any worktree finds it running.
+  const repoRoot = context.repositoryRoot;
   const dataSource = createViewerWorker(repoRoot, context, false);
   startupWorker = dataSource;
   const fingerprint = createHash("sha256");
@@ -2898,14 +2921,16 @@ async function serve(repoRoot: string, requested: RequestedReview | null) {
   let port = registered.viewer?.port || viewerPort();
   let server: http.Server | null = null;
   const fallback = 20000 + (Number.parseInt(context.reviewId.slice(-64, -56), 16) % 40000);
-  const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome() && occupant.repositoryRoot === context.repositoryRoot;
+  // A viewer of this review is recognized by the review, not by the worktree it
+  // serves: one serving a worktree the review no longer records is replaced.
+  const matching = (occupant: ViewerIdentity | null): occupant is ViewerIdentity => occupant !== null && occupant.reviewId === context.reviewId && occupant.generation === context.generation && occupant.reviewHome === reviewHome();
   for (let attempt = 0; attempt < 40 && !server; attempt++) {
     try {
       server = await serveViewer({ viewerDir, port, repoRoot, implementationId: implementation.implementationId, dataSource, viewerVersion, context });
     } catch (error) {
       if (!["EADDRINUSE", "EACCES"].includes(errorCode(error) ?? "")) throw error;
       const occupant = await probeViewer(port);
-      if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion) {
+      if (matching(occupant) && occupant.healthy !== false && occupant.viewerVersion === viewerVersion && occupant.repositoryRoot === context.repositoryRoot) {
         await dataSource.close();
         const url = `http://${VIEWER_HOST}:${port}/`;
         notifyLauncher({ type: "ready", url, repositoryRoot: repoRoot, reviewId: context.reviewId, processId: occupant.processId, implementation });
@@ -2914,6 +2939,11 @@ async function serve(repoRoot: string, requested: RequestedReview | null) {
       }
       if (process.env.SEMANTIC_VIEW_NO_REPLACE) throw new Error(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
       if (matching(occupant)) {
+        // Read the review again right before stopping it: a viewer that a later
+        // launch started for the worktree the review now records must stay.
+        if (!viewerLaunchCurrent(context)) {
+          throw new Error(`The review changed while this viewer started, so the viewer running at http://${VIEWER_HOST}:${port}/ is kept. Launch the review again to open it.`);
+        }
         await stopViewerAndWait(occupant, port);
       } else {
         // A different review (or another application) keeps its port. Stable

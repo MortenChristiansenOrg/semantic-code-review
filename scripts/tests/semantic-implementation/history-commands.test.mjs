@@ -583,7 +583,8 @@ test("restack rewrites only the manifest and the stage inventories follow from G
   finalizeStage(repository, { id: "persistence", file: "persistence.txt", contents: "persistence v1\n" });
   const prefix = "semantic-flow/test-implementation";
   const documents = storedDocuments(repository);
-  assert.deepEqual([...documents.keys()], ["requirements/story.json", "stages/persistence.json", "stages/policy.json"]);
+  // review.json holds the private review ID.
+  assert.deepEqual([...documents.keys()], ["requirements/story.json", "review.json", "stages/persistence.json", "stages/policy.json"]);
   for (const [file, bytes] of documents) {
     if (file.endsWith(".json")) assert.equal("change" in JSON.parse(bytes), false, file);
   }
