@@ -729,7 +729,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   }
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
-    return m ? m.classification : "behavior";
+    // A classification this viewer does not know arrives absent and is shown neutrally.
+    return m ? m.classification || "unclassified" : "behavior";
   }
   // When a file is split across nodes, resolve which node owns each changed
   // line (keyed "old:<n>"/"new:<n>") from the membership hunk or line-range

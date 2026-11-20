@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -30,11 +31,18 @@ function reservePort() {
   });
 }
 
+function exited(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { if (error.code === "ESRCH") return true; throw error; }
+}
+
+/** Stops a viewer. One that already exited is not asked again: its port may since
+ * serve another test's viewer. */
 async function stopViewer({ url, pid }) {
+  if (pid !== undefined && exited(pid)) return;
   if (url) await fetch(url + "api/shutdown", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
   for (let attempt = 0; pid !== undefined && attempt < 100; attempt++) {
-    try { process.kill(pid, 0); }
-    catch (error) { if (error.code === "ESRCH") return; throw error; }
+    if (exited(pid)) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (pid !== undefined) assert.fail(`Viewer process ${pid} did not exit after shutdown`);
@@ -220,6 +228,11 @@ test("the viewer accepts and rejects requests as before it read them into protoc
   await post("ApiFailure", "api/feedback/reply", { implementationId: "other", threadId, body: "Reply", attachments: ignored }, 409);
   await post("ApiFailure", "api/feedback/reply", { implementationId, body: "Reply", attachments: ignored }, 400);
   await post("ApiFailure", "api/feedback/reply", { implementationId, threadId, body: "Reply", attachments: ignored }, 422);
+  // A truthy client ID that is not a string is the reply reference "0", so a retry
+  // of a reply sent that way adds no second comment.
+  const first = await post("ThreadActionResponse", "api/feedback/reply", { implementationId, threadId, body: "Same reply.", clientId: "0" });
+  const retried = await post("ThreadActionResponse", "api/feedback/reply", { implementationId, threadId, body: "Same reply.", clientId: 42 });
+  assert.equal(retried.comment.id, first.comment.id);
   const unknownStage = await post("FeedbackExportResponse", "api/feedback/export", { implementationId, replies: [], notes: [
     { ref: 0, kind: "node", id: "implementation-change", stageId: 42, body: "Which stage?", attachments: [] },
   ] }, 422);
@@ -235,6 +248,14 @@ test("the viewer accepts and rejects requests as before it read them into protoc
   const view = await post("ApiFailure", "api/approval-comparison", { ...endpoint, snapshotId: "", mode: "bogus" }, 409);
   assert.match(view.error, /Invalid comparison view/);
 
+  // A state change's sides are compared exactly as sent: an absent value that names a value matches nothing.
+  const named = await post("ApiFailure", "api/review-state", { ...target, changes: [
+    { path: ["specificationOpen", "named"], before: { present: false, value: null }, after: { present: true, value: true } },
+  ] }, 409);
+  assert.match(named.error, /changed in another tab/);
+  const { state } = await get("ReviewStateResponse", "api/review-state");
+  assert.equal(Object.hasOwn(state.specificationOpen ?? {}, "named"), false);
+
   const otherReview = await post("ApiFailure", "api/review-state", { ...target, reviewId: "other", changes: null }, 409);
   assert.match(otherReview.error, /another review/);
   const page = await get("ApiFailure", `api/diff?${new URLSearchParams({ stage: stage.id, path: file.path, base: file.baseRevision, head: stage.headRevision, mode: "bogus" })}`, 422);
@@ -247,23 +268,44 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   // Content the schema rejects, as an older artifact or a remote review may hold.
   const stagePath = ".semantic-review/stages/implementation.json";
   const stage = repository.readJson(stagePath);
-  stage.nodes.push({ id: "malformed-change", description: "A change without a classification.", changes: [{ path: "implementation.md" }] });
+  // The file's only node change has a classification this viewer does not know.
+  stage.nodes[0].changes[0].classification = "mystery";
+  stage.nodes.push({ id: "malformed-change", description: "Changes without a path or with malformed ownership.",
+    changes: [{ classification: "test" }, { path: "implementation.md", classification: "test", hunks: "all" }] });
   (stage.evidence ??= []).push({ id: "call", kind: "video-call", summary: "Walked through the change", inline: "transcript <ok>",
     attachments: [], specificationRefs: [], capturedAt: "2026-10-30T10:00:00Z", nodeRefs: ["implementation-change"] });
   repository.write(stagePath, JSON.stringify(stage));
   await startViewer(viewer, repository);
-  const { captured, get } = await client(viewer.url);
+  const { captured, get, post } = await client(viewer.url);
 
   const { implementation: { stages: [served] } } = await get("ImplementationResponse", "api/implementation");
-  // A malformed node change is left out; its node, its file and the rest of the stage are served.
-  assert.deepEqual(served.nodes.map((node) => [node.id, node.changes.length]), [["implementation-change", 1], ["malformed-change", 0]]);
-  assert.deepEqual(served.files.map((file) => [file.path, file.memberships.map((membership) => membership.nodeId)]), [["implementation.md", ["implementation-change"]]]);
+  // A node change without a path or with malformed ownership is left out; its node, its file
+  // and the rest of the stage are served. An unknown classification is left out of a change
+  // that keeps its file, so the file stays under its node and can be approved.
+  assert.deepEqual(served.nodes.map((node) => [node.id, node.changes]), [
+    ["implementation-change", [{ path: "implementation.md" }]], ["malformed-change", []],
+  ]);
+  const [file] = served.files;
+  assert.deepEqual(served.files.map(({ path, memberships }) => [path, memberships]), [["implementation.md", [{ nodeId: "implementation-change" }]]]);
+  await post("ApprovalSnapshotResponse", "api/approval-snapshots", { stageId: served.id, nodeId: "implementation-change", path: file.path,
+    baseRevision: file.baseRevision, headRevision: served.headRevision, fileRevision: file.revision, ownership: file.memberships[0] });
   // Evidence of an unknown kind keeps its output as generic evidence.
   const call = served.insights.find((insight) => insight.collection === "evidence" && insight.id === "call");
   assert.equal(call.meta, "video-call");
   assert.equal(call.evidence.kind, "other");
   assert.equal(call.evidence.inline, "transcript <ok>");
   assert.deepEqual(protocolErrors(captured), []);
+});
+
+test("stopping a viewer that already exited sends nothing to its port", async (t) => {
+  // Another server now listens where the stopped viewer did.
+  const requests = [];
+  const server = http.createServer((request, response) => { requests.push(request.url); response.end("{}"); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const { pid } = spawnSync(process.execPath, ["-e", ""]);
+  await stopViewer({ url: `http://127.0.0.1:${server.address().port}/`, pid });
+  assert.deepEqual(requests, []);
 });
 
 test("the protocol check reports a body that drifts from its type", () => {

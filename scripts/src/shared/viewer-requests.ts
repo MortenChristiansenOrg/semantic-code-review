@@ -95,11 +95,14 @@ export function parseCompletion(fields: JsonRecord): Wire.ReviewCompletionReques
   return { ...parseReviewTarget(fields), completed, expectedCompletedAt };
 }
 
+/** One side of a state change, with every field as received: patchReviewState
+ * compares it exactly, so a side with fields beyond its shape (an absent value that
+ * still names a value) matches no stored value and is rejected as a conflict. */
 function stateValue(value: unknown): Wire.ReviewStateValue {
   if (!isRecord(value) || typeof value.present !== "boolean") throw new Error("Invalid state change value.");
-  if (!value.present) return { present: false };
+  if (!value.present) return { ...value, present: false };
   if (!Object.hasOwn(value, "value")) throw new Error("Invalid state change value.");
-  return { present: true, value: value.value };
+  return { ...value, present: true, value: value.value };
 }
 
 /** Review state changes. patchReviewState checks their limits; this establishes
@@ -271,12 +274,14 @@ export function parseFeedbackExport(fields: JsonRecord): ReceivedFeedbackExport 
 }
 
 /** A thread action as received. Its attachments are read only when a reply is sent,
- * after the implementation and thread are checked; resolve and reopen ignore them. */
-export type ReceivedThreadAction = Omit<Wire.ThreadActionRequest, "attachments"> & { attachments?: unknown };
+ * after the implementation and thread are checked; resolve and reopen ignore them.
+ * A client ID that is not a string is kept as sent: when it is truthy it still stands
+ * in for the reply's hashed reference, and the reply reads it as reference "0". */
+export type ReceivedThreadAction = Omit<Wire.ThreadActionRequest, "attachments" | "clientId"> & { attachments?: unknown; clientId?: unknown };
 
 /** A thread action; its handler rejects an empty thread ID after checking the implementation. */
 export function parseThreadAction(fields: JsonRecord): ReceivedThreadAction {
-  const body = stringField(fields, "body"), clientId = stringField(fields, "clientId");
+  const body = stringField(fields, "body"), clientId = fields.clientId;
   return {
     implementationId: text(fields, "implementationId"), threadId: text(fields, "threadId"),
     ...(body !== undefined ? { body } : {}), ...(clientId !== undefined ? { clientId } : {}),

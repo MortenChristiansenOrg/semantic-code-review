@@ -184,7 +184,8 @@ const fieldsOf = (value: unknown): JsonRecord => isRecord(value) ? value : {};
 // have no $schema, base branch or insight collections. The viewer therefore
 // narrows artifact documents field by field into the wire types it sends. It
 // fails only where it cannot render at all; a missing display value becomes
-// empty and a node change whose ownership is malformed is left out.
+// empty, an unknown classification is left out, and a node change whose path or
+// ownership is malformed is left out.
 
 /** The implementation manifest fields the viewer reads. */
 interface ViewerManifest {
@@ -258,17 +259,19 @@ const displayString = (value: unknown, key: string): string => stringField(value
 const stringsOf = (value: unknown): string[] => isList(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
 /** A node's change of one file, or undefined when it is malformed. Ownership decides
- * which lines a node shows, so a malformed change is left out instead of showing the
- * wrong lines; the stage and the file are still shown. */
+ * which lines a node shows, so a change with a malformed path or ownership is left out
+ * instead of showing the wrong lines; the stage and the file are still shown. An
+ * unknown classification only labels the file, so the change keeps its file without it. */
 function readNodeChange(value: unknown): ViewerNodeChange | undefined {
   const entry = fieldsOf(value);
   const { path: filePath, classification, hunks, lineRanges } = entry;
   const isHunk = (hunk: unknown): hunk is number => Number.isInteger(hunk);
-  if (typeof filePath !== "string" || !isClassification(classification)) return undefined;
+  if (typeof filePath !== "string") return undefined;
   if (hunks !== undefined && !(isList(hunks) && hunks.every(isHunk))) return undefined;
   if (lineRanges !== undefined && !(isList(lineRanges) && lineRanges.every(isLineRange))) return undefined;
   return {
-    path: filePath, classification,
+    path: filePath,
+    ...(isClassification(classification) ? { classification } : {}),
     ...(hunks !== undefined ? { hunks } : {}),
     ...(lineRanges !== undefined ? { lineRanges } : {}),
   };
@@ -1180,7 +1183,7 @@ function fileRevision(stage: DiffRange, file: { path: string; previousPath?: str
  * JSON compares equal to the original. */
 function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path"> {
   return {
-    classification: change.classification,
+    ...(change.classification ? { classification: change.classification } : {}),
     ...(change.hunks ? { hunks: change.hunks } : {}),
     ...(change.lineRanges ? { lineRanges: change.lineRanges } : {}),
   };

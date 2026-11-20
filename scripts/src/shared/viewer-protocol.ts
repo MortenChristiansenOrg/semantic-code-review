@@ -96,14 +96,16 @@ export type LineRange = { old: LineSpan; new?: LineSpan } | { old?: LineSpan; ne
 /** A node's ownership of one changed file: the whole file, selected hunks, or line ranges. */
 export interface FileMembership {
   nodeId: string;
-  classification: Classification;
+  /** Absent when the artifact records a classification this viewer does not know. */
+  classification?: Classification;
   hunks?: number[];
   lineRanges?: LineRange[];
 }
 
 export interface NodeChange {
   path: string;
-  classification: Classification;
+  /** Absent when the artifact records a classification this viewer does not know. */
+  classification?: Classification;
   hunks?: number[];
   lineRanges?: LineRange[];
 }
