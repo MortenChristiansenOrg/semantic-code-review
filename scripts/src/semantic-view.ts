@@ -1644,7 +1644,8 @@ export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets)
     const [, stageId, filePath] = match;
     const stage = implementation.stages.find((s) => s.id === stageId);
     if (!stage) throw new Error(`unknown stage "${stageId}"`);
-    return { "target-kind": "file", stage: stageId, path: filePath, label: filePath };
+    // A label must show something; a path of only whitespace is shown quoted.
+    return { "target-kind": "file", stage: stageId, path: filePath, label: filePath.trim() ? filePath : JSON.stringify(filePath) };
   }
   if (note.kind === "line") {
     const match = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(noteId);

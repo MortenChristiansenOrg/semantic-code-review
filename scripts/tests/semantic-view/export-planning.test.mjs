@@ -1153,9 +1153,12 @@ test("mapNoteTarget keeps carriage returns and line feeds in file and line paths
     { "target-kind": "file", stage: "implementation", path: filePath, label: filePath });
   assert.deepEqual(mapNoteTarget({ kind: "line", id: `l:implementation:old:3:${filePath}` }, implementation),
     { "target-kind": "line", stage: "implementation", path: filePath, side: "old", line: 3, label: `${filePath}:3` });
+  assert.deepEqual(mapNoteTarget({ kind: "file", id: "f:implementation:\r\n" }, implementation),
+    { "target-kind": "file", stage: "implementation", path: "\r\n", label: '"\\r\\n"' });
 });
 
-test("file and line feedback on paths with line breaks is sent and its line snapshot resolves", (t) => {
+// Windows forbids line breaks in file names.
+test("file and line feedback on paths with line breaks is sent and its line snapshot resolves", { skip: process.platform === "win32" }, (t) => {
   const repository = createRepository(t);
   const name = "line\nbreak\r.txt";
   repository.commitFile(name, "one\ntwo\n", "Original");
