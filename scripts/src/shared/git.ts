@@ -4,10 +4,12 @@ import { fail } from "./errors.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 
 /** Git's repository-local variables (`git rev-parse --local-env-vars`, plus the
- * numbered config pairs and the namespace). Git sets them for hooks and for
- * `git rebase --exec`; inherited, they would point the CLI's commands at another
- * repository, worktree or index than the one the CLI selected. */
-const REPOSITORY_LOCAL_GIT_VARIABLE = /^GIT_(ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|OBJECT_DIRECTORY|DIR|WORK_TREE|IMPLICIT_WORK_TREE|GRAFT_FILE|INDEX_FILE|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|PREFIX|SHALLOW_FILE|COMMON_DIR|NAMESPACE)$/i;
+ * numbered config pairs and the namespace), and the variables that change how a
+ * repository is found, how pathspecs match, or forbid ref updates. Git sets
+ * several for hooks and for `git rebase --exec`; inherited, they would point the
+ * CLI's commands at another repository, worktree or index than the one the CLI
+ * selected, or change what its commands match. */
+const REPOSITORY_LOCAL_GIT_VARIABLE = /^GIT_(ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|OBJECT_DIRECTORY|DIR|WORK_TREE|IMPLICIT_WORK_TREE|GRAFT_FILE|INDEX_FILE|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|PREFIX|SHALLOW_FILE|COMMON_DIR|NAMESPACE|QUARANTINE_PATH|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|LITERAL_PATHSPECS|GLOB_PATHSPECS|NOGLOB_PATHSPECS|ICASE_PATHSPECS)$/i;
 
 /** This process's environment without Git's repository-local variables, with
  * the variables the CLI sets for one command, such as a temporary index, on top. */
