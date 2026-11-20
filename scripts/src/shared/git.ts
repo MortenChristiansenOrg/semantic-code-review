@@ -3,6 +3,30 @@ import process from "node:process";
 import { fail } from "./errors.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 
+/** Git's repository-local variables (`git rev-parse --local-env-vars`, plus the
+ * numbered config pairs and the namespace). Git sets them for hooks and for
+ * `git rebase --exec`; inherited, they would point the CLI's commands at another
+ * repository, worktree or index than the one the CLI selected. */
+const REPOSITORY_LOCAL_GIT_VARIABLE = /^GIT_(ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|OBJECT_DIRECTORY|DIR|WORK_TREE|IMPLICIT_WORK_TREE|GRAFT_FILE|INDEX_FILE|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|PREFIX|SHALLOW_FILE|COMMON_DIR|NAMESPACE)$/i;
+
+/** This process's environment without Git's repository-local variables, with
+ * the variables the CLI sets for one command, such as a temporary index, on top. */
+export function gitEnvironment(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (REPOSITORY_LOCAL_GIT_VARIABLE.test(key)) delete env[key];
+  }
+  return { ...env, ...overrides };
+}
+
+/** Removes Git's repository-local variables from this process, so every child
+ * process, Git or not, acts on the repository the CLI selects. */
+export function isolateGitEnvironment(): void {
+  for (const key of Object.keys(process.env)) {
+    if (REPOSITORY_LOCAL_GIT_VARIABLE.test(key)) delete process.env[key];
+  }
+}
+
 export interface GitOptions {
   cwd?: string;
   allowFailure?: boolean;
@@ -39,6 +63,7 @@ export function git(
   try {
     const output = execFileSync("git", args, {
       cwd,
+      env: gitEnvironment(),
       encoding,
       windowsHide: true,
       maxBuffer: SUBPROCESS_MAX_BUFFER,
@@ -76,10 +101,7 @@ export function gitRaw(
     encoding,
     windowsHide: true,
     maxBuffer: SUBPROCESS_MAX_BUFFER,
-    env: {
-      ...process.env,
-      ...env,
-    },
+    env: gitEnvironment(env),
     stdio: ["pipe", "pipe", "pipe"],
   });
   // A child that exits before Node kills it on overflow reports status 0
