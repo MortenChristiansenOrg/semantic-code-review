@@ -1,5 +1,5 @@
-// The whole page as one lit template. The diff panel, not yet migrated, is
-// applied from legacy HTML strings that keep their existing DOM between renders.
+// The whole page as one lit template. Dialogs and the floating tooltip render
+// into their own containers outside the page.
 import { html, nothing, render, type TemplateResult } from "lit-html";
 import { agentBarView, type AgentBarView } from "./agent-bar";
 import { coverageView, type CoverageView } from "./coverage";

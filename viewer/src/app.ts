@@ -4,12 +4,17 @@
 /* Semantic Flow review viewer — Cinema.
    Renders a semantic implementation artifact (window.SEMANTIC_IMPLEMENTATION) as a full-bleed
    inline-diff reading experience. */
+import { render as renderLit } from "lit-html";
 import * as api from "./api";
 import { aggregateApprovalState } from "./approvals";
 import { selectedNodeForFile } from "./files";
-import { esc } from "./html";
-import { lineThreadIsland, renderLineThreads } from "./views/line-threads";
+import { clearSelectionHits, hasSelectionHits, highlightSelectionHits } from "./selection-hits";
+import { fileSearchView } from "./views/file-search";
+import { highlightCode, langFor } from "./views/highlight";
+import { codeInsightView, evidenceView } from "./views/insight-dialogs";
 import { renderPage } from "./views/page";
+import { reviewCleanupView, reviewsPanelView } from "./views/reviews";
+import { tagPopoverView, tooltipView } from "./views/tooltip";
 
 (async function () {
   "use strict";
@@ -457,7 +462,10 @@ import { renderPage } from "./views/page";
   // in each node. Rebuild only when the implementation snapshot changes.
   let fileSearchEntries = [];
   let fileOccurrenceCounts = new Map();
-  let refreshFileSearch = null;
+  let refreshFileSearch = null, fileSearchFileChanged = null;
+  // Counts picker openings, so a closed picker's late close event leaves a
+  // newer picker alone.
+  let fileSearchSession = 0;
   function rebuildFileSearchIndex() {
     fileSearchEntries = [];
     fileOccurrenceCounts = new Map();
@@ -481,51 +489,63 @@ import { renderPage } from "./views/page";
   function openFileSearch(path = "", origin = null) {
     if (reviewDeleted || document.querySelector("dialog[open]")) return;
     const opener = document.activeElement;
+    const session = ++fileSearchSession;
     const dialog = document.createElement("dialog");
     dialog.className = "file-search";
     dialog.setAttribute("aria-labelledby", "file-search-title");
-    dialog.innerHTML = `<header><h2 id="file-search-title">Find a file</h2><button type="button" class="tb-btn" aria-label="Close file search">Esc</button></header>
-      <div class="file-search-field">
-        <input id="file-search-input" type="text" role="combobox" aria-label="Filename" aria-autocomplete="both" aria-expanded="true" aria-controls="file-search-results" aria-describedby="file-search-help" placeholder="Filename…" autocomplete="off" spellcheck="false">
-        <div class="file-search-completion" aria-hidden="true"><span class="file-search-completion-text"><span class="file-search-typed"></span><span class="file-search-suffix"></span></span></div>
-      </div>
-      <p id="file-search-status" role="status"></p>
-      <div id="file-search-results" role="listbox" aria-label="File changes"></div>
-      <footer id="file-search-help">↑ ↓ select · Enter open · Esc close</footer>`;
-    const input = dialog.querySelector("input");
-    const results = dialog.querySelector('[role="listbox"]');
-    const status = dialog.querySelector('[role="status"]');
-    const completion = dialog.querySelector(".file-search-completion-text");
-    const typed = dialog.querySelector(".file-search-typed");
-    const suffix = dialog.querySelector(".file-search-suffix");
-    let matches = [], selected = 0, navigating = false, composing = false;
+    let matches = [], selected = 0, navigating = false, composing = false, input = null;
     // Keep occurrence navigation scoped to the exact file until the user edits
     // its filename. Directory text never participates in the search query.
     let exactPath = path || null;
     let originEntry = path && origin ? origin : null;
-    input.value = splitPath(path).name;
-    function updateCompletion() {
+    function completion() {
+      if (!input) return "";
       const name = matches[selected] ? splitPath(matches[selected].file.path).name : "";
       const query = input.value.toLowerCase();
       const index = name.toLowerCase().indexOf(query);
       const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
-      typed.textContent = input.value;
       // For an interior substring, suggest only the remainder after that match.
-      suffix.textContent = query && index >= 0 && atEnd && !composing && document.activeElement === input
+      return query && index >= 0 && atEnd && !composing && document.activeElement === input
         ? name.slice(index + input.value.length) : "";
-      completion.style.transform = `translateX(${-input.scrollLeft}px)`;
+    }
+    // The grouped results, rebuilt only when the matches or the data they show change.
+    let grouped = [], groupedMatches = null;
+    function groups() {
+      if (groupedMatches === matches) return grouped;
+      groupedMatches = matches;
+      const stages = grouped = [];
+      let stage = null, node = null;
+      matches.forEach(({ stage: s, node: n, file }, index) => {
+        if (stage?.id !== s.id) {
+          stage = { key: s.id, id: s.id, index, number: String(stageNumberById.get(s.id)).padStart(2, "0"), title: s.title, nodes: [] };
+          stages.push(stage); node = null;
+        }
+        if (node?.id !== n.id) { node = { key: n.id, id: n.id, index, title: n.title, options: [] }; stage.nodes.push(node); }
+        const { name, dir } = splitPath(file.path);
+        node.options.push({ index, key: file.path, name, dir, kind: file.kind, kindLabel: kindLabel(file.kind), kindGlyph: kindGlyph(file.kind),
+          binary: Boolean(file.binary), additions: file.additions, deletions: file.deletions });
+      });
+      return stages;
+    }
+    function draw() {
+      renderLit(fileSearchView({
+        stages: groups(), matches: matches.length, selected, typed: input?.value || "", suffix: completion(),
+        onInput: () => { exactPath = null; originEntry = null; matches = []; paint(); },
+        onKeydown, onCaret, onChoose: choose, onClose: () => dialog.close(),
+      }), dialog);
+      input ||= dialog.querySelector("input");
+      // CSSOM only: the typed text under the input follows its horizontal scroll.
+      dialog.querySelector(".file-search-completion-text").style.transform = `translateX(${-input.scrollLeft}px)`;
+    }
+    function onCaret(event) {
+      if (event.type === "compositionstart") composing = true;
+      else if (event.type === "compositionend") composing = false;
+      draw();
     }
     function select(index, scroll = true) {
       selected = index;
-      for (const option of results.querySelectorAll('[role="option"]')) {
-        option.setAttribute("aria-selected", String(Number(option.dataset.index) === selected));
-      }
-      const active = results.querySelector(`[data-index="${selected}"]`);
-      if (active) {
-        input.setAttribute("aria-activedescendant", active.id);
-        if (scroll) active.scrollIntoView({ block: "nearest" });
-      } else input.removeAttribute("aria-activedescendant");
-      updateCompletion();
+      draw();
+      if (scroll) dialog.querySelector(`[role="option"][data-index="${selected}"]`)?.scrollIntoView({ block: "nearest" });
     }
     function paint() {
       const previous = matches[selected];
@@ -533,27 +553,6 @@ import { renderPage } from "./views/page";
       matches = fileSearchEntries.filter(({ file }) => exactPath
         ? file.path === exactPath
         : matchesFileSearch(file.path, query));
-      let stageId, nodeId, html = "";
-      matches.forEach(({ stage, node, file }, index) => {
-        if (stageId !== stage.id) {
-          if (stageId !== undefined) html += "</div></div>";
-          stageId = stage.id; nodeId = undefined;
-          html += `<div role="group" aria-labelledby="file-search-stage-${index}"><h3 id="file-search-stage-${index}">${String(stageNumberById.get(stage.id)).padStart(2, "0")} · ${esc(stage.title)}</h3>`;
-        }
-        if (nodeId !== node.id) {
-          if (nodeId !== undefined) html += "</div>";
-          nodeId = node.id;
-          html += `<div role="group" aria-labelledby="file-search-node-${index}"><h4 id="file-search-node-${index}">${esc(node.title)}</h4>`;
-        }
-        const { name, dir } = splitPath(file.path);
-        html += `<div role="option" id="file-search-option-${index}" data-index="${index}" aria-selected="false">
-          ${fileKind(file.kind)}
-          <span class="file-search-path"><strong>${esc(name)}</strong>${dir ? `<small>${esc(dir)}</small>` : ""}</span>
-          <span title="Total line changes for this file in this stage">${file.binary ? "Binary" : fileMetrics(file)}</span></div>`;
-      });
-      if (matches.length) html += "</div></div>";
-      results.innerHTML = html;
-      status.textContent = matches.length ? `${matches.length} file occurrence${matches.length === 1 ? "" : "s"} · line counts are per stage` : "No matching files";
       const wanted = previous ? { stageId: previous.stage.id, nodeId: previous.node.id, path: previous.file.path }
         : originEntry ? { ...originEntry, path: exactPath } : null;
       const previousIndex = wanted ? matches.findIndex((entry) => entry.stage.id === wanted.stageId && entry.node.id === wanted.nodeId && entry.file.path === wanted.path) : -1;
@@ -570,11 +569,7 @@ import { renderPage } from "./views/page";
       jumpToElement("file", id, entry.stage.id, entry.node.id);
       requestAnimationFrame(() => fileRowElement(id, entry.node.id)?.querySelector(".frow-open")?.focus({ preventScroll: true }));
     }
-    input.addEventListener("input", () => { exactPath = null; originEntry = null; matches = []; paint(); });
-    for (const event of ["focus", "blur", "select", "keyup", "click", "scroll"]) input.addEventListener(event, updateCompletion);
-    input.addEventListener("compositionstart", () => { composing = true; updateCompletion(); });
-    input.addEventListener("compositionend", () => { composing = false; updateCompletion(); });
-    input.addEventListener("keydown", (event) => {
+    function onKeydown(event) {
       if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
       if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) && matches.length) {
         event.preventDefault();
@@ -583,35 +578,43 @@ import { renderPage } from "./views/page";
       } else if (event.key === "Enter") {
         event.preventDefault(); choose(selected);
       }
-    });
-    results.addEventListener("click", (event) => {
-      const option = event.target.closest('[role="option"]');
-      if (option) choose(Number(option.dataset.index));
-    });
-    dialog.querySelector("button").addEventListener("click", () => dialog.close());
+    }
     dialog.addEventListener("click", (event) => {
       if (event.target !== dialog) return;
       const box = dialog.getBoundingClientRect();
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
     });
     dialog.addEventListener("close", () => {
-      refreshFileSearch = null;
       dialog.remove();
+      if (session !== fileSearchSession) return;
+      refreshFileSearch = fileSearchFileChanged = null;
       if (!navigating) (opener?.isConnected ? opener : app.querySelector('[data-action="file-search"]'))?.focus({ preventScroll: true });
     });
+    // A loaded diff page can change a file's line counts or binary flag, which
+    // the results show; redraw only when a listed file changed.
+    fileSearchFileChanged = (file) => {
+      if (!matches.some((match) => match.file === file)) return;
+      groupedMatches = null; draw();
+    };
     refreshFileSearch = paint;
-    document.body.append(dialog); paint(); dialog.showModal(); input.focus(); input.select();
+    document.body.append(dialog); draw();
+    input.value = splitPath(path).name;
+    paint(); dialog.showModal(); input.focus(); input.select();
     // Set the initial viewport after opening and focusing, when layout exists.
+    const results = dialog.querySelector('[role="listbox"]');
     results.scrollTo({ top: 0, behavior: "instant" });
     if (selected > 0) results.querySelector(`[data-index="${selected}"]`)?.scrollIntoView({ block: "center", behavior: "instant" });
   }
 
   const fileBaseRevision = (entry) => entry.file.baseRevision || entry.stage.baseRevision;
+  // The revisions and view mode a diff page is requested for.
+  const diffIdentity = (entry) => JSON.stringify([fileBaseRevision(entry), entry.stage.headRevision, entry.file.revision,
+    fileViewMode(entry.id) === "full" ? "full" : "changes"]);
   const diffRequests = new Map();
   async function ensureFileDiff(entry, offset = 0, force = false, target = null, pageScroll = null) {
     if (!entry) return;
     if (diffRequests.has(entry.id)) {
-      if (target || force) entry.file._queuedDiff = { offset, force, target, pageScroll };
+      if (target || force) entry.file._queuedDiff = { offset, force, target, pageScroll, identity: diffIdentity(entry) };
       return;
     }
     const mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
@@ -626,7 +629,16 @@ import { renderPage } from "./views/page";
       mode, offset: String(offset),
       ...(target ? { side: target.side, line: String(target.line) } : {}),
     };
-    let pageLoaded = false;
+    const identity = diffIdentity(entry);
+    // A live update replaces the file objects while a page loads, and the
+    // reviewer may switch the view mode. The response, or its error, belongs to
+    // the file that now holds the path if it is still the requested base, head,
+    // file revision and mode; otherwise it is stale.
+    const currentFile = () => {
+      const current = fileById.get(entry.id);
+      return current && diffIdentity(current) === identity ? current.file : null;
+    };
+    let pageLoaded = false, stale = false;
     const request = api.getDiff(query)
       .then(async (response) => {
         const payload = await response.json();
@@ -636,27 +648,42 @@ import { renderPage } from "./views/page";
         if (!Array.isArray(payload.lines)) {
           throw new Error("Diff response did not include lines.");
         }
-        if ((fileViewMode(entry.id) === "full" ? "full" : "changes") !== mode) return;
-        entry.file.lines = payload.lines;
-        entry.file._diffMode = mode;
-        entry.file._pageOffset = payload.offset ?? offset;
-        entry.file.nextOffset = payload.nextOffset;
-        entry.file.additions = Number(payload.additions) || 0;
-        entry.file.deletions = Number(payload.deletions) || 0;
-        entry.file.binary = Boolean(payload.binary);
-        entry.file.truncated = Boolean(payload.truncated);
-        delete entry.file._ownership;
+        const file = currentFile();
+        if (!file) { stale = true; return; }
+        const additions = Number(payload.additions) || 0, deletions = Number(payload.deletions) || 0, binary = Boolean(payload.binary);
+        const shownChanged = file.additions !== additions || file.deletions !== deletions || Boolean(file.binary) !== binary;
+        file.lines = payload.lines;
+        file._diffMode = mode;
+        file._pageOffset = payload.offset ?? offset;
+        file.nextOffset = payload.nextOffset;
+        file.additions = additions;
+        file.deletions = deletions;
+        file.binary = binary;
+        file.truncated = Boolean(payload.truncated);
+        delete file._ownership;
+        if (shownChanged) fileSearchFileChanged?.(file);
         pageLoaded = true;
       })
       .catch((error) => {
-        entry.file._diffError = error.message || "Diff could not be loaded.";
+        const file = currentFile();
+        if (file) file._diffError = error.message || "Diff could not be loaded.";
+        else stale = true;
       })
       .finally(() => {
+        const current = fileById.get(entry.id), file = current?.file;
         entry.file._diffLoading = false;
+        if (file) file._diffLoading = false;
         diffRequests.delete(entry.id);
-        const queued = entry.file._queuedDiff;
+        let queued = file?._queuedDiff || entry.file._queuedDiff;
         delete entry.file._queuedDiff;
-        if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target, queued.pageScroll);
+        if (file) delete file._queuedDiff;
+        // A queued page belongs to the revisions and mode it was asked for; a
+        // request for a line asks again for that line, and a page is dropped.
+        if (queued && (!current || queued.identity !== diffIdentity(current)))
+          queued = queued.target ? { offset: 0, force: true, target: queued.target, pageScroll: null } : null;
+        // A stale request for a line asks again for that line in the current file.
+        if (!queued && stale && target) queued = { offset: 0, force: true, target, pageScroll: null };
+        if (queued) ensureFileDiff(current, queued.offset, queued.force, queued.target, queued.pageScroll);
         render();
         if (pageLoaded && pageScroll && !queued) scrollDiffPage(entry.id, pageScroll);
       });
@@ -681,9 +708,6 @@ import { renderPage } from "./views/page";
     return (file.lines || []).some((row) => row[key] === line);
   }
 
-  function stageFileEntry(stageId, path) {
-    return fileById.get(fileKey(stageId, path));
-  }
   function nodeFileList(stage, node) {
     return stage.files.filter((file) => file.memberships.some((m) => m.nodeId === node.id));
   }
@@ -1061,7 +1085,6 @@ import { renderPage } from "./views/page";
     return "none";
   }
   const approved = (id) => approvalState(id) === "approved";
-  const approvalStale = (id) => approvalState(id) === "stale";
   function nodeApprovalState(stage, node) {
     return aggregateApprovalState(
       nodeFileList(stage, node).map((file) => approvalState(fileApprovalKey(stage.id, node.id, file.path))),
@@ -1244,15 +1267,6 @@ import { renderPage } from "./views/page";
     const stages = st.stages.length ? `Stage ${st.stages.map((n) => String(n).padStart(2, "0")).join(" · ")}` : "no stage";
     return { id: acId, vstat: m.vstat, glyph: m.glyph, label: m.label, meta: `${acId} · ${stages}`, text: ac ? ac.text : acId };
   }
-  function bubble() {
-    return `<svg class="bub" viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
-  }
-  function bubblePlus() {
-    return `<svg class="bub" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M4 5.5h16v10H9.5L5.5 19v-3.5H4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 8v5M9.5 10.5h5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
-  }
-  function arrowRight() {
-    return `<svg class="tico" viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  }
   // Icon + tooltip text for the kind of element a feedback thread targets.
   function threadTypeLabel(kind) {
     return kind === "file" ? "File"
@@ -1301,15 +1315,6 @@ import { renderPage } from "./views/page";
   function kindLabel(kind) {
     return kind === "added" ? "Added" : kind === "deleted" ? "Deleted" : kind === "renamed" ? "Renamed" : "Modified";
   }
-  function fileKind(kind) {
-    return `<span class="kind k-${esc(kind)}" role="img" aria-label="${esc(kindLabel(kind))}" title="${esc(kindLabel(kind))}">${kindGlyph(kind)}</span>`;
-  }
-  // A renamed/moved file shows where it came from so reviewers can place it; the
-  // full pre-rename path stays in the tooltip when the shown one is shortened.
-  function renameFrom(file) {
-    if (file.kind !== "renamed" || !file.previousPath) return "";
-    return `<span class="fp-from" data-tooltip-focus title="Renamed from ${esc(file.previousPath)}">← ${esc(shortPath(file.previousPath))}</span>`;
-  }
 
   /* ---- reasoning tags (the signature) ----------------------------------- */
   function vstatus(ins) {
@@ -1330,17 +1335,14 @@ import { renderPage } from "./views/page";
       : "";
   }
   // An insight linked to a line of an open diff; it opens beside the code.
-  function inlineCodeInsightButton(stage, ins) {
-    const target = ins.codeTarget;
-    if (!target) return "";
+  function inlineInsightModel(stage, ins) {
     const info = vstatus(ins) || INSIGHT[ins.type] || INSIGHT.decision;
-    return `<button type="button" class="code-insight-link type-${esc(ins.type)} ${target.status === "needs-review" ? "needs-review" : ""}" data-action="code-insight" data-stage="${esc(stage.id)}" data-collection="${esc(ins.collection)}" data-item="${esc(ins.id)}"><b class="inline-insight-icon" role="img" aria-label="${esc(info.label)}">${esc(info.glyph)}</b><span class="inline-insight-text">${esc(ins.title)}</span>${target.status === "needs-review" ? " · Needs review" : ""}</button>`;
+    return { stageId: stage.id, collection: ins.collection, itemId: ins.id, type: ins.type, glyph: info.glyph, label: info.label,
+      title: ins.title, needsReview: ins.codeTarget.status === "needs-review" };
   }
-  function codeContextHtml(target) {
-    return `<div class="insight-code-block" tabindex="0" aria-label="Code context">${target.context.map((line, index) => {
-      const number = target.contextStartLine + index;
-      return `<div class="insight-code-line ${number >= target.startLine && number <= target.endLine ? "is-target" : ""}"><span>${esc(number)}</span><code>${esc(line) || " "}</code></div>`;
-    }).join("")}</div>`;
+  function codeContextModel(target) {
+    return { path: target.path, startLine: target.startLine, endLine: target.endLine, revision: target.revision.slice(0, 12),
+      contextStartLine: target.contextStartLine, context: target.context };
   }
   function openCodeInsight(stage, ins, choices = [ins]) {
     if (!stage || !ins?.codeTarget) return;
@@ -1354,16 +1356,15 @@ import { renderPage } from "./views/page";
     });
     const paint = () => {
       const target = ins.codeTarget, stale = target.status === "needs-review";
-      const shown = stale ? target.original : target;
-      dialog.innerHTML = `<header><h2 id="code-insight-title">Insight and code</h2><button type="button" data-close aria-label="Close insight">Close</button></header>
-        ${choices.length > 1 ? `<label class="insight-picker">Insight <select>${choices.map((item, i) => `<option value="${i}" ${item === ins ? "selected" : ""}>${esc(item.title)}</option>`).join("")}</select></label>` : ""}
-        <p class="insight-target-status ${stale ? "needs-review" : ""}">${stale ? `Needs review: ${esc(target.reason)}` : target.status === "mapped" ? "Linked code is unchanged; mapped to this stage revision. The insight has not been re-reviewed." : "Linked to this stage revision."}</p>
-        <div class="code-insight-columns"><article tabindex="0" aria-label="Insight text"><p class="eyebrow">${esc((INSIGHT[ins.type] || INSIGHT.decision).label)}</p><h3>${esc(ins.title)}</h3><div class="insight-full-body">${esc(ins.body || "")}</div>
-          ${stale ? '<p>Review the insight against the revised code, then use <code>stage target</code> to retarget it or remove its code link. Its original context is preserved here.</p>' : ""}</article>
-          <section aria-label="Linked code"><h3>${stale ? "Original code" : "Linked code"}</h3><p class="insight-code-location">${esc(shown.path)}:${esc(shown.startLine)}–${esc(shown.endLine)} · ${esc(shown.revision.slice(0, 12))}</p>${codeContextHtml(shown)}
-            ${!stale && target.status === "mapped" ? `<details class="insight-original"><summary>Original context · ${esc(target.original.revision.slice(0, 12))}</summary><p>${esc(target.original.path)}:${esc(target.original.startLine)}–${esc(target.original.endLine)}</p>${codeContextHtml(target.original)}</details>` : ""}</section></div>`;
-      dialog.querySelector("[data-close]").addEventListener("click", dismiss);
-      dialog.querySelector("select")?.addEventListener("change", event => { ins = choices[Number(event.target.value)]; paint(); dialog.querySelector("select").focus(); });
+      renderLit(codeInsightView({
+        choices: choices.length > 1 ? choices.map((item) => item.title) : [], chosen: choices.indexOf(ins),
+        status: stale ? "needs-review" : target.status === "mapped" ? "mapped" : "current", reason: stale ? target.reason : "",
+        kindLabel: (INSIGHT[ins.type] || INSIGHT.decision).label, title: ins.title, body: ins.body || "",
+        shown: codeContextModel(stale ? target.original : target),
+        original: !stale && target.status === "mapped" ? codeContextModel(target.original) : null,
+        onChoose: (index) => { ins = choices[index]; paint(); },
+        onClose: dismiss,
+      }), dialog);
     };
     paint(); show();
   }
@@ -1404,59 +1405,42 @@ import { renderPage } from "./views/page";
     };
     return { dialog, dismiss, show };
   }
-  function evidenceAttachmentHtml(stage, ins, attachment) {
-    const index = ins.evidence.attachments.indexOf(attachment), url = api.evidenceUrl({ stage: stage.id, item: ins.id, index: String(index) });
-    const type = attachment.mediaType, name = attachment.caption || `${EVIDENCE_KIND[ins.evidence.kind] || "Evidence"} ${index + 1}`;
-    const caption = attachment.caption ? `<figcaption>${esc(attachment.caption)}</figcaption>` : "";
-    const open = `<a class="evidence-open" href="${esc(url)}" download="${esc(`${ins.id}-${index + 1}`)}">Download</a>`;
-    if (type.startsWith("image/")) return `<figure><button type="button" class="evidence-zoom" data-evidence-zoom aria-pressed="false" aria-label="Zoom ${esc(name)}"><img src="${esc(url)}" alt="${esc(name)}"></button>${caption}${open}</figure>`;
-    if (type.startsWith("video/")) return `<figure><video src="${esc(url)}" controls preload="metadata" aria-label="${esc(name)}"></video>${caption}${open}</figure>`;
-    if (type.startsWith("text/") || type === "application/json") return `<figure><pre class="evidence-text" tabindex="0" aria-label="${esc(name)}" data-evidence-text="${esc(url)}">Loading…</pre>${caption}${open}</figure>`;
-    return `<figure><p class="evidence-file">${esc(name)}</p>${caption}${open}</figure>`;
-  }
   const EVIDENCE_TEXT_LIMIT = 200000;
-  async function loadEvidenceText(element) {
+  async function loadEvidenceText(url) {
     try {
-      const response = await api.getEvidence(element.dataset.evidenceText);
+      const response = await api.getEvidence(url);
       if (!response.ok) throw new Error();
       const text = await response.text();
-      element.textContent = text.length > EVIDENCE_TEXT_LIMIT ? `${text.slice(0, EVIDENCE_TEXT_LIMIT)}\n… Download the file for the rest.` : text;
-    } catch { element.textContent = "This evidence could not be loaded."; }
+      return text.length > EVIDENCE_TEXT_LIMIT ? `${text.slice(0, EVIDENCE_TEXT_LIMIT)}\n… Download the file for the rest.` : text;
+    } catch { return "This evidence could not be loaded."; }
   }
   function openEvidence(stage, ins) {
     if (!stage || !ins?.evidence) return;
     forceHidePop();
     const evidence = ins.evidence;
     const { dialog, dismiss, show } = insightDialog("code-insight-dialog evidence-dialog", "evidence-title");
-    const before = evidence.attachments.filter((item) => item.role === "before");
-    const after = evidence.attachments.filter((item) => item.role === "after");
-    const others = evidence.attachments.filter((item) => !item.role);
-    const column = (title, list) => `<section aria-label="${esc(title)}"><h4>${title}</h4>${list.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}</section>`;
-    const nodes = (ins.nodeRefs || []).map((id) => nodeTitleById.get(`${stage.id}:${id}`) || id);
-    const criteria = evidence.specificationRefs.map((ref) => {
-      const criterion = allAcceptance.find((item) => item.ref === ref);
-      return `<li><code>${esc(ref)}</code>${criterion ? ` ${esc(criterion.text)}` : ""}</li>`;
-    }).join("");
-    dialog.innerHTML = `<header><h2 id="evidence-title">Evidence</h2><button type="button" class="evidence-close" data-close aria-label="Close evidence">×</button></header>
-      <p class="insight-target-status">Captured ${esc(new Date(evidence.capturedAt).toLocaleString())}</p>
-      <p class="eyebrow">${esc(EVIDENCE_KIND[evidence.kind] || evidence.kind)}</p><h3>${esc(ins.title)}</h3>
-      ${evidence.reproduction ? `<p class="evidence-reproduction"><b>Reproduce:</b> ${esc(evidence.reproduction)}</p>` : ""}
-      ${before.length || after.length ? `<div class="evidence-compare">${column("Before", before)}${column("After", after)}</div>` : ""}
-      ${others.map((item) => evidenceAttachmentHtml(stage, ins, item)).join("")}
-      ${evidence.inline ? `<pre class="evidence-text" tabindex="0" aria-label="Captured output">${esc(evidence.inline)}</pre>` : ""}
-      ${criteria ? `<h4>Acceptance criteria</h4><ul class="evidence-links">${criteria}</ul>` : ""}
-      ${nodes.length ? `<h4>Changes</h4><ul class="evidence-links">${nodes.map((title) => `<li>${esc(title)}</li>`).join("")}</ul>` : ""}`;
-    dialog.querySelector("[data-close]").addEventListener("click", dismiss);
-    dialog.addEventListener("click", (event) => {
-      const zoom = event.target.closest("[data-evidence-zoom]");
-      if (zoom) zoom.setAttribute("aria-pressed", String(zoom.classList.toggle("is-zoomed")));
+    const zoomed = new Set(), failed = new Set(), texts = new Map();
+    const items = evidence.attachments.map((attachment, index) => {
+      const type = attachment.mediaType;
+      return { attachment, index, url: api.evidenceUrl({ stage: stage.id, item: ins.id, index: String(index) }),
+        type: type.startsWith("image/") ? "image" : type.startsWith("video/") ? "video" : type.startsWith("text/") || type === "application/json" ? "text" : "file" };
     });
-    // Load errors don't bubble, so listen while they pass through the dialog.
-    dialog.addEventListener("error", (event) => {
-      const figure = event.target.closest?.("figure");
-      if (figure && event.target.matches("img, video")) figure.innerHTML = `<p class="evidence-file" role="status">This evidence could not be loaded.</p>`;
-    }, true);
-    dialog.querySelectorAll("[data-evidence-text]").forEach(loadEvidenceText);
+    const model = ({ attachment, index, url, type }) => ({ index, type, url, caption: attachment.caption || "", download: `${ins.id}-${index + 1}`,
+      name: attachment.caption || `${EVIDENCE_KIND[evidence.kind] || "Evidence"} ${index + 1}`,
+      failed: failed.has(index), zoomed: zoomed.has(index), text: texts.get(index) ?? null });
+    const role = (value) => items.filter((item) => item.attachment.role === value).map(model);
+    const paint = () => renderLit(evidenceView({
+      captured: new Date(evidence.capturedAt).toLocaleString(), kindLabel: EVIDENCE_KIND[evidence.kind] || evidence.kind, title: ins.title,
+      reproduction: evidence.reproduction || "", before: role("before"), after: role("after"),
+      others: items.filter((item) => !item.attachment.role).map(model), inline: evidence.inline || "",
+      criteria: evidence.specificationRefs.map((ref) => ({ ref, text: allAcceptance.find((item) => item.ref === ref)?.text || "" })),
+      nodes: (ins.nodeRefs || []).map((id) => nodeTitleById.get(`${stage.id}:${id}`) || id),
+      onZoom: (index) => { if (!zoomed.delete(index)) zoomed.add(index); paint(); },
+      onFailed: (index) => { failed.add(index); paint(); },
+      onClose: dismiss,
+    }), dialog);
+    paint();
+    for (const item of items) if (item.type === "text") void loadEvidenceText(item.url).then((text) => { texts.set(item.index, text); paint(); });
     show();
   }
   const EVIDENCE_KIND = { screenshot: "Screenshot", recording: "Recording", terminal: "Terminal output", http: "HTTP exchange", log: "Log excerpt", "output-file": "Output file", measurement: "Measurement", report: "Report" };
@@ -1518,21 +1502,6 @@ import { renderPage } from "./views/page";
   }
 
   /* ---- approvals / comments UI ----------------------------------------- */
-  function approveBtn(kind, id, size = "") {
-    const blocked = approvalOps.has(id) || !revisionFor(id);
-    const st = approvalState(id);
-    if (blocked) {
-      return `<button class="approve ${size}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false" disabled title="File revision is unavailable">
-        <span class="check"></span>Approve</button>`;
-    }
-    if (st === "stale") {
-      return `<button class="approve ${size} is-stale" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="false" title="Changed since you approved it — click to re-approve">
-        <span class="check">!</span>Re-approve</button>`;
-    }
-    const on = st === "approved";
-    return `<button class="approve ${size} ${on ? "is-on" : ""}" data-action="approve" data-kind="${esc(kind)}" data-id="${esc(id)}" type="button" aria-pressed="${on}">
-      <span class="check">${on ? "✓" : ""}</span>${on ? "Approved" : "Approve"}</button>`;
-  }
   function stageApproveModel(stage) {
     const blocked = approvalOps.has(stage.id) || !stageNodesApproved(stage);
     const st = stageApprovalState(stage);
@@ -1541,9 +1510,6 @@ import { renderPage } from "./views/page";
       label: `${verb} stage ${stageNumber(stage)}: ${stage.title}` };
   }
   function stageNumber(stage) { return String(data.stages.indexOf(stage) + 1).padStart(2, "0"); }
-  function commentBtn(kind, id, stageId) {
-    return `<button class="comment" data-action="comment" data-kind="${esc(kind)}" data-id="${esc(id)}" data-stage="${esc(stageId || "")}" type="button">＋ Add note</button>`;
-  }
   function threadStateKey(kind, id, stageId) {
     return kind === "node" ? `n:${stageId}:${id}` : id;
   }
@@ -1887,9 +1853,6 @@ import { renderPage } from "./views/page";
   }
 
   /* ---- file rows -------------------------------------------------------- */
-  function fileMetrics(file) {
-    return `<span class="metrics"><i class="add">+${file.additions}</i><i class="del">−${file.deletions}</i></span>`;
-  }
   function fileRowModel(stage, node, file) {
     const id = fileKey(stage.id, file.path);
     const approvalId = fileApprovalKey(stage.id, node.id, file.path);
@@ -1912,7 +1875,7 @@ import { renderPage } from "./views/page";
       insights: fileCodeInsights(stage, file.path).length,
       notes: counts.file || counts.personal ? { threads: counts.file, personal: counts.personal, expanded: open && state.openThreads[id] !== false } : null,
       lineComments: counts.line,
-      open: open && entry ? { diff: diffPanel(entry, { compact: true, close: "cinema-close", focusNodeId: node.id }), notes: fileNotesModel(id) } : null,
+      open: open && entry ? { diff: diffPanelModel(entry, node.id), notes: fileNotesModel(id) } : null,
     };
   }
   // File notes can be hidden independently of the open diff.
@@ -1956,95 +1919,11 @@ import { renderPage } from "./views/page";
     };
   }
 
-  /* ---- diff renderer (shared, big view) --------------------------------- */
+  /* ---- diff panel ------------------------------------------------------- */
   function fileViewMode(id) { return state.fileView[id] === "full" ? "full" : "hunk"; }
 
-  /* ---- lightweight per-line syntax highlighting ------------------------- */
-  const HL_KEYWORDS = new Set(
-    ("abstract as async await base bool break byte case catch char checked class const continue " +
-     "decimal default delegate do double else enum event explicit extern false finally fixed float " +
-     "for foreach function get goto if implicit in int interface internal is let lock long namespace " +
-     "new null object operator out override params private protected public readonly record ref return " +
-     "sbyte sealed set short sizeof stackalloc static string struct switch this throw true try typeof " +
-     "uint ulong unchecked unsafe ushort using var virtual void volatile while yield await async " +
-     "export import extends implements instanceof of with from type keyof readonly never unknown any " +
-     "boolean number undefined def elif except lambda pass raise global nonlocal None True False and " +
-     "or not in").split(/\s+/),
-  );
-  const HL_HASH = new Set(["py", "rb", "sh", "bash", "yml", "yaml", "toml", "ps1", "r", "pl", "ini", "cfg"]);
-  function langFor(path) {
-    return String(path || "").split(".").pop().toLowerCase();
-  }
-  const highlightedLines = new Map();
-  function highlightCode(src, lang) {
-    const key = `${lang}\0${src}`;
-    if (highlightedLines.has(key)) return highlightedLines.get(key);
-    const result = renderHighlightedCode(src, lang);
-    if (key.length < 20000) {
-      highlightedLines.set(key, result);
-      while (highlightedLines.size > 2000) highlightedLines.delete(highlightedLines.keys().next().value);
-    }
-    return result;
-  }
-  function renderHighlightedCode(src, lang) {
-    const s = String(src);
-    const n = s.length;
-    const hash = HL_HASH.has(lang);
-    const isIdStart = (c) => /[A-Za-z_$@#]/.test(c);
-    const isId = (c) => /[A-Za-z0-9_$]/.test(c);
-    let out = "";
-    let i = 0;
-    while (i < n) {
-      const c = s[i];
-      if (!hash && c === "/" && s[i + 1] === "/") { out += `<span class="tok-com">${esc(s.slice(i))}</span>`; break; }
-      if (hash && c === "#") { out += `<span class="tok-com">${esc(s.slice(i))}</span>`; break; }
-      if (c === "/" && s[i + 1] === "*") {
-        const end = s.indexOf("*/", i + 2);
-        const stop = end < 0 ? n : end + 2;
-        out += `<span class="tok-com">${esc(s.slice(i, stop))}</span>`; i = stop; continue;
-      }
-      if (c === '"' || c === "'" || c === "`") {
-        let j = i + 1;
-        while (j < n && s[j] !== c) { if (s[j] === "\\") j++; j++; }
-        j = Math.min(j + 1, n);
-        out += `<span class="tok-str">${esc(s.slice(i, j))}</span>`; i = j; continue;
-      }
-      if (/[0-9]/.test(c) && (i === 0 || !isId(s[i - 1]))) {
-        let j = i + 1;
-        while (j < n && /[0-9a-fA-FxXbBoO._]/.test(s[j])) j++;
-        out += `<span class="tok-num">${esc(s.slice(i, j))}</span>`; i = j; continue;
-      }
-      if (isIdStart(c)) {
-        let j = i + 1;
-        while (j < n && isId(s[j])) j++;
-        const word = s.slice(i, j);
-        out += HL_KEYWORDS.has(word) ? `<span class="tok-key">${esc(word)}</span>` : esc(word);
-        i = j; continue;
-      }
-      out += esc(c); i++;
-    }
-    return out || esc(" ");
-  }
-
-  // The diff sign column doubles as each line's note affordance: on hover it
-  // reveals a faint "+" to start a note, and a line that already has notes shows
-  // a comment bubble that toggles its thread in and out of view. This keeps the
-  // code itself untouched — the gutter carries the whole interaction.
-  function lineActionCell(lineId, count, sign, resolved) {
-    const has = count > 0;
-    const open = Boolean(state.openLineThreads[lineId]);
-    const label = has
-      ? `${count} note${count === 1 ? "" : "s"} on this line — click to ${open ? "hide" : "show"}`
-      : resolved
-        ? `Resolved note on this line — click to ${open ? "hide" : "show"}`
-        : "Add a note on this line";
-    return `<button class="lact${has ? " has-note" : ""}${resolved ? " has-resolved" : ""}${open ? " is-open" : ""}" type="button" data-action="line-note" data-id="${esc(lineId)}" title="${esc(label)}" aria-label="${esc(label)}"><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlus()}</span>${has ? `<span class="lact-bub" aria-hidden="true">${bubble()}${count > 1 ? `<b>${count}</b>` : ""}</span>` : resolved ? `<span class="lact-bub lact-bub-resolved" aria-hidden="true">${bubble()}</span>` : ""}</button>`;
-  }
-  // A collapsible conversation attached to a single diff line. It renders as a
-  // full-width row directly beneath its line and stays hidden until the line's
-  // gutter bubble is toggled open, so notes never crowd the surrounding code.
-  // The legacy diff leaves an island row for the thread, which the thread
-  // template is rendered into after each render (see renderLineThreads).
+  // A line's thread, shown as a full-width row directly beneath the line while
+  // the line's gutter bubble is toggled open, so notes never crowd the code.
   function lineThreadContent(lineId) {
     const composingNew =
       compose && compose.kind === "line" && compose.id === lineId && matchesNodeContext(compose, elementNodeId("line", lineId)) && compose.editIndex == null;
@@ -2056,87 +1935,167 @@ import { renderPage } from "./views/page";
     if (!arts.length && !locals.length && !composingNew) return null;
     return { arts, locals, composingNew };
   }
-  function lineThreadRow(lineId) {
-    return lineThreadContent(lineId) ? lineThreadIsland(lineId, esc) : "";
-  }
   function lineListKey(lineId) { return threadListKey("line", elementNodeId("line", lineId), lineId); }
   function lineThreadModel(lineId) {
     const content = lineThreadContent(lineId);
     return content && { id: lineId, kind: "line", stageId: null, listKey: lineListKey(lineId), entries: threadListEntries(content.arts, content.locals),
       composer: content.composingNew ? composerModel(compose) : null };
   }
-  // Render one code row plus, when the file is diff-anchored (ctx present) and
-  // the row maps to a real line, its gutter affordance and any attached thread.
-  function codeRow(rowClass, gutterOld, gutterNew, sign, code, ctx, side, lineNo) {
-    if (!ctx || !ctx.stageId || !lineNo) {
-      return `<div class="${esc(rowClass)}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span><i>${sign}</i><code>${code}</code></div>`;
+  // The inline insight whose linked lines are highlighted in one open diff:
+  // { fileId, nodeId, stageId, path, startLine, endLine }, or null. Rows
+  // render the highlight from it; hovering and focusing an insight toggle the
+  // same class on the affected rows directly (setInsightPreview), so a later
+  // render produces the classes already shown.
+  let insightPreview = null;
+  // The inline insight button that set the preview, and the ones hovered,
+  // focused or just dismissed.
+  let insightPreviewSource = null;
+  let hoveredCodeInsight = null, focusedCodeInsight = null, suppressedCodeInsight = null;
+  let insightPreviewRows = [];
+  // Set while the page renders: rows already carry the classes computed for
+  // the preview, so a focus change during the render, such as a focused
+  // insight button blurring as it is removed, leaves the repaint to
+  // forgetRemovedInsights after the render.
+  let renderingPage = false;
+  // The rows a render highlights for `preview`. The insight's button sits in the
+  // diff it previews; rows are the grid's children, so walking them skips the
+  // code inside each row. The work follows the rendered rows, not the length
+  // of the linked range.
+  function previewedRows(preview, source) {
+    if (!preview) return [];
+    let grid = source?.isConnected ? source.closest(".diff-grid") : null;
+    if (!grid) {
+      const diff = fileRowElement(preview.fileId, preview.nodeId)?.nextElementSibling;
+      grid = diff?.classList.contains("cinema-diff") ? diff.querySelector(".diff-grid") : null;
     }
+    if (!grid) return [];
+    const prefix = lineKey(preview.stageId, "new", "", "").slice(0, -1), suffix = `:${preview.path}`;
+    const rows = [];
+    for (const row of grid.children) {
+      const id = row.dataset.lineId;
+      if (!id || !row.classList.contains("drow") || !id.startsWith(prefix) || !id.endsWith(suffix)) continue;
+      const digits = id.slice(prefix.length, id.length - suffix.length);
+      if (!/^\d+$/.test(digits)) continue;
+      const line = Number(digits);
+      if (line >= preview.startLine && line <= preview.endLine) rows.push(row);
+    }
+    return rows;
+  }
+  // `force` repaints even when the preview is unchanged, after a render that
+  // may have replaced or repainted rows from an earlier preview.
+  function setInsightPreview(next, source, force = false) {
+    const previousSource = insightPreviewSource;
+    insightPreviewSource = next ? source : null;
+    if (!force && JSON.stringify(next) === JSON.stringify(insightPreview)) return;
+    const previous = new Set([...insightPreviewRows, ...previewedRows(insightPreview, previousSource)]);
+    insightPreview = next;
+    insightPreviewRows = previewedRows(next, source);
+    const current = new Set(insightPreviewRows);
+    for (const row of previous) if (!current.has(row)) row.classList.remove("is-code-insight-target");
+    for (const row of insightPreviewRows) row.classList.add("is-code-insight-target");
+  }
+  // After each render, an insight removed by it, such as when its diff closes,
+  // neither hovers nor keeps its lines highlighted; one that remains is looked
+  // up again, so a refreshed range or a removed insight replaces the old one.
+  // When the insight that set the highlight is removed, a remaining hovered or
+  // focused one takes over.
+  function forgetRemovedInsights() {
+    if (hoveredCodeInsight && !hoveredCodeInsight.isConnected) hoveredCodeInsight = null;
+    if (focusedCodeInsight && !focusedCodeInsight.isConnected) focusedCodeInsight = null;
+    if (suppressedCodeInsight && !suppressedCodeInsight.isConnected) suppressedCodeInsight = null;
+    if (!insightPreview && !insightPreviewRows.length) return;
+    const source = insightPreviewSource?.isConnected ? insightPreviewSource : hoveredCodeInsight || focusedCodeInsight;
+    setInsightPreview(source ? codeInsightPreview(source) : null, source, true);
+  }
+  function insightTargetsLine(ctx, side, lineNo) {
+    const preview = insightPreview;
+    return Boolean(preview && side === "new" && preview.fileId === ctx.fileId && preview.nodeId === ctx.diffNodeId &&
+      preview.stageId === ctx.stageId && preview.path === ctx.path && lineNo >= preview.startLine && lineNo <= preview.endLine);
+  }
+  // Adds a code row and, when the file is diff-anchored (ctx present) and the
+  // row maps to a real line, the ownership notice and inline insights above it
+  // and its thread below it. The sign column doubles as the line's note
+  // affordance: a "+" on hover, or a bubble that toggles the line's thread.
+  function pushCodeRow(out, row, ctx, side, lineNo) {
+    if (!ctx || !ctx.stageId || !lineNo) { out.push({ type: "code", key: `${row.kind}:${row.old}:${row.new}`, ...row, line: null }); return; }
     const lineId = lineKey(ctx.stageId, side, lineNo, ctx.path);
-    const count = visibleThreadCount("line", lineId);
-    const has = count > 0;
-    const resolved =
-      !has &&
-      artifactThreadsForElement("line", lineId).some((t) => t.status === "resolved");
-    const act = lineActionCell(lineId, count, sign, resolved);
+    // Most lines have no notes; only look up the ones that might.
+    const noted = ctx.notedLines.has(lineId);
+    const count = noted ? visibleThreadCount("line", lineId) : 0;
+    const resolved = noted && !count && artifactThreadsForElement("line", lineId).some((t) => t.status === "resolved");
     // For a file split across steps, dim the lines owned by other steps so the
     // step currently in focus reads as this node's slice of the shared diff.
-    let ownClass = "";
-    let ownershipNotice = "";
+    let ownership = "";
     if (ctx.ownership && (side === "old" || side === "new")) {
       const owner = ctx.ownership.get(`${side}:${lineNo}`);
       if (owner) {
-        ownClass = ctx.focusNodeId
-          ? owner === ctx.focusNodeId ? " own-focus" : " own-other"
-          : " own-mark";
-        if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner) {
-          ownershipNotice = `<div class="ownership-notice">Edited in <button type="button" data-action="jump-to" data-kind="line" data-id="${esc(lineId)}" data-node-id="${esc(owner)}" title="Show change node">${esc(nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner)} ${arrowRight()}</button></div>`;
-        }
+        ownership = ctx.focusNodeId ? owner === ctx.focusNodeId ? "own-focus" : "own-other" : "own-mark";
+        if (ctx.focusNodeId && owner !== ctx.focusNodeId && ctx.previousOwner !== owner)
+          out.push({ type: "owner", key: `owner:${lineId}`, lineId, nodeId: owner, title: nodeTitleById.get(`${ctx.stageId}:${owner}`) || owner });
         ctx.previousOwner = owner;
       } else ctx.previousOwner = null;
     }
-    const row = `<div data-line-id="${esc(lineId)}" class="${rowClass}${has ? " has-line-note" : resolved ? " has-line-note-resolved" : ""}${ownClass}"><span class="ln">${gutterOld}</span><span class="ln">${gutterNew}</span>${act}<code>${code}</code></div>`;
-    const stage = stageById.get(ctx.stageId);
-    const linked = side === "new" && stage ? stage.insights.filter(ins => ins.codeTarget?.status !== "needs-review" && ins.codeTarget?.path === ctx.path && ins.codeTarget.startLine === lineNo) : [];
-    const insights = linked.length ? `<div class="line-code-insights">${linked.map(ins => inlineCodeInsightButton(stage, ins)).join("")}</div>` : "";
-    return ownershipNotice + insights + row + lineThreadRow(lineId);
+    const linked = side === "new" ? ctx.insightsByLine.get(lineNo) : null;
+    if (linked) out.push({ type: "insights", key: `insights:${lineId}`, insights: linked });
+    out.push({ type: "code", key: lineId, ...row, line: { id: lineId, count, resolved, open: Boolean(state.openLineThreads[lineId]),
+      ownership, insightTarget: insightTargetsLine(ctx, side, lineNo) } });
+    // A selection holds the list it touches, so a thread a live update removed
+    // stays until the selection clears.
+    const thread = noted || compose?.id === lineId || (selectedThreadLists.size && selectedThreadLists.has(lineListKey(lineId))) ? lineThreadModel(lineId) : null;
+    if (thread) out.push({ type: "thread", key: `thread:${lineId}`, thread });
   }
-  function drowHtml(r, lang, ctx) {
+  // What a diff's rows look up per line, gathered once per diff: the lines that
+  // threads or local notes may be attached to, and the current inline insights
+  // by the new line they start on.
+  function diffContext(entry, nodeId, extra = {}) {
+    const notedLines = new Set(state.comments.filter((c) => c.kind === "line").map((c) => c.id));
+    for (const t of artifactThreads) if (t.target?.kind === "line") notedLines.add(lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path));
+    const insightsByLine = new Map();
+    for (const ins of entry.stage.insights) {
+      if (ins.codeTarget?.status === "needs-review" || ins.codeTarget?.path !== entry.file.path) continue;
+      const start = ins.codeTarget.startLine;
+      insightsByLine.set(start, [...(insightsByLine.get(start) || []), inlineInsightModel(entry.stage, ins)]);
+    }
+    return { stageId: entry.stage.id, path: entry.file.path, fileId: entry.id, diffNodeId: nodeId, notedLines, insightsByLine, ...extra };
+  }
+  function pushDiffRow(out, r, lang, ctx) {
     if (ctx && ctx.previousHunk !== r.h) { ctx.previousOwner = null; ctx.previousHunk = r.h; }
-    const sign = r.t === "add" ? "+" : r.t === "del" ? "−" : "";
-    const code = highlightCode(r.s || " ", lang);
     const side = r.t === "del" ? "old" : "new";
-    const lineNo = r.t === "del" ? r.o : r.n;
-    return codeRow(`drow d-${r.t}`, r.o || "", r.n || "", sign, code, ctx, side, lineNo);
+    pushCodeRow(out, { kind: r.t, old: String(r.o || ""), new: String(r.n || ""), sign: r.t === "add" ? "+" : r.t === "del" ? "−" : "",
+      code: highlightCode(r.s || " ", lang) }, ctx, side, r.t === "del" ? r.o : r.n);
   }
-  function newFileRowHtml(r, lang, ctx, side) {
-    const num = r.n || r.o || "";
-    const code = highlightCode(r.s || " ", lang);
-    const lineNo = side === "old" ? r.o || r.n : r.n || r.o;
-    return codeRow("drow d-newline", "", num, "", code, ctx, side, lineNo);
+  // Added and deleted files show their full contents once, as neutral lines.
+  function pushWholeFileRow(out, r, lang, ctx, side) {
+    pushCodeRow(out, { kind: "newline", old: "", new: String(r.n || r.o || ""), sign: "", code: highlightCode(r.s || " ", lang) },
+      ctx, side, side === "old" ? r.o || r.n : r.n || r.o);
   }
-  function gapHtml(count) {
-    return `<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${count} unchanged line${count === 1 ? "" : "s"} omitted ⋯</code></div>`;
+  const gapRow = (count, key) => ({ type: "gap", key: `gap:${key}`, count });
+  const diffMessage = (text, status = false) => ({ type: "message", text, status });
+  // Rows are keyed so an unchanged row keeps its element; keys stay unique even
+  // when a page repeats a line.
+  function uniqueRowKeys(rows) {
+    const seen = new Set();
+    for (const row of rows) {
+      let key = row.key;
+      for (let n = 2; seen.has(key); n++) key = `${row.key}#${n}`;
+      row.key = key; seen.add(key);
+    }
+    return rows;
   }
-  function diffBody(file, mode, hideDel, ctx) {
-    if (file._diffError)
-      return `<div class="diff-empty">Could not load diff: ${esc(file._diffError)}</div>`;
-    if (!Array.isArray(file.lines))
-      return `<div class="diff-empty">Loading diff…</div>`;
-    if (file.binary) return `<div class="diff-empty">Binary file — not shown.</div>`;
+  function diffContentModel(file, mode, hideDel, ctx) {
+    if (file._diffError) return diffMessage(`Could not load diff: ${file._diffError}`);
+    if (!Array.isArray(file.lines)) return diffMessage("Loading diff…");
+    if (file.binary) return diffMessage("Binary file — not shown.");
     const lines = file.lines;
-    if (!lines.length) return `<div class="diff-empty">No line changes recorded for this file.</div>`;
+    if (!lines.length) return diffMessage("No line changes recorded for this file.");
     const lang = langFor(file.path);
     const out = [];
     if (file.kind === "added") {
-      // Added file: content is identical in both views, so render the full file
-      // once as neutral lines (not an all-green wall) with a clear "new file" banner.
-      out.push(`<div class="drow d-newfile"><span class="ln"></span><span class="ln"></span><i>＋</i><code>New file — full contents</code></div>`);
-      lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "new")));
+      out.push({ type: "banner", key: "banner", kind: "newfile", sign: "＋", text: "New file — full contents" });
+      lines.forEach((r) => pushWholeFileRow(out, r, lang, ctx, "new"));
     } else if (file.kind === "deleted") {
-      // Deleted file: mirror the added-file presentation — the full previous
-      // contents once as neutral lines with a clear "deleted file" banner.
-      out.push(`<div class="drow d-oldfile"><span class="ln"></span><span class="ln"></span><i>－</i><code>Deleted file — previous contents</code></div>`);
-      lines.forEach((r) => out.push(newFileRowHtml(r, lang, ctx, "old")));
+      out.push({ type: "banner", key: "banner", kind: "oldfile", sign: "－", text: "Deleted file — previous contents" });
+      lines.forEach((r) => pushWholeFileRow(out, r, lang, ctx, "old"));
     } else {
       const CTX = 3;
       const n = lines.length;
@@ -2160,30 +2119,15 @@ import { renderPage } from "./views/page";
         if (row.o != null) oldNo = row.o;
         if (row.n != null) newNo = row.n;
         if (!keep[i]) { omitted++; continue; }
-        if (omitted) { out.push(gapHtml(omitted)); omitted = 0; }
-        out.push(drowHtml(row, lang, ctx));
+        if (omitted) { out.push(gapRow(omitted, i)); omitted = 0; }
+        pushDiffRow(out, row, lang, ctx);
       }
-      if (omitted) out.push(gapHtml(omitted));
+      if (omitted) out.push(gapRow(omitted, "end"));
     }
-    if (file.nextOffset != null || file._pageOffset > 0) out.push(`<div class="diff-pages">
-      <button type="button" data-action="diff-page" data-id="${esc(fileKey(ctx.stageId, file.path))}" data-offset="${Math.max(0, (file._pageOffset || 0) - 900)}" ${file._pageOffset > 0 ? "" : "disabled"}>Previous page</button>
-      <span>Rows ${(file._pageOffset || 0) + 1}–${(file._pageOffset || 0) + lines.length}</span>
-      <button type="button" data-action="diff-page" data-id="${esc(fileKey(ctx.stageId, file.path))}" data-offset="${file.nextOffset || 0}" ${file.nextOffset == null ? "disabled" : ""}>Next page</button>
-    </div>`);
-    return `<div class="diff-scroll${hideDel ? " hide-removed" : ""}"><div class="diff-grid">${out.join("")}</div></div>`;
-  }
-  function viewToggle(id) {
-    const mode = fileViewMode(id);
-    return `<div class="view-toggle" role="group" aria-label="Diff view">
-      <button class="vt ${mode === "hunk" ? "is-on" : ""}" data-action="set-view" data-id="${esc(id)}" data-mode="hunk" type="button" aria-pressed="${mode === "hunk"}">Changes</button>
-      <button class="vt ${mode === "full" ? "is-on" : ""}" data-action="set-view" data-id="${esc(id)}" data-mode="full" type="button" aria-pressed="${mode === "full"}">Full file</button>
-    </div>`;
-  }
-  function hideRemovedToggle(id) {
-    const on = Boolean(state.hideDeleted[id]);
-    return `<div class="view-toggle" role="group" aria-label="Removed lines">
-      <button class="vt ${on ? "is-on" : ""}" data-action="toggle-hide-removed" data-id="${esc(id)}" type="button" aria-pressed="${on}" title="Hide removed lines to preview the resulting file">Hide removed</button>
-    </div>`;
+    const offset = file._pageOffset || 0;
+    const pager = file.nextOffset != null || offset > 0 ? { action: "diff-page", id: fileKey(ctx.stageId, file.path), offset, rows: lines.length,
+      previousOffset: offset > 0 ? Math.max(0, offset - 900) : null, nextOffset: file.nextOffset ?? null } : null;
+    return { type: "grid", grid: { hideRemoved: hideDel, rows: uniqueRowKeys(out), pager } };
   }
   // Diff view controls: mode toggle + hide-removed. Added/deleted files render
   // their full contents once, so neither control applies to them.
@@ -2201,7 +2145,7 @@ import { renderPage } from "./views/page";
       return api.fileContentUrl({ ...query, target: decodeURIComponent(resolved.pathname.slice(1)), raw: "1", ...(image ? { image: "1" } : {}) }, resolved.hash);
     } catch { return null; }
   }
-  function markdownBody(entry) {
+  function markdownPreviewModel(entry) {
     const key = markdownUrl(entry);
     let preview = markdownPreviews.get(key);
     if (!preview) {
@@ -2216,45 +2160,24 @@ import { renderPage } from "./views/page";
         const result = await response.json();
         if (!response.ok || !result.ok) throw new Error(result.error || "Could not load Markdown.");
         if (!window.renderMarkdownPreview) throw new Error("Markdown renderer unavailable; reload the viewer.");
+        // Sanitized by the Markdown module (DOMPurify, validated link and image URLs).
         preview.html = window.renderMarkdownPreview(result.content, (target, image) => markdownUrl(entry, target, image));
         preview.label = `Complete file · ${result.side === "base" ? "Base revision (deleted file)" : "Head revision"} ${result.revision.slice(0, 12)}`;
       }).catch((error) => { preview.error = error.message; }).finally(() => { preview.loading = false; render(); });
     }
-    if (preview.loading) return `<div class="diff-empty" role="status">Loading Markdown preview…</div>`;
-    if (preview.error) return `<div class="diff-empty" role="status">Preview unavailable: ${esc(preview.error)}</div>`;
-    return `<div class="markdown-revision">${esc(preview.label)} · Switch to Source to review lines.</div><article class="markdown-preview">${preview.html}</article>`;
+    if (preview.loading) return { type: "loading" };
+    if (preview.error) return { type: "error", message: preview.error };
+    return { type: "ready", label: preview.label, html: preview.html };
   }
-  function diffControls(entry) {
+  function diffControlsModel(entry) {
     const k = entry.file.kind, id = fileApprovalKey(entry.stage.id, activeFileNodeId(entry.id), entry.file.path);
     const stale = approvalState(id) === "stale", since = sinceApprovalEnabled(id);
-    const comparison = stale ? `<div class="view-toggle"><button class="vt ${since ? "is-on" : ""}" type="button" data-action="approval-comparison" data-id="${esc(id)}" aria-pressed="${since}">Since approval</button></div>` : "";
-    const wrap = `<div class="view-toggle"><button class="vt ${state.wrapLines ? "is-on" : ""}" type="button" data-action="toggle-wrap" aria-pressed="${Boolean(state.wrapLines)}">Wrap lines</button></div>`;
-    const preview = markdownMode(entry);
-    const markdown = isMarkdown(entry) ? `<div class="view-toggle" role="group" aria-label="Markdown view"><button class="vt ${preview ? "" : "is-on"}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="source" aria-pressed="${!preview}">Source</button><button class="vt ${preview ? "is-on" : ""}" type="button" data-action="markdown-mode" data-id="${esc(entry.id)}" data-mode="preview" aria-pressed="${preview}">Preview</button></div>` : "";
-    if (preview) return markdown;
-    return `${wrap}${since || !["added", "deleted"].includes(k) ? `${viewToggle(entry.id)}${hideRemovedToggle(entry.id)}` : ""}${comparison}${markdown}`;
-  }
-  function diffHeader(entry, opts = {}) {
-    const { file, stage } = entry;
-    const { dir, name } = splitPath(file.path);
-    const id = entry.id;
-    return `<header class="diff-head">
-      <div class="diff-id">
-        ${fileKind(file.kind)}
-        <span class="diff-path"><small>${esc(dir)}</small><strong>${esc(name)}</strong>${renameFrom(file)}</span>
-      </div>
-      <div class="diff-facts">
-        <span class="metrics"><i class="add">+${file.additions}</i><i class="del">−${file.deletions}</i></span>
-        <span class="diff-stage">${esc(stage.title)}</span>
-      </div>
-      <div class="diff-actions">
-        ${diffControls(entry)}
-        ${opts.nav ? `<span class="diff-nav"><button data-action="file-prev" type="button" aria-label="Previous file">‹</button><button data-action="file-next" type="button" aria-label="Next file">›</button></span>` : ""}
-        ${approveBtn("file", fileApprovalKey(stage.id, opts.nodeId || activeFileNodeId(id), file.path), "sm")}
-        ${commentBtn("file", id)}
-        ${opts.close ? `<button class="diff-close" data-action="${esc(opts.close)}" type="button" aria-label="Close">×</button>` : ""}
-      </div>
-    </header>`;
+    return {
+      fileId: entry.id, wrap: Boolean(state.wrapLines),
+      view: since || !["added", "deleted"].includes(k) ? { full: fileViewMode(entry.id) === "full", hideRemoved: Boolean(state.hideDeleted[entry.id]) } : null,
+      comparison: stale ? { approvalId: id, on: since } : null,
+      markdown: isMarkdown(entry) ? { preview: markdownMode(entry) } : null,
+    };
   }
   function retainedApproval(id) {
     return approvalRecord(id) || approvalRecord(previousApprovalId(id) || "") || approvalRecord(remotePreviousApprovalId(id) || "");
@@ -2288,63 +2211,49 @@ import { renderPage } from "./views/page";
     if (pageLoaded && pageScroll && comparisonKey(id, entry) === key && sinceApprovalEnabled(id))
       scrollDiffPage(entry.id, pageScroll);
   }
-  function baseChangeInfo(id, comparison) {
-    const toggle = (label) => `<button class="tb-btn" type="button" data-action="approval-base-scope" data-id="${esc(id)}">${label}</button>`;
-    if (comparison.baseChanges === "excluded") return `<p>The stage base changed since approval. Changes from the target branch or a lower stage are left out, so this shows only what changed in this stage. ${toggle("Include base changes")}</p>`;
-    if (comparison.baseChanges === "included") return `<p>The stage base changed since approval. This comparison includes changes from the target branch or a lower stage, which were not made in this stage. ${toggle("Leave out base changes")}</p>`;
-    return '<p>The stage base changed since approval. Changes from the target branch or a lower stage could not be separated here, so not every change below was made in this stage.</p>';
-  }
-  function approvalComparisonBody(id, entry) {
+  function approvalComparisonModel(id, entry) {
     const approval = retainedApproval(id);
-    if (!approval?.snapshotId) return '<div class="diff-empty">Approved content is unavailable. Re-approve the current file to retain a snapshot.</div>';
+    const plain = (text) => ({ comparison: null, content: diffMessage(text) });
+    if (!approval?.snapshotId) return plain("Approved content is unavailable. Re-approve the current file to retain a snapshot.");
     const key = comparisonKey(id, entry), comparison = approvalComparisons.get(key);
-    if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return '<div class="diff-empty">Loading approved comparison…</div>'; }
-    if (comparison.loading) return '<div class="diff-empty">Loading approved comparison…</div>';
-    if (comparison.error) return `<div class="diff-empty">${esc(comparison.error)}</div>`;
-    const info = `<div class="comparison-info"><p>Comparison with the approved file. Lines removed since approval are no longer in the file, so they cannot take line comments.</p>
-      ${comparison.baseChanged ? baseChangeInfo(id, comparison) : ""}${comparison.ownershipChanged ? '<p>This node’s file ownership or classification changed since approval.</p>' : ""}</div>`;
-    if (comparison.unsupported) return `${info}<div class="diff-empty">${esc(comparison.unsupported)}<p>Approved SHA-256: ${esc(comparison.approved.sha256 || "Not retained")}<br>Current SHA-256: ${esc(comparison.current.sha256 || "Not retained")}</p></div>`;
-    if (!comparison.lines.length) return `${info}<div class="diff-empty">${comparison.baseChanges === "excluded" ? "This stage made no changes to the file since approval. Only its base changed." : "No file content changes since approval."}</div>`;
+    if (!comparison) { queueMicrotask(() => { if (sinceApprovalEnabled(id)) void loadApprovalComparison(id, entry); }); return plain("Loading approved comparison…"); }
+    if (comparison.loading) return plain("Loading approved comparison…");
+    if (comparison.error) return plain(comparison.error);
+    const info = { approvalId: id, ownershipChanged: Boolean(comparison.ownershipChanged),
+      baseChanges: !comparison.baseChanged ? null : comparison.baseChanges === "excluded" || comparison.baseChanges === "included" ? comparison.baseChanges : "mixed" };
+    if (comparison.unsupported) return { comparison: info, content: { type: "unsupported", text: comparison.unsupported,
+      approvedSha: comparison.approved.sha256 || "Not retained", currentSha: comparison.current.sha256 || "Not retained" } };
+    if (!comparison.lines.length) return { comparison: info, content: diffMessage(comparison.baseChanges === "excluded"
+      ? "This stage made no changes to the file since approval. Only its base changed." : "No file content changes since approval.") };
     // Only current lines have a feedback anchor. A removed row's number belongs to
     // the approved snapshot, not to the stage's old side, so it gets no affordance.
-    const ctx = { stageId: entry.stage.id, path: entry.file.path };
+    const ctx = diffContext(entry, entry.nodeId);
+    const lang = langFor(entry.file.path);
     const rows = []; let previousNew = 0;
-    for (const row of comparison.lines) {
-      if (previousNew && row.n > previousNew + 1) rows.push(gapHtml(row.n - previousNew - 1));
-      rows.push(drowHtml(row, langFor(entry.file.path), row.t === "del" ? null : ctx));
+    comparison.lines.forEach((row, index) => {
+      if (previousNew && row.n > previousNew + 1) rows.push(gapRow(row.n - previousNew - 1, index));
+      pushDiffRow(rows, row, lang, row.t === "del" ? null : ctx);
       if (row.n) previousNew = row.n;
-    }
-    const pager = comparison.offset || comparison.nextOffset != null ? `<div class="diff-pages">
-      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${Math.max(0, comparison.offset - 900)}" ${comparison.offset ? "" : "disabled"}>Previous page</button>
-      <span>Rows ${comparison.offset + 1}–${comparison.offset + comparison.lines.length}</span>
-      <button type="button" data-action="approval-page" data-id="${esc(id)}" data-offset="${comparison.nextOffset || 0}" ${comparison.nextOffset == null ? "disabled" : ""}>Next page</button></div>` : "";
-    return `${info}<div class="diff-scroll${state.hideDeleted[entry.id] ? " hide-removed" : ""}"><div class="diff-grid">${rows.join("")}${pager}</div></div>`;
+    });
+    const offset = comparison.offset || 0;
+    const pager = offset || comparison.nextOffset != null ? { action: "approval-page", id, offset, rows: comparison.lines.length,
+      previousOffset: offset ? Math.max(0, offset - 900) : null, nextOffset: comparison.nextOffset ?? null } : null;
+    return { comparison: info, content: { type: "grid", grid: { hideRemoved: Boolean(state.hideDeleted[entry.id]), rows: uniqueRowKeys(rows), pager } } };
   }
-
-  function diffPanel(entry, opts = {}) {
-    if (!entry) return `<div class="diff-panel is-empty"><p>Select a file to inspect its diff.</p></div>`;
-    const ctx = {
-      stageId: entry.stage.id,
-      path: entry.file.path,
-      ownership: membershipOwnership(entry.file),
-      focusNodeId: opts.focusNodeId || null,
-    };
-    const approvalId = fileApprovalKey(entry.stage.id, opts.focusNodeId || activeFileNodeId(entry.id), entry.file.path);
+  // The diff of a file opened in the step `nodeId`.
+  function diffPanelModel(entry, nodeId) {
+    const ctx = diffContext(entry, nodeId, { ownership: membershipOwnership(entry.file), focusNodeId: nodeId });
+    const approvalId = fileApprovalKey(entry.stage.id, nodeId, entry.file.path);
     const sinceApproval = sinceApprovalEnabled(approvalId);
-    const comparisonEntry = approvalEntry(approvalId);
-    return `<section class="diff-panel ${state.wrapLines ? "wrap-lines" : ""} ${sinceApproval ? "is-approved-comparison" : ""} ${opts.compact ? "is-compact" : ""}" aria-label="Diff for ${esc(entry.file.path)}">
-      ${opts.compact ? diffToolbar(entry, opts) : diffHeader(entry, opts)}
-      <div class="source-view" ${markdownMode(entry) ? "hidden" : ""}>${sinceApproval ? approvalComparisonBody(approvalId, comparisonEntry) : diffBody(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx)}</div>
-      ${markdownMode(entry) ? markdownBody(entry) : ""}
-    </section>`;
-  }
-  function diffToolbar(entry) {
-    const k = entry.file.kind;
-    const hint = k === "added" ? "New file" : k === "deleted" ? "Deleted file" : "Inline diff";
-    return `<header class="diff-bar">
-      <span class="diff-bar-hint">${hint}</span>
-      ${diffControls(entry)}
-    </header>`;
+    const preview = markdownMode(entry);
+    return {
+      path: entry.file.path, kind: entry.file.kind, wrap: Boolean(state.wrapLines), sinceApproval,
+      controls: diffControlsModel(entry),
+      // The source rows stay rendered under a Markdown preview, so line drafts survive switching.
+      body: sinceApproval ? approvalComparisonModel(approvalId, approvalEntry(approvalId))
+        : { comparison: null, content: diffContentModel(entry.file, fileViewMode(entry.id), Boolean(state.hideDeleted[entry.id]), ctx) },
+      preview: preview ? markdownPreviewModel(entry) : null,
+    };
   }
 
   /* ---- chrome ----------------------------------------------------------- */
@@ -2381,10 +2290,9 @@ import { renderPage } from "./views/page";
     reviewDeleted = true; deletedElsewhere = external; reviewsOpen = true;
     clearTimeout(saveTimer); saveError = ""; showSaveStatus(); render(); void refreshReviews();
   }
-  function deletedReviewPage() {
-    const text = deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
-    return `<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in the original worktree to start a fresh session.</p>
-      ${text ? `<label>Copy any unsent text you want to keep<textarea readonly rows="6">${esc(text)}</textarea></label>` : ""}</section>`;
+  // Unsent text the reviewer can copy after another tab deleted this review.
+  function deletedReviewText() {
+    return deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...state.comments.filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
   }
   const storageSize = (bytes) => bytes >= 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MiB` : `${(bytes / 1024).toFixed(1)} KiB`;
   async function manageReviewData(id) {
@@ -2394,19 +2302,17 @@ import { renderPage } from "./views/page";
     const dialog = document.createElement("dialog"); dialog.className = "review-cleanup"; dialog.setAttribute("aria-labelledby", "cleanup-title");
     let storage = null, busy = false, error = "", message = "";
     function paint() {
-      dialog.innerHTML = `<h2 id="cleanup-title">Review data</h2><strong>${esc(review.title)}</strong><p class="review-location">${esc(review.repositoryRoot)}</p>
-        <p class="review-location">${esc(review.id)} · ${storage?.deletionPending || review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}</p>
-        ${storage ? `<p class="review-location">Stored in ${esc(storage.storageDirectory)}</p><p><strong>${storageSize(storage.bytes)}</strong> total</p>
-          <table><thead><tr><th>Data</th><th>Size</th><th>Contents</th></tr></thead><tbody>${storage.categories.map((item) => `<tr><td>${esc(item.label)}</td><td>${storageSize(item.bytes)}</td><td>${esc(item.detail)}</td></tr>`).join("")}</tbody></table>
-          ${storage.drafts || storage.unresolved ? `<p class="cleanup-warning">This review has ${storage.drafts} unsent draft${storage.drafts === 1 ? "" : "s"} and ${storage.unresolved} unresolved feedback thread${storage.unresolved === 1 ? "" : "s"}.</p>` : ""}
-          <p>Deletion removes this review’s local data. Source files, branches, implementation artifacts, published metadata, and archives are preserved.</p>
-          ${!storage.deletionPending ? `<p>${storageSize(storage.unusedBytes)} in ${storage.unused.length} unused files or folders can be cleaned separately. Cleanup keeps files referenced by messages, drafts, or approvals, and skips uploads and snapshots less than an hour old. Nothing is deleted automatically.</p>` : ""}
-          ${storage.referenceError ? `<p role="alert">${esc(storage.referenceError)}</p>` : ""}` : ""}
-        ${busy ? '<p role="status">Working…</p>' : ""}${message ? `<p role="status">${esc(message)}</p>` : ""}${error ? `<p role="alert">${esc(error)}</p>` : ""}
-        <div class="cleanup-actions"><button class="tb-btn" type="button" data-cleanup="cancel" autofocus ${busy ? "disabled" : ""}>Cancel</button>
-          <button class="tb-btn" type="button" data-cleanup="refresh" ${busy ? "disabled" : ""}>Refresh details</button>
-          ${storage && !storage.deletionPending ? `<button class="tb-btn" type="button" data-cleanup="unused" ${busy || !storage.unused.length || storage.referenceError ? "disabled" : ""}>Clean unused files</button>` : ""}
-          <button class="tb-btn cleanup-delete" type="button" data-cleanup="delete" ${busy || !storage ? "disabled" : ""}>${storage?.deletionPending ? "Retry file removal" : "Delete review data"}</button></div>`;
+      renderLit(reviewCleanupView({
+        title: review.title, location: review.repositoryRoot, id: review.id,
+        status: storage?.deletionPending || review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active",
+        storage: storage && {
+          directory: storage.storageDirectory, size: storageSize(storage.bytes),
+          categories: storage.categories.map((item) => ({ label: item.label, size: storageSize(item.bytes), detail: item.detail })),
+          drafts: storage.drafts, unresolved: storage.unresolved, deletionPending: Boolean(storage.deletionPending),
+          unusedSize: storageSize(storage.unusedBytes), unusedCount: storage.unused.length, referenceError: storage.referenceError || "",
+        },
+        busy, message, error,
+      }), dialog);
     }
     async function details() {
       const response = await api.inspectReviewStorage(target);
@@ -2441,22 +2347,21 @@ import { renderPage } from "./views/page";
     finally { busy = false; paint(); }
   }
   const isCurrentReview = (review) => !reviewDeleted && review.id === savedReview.reviewId && review.generation === savedReview.generation;
-  function reviewsPanel() {
-    return `${reviewDeleted ? deletedReviewPage() : ""}
-      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ${reviewListBusy ? "disabled" : ""}>Refresh</button>${reviewDeleted ? "" : `<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
-      ${reviewListError ? `<p role="alert">${esc(reviewListError)}</p>` : ""}
-      ${reviewListBusy ? '<p role="status">Loading review…</p>' : ""}
-      ${!reviewList.length && !reviewListBusy ? '<p>No saved reviews.</p>' : ""}
-      ${reviewList.map((review) => `<article data-review="${esc(review.id)}" ${isCurrentReview(review) ? 'aria-current="true"' : ""}>
-        <div><strong>${esc(review.title)}</strong> <span>${review.remote ? "Remote · " : ""}${review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active"}${isCurrentReview(review) ? " · Current" : ""}</span>
-        <p>${esc(review.remote ? `${review.remote.remoteName}/${review.remote.branch}` : review.implementationId)}</p><p class="review-location">${esc(review.remote?.sourceRoot || review.repositoryRoot)}</p>
-        <p>Last edited <time datetime="${esc(review.updatedAt)}">${esc(new Date(review.updatedAt).toLocaleString())}</time></p>
-        ${!review.available ? `<p class="review-unavailable">Unavailable: ${esc(review.unavailableReason)}</p>` : ""}</div>
-        <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id="${esc(review.id)}" ${reviewListBusy || !review.available || isCurrentReview(review) ? "disabled" : ""}>Open review</button>
-        <button class="tb-btn" type="button" data-action="complete-review" data-review-id="${esc(review.id)}" ${reviewListBusy || review.deletionPending ? "disabled" : ""}>${review.completedAt ? "Reopen review" : "Mark complete"}</button>
-        <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id="${esc(review.id)}" ${reviewListBusy ? "disabled" : ""}>${review.deletionPending ? "Retry deletion…" : "Delete data…"}</button></div>
-      </article>`).join("")}
-    `;
+  function reviewsPanelModel() {
+    return {
+      deleted: reviewDeleted ? { text: deletedReviewText() } : null,
+      busy: reviewListBusy, error: reviewListError,
+      reviews: reviewList.map((review) => ({
+        id: review.id, title: review.title, remote: Boolean(review.remote), current: isCurrentReview(review),
+        status: review.deletionPending ? "Deletion pending" : review.completedAt ? "Completed" : "Active",
+        subject: review.remote ? `${review.remote.remoteName}/${review.remote.branch}` : review.implementationId,
+        location: review.remote?.sourceRoot || review.repositoryRoot,
+        updatedAt: review.updatedAt, updatedText: new Date(review.updatedAt).toLocaleString(),
+        unavailable: review.available ? null : String(review.unavailableReason ?? ""),
+        canOpen: Boolean(review.available) && !isCurrentReview(review),
+        completed: Boolean(review.completedAt), deletionPending: Boolean(review.deletionPending),
+      })),
+    };
   }
   let reviewsDialog = null, reviewsCloseTimer;
   function setReviewsOpen(open) {
@@ -2494,9 +2399,10 @@ import { renderPage } from "./views/page";
     const active = reviewsDialog.contains(document.activeElement) ? document.activeElement : null;
     const action = active?.dataset.action, reviewId = active?.dataset.reviewId;
     const top = reviewsDialog.scrollTop;
-    reviewsDialog.innerHTML = reviewsPanel(); enhanceTooltips(reviewsDialog);
+    renderLit(reviewsPanelView(reviewsPanelModel()), reviewsDialog); enhanceTooltips(reviewsDialog);
     reviewsDialog.scrollTop = top;
-    if (action) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
+    // Rendering keeps the focused button unless it became disabled.
+    if (action && document.activeElement !== active) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
     if (reviewsDialog.open && !document.querySelector(".review-cleanup[open]") && !reviewsDialog.contains(document.activeElement)) {
       reviewsDialog.querySelector("button:not(:disabled)")?.focus({ preventScroll: true });
     }
@@ -2761,7 +2667,7 @@ import { renderPage } from "./views/page";
     selectedThreadLists = threadListsInSelection();
     heldThreadLists = new Set();
     nextThreadLists = new Map();
-    renderPage(app, {
+    const model = {
       topbar: topbarModel(),
       agentBar: agentBarModel(),
       notices: {
@@ -2772,16 +2678,20 @@ import { renderPage } from "./views/page";
       story: storyModel(),
       coverage: coverageModel(),
       notes: notesPanelModel(),
-    });
-    renderLineThreads(app, lineThreadModel);
+    };
+    renderingPage = true;
+    try { renderPage(app, model); } finally { renderingPage = false; }
     shownThreadLists = nextThreadLists;
     enhance();
     if (reviewsOpen && !reviewsDialog) setReviewsOpen(true);
   }
 
   function enhance() {
+    forgetRemovedInsights();
     animateDetails();
     observeUnreadReplies();
+    // Rendering can replace rows whose text held matches; match again.
+    if (hasSelectionHits()) refreshDiffSelection();
     const unread = unreadReplyCount();
     document.title = unread ? `(${unread}) ${baseTitle}` : baseTitle;
     if (pendingHighlight) {
@@ -2896,20 +2806,17 @@ import { renderPage } from "./views/page";
   }
   function fillPop(btn) {
     const d = btn.dataset;
+    const el = ensurePop();
     if (d.tooltip) {
-      const el = ensurePop();
       el.className = "tag-pop-float is-tooltip";
       // A label the layout cuts off is named in full by the owner's fuller hint.
       const clipped = d.tooltipClipped && [...btn.querySelectorAll("[data-clippable]")].some((label) => label.scrollWidth > label.clientWidth);
-      el.innerHTML = `<strong>${esc(clipped ? d.tooltipClipped : d.tooltip)}</strong>`;
+      renderLit(tooltipView(clipped ? d.tooltipClipped : d.tooltip), el);
       return;
     }
     const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
-    const el = ensurePop();
     el.className = `tag-pop-float type-${d.type}${d.vstat ? ` vstat-${d.vstat}` : ""}`;
-    el.innerHTML = `<span class="tag-pop-kind">${esc(kindLine)}</span>
-      <strong>${esc(d.title)}</strong>
-      ${d.body ? `<p>${esc(d.body)}</p>` : ""}`;
+    renderLit(tagPopoverView({ kind: kindLine, title: d.title ?? "", body: d.body || "" }), el);
   }
   function positionPop(btn) {
     const r = btn.getBoundingClientRect();
@@ -2994,22 +2901,29 @@ import { renderPage } from "./views/page";
   /* ---- events ----------------------------------------------------------- */
   // Keep the hit area stable: highlighting only changes paint, never layout or
   // the insight DOM. Moving between its icon, text, and padding is one hover.
-  let hoveredCodeInsight = null, focusedCodeInsight = null, suppressedCodeInsight = null;
   function clearInlineInsightHighlight() {
     hoveredCodeInsight = focusedCodeInsight = null;
     highlightInlineInsight(null);
   }
+  // Highlights the lines an inline insight is linked to, in the diff that
+  // shows the insight, without rendering the viewer.
   function highlightInlineInsight(button) {
-    app.querySelectorAll(".is-code-insight-target").forEach(row => row.classList.remove("is-code-insight-target"));
-    if (!button?.isConnected) return;
-    const stage = stageById.get(button.dataset.stage);
-    const target = stage?.insights.find(ins => ins.collection === button.dataset.collection && ins.id === button.dataset.item)?.codeTarget;
-    if (!target || target.status === "needs-review") return;
-    button.closest(".diff-grid")?.querySelectorAll("[data-line-id]").forEach(row => {
-      const line = parseLineId(row.dataset.lineId);
-      if (line?.stageId === stage.id && line.side === "new" && line.path === target.path && line.line >= target.startLine && line.line <= target.endLine)
-        row.classList.add("is-code-insight-target");
-    });
+    if (renderingPage) return;
+    setInsightPreview(codeInsightPreview(button), button);
+  }
+  // The lines an inline insight button previews, from the current insight data.
+  function codeInsightPreview(button) {
+    let next = null;
+    if (button?.isConnected) {
+      const stage = stageById.get(button.dataset.stage);
+      const target = stage?.insights.find(ins => ins.collection === button.dataset.collection && ins.id === button.dataset.item)?.codeTarget;
+      // The open diff follows its file row, inside the step it was opened in.
+      const fileId = button.closest(".cinema-diff")?.previousElementSibling?.dataset.file;
+      const nodeId = button.closest("details[data-node]")?.dataset.node;
+      if (target && target.status !== "needs-review" && fileId && nodeId)
+        next = { fileId, nodeId, stageId: stage.id, path: target.path, startLine: target.startLine, endLine: target.endLine };
+    }
+    return next;
   }
   document.addEventListener("pointerover", e => {
     const button = e.target.closest(".line-code-insights .code-insight-link");
@@ -3212,13 +3126,7 @@ import { renderPage } from "./views/page";
       const sel = window.getSelection && window.getSelection();
       if (sel && !sel.isCollapsed && e.target.closest && e.target.closest(".fp-name")) return;
       toggleCinema(btn.dataset.id, btn.dataset.nodeId);
-    } else if (a === "cinema-close") {
-      const holder = btn.closest(".cinema-diff");
-      const row = holder && holder.previousElementSibling;
-      const fid = row && row.dataset ? row.dataset.file : null;
-      closeCinema(fid);
-    }
-    else if (a === "export-feedback") {
+    } else if (a === "export-feedback") {
       exportFeedback();
     } else if (a === "remove-attachment") {
       const attachments = editorAttachments(btn.closest("form"));
@@ -3830,75 +3738,87 @@ import { renderPage } from "./views/page";
 
   /* ---- diff selection highlighting -------------------------------------
      When the reviewer selects a token inside a diff, highlight every other
-     occurrence of that exact text within the same file view. */
-  function clearSelHits(root) {
-    const parents = new Set();
-    root.querySelectorAll("mark.sel-hit").forEach((m) => {
-      parents.add(m.parentNode);
-      m.replaceWith(document.createTextNode(m.textContent));
-    });
-    parents.forEach((parent) => parent.normalize());
+     occurrence of that exact text within the same file view (selection-hits.ts). */
+  // The diff grid holding the document selection, if any. A selection inside a
+  // text field (such as a line thread's draft) is the field's, not the diff's.
+  function diffSelectionGrid(sel) {
+    if (!sel || sel.isCollapsed || !sel.anchorNode) return null;
+    const active = document.activeElement;
+    if (active?.matches("input, textarea") && sel.anchorNode.contains(active)) return null;
+    return sel.anchorNode.parentElement?.closest(".diff-grid") || null;
   }
-  function applySelHits(root, term, skipRange) {
-    clearSelHits(root);
-    const needle = term.toLowerCase();
-    // Line threads are lit templates, which own their text nodes; only code is marked.
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
-      node.parentElement?.closest("[data-lit-island]") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
-    const targets = [];
-    let node;
-    while ((node = walker.nextNode())) {
-      // Never mutate the nodes the reviewer is actively selecting — replacing
-      // them would collapse the selection and make the text impossible to copy.
-      if (skipRange && skipRange.intersectsNode(node)) continue;
-      if (node.nodeValue.toLowerCase().includes(needle)) targets.push(node);
-    }
-    targets.forEach((textNode) => {
-      const text = textNode.nodeValue;
-      const lc = text.toLowerCase();
-      const frag = document.createDocumentFragment();
-      let i = 0, idx;
-      while ((idx = lc.indexOf(needle, i)) !== -1) {
-        if (idx > i) frag.appendChild(document.createTextNode(text.slice(i, idx)));
-        const mark = document.createElement("mark");
-        mark.className = "sel-hit";
-        mark.textContent = text.slice(idx, idx + term.length);
-        frag.appendChild(mark);
-        i = idx + term.length;
-      }
-      if (i < text.length) frag.appendChild(document.createTextNode(text.slice(i)));
-      textNode.replaceWith(frag);
-    });
-  }
-  function refreshDiffSelection() {
-    // Capture the selection *before* mutating the DOM: clearing marks first
-    // could normalize away the range the reviewer just made.
+  // The selection the matches were last computed for, so a scheduled refresh
+  // that finds the same selection, such as the mouseup and selection change of
+  // one double-click, does no work.
+  let matchedSelection = null;
+  const sameSelection = (a, b) => !a || !b ? a === b : a.grid === b.grid && a.term === b.term &&
+    a.startContainer === b.startContainer && a.startOffset === b.startOffset && a.endContainer === b.endContainer && a.endOffset === b.endOffset;
+  function refreshDiffSelection(onlyIfChanged = false) {
     const sel = document.getSelection();
     let grid = null;
     let term = "";
     let range = null;
-    if (sel && !sel.isCollapsed && sel.anchorNode) {
-      const host = sel.anchorNode.parentElement && sel.anchorNode.parentElement.closest(".diff-grid");
+    const host = diffSelectionGrid(sel);
+    if (host) {
       const t = String(sel).trim();
-      if (host && t && t.length >= 2 && !/\n/.test(t)) {
+      if (t && t.length >= 2 && !/\n/.test(t)) {
         grid = host; term = t;
         range = sel.rangeCount ? sel.getRangeAt(0) : null;
       }
     }
-    app.querySelectorAll(".diff-grid").forEach(clearSelHits);
-    if (grid) applySelHits(grid, term, range);
+    // The selection's range is live, so record its bounds.
+    const current = grid ? { grid, term, startContainer: range?.startContainer, startOffset: range?.startOffset,
+      endContainer: range?.endContainer, endOffset: range?.endOffset } : null;
+    if (onlyIfChanged && sameSelection(current, matchedSelection)) return;
+    matchedSelection = current;
+    if (grid) highlightSelectionHits(grid, term, range);
+    else clearSelectionHits();
   }
-  // Run after the browser finishes the selection so we never mutate mid-drag.
+  function clearDiffSelection() {
+    matchedSelection = null;
+    clearSelectionHits();
+  }
+  // A drag in a diff is matched once, after the browser finishes the selection;
+  // other selection changes, such as from the keyboard or select all, at most
+  // once per frame. Both share one scheduled refresh.
+  let selectingInDiff = false, selectionFrame = 0;
+  function scheduleSelectionRefresh() {
+    if (selectionFrame) return;
+    selectionFrame = requestAnimationFrame(() => {
+      selectionFrame = 0;
+      if (!selectingInDiff) refreshDiffSelection(true);
+    });
+  }
+  // Dragging already selected text starts a native drag that swallows the
+  // mouseup, so the drag, a cancelled pointer, or a move with the button
+  // released also end the selecting drag. The selection may have changed
+  // during the drag, and no mouseup will refresh its matches.
+  const endSelectingDrag = () => {
+    if (!selectingInDiff) return;
+    selectingInDiff = false;
+    scheduleSelectionRefresh();
+  };
+  document.addEventListener("dragstart", endSelectingDrag);
+  document.addEventListener("dragend", endSelectingDrag);
+  document.addEventListener("pointercancel", endSelectingDrag);
+  document.addEventListener("pointermove", (e) => { if (!(e.buttons & 1)) endSelectingDrag(); });
   document.addEventListener("mouseup", (e) => {
-    if (!e.target.closest || !e.target.closest(".diff-scroll")) {
-      app.querySelectorAll(".diff-grid mark.sel-hit").length && app.querySelectorAll(".diff-grid").forEach(clearSelHits);
-      return;
-    }
-    setTimeout(refreshDiffSelection, 0);
+    selectingInDiff = false;
+    if (!e.target.closest || !e.target.closest(".diff-scroll")) { clearDiffSelection(); return; }
+    scheduleSelectionRefresh();
   });
   document.addEventListener("mousedown", (e) => {
-    if (e.target.closest && e.target.closest(".diff-scroll")) return;
-    app.querySelectorAll(".diff-grid").forEach(clearSelHits);
+    const inDiff = Boolean(e.target.closest && e.target.closest(".diff-scroll"));
+    selectingInDiff = inDiff && e.button === 0;
+    if (!inDiff) clearDiffSelection();
+  });
+  // Typing or moving the caret in a text field changes the selection without
+  // touching a diff; only refresh when there are matches to clear or the
+  // selection is in a diff.
+  document.addEventListener("selectionchange", () => {
+    if (selectingInDiff) return;
+    if (document.activeElement?.matches("input, textarea") && !hasSelectionHits() && !diffSelectionGrid(document.getSelection())) return;
+    scheduleSelectionRefresh();
   });
 
   // Preserve disclosures and scroll when live artifact updates change the layout.
