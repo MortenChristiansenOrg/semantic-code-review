@@ -13,6 +13,7 @@ import { MINIMUM_NODE_MAJOR, sha256, skillFiles, unpackDistribution, validateDis
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
 import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
+import { viewerFetch, viewerKey } from './helpers/viewer-client.mjs';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
 
 const api = `https://api.github.com/repos/${RELEASE_REPOSITORY}`;
@@ -30,7 +31,8 @@ function temp(t) {
 function distribution(version = '0.2.0', extraFiles = {}) {
   const root = path.resolve(scriptsDirectory, '..');
   const files = new Map(skillFiles(root).map((name) => [name, fs.readFileSync(path.join(root, name))]));
-  for (const [name, content] of Object.entries(extraFiles)) files.set(name, Buffer.from(content));
+  // A null content removes a file the current skill has.
+  for (const [name, content] of Object.entries(extraFiles)) content === null ? files.delete(name) : files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
   const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: MINIMUM_NODE_MAJOR,
@@ -131,6 +133,15 @@ test('archive validation rejects wrong versions, missing files, changed contents
   const original = distribution();
   assert.throws(() => validateDistribution(original, '0.3.0'), /does not match/);
   assert.throws(() => validateDistribution(original, '0.2.0', 18), /requires Node/);
+  // A script the page loads must ship with it; older pages load no start script.
+  assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null }), '0.2.0'), /missing viewer\/boot\.js/);
+  const olderPage = '<script src="implementation-data.js"></script>\n<script src="app.js"></script>\n';
+  validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': olderPage }), '0.2.0');
+  // The script is found whatever the order and quoting of its attributes.
+  const reordered = '<div id="app"></div>\n<script defer src="boot.js"></script>\n';
+  assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': reordered }), '0.2.0'), /missing viewer\/boot\.js/);
+  const quoted = '<script title="a > b" defer src="boot.js"></script>\n';
+  assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': quoted }), '0.2.0'), /missing viewer\/boot\.js/);
   assert.throws(() => validateDistribution(original, '0.2.0', MINIMUM_NODE_MAJOR - 1), new RegExp(`requires Node\\.js ${MINIMUM_NODE_MAJOR} or newer`));
   for (const mutate of [
     (files) => files.delete('viewer/app.js'),
@@ -271,7 +282,7 @@ test('release update keeps the new installation when the old one cannot be delet
 test('release update restarts the matching viewer and preserves repository artifacts', async (t) => {
   let port;
   t.after(async () => {
-    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+    if (port) { const viewer = await probeViewer(port, { key: viewerKey(port) }); if (viewer) await stopViewerAndWait(viewer, port); }
   });
   const fixture = await updateFixture(t);
   initializeImplementation(fixture.repository);
@@ -282,10 +293,10 @@ test('release update restarts the matching viewer and preserves repository artif
   const env = { SEMANTIC_VIEW_PORT: String(port), SEMANTIC_VIEW_NO_OPEN: '1' };
   const launch = spawnSync(process.execPath, [fixture.cli, 'review'], { cwd: fixture.repository.root, env: { ...process.env, ...env }, encoding: 'utf8' });
   assert.equal(launch.status, 0, launch.stderr);
-  const before = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());
+  const before = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());
   const result = await fixture.run([], env);
   assert.equal(result.status, 0, result.stderr);
-  const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());
+  const after = await viewerFetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());
   assert.notEqual(before.processId, after.processId);
   assert.equal(after.skillDirectory, fixture.installed);
   assert.equal(beforeArtifact, fixture.repository.artifact.read('manifest.json'));
@@ -294,14 +305,16 @@ test('release update restarts the matching viewer and preserves repository artif
 test('release downgrade restarts the viewer with the executable the older release ships', async (t) => {
   let port;
   t.after(async () => {
-    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+    if (port) { const viewer = await probeViewer(port, { key: viewerKey(port) }); if (viewer) await stopViewerAndWait(viewer, port); }
   });
   // Releases before the single executable started their viewer with `semantic-view.mjs review <path>`.
   const olderViewer = `import fs from 'node:fs';
 fs.writeFileSync(process.env.SEMANTIC_FLOW_TEST_VIEWER_ARGS, JSON.stringify(process.argv.slice(2)));
 process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: process.argv[3], processId: process.pid, implementation: { stageCount: 0, fileCount: 0 } }, () => process.disconnect());
 `;
-  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer } });
+  // Releases before viewer access control have no start script and load the review data by script.
+  const olderPage = '<!doctype html>\n<div id="app"></div>\n<script src="implementation-data.js"></script>\n<script src="markdown.js"></script>\n<script src="app.js"></script>\n';
+  const fixture = await updateFixture(t, { previous: '0.3.0', files: { 'scripts/semantic-view.mjs': olderViewer, 'viewer/index.html': olderPage, 'viewer/boot.js': null } });
   initializeImplementation(fixture.repository);
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -322,7 +335,7 @@ process.send({ type: 'ready', url: 'http://127.0.0.1:1/', repositoryRoot: proces
 test('a viewer file left over from an older release does not start the viewer', async (t) => {
   let port;
   t.after(async () => {
-    if (port) { const viewer = await probeViewer(port); if (viewer) await stopViewerAndWait(viewer, port); }
+    if (port) { const viewer = await probeViewer(port, { key: viewerKey(port) }); if (viewer) await stopViewerAndWait(viewer, port); }
   });
   const fixture = await updateFixture(t);
   // Copying a single-executable release over a four-executable folder keeps the old viewer file.

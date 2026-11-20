@@ -34,10 +34,12 @@ schema copies under `skills/semantic-flow/references`.
 
 Run `npm ci`, then `npx playwright install chromium` (or
 `npx playwright install --with-deps chromium` on a fresh Linux CI machine), and
-`npm run test:browser` from `scripts/`. The tests serve the production viewer
-with intercepted fixture responses and cover layout at empty/short/overflowing
+`npm run test:browser` from `scripts/`. `viewer.spec.mjs` serves the production
+viewer with intercepted fixture responses and covers layout at empty/short/overflowing
 sizes, saved stage choices, feedback refresh, keyboard submission, node context,
-and accessible tooltips. They do not require a running artifact server.
+and accessible tooltips. `real-viewer.spec.mjs` starts real viewers with the CLI
+on fixture repositories and covers launch links, the page's content security
+policy, the fresh-link notice, and switching between viewers on different ports.
 
 The artifact command suite also scripts recovery from an unsupported decision
 category: the rejected write preserves application work, a supported retry keeps

@@ -65,6 +65,7 @@ const compilation = await build({
 // The viewer ships as browser scripts; users unpack it with no install step.
 const viewerCompilation = await build({
   entryPoints: {
+    boot: path.join(viewerSource, "src", "boot.ts"),
     app: path.join(viewerSource, "src", "app.ts"),
     markdown: path.join(viewerSource, "src", "markdown.ts"),
   },

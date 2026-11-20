@@ -1,0 +1,95 @@
+/* Starts the viewer page. The page receives its secrets through a single-use
+   launch code in the URL fragment, loads the review data with them, and only
+   then loads the app, whose modules read that data when they load. */
+import { accessSurvivesReload, showFreshLinkNotice, storedAccess, takeLaunchCode, useAccess, type Access } from "./access";
+import * as api from "./api";
+
+declare global {
+  interface Window {
+    /** Set by app.js when it runs. */
+    SEMANTIC_APP?: {
+      /** Whether the page has started. */
+      started(): boolean;
+    };
+  }
+}
+
+async function redeem(code: string): Promise<Access | null> {
+  try {
+    const response = await api.startSession({ code });
+    const body = await response.json();
+    return response.ok && body.ok ? { key: body.key, read: body.read } : null;
+  } catch { return null; }
+}
+
+function loadScript(src: string): void {
+  const script = document.createElement("script");
+  script.src = src;
+  // Dynamically added scripts run in the order added only when not async.
+  script.async = false;
+  document.body.append(script);
+}
+
+/** Whether the app scripts were added; they run once per page. */
+let appLoaded = false;
+
+/** Loads the review data with the access and then the app. */
+async function start(access: Access): Promise<void> {
+  useAccess(access);
+  let start;
+  // Only the server's own explanation replaces the general one.
+  let failure = "Review data could not be loaded.";
+  try {
+    const response = await api.getBootstrap();
+    const body = await response.json();
+    if (!response.ok || !body.ok) {
+      // The request already showed how to get a fresh link.
+      if (!body.ok && body.keyRequired) return;
+      if (!body.ok && body.error) failure = body.error;
+      throw new Error(failure);
+    }
+    start = body;
+  } catch {
+    const app = document.querySelector("#app");
+    if (app && !document.getElementById("fresh-link-notice")) app.textContent = `${failure} Reload to retry.`;
+    return;
+  }
+  if (appLoaded) return;
+  appLoaded = true;
+  window.SEMANTIC_IMPLEMENTATION = start.implementation;
+  window.SEMANTIC_REVIEW_CONTEXT = start.context;
+  loadScript("markdown.js");
+  loadScript("app.js");
+}
+
+void (async function boot() {
+  // The code leaves the address bar before anything else happens.
+  const code = takeLaunchCode();
+  // A spent or expired link leaves the access this tab already has in place.
+  const access = (code ? await redeem(code) : null) ?? storedAccess();
+  if (!access) { showFreshLinkNotice(); return; }
+  await start(access);
+})();
+
+// A launch link opened in a tab that already shows this viewer changes only the
+// fragment. Its code may belong to a restarted viewer on the same port, or to
+// another review's viewer that took the port.
+window.addEventListener("hashchange", () => {
+  // A page that has not started, whatever stopped it, starts again from the link,
+  // and so does a page that cannot keep access across a reload: a reload keeps the
+  // fragment, and the new page redeems it as a first load does.
+  if (!window.SEMANTIC_APP?.started() || !accessSurvivesReload()) {
+    if (window.location.hash.startsWith("#launch=")) window.location.reload();
+    return;
+  }
+  const code = takeLaunchCode();
+  if (!code) return;
+  void (async () => {
+    const access = await redeem(code);
+    // A spent or expired link leaves a working page as it is.
+    if (!access) return;
+    // The reload loads the page the server now serves.
+    useAccess(access);
+    window.location.reload();
+  })();
+});

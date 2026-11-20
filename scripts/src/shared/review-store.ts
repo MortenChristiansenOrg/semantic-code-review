@@ -549,7 +549,9 @@ function acquireReviewLock<T>(id: string, waitMs: number, operation: () => T): T
 }
 /** A remote review is found again by the remote URL and branch it reviews. */
 export type RemoteReview = { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
-export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string };
+/** Locates a running viewer. `key` authorizes requests to it; viewers of older
+ * releases record none. */
+export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string; key?: string };
 export type ReviewRecord = {
   id: string; generation: string;
   /** Locates the review's repository: a worktree that reaches it, and the
@@ -579,11 +581,12 @@ function parseRemote(value: unknown): RemoteReview | undefined {
 }
 function parseViewer(value: unknown): ViewerRecord | undefined {
   if (!isRecord(value)) return undefined;
-  const { port, processId, viewerVersion, skillDirectory } = value;
+  const { port, processId, viewerVersion, skillDirectory, key } = value;
   // An out-of-range port would abort viewer startup instead of letting it choose one.
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535 ||
-    typeof processId !== "number" || typeof viewerVersion !== "string" || typeof skillDirectory !== "string") return undefined;
-  return { port, processId, viewerVersion, skillDirectory };
+    typeof processId !== "number" || typeof viewerVersion !== "string" || typeof skillDirectory !== "string" ||
+    (key !== undefined && (typeof key !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(key)))) return undefined;
+  return { port, processId, viewerVersion, skillDirectory, ...(key !== undefined ? { key } : {}) };
 }
 /** Narrows a stored review.json record; fails when a required field is missing or malformed. */
 export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
@@ -751,12 +754,16 @@ function approvalSnapshotIds(state: JsonRecord): Set<string> {
 }
 
 /** Runtime location is discoverable without changing the user's edit timestamp. */
-export function recordViewer(id: string, generation: string, viewer: ReviewRecord["viewer"]) {
+/** Records the review's viewer. With `expected`, only while the record still
+ * names that viewer (or none, for null); returns whether it was recorded. */
+export function recordViewer(id: string, generation: string, viewer: ReviewRecord["viewer"], expected?: ViewerRecord | null): boolean {
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("The review session changed during viewer startup.");
+    if (expected !== undefined && JSON.stringify(record.viewer ?? null) !== JSON.stringify(expected)) return false;
     record.viewer = viewer;
     atomicJson(path.join(reviewDirectory(id), "review.json"), record);
+    return true;
   });
 }
 export function listReviews(): ReviewRecord[] {

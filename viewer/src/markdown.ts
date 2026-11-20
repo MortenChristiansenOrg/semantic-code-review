@@ -10,6 +10,20 @@ declare global {
   interface Window { renderMarkdownPreview?: RenderMarkdownPreview }
 }
 
+// An absolute URL naming this machine could reach this or another review viewer.
+// The browser loads images by itself, so those come only from the viewer's own
+// resource URLs; links open only when the reviewer follows them.
+function viewerAddress(value: string): boolean {
+  try {
+    // A final dot names the same host.
+    const host = new URL(value).hostname.toLowerCase().replace(/\.$/, '');
+    return host === window.location.hostname.toLowerCase().replace(/\.$/, '') || host === 'localhost' || host.endsWith('.localhost') ||
+      host === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(host) || host === '0.0.0.0' || host === '[::]' ||
+      // IPv6 addresses that embed one of the IPv4 addresses above.
+      /^\[::ffff:(?:7f[0-9a-f]{2}:[0-9a-f]{1,4}|0:0)\]$/.test(host);
+  } catch { return true; }
+}
+
 // Keep repository markup out of the viewer's action and styling namespaces.
 window.renderMarkdownPreview = (source, resourceUrl) => {
   const clean = DOMPurify.sanitize(marked.parse(source, { gfm: true, async: false }), {
@@ -28,7 +42,8 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
     const value = element.getAttribute(attr);
     let resolved: string | null = null;
     if (value && !/[\u0000- \u007f\\]/.test(value)) {
-      if (/^https?:\/\//i.test(value) || (!image && /^mailto:/i.test(value))) resolved = value;
+      if (/^https?:\/\//i.test(value)) resolved = image && viewerAddress(value) ? null : value;
+      else if (!image && /^mailto:/i.test(value)) resolved = value;
       else if (!/^[a-z][a-z0-9+.-]*:/i.test(value) && !value.startsWith('//')) resolved = resourceUrl(value, image);
     }
     if (resolved) {
