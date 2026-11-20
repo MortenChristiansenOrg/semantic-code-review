@@ -1785,6 +1785,21 @@ test('evidence linked to two nodes has one thread and reports a capture that fai
   expect(errors).toEqual([]);
 });
 
+test('evidence of a kind the viewer does not know shows its output and takes a thread', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push({ ...evidenceInsight({ kind: 'other', attachments: [], inline: 'call transcript <ok>' }), meta: 'video-call' });
+  data.feedback = [thread('on-evidence', 'open', { kind: 'insight', stageId: 'first', collection: 'evidence', itemId: 'shot', label: 'Evidence' })];
+  const errors = await mount(page, data);
+  await openFile(page);
+  const pill = page.locator('details[data-node="first-one"] .tag.type-evidence');
+  await expect(pill.locator('.notes-toggle')).toBeVisible();
+  await pill.getByRole('button', { name: 'View evidence' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Evidence' });
+  await expect(dialog.locator('.eyebrow')).toHaveText('video-call');
+  await expect(dialog.locator('.evidence-text')).toHaveText('call transcript <ok>');
+  expect(errors).toEqual([]);
+});
+
 test('sent feedback on evidence is grouped under its stage in the notes panel', async ({ page }) => {
   const data = fixture();
   data.stages[0].insights.push(evidenceInsight({ attachments: [] }));

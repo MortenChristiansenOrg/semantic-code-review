@@ -179,9 +179,11 @@ export type InsightCollection =
   | "decisions" | "assumptions" | "alternatives" | "failedAttempts" | "risks"
   | "validation" | "evidence" | "openQuestions";
 
+/** `other` stands for a kind this viewer does not know; the insight's `meta` holds
+ * the recorded kind. */
 export type EvidenceKind =
   | "screenshot" | "recording" | "terminal" | "http" | "log"
-  | "output-file" | "measurement" | "report";
+  | "output-file" | "measurement" | "report" | "other";
 
 /** An evidence file. Fetch its bytes from `/api/evidence` by its index. */
 export interface EvidenceAttachment {
@@ -823,8 +825,7 @@ export interface ReviewCompletionRequest extends ReviewTarget {
   expectedCompletedAt: string | null;
 }
 
-/** POST `/api/reviews/open` request. The page sends the same body as for
- * `/api/reviews/completion`; the server reads only the target. */
+/** POST `/api/reviews/open` request. */
 export type ReviewOpenRequest = ReviewTarget;
 
 /** POST `/api/reviews/open` response: the started review's viewer URL. */

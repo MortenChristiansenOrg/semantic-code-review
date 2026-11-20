@@ -169,6 +169,30 @@ test("planFeedbackThreads tolerates a non-array payload", () => {
   assert.deepEqual(planFeedbackThreads(null, implementation), { planned: [], skipped: [] });
 });
 
+test("planFeedbackThreads rejects a node note's non-string stage and ignores snapshots it never checks", () => {
+  const { planned, skipped } = planFeedbackThreads([
+    { ref: 0, kind: "node", id: "impl-change", stageId: 42, body: "Which stage?" },
+    { ref: 1, kind: "node", id: "impl-change", stageId: "", body: "First stage with the node" },
+    { ref: 2, kind: "stage", id: "implementation", body: "Stage note", snapshot: { base: "abc" } },
+  ], implementation);
+  assert.deepEqual(skipped, [{ ref: 0, reason: 'unknown stage "42"' }]);
+  assert.deepEqual(planned.map((thread) => [thread.ref, thread.target["target-kind"]]), [[1, "node"], [2, "stage"]]);
+});
+
+test("a line draft without a file revision is checked by its base and head revisions", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  const current = buildFeedbackTargetData(repository.root), [stage] = current.stages;
+  const note = { kind: "line", id: "l:implementation:new:1:implementation.txt", body: "Check this line",
+    snapshot: { base: stage.baseRevision, head: stage.headRevision, fileRevision: null } };
+  assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
+  assert.deepEqual(planFeedbackThreads([note], current).skipped, []);
+  const sent = exportFeedback({ repoRoot: repository.root, implementation: current }, [note, { ...note, snapshot: { ...note.snapshot, fileRevision: "" } }]);
+  assert.equal(sent.ok, true, JSON.stringify(sent)); assert.equal(sent.exported.length, 2);
+  const moved = { ...note, snapshot: { ...note.snapshot, head: "f".repeat(40) } };
+  assert.match(planFeedbackThreads([moved], current).skipped[0].reason, /file changed/);
+  assert.match(planFeedbackThreads([{ ...note, snapshot: { ...note.snapshot, fileRevision: 42 } }], current).skipped[0].reason, /snapshot is invalid/);
+});
+
 test("feedback export target data omits diff reconstruction", (t) => {
   const { repository } = createImplementationWithStages(t);
   const targetData = buildFeedbackTargetData(repository.root);
