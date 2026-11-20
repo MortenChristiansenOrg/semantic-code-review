@@ -206,19 +206,18 @@ export interface ActiveImplementation {
   supersededHeads: string[];
 }
 
-/** An active ref must be direct: every write moves it, and a write through a
- * symbolic ref would move or delete the ref it names, such as a branch. */
+/** An active ref must be direct: it names its snapshot, and every write moves it. */
 function assertDirectActiveRef(ref: string, symref: string): void {
-  if (symref) fail(`${ref} is a symbolic ref to ${symref}; an active artifact ref must point at its snapshot. Remove it with git symbolic-ref --delete ${ref}.`);
+  if (symref) fail(`${ref} is a symbolic ref to ${symref}, not an active artifact; remove it with git symbolic-ref --delete.`);
 }
 
-/** Every active implementation of the repository of root, read with one Git process. */
+/** Every active implementation of the repository of root, read with one Git
+ * process. A symbolic ref names no snapshot and is not one. */
 export function listActiveImplementations(root: string): ActiveImplementation[] {
   const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ACTIVE_REF_PREFIX], { cwd: root });
-  return output.split(/\r?\n/).filter(Boolean).map((line) => {
+  return output.split(/\r?\n/).filter(Boolean).flatMap((line) => {
     const [commit, ref, parents = "", symref = ""] = line.split("\t");
-    assertDirectActiveRef(ref, symref);
-    return { implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) };
+    return symref ? [] : [{ implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) }];
   }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
 }
 
