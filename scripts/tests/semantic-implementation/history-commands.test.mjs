@@ -132,7 +132,7 @@ test("restack replays a stage rebuilt on an amended stage below from that stage"
   assert.equal(repository.git("show", `${prefix}/api:shared.txt`), lines("u", "y").trimEnd());
 });
 
-test("restack replays a stage whose commit the stage below took in and partly reverted", (t) => {
+test("restack stops when the stage below took in a stage's commit", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
   const lines = (first, middle, last) => `${first}\na\n${middle}\nc\nd\n${last}\n`;
@@ -150,8 +150,9 @@ test("restack replays a stage whose commit the stage below took in and partly re
   repository.git("switch", `${prefix}/api`);
   repository.commitFile("shared.txt", lines("u", "n", "x"), "Extend the API");
   repository.git("switch", `${prefix}/policy`);
-  repository.semantic("restack", "--from", "policy");
-  assert.equal(repository.git("show", `${prefix}/api:shared.txt`), lines("u", "n", "y").trimEnd());
+  const before = repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/");
+  repository.expectSemanticFailure(`Stage policy holds the commit ${api} of stage api`, "restack", "--from", "policy");
+  assert.equal(repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"), before);
 });
 
 test("restack accepts several edited stage heads in one pass", (t) => {

@@ -2116,15 +2116,22 @@ export interface RestackSummary {
 /** Where a stage's own changes start. A stage rebuilt on the stage below's
  * current head starts there; one rebuilt on an earlier correction below starts
  * at the newest commit it shares with that stage. Either way the correction is
- * not replayed as the stage's own change. A start that already holds the
- * stage's recorded commit would drop the stage's changes, so the stage then
- * starts at its recorded base, as it does otherwise. */
-function rebuiltStageBase(root: string, recordedBase: string, recordedHead: string, below: string | undefined, head: string): string {
-  if (below === undefined || below === recordedBase) return recordedBase;
-  const usable = (start: string) => start !== recordedBase && !isAncestor(root, recordedHead, start);
-  if (isAncestor(root, below, head)) return usable(below) ? below : recordedBase;
-  const shared = gitOptional(["merge-base", below, head], { cwd: root });
-  return shared && usable(shared) && isAncestor(root, recordedBase, shared) ? shared : recordedBase;
+ * not replayed as the stage's own change. Otherwise it starts at its recorded
+ * base. When the stage below took in this stage's recorded commit, no start
+ * tells their changes apart, so the restack stops before moving anything. */
+function rebuiltStageBase(
+  root: string,
+  stage: { id: string; recordedBase: string; recordedHead: string; head: string },
+  below: { id: string; head: string } | undefined,
+): string {
+  const { recordedBase, recordedHead, head } = stage;
+  if (below === undefined || below.head === recordedBase) return recordedBase;
+  if (isAncestor(root, recordedHead, below.head)) {
+    fail(`Stage ${below.id} holds the commit ${recordedHead} of stage ${stage.id}, so restack cannot tell their changes apart. No refs were changed. Remove that commit from ${below.id}'s branch, or move its changes into one of the stages.`);
+  }
+  if (isAncestor(root, below.head, head)) return below.head;
+  const shared = gitOptional(["merge-base", below.head, head], { cwd: root });
+  return shared && shared !== recordedBase && isAncestor(root, recordedBase, shared) ? shared : recordedBase;
 }
 
 function restack(workspace: Workspace, options: Options): void {
@@ -2239,7 +2246,11 @@ function restackStages(
       let nextHead: string;
       // A stage whose branch moved was corrected; it is folded into one commit again.
       const unchanged = actualHead === stage.change.headRevision;
-      const stageBase = rebuiltStageBase(workspace.root, stage.change.baseRevision, stage.change.headRevision, observedBelow, actualHead);
+      const stageBase = rebuiltStageBase(
+        workspace.root,
+        { id, recordedBase: stage.change.baseRevision, recordedHead: stage.change.headRevision, head: actualHead },
+        observedBelow === undefined ? undefined : { id: artifact.manifest.stages[index - 1], head: observedBelow },
+      );
       if (isAncestor(workspace.root, parentHead, actualHead)) {
         nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);
       } else {
