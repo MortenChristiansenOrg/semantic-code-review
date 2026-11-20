@@ -111,24 +111,25 @@ separate reviews have separate stored copies. Explicit review deletion removes
 local feedback together with drafts, notes, approvals, attachments, and snapshots.
 The implementation artifact and archived or published provenance are unaffected.
 Deletion first moves the review's folder to a pending name, so stale writes fail,
-then gives the implementation a new review ID, and only then removes the folder;
-when the new ID cannot be stored, the folder is moved back and nothing changes.
-Files are removed only once the folder is renamed as deleted, never from a folder
-whose deletion may still roll back. Cleanup, registration and deletion settle an
-interrupted deletion by what the repository records, checking the worktree a
-registration runs from before the recorded location: while the implementation
-still holds the old ID, the folder is moved back; once its active artifact holds
-another ID, or the deletion marked the old ID retired, the deletion is completed.
-A missing implementation or repository proves nothing, since the repository may
-have moved, so the folder stays pending, as it does while an archive claims the
-implementation, until it can be settled, for example by a command run from the
-repository, or the repository has been missing for 30 days. A registration that finds the old ID retired starts the
-fresh review even while the folder waits for cleanup. When the
-repository cannot be reached, or an archive in progress claims the old ID, deletion
-still succeeds and marks the old ID retired; the next registration that finds the
-old ID in the artifact stores a new one first, and the mark stays until no snapshot
-holds the old ID. A folder left behind by a completed deletion is removed by a
-later cleanup. A fresh review starts under the new ID.
+records in that folder the new review ID it is about to store, stores it in the
+implementation's artifact, and only then removes the folder; when the new ID
+cannot be stored, the folder is moved back and nothing changes. Files are removed
+only once the folder is renamed as deleted, never from a folder whose deletion may
+still roll back. Cleanup, registration and deletion settle an interrupted deletion
+by what the repository records. A registration run from a worktree whose artifact
+still holds the old ID moves the folder back. Otherwise the deletion is completed
+once the active artifact holds the new ID the deletion recorded, or the deletion
+marked the old ID retired, and the folder is moved back while the recorded
+repository still holds the old ID. Anything else proves nothing, since the
+repository may have moved and another one may sit at its old location, so the
+folder stays pending, as it does while an archive claims the implementation, until
+a command runs from the repository or the repository has been missing for 30
+days. When the repository cannot be reached, holds no snapshot with the old ID,
+or an archive in progress claims it, deletion still succeeds and marks the old ID
+retired; the next registration that finds the old ID in the artifact stores a new
+one first and only then removes the mark, and starts the fresh review even while
+the folder waits for cleanup. A folder left behind by a completed deletion is
+removed by a later cleanup. A fresh review starts under the new ID.
 Cleanup records when it first finds a local review's Git directory missing and
 removes the review once it has been missing for 30 days; finding the directory
 again, or running a command from the repository, starts that period over. Only a

@@ -82,7 +82,9 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
 test('a remote review keeps its identity when opened from another checkout of the repository', (t) => {
   const { author, source } = setup(t);
   const review = startRemoteReview(source.root, 'origin/feature');
-  assert.equal(review.remote.url, author.root);
+  // The remote URL may hold credentials, so the review stores only a hash of it.
+  assert.equal(review.remote.url, undefined);
+  assert.ok(!JSON.stringify(readReview(review.id)).includes(author.root));
   const linked = source.root + '-linked';
   source.git('worktree', 'add', '-q', '--detach', linked);
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
@@ -92,8 +94,11 @@ test('a remote review keeps its identity when opened from another checkout of th
   assert.equal(startRemoteReview(clone.root, 'feature').id, review.id);
   // Another branch of the same remote is another review.
   author.git('branch', 'other', 'feature');
-  assert.notEqual(startRemoteReview(clone.root, 'other').id, review.id);
-  assert.equal(registeredReviews().filter((entry) => entry.remote?.url === author.root).length, 2);
+  const other = startRemoteReview(clone.root, 'other');
+  assert.notEqual(other.id, review.id);
+  // No checkout started a second review of either branch.
+  const keys = [review.implementationId, other.implementationId];
+  assert.equal(registeredReviews().filter((entry) => entry.remote && keys.includes(entry.implementationId)).length, 2);
 });
 
 test('refresh preserves notes and approved snapshots through appends, force-pushes, and failures', (t) => {

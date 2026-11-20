@@ -23,8 +23,10 @@ data root and must be an absolute path. Each implementation has one review, with
 a random review ID that `implementation init` stores in the private artifact and
 that publication and archives leave out. All worktrees of the repository share
 the review. The review records a worktree and the repository's Git directory only
-to locate it; when that worktree is moved or removed, the next command run from
-another worktree records the new location. Folder names use
+to locate it; when that worktree is moved or removed, the next `review` or
+`feedback` command run from another worktree, or opening the review there,
+records the new location. Commands that only read the artifact, such as
+`implementation export`, do not. Folder names use
 `<repository>--<implementation>--<64 random hex characters>`, for example
 `my-project--order-cancellation--<64 hex characters>`. The readable parts are
 normalized and capped at 24 and 40 characters. Changing the display title does not
@@ -746,7 +748,9 @@ requests fail and cannot recreate the deleted review; an open viewer of the revi
 treats it as deleted only once the deletion has completed. Files that cannot be
 removed at once are removed by a later cleanup. If the folder cannot be moved, or
 the new review ID cannot be stored, deletion fails without changing anything and
-can be retried. If the repository cannot be reached, deletion succeeds and the new
+can be retried. If the folder then cannot be moved back either, the review's data
+is kept under its pending name and the review is unavailable: restore access to
+the folder, then open the review from its repository again, which moves it back. If the repository cannot be reached, deletion succeeds and the new
 review ID is stored when a command next runs from the repository. The error
 identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart

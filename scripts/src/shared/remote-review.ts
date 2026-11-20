@@ -178,22 +178,23 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   // checkout opens the same review. This lock name only serializes starting it.
   const startLock = `remote--${key}--${hash}`;
   return withReviewLock(startLock, () => {
-    const existing = findRemoteReview(url, branch);
+    const existing = findRemoteReview(key);
     if (existing) return existing; // Opening preserves the reviewed snapshot; refresh is explicit.
     const repository = url.replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/, "") || "remote";
     const id = newReviewId(repository, branch);
     return withReviewLock(id, () => startNewRemoteReview(id, sourceRoot, remoteName, url, branch, key));
   });
 }
-/** The remote review of a remote URL and branch, if one is registered. Damaged
- * records are skipped, so one cannot hide the others. */
-function findRemoteReview(url: string, branch: string): ReviewRecord | undefined {
+/** The remote review whose key, a hash of the remote URL and branch, is given, if
+ * one is registered. The URL itself is not stored, since it may hold credentials.
+ * Damaged records are skipped, so one cannot hide the others. */
+function findRemoteReview(key: string): ReviewRecord | undefined {
   const directory = path.join(reviewHome(), "reviews");
   if (!fs.existsSync(directory)) return undefined;
   for (const id of fs.readdirSync(directory).filter(isReviewId).sort()) {
     let record: ReviewRecord;
     try { record = readReview(id); } catch { continue; }
-    if (record.remote?.url === url && record.remote.branch === branch) return record;
+    if (record.remote && record.implementationId === key) return record;
   }
   return undefined;
 }
@@ -210,7 +211,7 @@ function startNewRemoteReview(id: string, sourceRoot: string, remoteName: string
     branchName(root, targetBranch);
     const now = new Date().toISOString();
     for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child));
-    const remote: RemoteReview = { sourceRoot, remoteName, url, branch, targetBranch };
+    const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch };
     const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: fs.realpathSync(root), implementationId: key,
       title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, stateRevision: 0, remote };
     return refresh(record, remote);

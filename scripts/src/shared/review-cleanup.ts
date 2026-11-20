@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentIds, beginReviewDeletion, clearReviewIdRetired, completeReviewDeletion, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
+import { attachmentIds, beginReviewDeletion, completeReviewDeletion, pathMissing, pendingDeletionDirectory, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
 import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage } from "./viewer-protocol.js";
@@ -99,8 +99,8 @@ export function inspectReviewStorage(id: string, generation: string): ReviewStor
 export function deleteReviewData(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewDeleteResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     recoverInterruptedDeletion(id);
-    if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) {
-      if (reviewDeletionPending(id)) throw new Error("An earlier deletion of this review was interrupted and cannot be settled yet: its repository cannot be reached at the recorded location, or an archive of its implementation is in progress. Run a Semantic Flow command from a worktree of the repository, or finish the archive, then retry deletion.");
+    if (pathMissing(path.join(reviewDirectory(id), "review.json"))) {
+      if (!pathMissing(pendingDeletionDirectory(id))) throw new Error("An earlier deletion of this review was interrupted and cannot be settled yet: its repository cannot be reached at the recorded location, or an archive of its implementation is in progress. Run a Semantic Flow command from a worktree of the repository, or finish the archive, then retry deletion.");
       return { deleted: true }; // Exact retry after completion.
     }
     const preview = inspect(id, generation);
@@ -111,9 +111,9 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
     try {
       retirement = retireReviewId(record);
       // The old ID may still be stored, or come back with a failed archive: the
-      // next registration that finds it replaces it first. When nothing holds it,
-      // nothing else shows that this deletion committed.
-      if (retirement !== "rotated") markReviewIdRetired(id);
+      // next registration that finds it replaces it first. A remote review's ID
+      // is held by nothing but its folder.
+      if (retirement === "unconfirmed" || retirement === "unreachable") markReviewIdRetired(id);
     } catch (error) {
       try { rollBackReviewDeletion(id); }
       catch (restoreError) {
@@ -124,7 +124,9 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
       throw error;
     }
     completeReviewDeletion(id);
-    if (retirement === "absent") clearReviewIdRetired(id);
+    // A folder that cannot be renamed yet waits for cleanup; should the
+    // implementation be archived first, the mark still shows the deletion committed.
+    if (retirement === "rotated" && reviewDeletionPending(id)) markReviewIdRetired(id);
     return { deleted: true };
   });
 }

@@ -61,18 +61,18 @@ export function writeReviewId(draft: ArtifactDraft, root: string, implementation
  * holds expected: a compare-and-swap, so an ID another writer stored is kept.
  * Git is given the directory explicitly, so no worktree of the repository is
  * needed. Returns whether the ID was replaced. */
-function rotateArtifactReviewId(gitDirectory: string, implementationId: string, expected: string): boolean {
-  const name = repositoryName(gitDirectory);
+function rotateArtifactReviewId(gitDirectory: string, implementationId: string, expected: string, replacement: string): boolean {
   return replaceArtifactFileInGitDirectory(gitDirectory, implementationId, REVIEW_ID_FILE, (files) =>
-    artifactReviewId(files) === expected ? jsonBytes({ reviewId: newReviewId(name, implementationId) }) : undefined);
+    artifactReviewId(files) === expected ? jsonBytes({ reviewId: replacement }) : undefined);
 }
 /** Which snapshot of the implementation holds review ID id: the active
  * artifact, or the claim of an archive in progress (or an interrupted one, which
  * puts the snapshot back when it fails). Otherwise "replaced" when the active
- * artifact holds another review ID, and "none" when no snapshot holds one; both
- * only once the two refs are confirmed to still hold what was read, since a read
- * during an archive's rollback can miss both. "unconfirmed" when they are not. */
-function reviewIdHolder(gitDirectory: string, implementationId: string, id: string): "active" | "archiving" | "replaced" | "none" | "unconfirmed" {
+ * artifact holds replacement, "other" when it holds another review ID, and
+ * "none" when no snapshot holds one; all only once the two refs are confirmed to
+ * still hold what was read, since a read during an archive's rollback can miss
+ * both. "unconfirmed" when they are not. */
+function reviewIdHolder(gitDirectory: string, implementationId: string, id: string, replacement?: string): "active" | "archiving" | "replaced" | "other" | "none" | "unconfirmed" {
   const { active, archiving, confirmed } = readImplementationRefsInGitDirectory(gitDirectory, implementationId);
   const stored = active === undefined ? undefined : storedReviewId(active);
   if (stored === id) return "active";
@@ -80,7 +80,7 @@ function reviewIdHolder(gitDirectory: string, implementationId: string, id: stri
   if (claimed === id) return "archiving";
   // A review ID file that cannot be read may hold id.
   if (stored === null || claimed === null || !confirmed()) return "unconfirmed";
-  return stored === undefined ? "none" : "replaced";
+  return stored === undefined ? "none" : stored === replacement ? "replaced" : "other";
 }
 /** The review ID files store: undefined when they have no review ID file, null
  * when it cannot be read or holds no valid ID, since it may still name a review. */
@@ -88,16 +88,16 @@ function storedReviewId(files: ArtifactFiles): string | null | undefined {
   if (!hasFile(files, REVIEW_ID_FILE)) return undefined;
   return artifactReviewId(files) ?? null;
 }
-/** Gives the implementation a fresh review ID in place of id: stored one, found
- * no snapshot holding id, or could not establish that id is replaced, because
- * an archive's claim holds it and a failing archive would bring it back, or the
- * refs kept changing. */
-function replaceReviewId(gitDirectory: string, implementationId: string, id: string): "rotated" | "absent" | "unconfirmed" {
+/** Gives the implementation the review ID replacement in place of id: stored it,
+ * or did not, because an archive's claim holds id and a failing archive would
+ * bring it back, the refs kept changing, or the repository holds no snapshot
+ * with id. That repository may be another one at a moved repository's old
+ * location, so it does not show that id is retired. */
+function replaceReviewId(gitDirectory: string, implementationId: string, id: string, replacement = newReviewId(repositoryName(gitDirectory), implementationId)): "rotated" | "unconfirmed" {
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (rotateArtifactReviewId(gitDirectory, implementationId, id)) return "rotated";
+    if (rotateArtifactReviewId(gitDirectory, implementationId, id, replacement)) return "rotated";
     const holder = reviewIdHolder(gitDirectory, implementationId, id);
-    if (holder === "none" || holder === "replaced") return "absent";
-    if (holder === "archiving") return "unconfirmed";
+    if (holder !== "active" && holder !== "unconfirmed") return "unconfirmed";
     // A failed archive put the snapshot back after the rotation looked, or the
     // refs changed while they were read: try again.
   }
@@ -190,7 +190,18 @@ export function retireReviewId(record: ReviewRecord): ReviewIdRetirement {
   if (record.remote) return "absent";
   const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot);
   if (gitDirectory === undefined) return "unreachable";
-  return replaceReviewId(gitDirectory, record.implementationId, record.id);
+  // Recorded first: only this ID in the artifact shows that the deletion committed,
+  // since an unrelated repository may hold the implementation under another one.
+  const replacement = newReviewId(repositoryName(gitDirectory), record.implementationId);
+  // Not replaced atomically, which would leave and remove a temporary file in the
+  // pending folder: a partly written file names no ID, which proves nothing.
+  fs.writeFileSync(replacementFile(record.id), JSON.stringify({ reviewId: replacement }), { mode: 0o600 });
+  return replaceReviewId(gitDirectory, record.implementationId, record.id, replacement);
+}
+/** The file in a pending deletion's folder naming the review ID the deletion
+ * stores. It never reaches a live folder: moving the folder back removes it. */
+function replacementFile(id: string) {
+  return path.join(pendingDeletionDirectory(id), "replacement-review-id.json");
 }
 /** The Git common directory of a recorded worktree, if it is still a checkout. */
 function gitCommonDirectoryOf(root: string): string | undefined {
@@ -210,8 +221,9 @@ export function pendingDeletionDirectory(id: string) {
 /** Marks a review ID that a deletion retired while it could not reach the
  * repository, so the artifact still holds it. The registration that next finds
  * the ID in the artifact gives the implementation a fresh one and removes the
- * marker. A deletion that found no snapshot holding the ID marks it only until
- * its folder is removed, as the record that it committed. */
+ * marker. So does a deletion that found no snapshot holding the ID, since the
+ * repository it looked in may be another one at a moved repository's location;
+ * the marker is also the record that the deletion committed. */
 function retiredMarker(id: string) {
   return path.join(reviewsDirectory(), ".retired-" + path.basename(reviewDirectory(id)));
 }
@@ -220,11 +232,6 @@ function retiredMarker(id: string) {
 export function markReviewIdRetired(id: string) {
   fs.writeFileSync(retiredMarker(id), "");
 }
-/** Removes the mark of a deletion that found no snapshot holding the ID, once its
- * folder is gone. Caller holds the lock. */
-export function clearReviewIdRetired(id: string) {
-  if (!reviewDeletionPending(id)) fs.rmSync(retiredMarker(id), { force: true });
-}
 /** Moves a review's folder to its pending deletion folder in one step. Afterwards
  * nothing reaches the review: its writers fail. Caller holds the lock. */
 export function beginReviewDeletion(id: string) {
@@ -232,6 +239,7 @@ export function beginReviewDeletion(id: string) {
 }
 /** Puts a folder that beginReviewDeletion moved back. Caller holds the lock. */
 export function rollBackReviewDeletion(id: string) {
+  fs.rmSync(replacementFile(id), { force: true });
   fs.renameSync(pendingDeletionDirectory(id), reviewDirectory(id));
 }
 /** Completes a deletion that can no longer roll back: its pending folder becomes
@@ -258,10 +266,13 @@ export function completeReviewDeletion(id: string) {
  * for any review. */
 function interruptedDeletionOutcome(id: string, holdingRoot?: string): "committed" | "uncommitted" | "unknown" {
   if (fs.existsSync(retiredMarker(id))) return "committed";
-  let record: ReviewRecord;
+  let record: ReviewRecord, replacement: string | undefined;
   const file = path.join(pendingDeletionDirectory(id), "review.json");
   try { record = parseReviewRecord(parseJson(fs.readFileSync(file, "utf8")), file); }
   catch { return "unknown"; }
+  // Absent when the deletion stopped before it could store a new ID.
+  try { replacement = stringField(parseJson(fs.readFileSync(replacementFile(id), "utf8")), "reviewId"); }
+  catch { replacement = undefined; }
   if (record.id !== id) return "unknown";
   if (record.remote) return "committed";
   // Registration read, under the review's lock, that this worktree's active
@@ -293,8 +304,9 @@ function interruptedDeletionOutcome(id: string, holdingRoot?: string): "committe
   const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot);
   if (gitDirectory === undefined) return "unknown";
   try {
-    const holder = reviewIdHolder(gitDirectory, record.implementationId, id);
-    return holder === "active" ? "uncommitted" : holder === "replaced" ? "committed" : "unknown";
+    // Only the ID this deletion stored proves that it committed.
+    const holder = reviewIdHolder(gitDirectory, record.implementationId, id, replacement);
+    return holder === "active" ? "uncommitted" : holder === "replaced" && replacement !== undefined ? "committed" : "unknown";
   } catch { return "unknown"; }
 }
 /** Settles a deletion of id that a crash interrupted, before anything else uses
@@ -317,8 +329,17 @@ export function reviewDeletionPending(id: string) {
  * deletion in progress, so it is not confirmed and the caller asks again later.
  * False when that cannot be told now. */
 export function reviewDeletionConfirmed(id: string): boolean {
-  try { return withReviewLock(id, () => !fs.existsSync(path.join(reviewDirectory(id), "review.json")) && !fs.existsSync(pendingDeletionDirectory(id)), { wait: false }); }
+  try { return withReviewLock(id, () => pathMissing(path.join(reviewDirectory(id), "review.json")) && pathMissing(pendingDeletionDirectory(id)), { wait: false }); }
   catch { return false; }
+}
+/** Whether file is known to be missing. Fails when that cannot be told, for
+ * example for lack of permission, which says nothing about whether it exists. */
+export function pathMissing(file: string): boolean {
+  try { fs.lstatSync(file); return false; }
+  catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(errorCode(error) ?? "")) return true;
+    throw error;
+  }
 }
 /** How long the Git directory of a local review must have been missing before
  * cleanup removes the review. A repository on an unmounted drive, or one moved
@@ -532,7 +553,7 @@ function acquireReviewLock<T>(id: string, waitMs: number, operation: () => T): T
   return result;
 }
 /** A remote review is found again by the remote URL and branch it reviews. */
-export type RemoteReview = { sourceRoot: string; remoteName: string; url?: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
+export type RemoteReview = { sourceRoot: string; remoteName: string; branch: string; targetBranch: string; headRevision?: string; refreshedAt?: string };
 export type ViewerRecord = { port: number; processId: number; viewerVersion: string; skillDirectory: string };
 export type ReviewRecord = {
   id: string; generation: string;
@@ -558,11 +579,8 @@ function parseRemote(value: unknown): RemoteReview | undefined {
   if (!isRecord(value)) return undefined;
   const { sourceRoot, remoteName, branch, targetBranch } = value;
   if (typeof sourceRoot !== "string" || typeof remoteName !== "string" || typeof branch !== "string" || typeof targetBranch !== "string" ||
-    !optionalString(value, "url") || !optionalString(value, "headRevision") || !optionalString(value, "refreshedAt")) return undefined;
-  const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch, headRevision: stringField(value, "headRevision"), refreshedAt: stringField(value, "refreshedAt") };
-  const url = stringField(value, "url");
-  if (url !== undefined) remote.url = url;
-  return remote;
+    !optionalString(value, "headRevision") || !optionalString(value, "refreshedAt")) return undefined;
+  return { sourceRoot, remoteName, branch, targetBranch, headRevision: stringField(value, "headRevision"), refreshedAt: stringField(value, "refreshedAt") };
 }
 function parseViewer(value: unknown): ViewerRecord | undefined {
   if (!isRecord(value)) return undefined;
@@ -631,11 +649,15 @@ export function registerReview(root: string, implementationId: string, title: st
       if (fs.existsSync(retiredMarker(id))) {
         // A deletion retired this ID while it could not reach the repository. The
         // repository is reachable now: store a fresh ID, then register that one.
-        // The marker stays until no snapshot holds the ID any more, so an archive
-        // that fails and puts its snapshot back cannot revive the ID. The deletion
+        // The marker stays until this stores one, so an archive that fails and
+        // puts its snapshot back cannot revive the ID. The deletion
         // committed, so a folder it left under the pending name only waits for
         // cleanup to remove it and never blocks the fresh review.
-        if (replaceReviewId(gitCommonDirectory(root), implementationId, id) !== "unconfirmed") fs.rmSync(retiredMarker(id), { force: true });
+        const gitDirectory = gitCommonDirectory(root), replacement = newReviewId(repositoryName(gitDirectory), implementationId);
+        // A folder that waits for cleanup keeps the evidence that its deletion
+        // committed once the marker is gone: the ID now stored in its place.
+        if (reviewDeletionPending(id)) fs.writeFileSync(replacementFile(id), JSON.stringify({ reviewId: replacement }), { mode: 0o600 });
+        if (replaceReviewId(gitDirectory, implementationId, id, replacement) === "rotated") fs.rmSync(retiredMarker(id), { force: true });
         return undefined;
       }
       // Its data would otherwise be shadowed by a new, empty review of the same ID.

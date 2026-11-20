@@ -233,7 +233,7 @@ test('a deleted review stays deleted when its registration waited for the deleti
     const [id, generation, fingerprint, ready] = process.argv.slice(1);
     withReviewLock(id, () => { fs.writeFileSync(ready, ''); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 750); deleteReviewData(id, generation, fingerprint); });`;
   const deletion = promisify(execFile)(process.execPath, [...sourceLoader, '--input-type=module', '-e', source, review.id, review.generation, preview(review).fingerprint, ready]);
-  while (!fs.existsSync(ready)) await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitFor(() => fs.existsSync(ready), deletion, 'the deletion took the lock');
   const registered = registerReview(repo, 'same-id', 'Review');
   await deletion;
   assert.notEqual(registered.id, review.id);
@@ -272,7 +272,7 @@ test('cleanup during a deletion that rolls back leaves the review intact', async
   const source = `import { deleteReviewData } from ${JSON.stringify(moduleUrl)};
     try { deleteReviewData(...process.argv.slice(1)); console.log('deleted'); } catch (error) { console.log(error.message); }`;
   const deletion = promisify(execFile)(process.execPath, [...sourceLoader, '--input-type=module', '-e', source, review.id, review.generation, preview(review).fingerprint]);
-  while (fs.existsSync(reviewDirectory(review.id))) await new Promise((resolve) => setTimeout(resolve, 10));
+  await waitFor(() => !fs.existsSync(reviewDirectory(review.id)), deletion, 'the deletion moved the folder aside');
   // Cleanup runs while the folder is moved aside and the deletion may still roll back.
   registeredReviews();
   const { stdout } = await deletion;
@@ -308,9 +308,24 @@ test('a deletion interrupted before it gave the implementation a new review ID i
   assert.notEqual(storedReviewId(repo, 'same-id'), review.id);
 });
 
+/** Waits until condition holds while the worker, the promise of an execFile call,
+ * runs. Fails, and stops the worker, when it exits first or takes too long, so a
+ * worker that never reaches the expected state cannot hang the test. */
+async function waitFor(condition, worker, what) {
+  let exited = false;
+  worker.then(() => { exited = true; }, () => { exited = true; });
+  const deadline = Date.now() + 30_000;
+  while (!condition()) {
+    if (exited) throw new Error(`The worker exited before ${what}.`);
+    if (Date.now() > deadline) { worker.child?.kill(); throw new Error(`Timed out waiting until ${what}.`); }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 /** Gives the implementation a fresh review ID, as a deletion does before it completes. */
 function rotateStoredReviewId(review) {
-  assert.ok(replaceArtifactFileInGitDirectory(review.gitCommonDir, review.implementationId, 'review.json', () => Buffer.from(JSON.stringify({ reviewId: newReviewId('repo', review.implementationId) }))));
+  const replacement = newReviewId('repo', review.implementationId);
+  fs.writeFileSync(path.join(pendingFolder(review), 'replacement-review-id.json'), JSON.stringify({ reviewId: replacement }));
+  assert.ok(replaceArtifactFileInGitDirectory(review.gitCommonDir, review.implementationId, 'review.json', () => Buffer.from(JSON.stringify({ reviewId: replacement }))));
 }
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 /** Moves the active artifact to an archiving claim, as an archive in progress does. */
@@ -391,10 +406,13 @@ test('a committed deletion whose folder cannot be renamed keeps it whole until c
   // Nothing is removed from a folder still under the review's own or pending name.
   assert.equal(removed.some((target) => target === pending || target.startsWith(pending + path.sep) || target.startsWith(reviewDirectory(review.id))), false);
   assert.ok(fs.existsSync(path.join(pending, 'attachments', file.id, 'content.bin')));
+  // The ID is marked retired, which keeps the deletion committed should the
+  // implementation be archived before cleanup can complete it.
+  assert.ok(fs.existsSync(retiredMarker(review)));
   renaming.mock.restore(); removing.mock.restore();
   registeredReviews();
   assert.equal(fs.existsSync(pending), false);
-  assert.deepEqual(retiredFolders(), []);
+  assert.deepEqual(retiredFolders(), ['.retired-' + review.id]);
 });
 
 test('a review deleted while an archive claims its implementation stays deleted when the archive fails', (t) => {
@@ -446,8 +464,11 @@ test('an interrupted deletion is completed only when a reachable artifact holds 
   registeredReviews();
   assert.ok(fs.existsSync(pendingFolder(review)));
   // Neither does one holding an implementation of the same ID under its own review
-  // ID: registration from the moved repository, which it has just verified, decides.
+  // ID, which is not the one the deletion stored: cleanup keeps the folder, and
+  // registration from the moved repository, which it has just verified, decides.
   activate(repo, 'same-id');
+  registeredReviews();
+  assert.ok(fs.existsSync(pendingFolder(review)));
   const registered = registerReview(moved, 'same-id', 'Review');
   assert.equal(registered.id, review.id);
   assert.equal(registered.generation, review.generation);
@@ -546,12 +567,9 @@ test('a deletion that found no snapshot holding the ID records that it committed
   renaming.mock.restore();
   registeredReviews();
   assert.equal(fs.existsSync(pending), false);
-  // A deletion that removes its folder at once leaves no mark.
-  const second = registerReview(path.join(root, 'other'), 'same-id', 'Other');
-  git(path.join(root, 'other'), 'update-ref', '-d', activeRef('same-id'));
-  assert.deepEqual(deleteReviewData(second.id, second.generation, preview(second).fingerprint), { deleted: true });
-  assert.equal(fs.existsSync(retiredMarker(second)), false);
-  assert.equal(fs.existsSync(pendingFolder(second)), false);
+  // The mark stays once the folder is gone: the repository looked in may be another
+  // one at a moved repository's location, so the ID may still come back.
+  assert.ok(fs.existsSync(retiredMarker(review)));
 });
 
 test('a deletion check never waits for a busy review lock', (t) => {

@@ -333,7 +333,6 @@ export interface FeedbackThread {
 export interface RemoteInfo {
   sourceRoot: string;
   remoteName: string;
-  url?: string;
   branch: string;
   targetBranch: string;
   headRevision?: string;
