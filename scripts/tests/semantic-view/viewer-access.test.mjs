@@ -365,7 +365,8 @@ async function loopback(t, handler) {
   return server.address().port;
 }
 
-test("requests to a viewer port settle when the response breaks off or never finishes", async (t) => {
+// A request that never settles fails the test instead of holding it open.
+test("requests to a viewer port settle when the response breaks off or never finishes", { timeout: 40_000 }, async (t) => {
   // Sends the headers and part of the body, then closes the connection.
   const closing = await loopback(t, (request, response) => {
     response.writeHead(200, { "content-type": "application/json", "content-length": "1000" });

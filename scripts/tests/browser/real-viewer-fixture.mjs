@@ -20,7 +20,7 @@ const roots = reviews.map(({ id, title, port }) => {
   repository.git("add", "pixel.png");
   finalizeStage(repository, {
     file: "guide.md",
-    contents: `# Guide\n\n![Own address](http://127.0.0.1:${port}/api/whoami)\n\n![Mapped address](http://[::ffff:127.0.0.1]:${port}/api/whoami)\n\n![Pixel](pixel.png)\n\n[Own link](http://127.0.0.1:${port}/)\n`,
+    contents: `# Guide\n\n![Own address](http://127.0.0.1:${port}/api/whoami)\n\n![Mapped address](http://[::ffff:127.0.0.1]:${port}/api/whoami)\n\n![Dotted address](http://localhost.:${port}/api/whoami)\n\n![Pixel](pixel.png)\n\n[Own link](http://127.0.0.1:${port}/)\n`,
   });
   return repository.root;
 });

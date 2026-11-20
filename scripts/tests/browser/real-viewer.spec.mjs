@@ -171,6 +171,7 @@ test('a Markdown image at the viewer\'s own address is refused while repository 
   const own = preview.locator('img[alt="Own address"]');
   await expect(own).not.toHaveAttribute('src', /./);
   await expect(preview.locator('img[alt="Mapped address"]')).not.toHaveAttribute('src', /./);
+  await expect(preview.locator('img[alt="Dotted address"]')).not.toHaveAttribute('src', /./);
   const pixel = preview.locator('img[alt="Pixel"]');
   await expect(pixel).toHaveAttribute('src', /[?&]read=/);
   await expect.poll(() => pixel.evaluate((image) => image.complete && image.naturalWidth)).toBe(1);
