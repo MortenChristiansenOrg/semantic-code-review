@@ -2988,7 +2988,15 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     if (!popEl || !popEl.classList.contains("is-shown")) return;
     if (popOwner && popOwner.isConnected) positionPop(popOwner); else forceHidePop();
   }, true);
-  window.addEventListener("resize", () => { if (popOwner && popOwner.isConnected) positionPop(popOwner); });
+  // A resize can uncover or cut off a label, which changes or ends its hint.
+  window.addEventListener("resize", () => {
+    if (!popOwner?.isConnected) return;
+    if (!popOwner.matches(".tag-face[data-tagpop]")) {
+      if (!tooltipText(popOwner)) { forceHidePop(); return; }
+      fillPop(popOwner);
+    }
+    positionPop(popOwner);
+  });
 
   /* ---- events ----------------------------------------------------------- */
   // Keep the hit area stable: highlighting only changes paint, never layout or

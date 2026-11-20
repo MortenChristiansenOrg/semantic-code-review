@@ -4948,6 +4948,9 @@ test('a tooltip opened on a cut-off Markdown table closes once the table fits an
   await expect(table).toHaveAttribute('aria-describedby', 'review-tooltip');
   await page.setViewportSize({ width: 2400, height: 700 });
   await expect.poll(() => isClipped(table)).toBe(false);
+  // The table now shows its whole text, so its hint ends while the pointer still rests on it.
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(table).not.toHaveAttribute('aria-describedby');
   await page.mouse.move(0, 0);
   await expect(tooltip).not.toHaveClass(/is-shown/);
   await expect(table).not.toHaveAttribute('aria-describedby');
@@ -4966,8 +4969,11 @@ test('a Markdown link names the title of a table it holds while the table is cut
   expect(await isClipped(table)).toBe(true);
   await shows(link, `Link title · ${clippedTableText}`, 'focus');
   await shows(table, clippedTableText, 'hover');
+  // The focused link's open tooltip follows a resize that uncovers the table.
+  await shows(link, `Link title · ${clippedTableText}`, 'focus');
   await page.setViewportSize({ width: 2400, height: 700 });
   await expect.poll(() => isClipped(table)).toBe(false);
+  await expect(tooltip).toHaveText('Link title');
   await shows(link, 'Link title', 'focus');
   expect(errors).toEqual([]);
 });
@@ -5315,5 +5321,16 @@ test('a pinned insight popover stays open while an inline insight highlights its
   await page.mouse.move(0, 0);
   await expect(page.locator('.is-code-insight-target')).toHaveCount(0);
   await expect(tooltip).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('file approval buttons and notes toggles are named for assistive technology', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('named')];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  await expect(one.getByRole('button', { name: 'Approve file' })).toHaveCount(1);
+  await expect(page.locator('.stage[data-stage="first"]').getByRole('button', { name: '1 thread, 1 open' })).toHaveCount(1);
   expect(errors).toEqual([]);
 });

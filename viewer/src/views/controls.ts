@@ -42,7 +42,7 @@ export interface NotesToggleView {
 export function notesToggle(view: NotesToggleView | null): TemplateResult | typeof nothing {
   if (!view) return nothing;
   const title = `${view.total} thread${view.total === 1 ? "" : "s"}${view.open ? `, ${view.open} open` : ", all resolved"}`;
-  return html`<button class="notes-toggle ${view.expanded ? "is-open" : ""} ${view.open ? "" : "all-resolved"}" data-action="toggle-thread" data-kind=${view.kind} data-id=${view.id} data-stage=${view.stageId} type="button" aria-expanded=${String(view.expanded)} data-tooltip=${title}>${bubbleIcon}<b>${view.total}</b>${view.open ? html`<i class="nt-dot"></i>` : nothing}</button>`;
+  return html`<button class="notes-toggle ${view.expanded ? "is-open" : ""} ${view.open ? "" : "all-resolved"}" data-action="toggle-thread" data-kind=${view.kind} data-id=${view.id} data-stage=${view.stageId} type="button" aria-expanded=${String(view.expanded)} aria-label=${title} data-tooltip=${title}>${bubbleIcon}<b>${view.total}</b>${view.open ? html`<i class="nt-dot"></i>` : nothing}</button>`;
 }
 
 export interface NoteTargetView {

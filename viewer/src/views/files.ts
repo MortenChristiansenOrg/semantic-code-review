@@ -105,7 +105,7 @@ function fileRow(row: FileRowView): TemplateResult {
           ${row.notes ? noteBadge(row, row.notes) : nothing}${row.lineComments
             ? html`<button class="mini-count mini-lines" data-action="open-file" data-id=${row.id} data-node-id=${row.nodeId} type="button" aria-expanded=${String(active)} data-tooltip=${lines} aria-label=${lines}>${bubbleIcon}<b>${row.lineComments}</b><small>lines</small></button>`
             : nothing}
-          <button class="mini-approve ${on ? "is-on" : ""} ${stale ? "is-stale" : ""}" data-action="approve" data-id=${row.approvalId} ?disabled=${row.approvalDisabled} type="button" aria-pressed=${String(on)} data-tooltip=${stale ? "Changed since approval — re-approve" : on ? "Approved" : "Approve file"}><span>${stale ? "!" : on ? "✓" : ""}</span></button>
+          <button class="mini-approve ${on ? "is-on" : ""} ${stale ? "is-stale" : ""}" data-action="approve" data-id=${row.approvalId} ?disabled=${row.approvalDisabled} type="button" aria-pressed=${String(on)} aria-label=${stale ? "Changed since approval — re-approve" : on ? "Approved" : "Approve file"} data-tooltip=${stale ? "Changed since approval — re-approve" : on ? "Approved" : "Approve file"}><span>${stale ? "!" : on ? "✓" : ""}</span></button>
         </div>
       </div>
       ${row.open ? html`<div class="cinema-diff">${diffPanelView(row.open.diff)}${fileNotesView(row.open.notes)}</div>` : nothing}
