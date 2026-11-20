@@ -146,7 +146,7 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
     checkoutStarted = true;
     git(root, ["checkout", "--force", "--detach", head]);
   }, () => {
-    if (checkoutStarted && previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
+    if (checkoutStarted && previousHead) git(root, ["checkout", "--force", "--detach", previousHead]);
   });
   record.remote = { ...remote, headRevision: head, refreshedAt: new Date().toISOString() };
   record.title = projected.manifest.title;
