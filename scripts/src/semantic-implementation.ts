@@ -2694,13 +2694,15 @@ function archiveImplementation(
   const version = workspace.snapshot.version;
   const startHead = git(["rev-parse", "HEAD"], { cwd: workspace.root });
   const archiveFiles = fullFormFiles(artifact, workspace.snapshot);
-  const expectedFiles = archiveFiles.list().sort().join("\0");
-  // Only a new commit on top of the starting one that holds every archived
-  // file proves the archive exists; the destination was absent before.
+  // The archive is built like a publication, from blobs no filter changed, so
+  // its bytes, paths and modes are known as one tree before anything is written.
+  const archiveTree = buildArtifactTree(workspace.root, archiveFiles, startHead, relativeDestination);
+  const expectedArchive = git(["rev-parse", `${archiveTree}:${relativeDestination}`], { cwd: workspace.root });
+  // Only a new commit on top of the starting one that holds exactly that tree
+  // proves the archive exists; the destination was absent before.
   const archived = () =>
     gitOptional(["rev-parse", "HEAD^"], { cwd: workspace.root }) === startHead &&
-    (gitOptional(["ls-tree", "-r", "-z", "--name-only", `HEAD:${relativeDestination}`], { cwd: workspace.root }) ?? "")
-      .split("\0").filter(Boolean).sort().join("\0") === expectedFiles;
+    gitOptional(["rev-parse", `HEAD:${relativeDestination}`], { cwd: workspace.root }) === expectedArchive;
   let removeWritten = () => {};
   // Moving the snapshot from the active ref to an archiving claim first makes a
   // concurrent writer fail instead of changing an artifact that is being
@@ -2708,7 +2710,9 @@ function archiveImplementation(
   removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
   try {
     removeWritten = exportArtifactFiles(archiveFiles, destination);
-    git(["add", "-f", "--", relativeDestination], { cwd: workspace.root });
+    // The index takes the archive's blobs as built, not the files through Git's filters.
+    const entries = gitRaw(["ls-tree", "-r", "-z", "--full-tree", archiveTree, "--", relativeDestination], { cwd: workspace.root });
+    gitRaw(["update-index", "-z", "--index-info"], { cwd: workspace.root, input: entries });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: workspace.root,
     })
@@ -2728,7 +2732,8 @@ function archiveImplementation(
       { cwd: workspace.root },
     );
   } catch (error) {
-    if (!archived()) {
+    // While the branch has not moved, nothing was committed and everything is undone.
+    if (gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root }) === startHead) {
       git(["reset", "--", destinationOption], {
         cwd: workspace.root,
         allowFailure: true,
@@ -2741,11 +2746,12 @@ function archiveImplementation(
       ]);
       throw error;
     }
-    // The archive was committed although Git reported a failure, such as a failing hook.
+    // The branch moved although Git reported a failure, such as a failing hook;
+    // whether the commit holds the archive is checked below.
     console.error(`semantic-implementation: ${errorMessage(error)}`);
   }
   if (!archived()) {
-    // A hook can change what is committed; the claim keeps the snapshot until someone checks.
+    // A hook or an interruption can change what is committed; the claim keeps the snapshot until someone checks.
     fail(`The archive commit does not hold the whole artifact at ${relativeDestination}, so ${implementationId} stays claimed.${interruptedArchiveNote(workspace.root)}`);
   }
   updateRefs(workspace.root, [{ ref: claim, next: ZERO_OID, previous: version }]);

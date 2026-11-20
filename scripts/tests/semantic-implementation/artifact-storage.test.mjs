@@ -173,7 +173,7 @@ test("an interrupted archive keeps its snapshot and says how to recover it", { s
 
   // The suggested recovery is one compare-and-swap transaction.
   const result = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
-  assert.match(result.stderr, new RegExp(`git update-ref -d refs/semantic-review/archiving/test-implementation ${snapshot}`));
+  assert.match(result.stderr, new RegExp(`git update-ref --no-deref -d refs/semantic-review/archiving/test-implementation ${snapshot}`));
   const command = /`(printf [^`]+)`/.exec(result.stderr)?.[1];
   assert.ok(command, result.stderr);
   const restored = spawnSync("sh", ["-c", command], { cwd: repo.root, encoding: "utf8" });

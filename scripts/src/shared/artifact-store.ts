@@ -192,18 +192,18 @@ export const archivingRef = (implementationId: string) => `${ARCHIVING_REF_PREFI
 
 /** Explains how to recover implementations whose archiving was interrupted. */
 export function interruptedArchiveNote(root: string): string {
-  const claims = git(["for-each-ref", "--format=%(objectname) %(refname)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
+  const claims = git(["for-each-ref", "--format=%(objectname) %(refname) %(symref)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
   return (claims ?? "").split(/\r?\n/).filter(Boolean).map((line) => {
-    const [snapshot, claim] = line.split(" ");
+    const [snapshot, claim, symref = ""] = line.split(" ");
     const id = claim.slice(ARCHIVING_REF_PREFIX.length);
-    // Only an ID that can name an implementation is put into a shell command.
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[0-9a-f]{40,64}$/.test(snapshot)) {
+    // Only a plain claim whose ID can name an implementation is put into a shell command.
+    if (symref !== "" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[0-9a-f]{40,64}$/.test(snapshot)) {
       return ` The archiving claim ${JSON.stringify(claim)} is left from an interrupted archive.`;
     }
     // One transaction moves the snapshot back, and only while nothing else took the ID.
-    const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --stdin`;
-    const finish = `git update-ref -d ${claim} ${snapshot}`;
-    return ` Archiving ${id} was interrupted. If its archive commit exists and holds the whole artifact, finish with \`${finish}\`. Otherwise unstage and remove the archive files it left (git status lists them), then make it active again with \`${restore}\`.`;
+    const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --no-deref --stdin`;
+    const finish = `git update-ref --no-deref -d ${claim} ${snapshot}`;
+    return ` Archiving ${id} was interrupted. If its archive commit exists and holds the whole artifact, finish with \`${finish}\`. Otherwise revert any commit that holds part of the archive, unstage and remove the archive files left behind (git status lists them), then make it active again with \`${restore}\`.`;
   }).join("");
 }
 

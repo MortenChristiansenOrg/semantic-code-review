@@ -148,6 +148,11 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
     "Archive test implementation",
   );
   assert.equal(repository.git("for-each-ref", "refs/semantic-review/active/", "refs/semantic-review/archiving/"), "");
+  // The archive holds exactly the published bytes.
+  assert.equal(
+    repository.git("rev-parse", "HEAD:.semantic-review-history/publish-implementation/.semantic-review"),
+    repository.git("rev-parse", `${metadataBranch}:.semantic-review`),
+  );
   assert.equal(repository.artifact.present(), false);
   const archived = (file) => repository.readJson(`.semantic-review-history/publish-implementation/.semantic-review/${file}`);
   assert.deepEqual(archived("manifest.json"), full.manifest);
