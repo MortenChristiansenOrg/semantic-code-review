@@ -425,13 +425,17 @@ test('saving review data reports a replacement that stays refused or fails other
   const refused = (platform, code) => {
     let attempts = 0;
     now = 0;
-    assert.throws(() => withRenames(t, platform, () => { attempts++; return code; }, () => atomicJson(file, { saved: true })), new RegExp(code));
-    return { attempts, waited: now };
+    // Each refused rename takes 20 ms. A retry without a deadline would loop
+    // forever, so it is cut off with another error, which fails the check below.
+    const refuse = () => { now += 20; return ++attempts > 1000 ? 'ENOTSUP' : code; };
+    assert.throws(() => withRenames(t, platform, refuse, () => atomicJson(file, { saved: true })), new RegExp(code));
+    return { attempts, waited: now - 20 * attempts };
   };
-  // Only Windows sharing violations are waited out, and only for the bounded time.
+  // Only Windows sharing violations are waited out, and only for two seconds in
+  // all, counting the time the refused renames took.
   const stuck = refused('win32', 'EPERM');
-  assert.equal(stuck.waited, REPLACE_WAIT_MS);
-  assert.ok(stuck.attempts > 2);
+  assert.ok(stuck.attempts > 2 && stuck.waited + 20 * stuck.attempts >= 2000 && stuck.waited + 20 * stuck.attempts <= 2020, JSON.stringify(stuck));
+  assert.equal(REPLACE_WAIT_MS, 2000);
   assert.deepEqual(refused('win32', 'ENOSPC'), { attempts: 1, waited: 0 });
   assert.deepEqual(refused('linux', 'EPERM'), { attempts: 1, waited: 0 });
   assert.equal(fs.readFileSync(file, 'utf8'), '{}\n');
