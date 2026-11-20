@@ -498,6 +498,16 @@ test("archive writes only direct refs and replaces a stale artifact folder under
   repository.expectSemanticFailure("refs/heads/main is a symbolic ref", "archive");
   repository.git("symbolic-ref", "--delete", "refs/heads/main");
   repository.git("branch", "main", target);
+  // An active ref that is symbolic would delete the branch it names.
+  const active = "refs/semantic-review/active/direct";
+  const snapshot = repository.git("rev-parse", active);
+  repository.git("branch", "decoy", snapshot);
+  repository.git("update-ref", "-d", active);
+  repository.git("symbolic-ref", active, "refs/heads/decoy");
+  repository.expectSemanticFailure(`${active} is a symbolic ref`, "archive");
+  assert.equal(repository.git("rev-parse", "decoy"), snapshot);
+  repository.git("symbolic-ref", "--delete", active);
+  repository.git("update-ref", active, snapshot);
   repository.semantic("archive");
   const archive = "refs/semantic-review/archive/direct";
   assert.notEqual(repository.result("git", ["cat-file", "-e", `${archive}:.semantic-review/stale.txt`]).status, 0);

@@ -204,11 +204,18 @@ export interface ActiveImplementation {
   supersededHeads: string[];
 }
 
+/** An active ref must be direct: every write moves it, and a write through a
+ * symbolic ref would move or delete the ref it names, such as a branch. */
+function assertDirectActiveRef(ref: string, symref: string): void {
+  if (symref) fail(`${ref} is a symbolic ref to ${symref}; an active artifact ref must point at its snapshot. Remove it with git symbolic-ref --delete ${ref}.`);
+}
+
 /** Every active implementation of the repository of root, read with one Git process. */
 export function listActiveImplementations(root: string): ActiveImplementation[] {
-  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ACTIVE_REF_PREFIX], { cwd: root });
+  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ACTIVE_REF_PREFIX], { cwd: root });
   return output.split(/\r?\n/).filter(Boolean).map((line) => {
-    const [commit, ref, parents = ""] = line.split("\t");
+    const [commit, ref, parents = "", symref = ""] = line.split("\t");
+    assertDirectActiveRef(ref, symref);
     return { implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) };
   }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
 }
@@ -551,12 +558,13 @@ export function replaceArtifactFileInGitDirectory(
   const gitDir = `--git-dir=${gitDirectory}`;
   const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
   const ref = activeRef(implementationId);
-  const read = () => run(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ref]).toString("utf8")
+  const read = () => run(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ref]).toString("utf8")
     .split(/\r?\n/).find((entry) => entry.split("\t")[1] === ref);
   for (let attempt = 0; ; attempt++) {
     const line = read();
     if (!line) return false;
-    const [commit, , parents = ""] = line.split("\t");
+    const [commit, , parents = "", symref = ""] = line.split("\t");
+    assertDirectActiveRef(ref, symref);
     const files = treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
     const bytes = replace(files);
     if (bytes === undefined) return false;
