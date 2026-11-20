@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { createRepository, initializeImplementation, beginStage, finalizeStage, scriptsDirectory } from '../tests/helpers/repository.mjs';
+import { createRepository, initializeImplementation, beginStage, finalizeStage, organizeStage, scriptsDirectory } from '../tests/helpers/repository.mjs';
 const args = process.argv.slice(2);
 const selected = args.includes('--scripts') ? path.resolve(args[args.indexOf('--scripts') + 1]) : scriptsDirectory;
 const baseline = args.includes('--baseline');
@@ -65,6 +65,11 @@ try {
   // Historical archive instructions incorrectly prevalidated the advanced target;
   // measure the actual successful legacy archive command, not that failing sequence.
   measure(stack, 'archive landed stack', baseline ? [['semantic-implementation', 'archive']] : [['semantic-flow', 'archive']]);
+  // Finishing a stage folds its commits into one.
+  const finish = fixture(); initializeImplementation(finish); beginStage(finish);
+  for (let i = 1; i <= 3; i++) finish.commitFile(`part-${i}.txt`, `part ${i}\n`, `Part ${i}`);
+  organizeStage(finish);
+  measure(finish, 'finish a stage of three commits', [['semantic-implementation', 'stage', 'finish']]);
   const feedback = fixture(); initializeImplementation(feedback); beginStage(feedback);
   finalizeStage(feedback, { contents: 'x'.repeat(90) + '\n' + 'unchanged context\n'.repeat(20000) }); feedback.feedback('init');
   for (const [start, count] of [[0, 100], [100, 200]]) {
@@ -82,7 +87,6 @@ try {
   viewer.write('large.txt', large.replace('050000 ', 'edited '));
   viewer.write('small.txt', 'small\n'); viewer.git('add', '.'); viewer.git('commit', '-m', 'Viewer fixture');
   // Helpers use the selected repo.semantic override, including the old CLI.
-  const { organizeStage } = await import('../tests/helpers/repository.mjs');
   organizeStage(viewer); viewer.semantic('stage', 'finish');
   let capturedGitBytes = 0;
   const source = viewerModule.createViewerDataSource(viewer.root, { gitCapture(cwd, args) {

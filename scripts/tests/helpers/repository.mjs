@@ -290,10 +290,11 @@ export function finalizeStage(
     message = `Implement ${id}`,
   } = {},
 ) {
-  const commit = repository.commitFile(file, contents, message);
+  repository.commitFile(file, contents, message);
   organizeStage(repository, { id });
   repository.semantic("stage", "finish", "--id", id);
-  return commit;
+  // Finishing folds the stage into one commit with a generated message.
+  return repository.git("rev-parse", "HEAD");
 }
 
 export function organizeStage(

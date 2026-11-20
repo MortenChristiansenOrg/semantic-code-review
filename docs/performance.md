@@ -129,6 +129,20 @@ The time is dominated by validation, which is unchanged. When landing is
 unknown, matching target commits for a suggestion adds a `git log -p` over at
 most 1,000 target commits and two `git patch-id` runs.
 
+## One commit per finalized stage (#177)
+
+`stage finish` folds the stage's commits into one with `git commit-tree`,
+reading the authors and co-author trailers of the folded commits. A stage of
+three commits, before (commits kept) and after, Linux, Node 24.20.0, two runs
+each:
+
+| Operation / fixture | Before | After |
+| --- | ---: | ---: |
+| Finish a stage of three commits | 21 Git calls, 447–449 ms | 28 Git calls, 493–494 ms |
+
+The other measured operations are unchanged: validation already listed each
+stage's commits, and now also counts them.
+
 ## Functional effects and limits
 
 - API references are grouped under `scripts/api/`; `API.d.ts` is the small index

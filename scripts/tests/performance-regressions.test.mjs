@@ -72,7 +72,9 @@ test('stage batches roll back together and stage plan reports mechanical selecto
   assert.deepEqual(plan.unlinkedItems.map((item) => item.itemId), ['one', 'probe']);
   organizeStage(repo);
   const finished = input(repo, 'stage', 'finish', '--json');
-  assert.equal(finished.headRevision, plan.headRevision);
+  // Finishing folds the stage into one commit with the same tree.
+  assert.equal(repo.git('rev-parse', `${finished.headRevision}^{tree}`), repo.git('rev-parse', `${plan.headRevision}^{tree}`));
+  assert.equal(repo.git('rev-parse', `${finished.headRevision}^`), repo.git('rev-parse', 'main'));
   repo.expectSemanticFailure(/node-ref/, 'stage', 'record-batch', '--stage', 'implementation', '--finalized', '--items', JSON.stringify([{ kind: 'risk', itemId: 'risk', summary: 'Needs link' }]));
 });
 

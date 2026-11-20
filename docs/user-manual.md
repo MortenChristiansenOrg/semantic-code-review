@@ -361,10 +361,13 @@ Record observed validation and link it to the relevant nodes:
 <semantic-flow> implementation stage finish
 ```
 
-A stage may contain several linear commits. Finalization rejects merge commits,
-requires the recorded stage branch to be checked out, and captures:
+A stage may collect several linear commits while you work on it. Finalization
+rejects merge commits, requires the recorded stage branch to be checked out,
+folds the commits into one stage commit, and captures:
 
-- The immutable head revision. The stage and base branch, the base revision and
+- The immutable head revision of that commit. Its message is the stage title
+  and summary; authors of the folded commits become `Co-authored-by` trailers.
+  The stage and base branch, the base revision and
   the exact changed-file inventory of the stage-only diff follow from it and
   from the stage below.
 - Descriptive nodes with classified whole-file, hunk, or line-range ownership.
@@ -432,7 +435,8 @@ git commit -am "Handle paid pending orders"
 
 The command:
 
-1. Accepts the edited lower branch's current head.
+1. Accepts the edited lower branch's current head and folds the correction into
+   its one stage commit.
 2. Replays every branch above it, bottom-up.
 3. Moves all affected refs only after every replay succeeds.
 4. Refreshes base/head snapshots and file inventories.
