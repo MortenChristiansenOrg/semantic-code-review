@@ -256,6 +256,14 @@ function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committ
   catch { return "unknown"; }
   if (record.id !== id) return "unknown";
   if (record.remote) return "committed";
+  // A worktree that reaches the review and still holds the ID proves the
+  // deletion did not commit, however long the recorded location has been gone.
+  const verifiedDirectory = reachingRoot === undefined ? undefined : gitCommonDirectoryOf(reachingRoot);
+  if (verifiedDirectory !== undefined) {
+    try {
+      if (reviewIdHolder(verifiedDirectory, record.implementationId, id) === "active") return "uncommitted";
+    } catch { /* Decided below. */ }
+  }
   const presence = repositoryPresence(record);
   if (presence === "missing" && missingLongEnough(record)) return "committed";
   try {

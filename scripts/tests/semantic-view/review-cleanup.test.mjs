@@ -456,6 +456,26 @@ test('an interrupted deletion is completed only when a reachable artifact holds 
   assert.equal(fs.existsSync(pendingFolder(review)), false);
 });
 
+test('an interrupted deletion of a repository that moved long ago is rolled back by registration from its new location', (t) => {
+  const { root, review } = setup(t), moved = path.join(root, 'moved');
+  patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);
+  // A crash left the folder pending before the ID changed, and the repository then
+  // moved and stayed away from its recorded location for longer than the grace period.
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  fs.renameSync(path.join(root, 'repo'), moved);
+  const file = path.join(pendingFolder(review), 'review.json'), record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  record.missingSince = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(record));
+  // The moved worktree still holds the ID, so the deletion did not commit.
+  const registered = registerReview(moved, 'same-id', 'Review');
+  assert.equal(registered.id, review.id);
+  assert.equal(registered.generation, review.generation);
+  assert.equal(registered.repositoryRoot, fs.realpathSync(moved));
+  assert.deepEqual(registered.state.comments, [{ mode: 'personal', body: 'Keep me' }]);
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
+  assert.equal(storedReviewId(moved, 'same-id'), review.id);
+});
+
 test('a deletion that reads the refs during an archive rollback does not take the review ID for gone', (t) => {
   const { root, review } = setup(t), repo = path.join(root, 'repo');
   const fingerprint = preview(review).fingerprint;
