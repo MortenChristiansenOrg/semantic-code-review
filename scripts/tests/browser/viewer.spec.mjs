@@ -601,6 +601,66 @@ test('a long stage rationale tooltip stays within the viewport and scrolls', asy
   await expect(tooltip).toBeVisible();
 });
 
+test('a tooltip taller than the window scrolls to its end with the keyboard from its trigger', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].rationale = `${'This stage exists because of a long chain of reasons. '.repeat(50)}The final reason.`;
+  data.stages[1].rationale = 'A short reason.';
+  await page.setViewportSize({ width: 390, height: 600 });
+  await mount(page, data);
+  await page.mouse.move(0, 0);
+  // Record whether the page's own handling of each key was taken over.
+  await page.evaluate(() => {
+    window.keyTaken = [];
+    window.addEventListener('keydown', (e) => window.keyTaken.push(e.defaultPrevented));
+  });
+  const tooltip = page.getByRole('tooltip');
+  const short = page.locator('.stage[data-stage="second"] .rationale-label');
+  await short.focus();
+  await expect(tooltip).toHaveText('A short reason.');
+  await page.keyboard.press('ArrowDown');
+  expect(await page.evaluate(() => window.keyTaken)).toEqual([false]);
+
+  const label = page.locator('.stage[data-stage="first"] .rationale-label');
+  await label.focus();
+  await expect(tooltip).toBeVisible();
+  await expect(label).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await expect(tooltip).toHaveText(data.stages[0].rationale);
+  await expect(tooltip).not.toHaveAttribute('tabindex');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  // Focusing scrolls the page smoothly; measure once it has settled.
+  const settledScroll = () => page.evaluate(() => new Promise((done) => {
+    let last = scrollY, still = 0;
+    const tick = () => { still = scrollY === last ? still + 1 : 0; last = scrollY; if (still >= 10) done(scrollY); else requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  }));
+  const pageScroll = await settledScroll();
+  const atEnd = () => tooltip.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  for (let i = 0; i < 40 && !(await atEnd()); i++) await page.keyboard.press('PageDown');
+  expect(await atEnd()).toBe(true);
+  // The final line is inside the tooltip's visible area.
+  expect(await tooltip.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const last = [...range.getClientRects()].at(-1), box = el.getBoundingClientRect();
+    return last.bottom <= box.bottom && last.top >= box.top;
+  })).toBe(true);
+  await expect(label).toBeFocused();
+  await expect(tooltip).toBeVisible();
+  expect(await settledScroll()).toBe(pageScroll);
+  await page.keyboard.press('Home');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press('End');
+  await expect.poll(atEnd).toBe(true);
+  // Escape closes it and gives the keys back to the page.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await page.evaluate(() => { window.keyTaken = []; });
+  await page.keyboard.press('ArrowDown');
+  expect(await page.evaluate(() => window.keyTaken)).toEqual([false]);
+});
+
 test('editing a draft from the notes panel focuses its visible form and survives a refresh', async ({ page }) => {
   const data = fixture();
   await mount(page, data, { comments: [{ kind: 'file', id: fileId, nodeId: 'first-two', body: 'Edit this note', mode: 'feedback', createdAt: 1 }] });

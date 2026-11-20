@@ -106,8 +106,33 @@ export function forceHidePop(): void {
   popOwner = null;
 }
 
+/** Whether the open tooltip or popover is cut off and scrolls. */
+function popOverflows(): boolean {
+  return Boolean(popEl?.classList.contains("is-shown") && popEl.scrollHeight > popEl.clientHeight);
+}
+const POP_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
+/**
+ * Scrolls a cut-off tooltip or popover from the keyboard while focus stays on
+ * the element it describes, so it keeps no tab stop of its own. Escape closes
+ * it and gives these keys back to the page.
+ */
+export function scrollPopFromKey(e: KeyboardEvent): void {
+  if (!POP_SCROLL_KEYS.has(e.key) || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  const target = e.target;
+  if (!popEl || !popOwner || !(target instanceof Element) || !popOwner.contains(target) || !popOverflows()) return;
+  // Fields and widgets keep their own use of these keys.
+  if ((target instanceof HTMLElement && target.isContentEditable) ||
+      target.closest('input, textarea, select, [role="textbox"], [role="combobox"], [role="listbox"], [role="slider"]')) return;
+  e.preventDefault();
+  const line = 40, page = Math.max(line, popEl.clientHeight - line);
+  if (e.key === "Home") popEl.scrollTop = 0;
+  else if (e.key === "End") popEl.scrollTop = popEl.scrollHeight;
+  else popEl.scrollTop += (e.key === "ArrowDown" ? line : e.key === "ArrowUp" ? -line : e.key === "PageDown" ? page : -page);
+}
+
 /** Opens the tooltip or popover for what the pointer or focus is on. */
 export function installPopover(): void {
+  document.addEventListener("keydown", scrollPopFromKey);
   document.addEventListener("pointerover", (e) => {
     const b = tooltipTarget(e.target);
     if (!b) return;
