@@ -715,16 +715,17 @@ function validateSemantic(
   }
 
   const base = commitObject(workspace.root, manifest.baseRevision);
-  const targetHead = branchCommit(workspace.root, manifest.targetBranch);
   const finalStageId = manifest.stages.at(-1);
   const finalStageHead = finalStageId
     ? finalizedStage(artifact, finalStageId).change.headRevision
     : undefined;
+  // With drift allowed the target is not read at all, so it may even be gone.
+  const targetHead = allowTargetDrift ? base : branchCommit(workspace.root, manifest.targetBranch);
   const targetContainsLandedStack =
     allowLandedTarget &&
     finalStageHead !== undefined &&
     isAncestor(workspace.root, finalStageHead, targetHead);
-  if (targetHead !== base && !targetContainsLandedStack && !allowTargetDrift) {
+  if (targetHead !== base && !targetContainsLandedStack) {
     fail(
       `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; check it out, then run restack --base ${manifest.targetBranch}.`,
     );
@@ -2329,12 +2330,17 @@ interface MetadataPublication {
   branch: string;
   commit: string;
   update: RefUpdate | undefined;
+  /** When the branch already publishes the artifact: a check that it still does. */
+  verify?: RefUpdate;
 }
 
 function metadataPublicationPlan(workspace: Workspace, artifact: Artifact, message: string): MetadataPublication {
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
+  if (branch === artifact.manifest.targetBranch) {
+    fail(`Metadata branch ${branch} is the target branch; publishing there would rewrite it.`);
+  }
   const publication = buildMetadataCommit(workspace, artifact, stageTip, message);
   const existing = gitOptional(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: workspace.root,
@@ -2345,7 +2351,7 @@ function metadataPublicationPlan(workspace: Workspace, artifact: Artifact, messa
     });
     const parents = commitParents(workspace.root, existing);
     if (parents.length === 1 && parents[0] === stageTip && existingTree === publication.tree) {
-      return { branch, commit: existing, update: undefined };
+      return { branch, commit: existing, update: undefined, verify: { ref: `refs/heads/${branch}`, next: existing, previous: existing } };
     }
     const pathsChanged = parents.length === 1
       ? changedPathNames(workspace.root, parents[0], existing)
@@ -2636,8 +2642,9 @@ interface LandingSubject {
   finalHeadRevision: string;
 }
 
-/** The commit or range a reviewer supplied as landing, in full revisions. It
- * must be on the target branch. */
+/** The commit or range a reviewer supplied as landing, in full revisions. The
+ * local target branch may be behind the remote one, so it only warns when the
+ * landing is not on it. */
 function suppliedLanding(root: string, targetBranch: string, value: string): string {
   const parts = value.split("..");
   if (parts.length > 2 || parts.some((part) => part === "" || part.startsWith("."))) {
@@ -2647,7 +2654,7 @@ function suppliedLanding(root: string, targetBranch: string, value: string): str
   const head = revisions.at(-1) ?? fail("--landed requires a revision.");
   const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}^{commit}`], { cwd: root });
   if (!targetHead || !isAncestor(root, head, targetHead)) {
-    fail(`Landing commit ${head} is not on target branch ${targetBranch}; update the target branch, or archive without --landed.`);
+    console.error(`Warning: landing commit ${head} is not on the local target branch ${targetBranch}; it is recorded as supplied.`);
   }
   if (revisions.length === 2) {
     const [base] = revisions;
@@ -2675,7 +2682,7 @@ function landingRecord(root: string, subject: LandingSubject, landed: string | u
 
 /** Patch IDs of the commits a `git log -p` range lists, oldest first. */
 function commitPatchIds(root: string, range: string[]): Array<{ commit: string; patchId: string }> {
-  const log = gitRawBuffer(["log", "--no-merges", "--no-renames", "--reverse", "-p", "--format=commit %H", ...range], { cwd: root });
+  const log = gitRawBuffer(["log", "--no-merges", "--no-renames", "--no-ext-diff", "--no-textconv", "--reverse", "-p", "--format=commit %H", ...range], { cwd: root });
   if (log.length === 0) return [];
   const ids = new Map(gitRaw(["patch-id", "--stable"], { cwd: root, input: log }).split(/\r?\n/).filter(Boolean).map((line) => {
     const [patchId, commit] = line.split(" ");
@@ -2691,24 +2698,33 @@ function commitPatchIds(root: string, range: string[]): Array<{ commit: string; 
  * makes, or a run of commits matching its commits one by one, as a rebase merge
  * makes. Only a suggestion: the target may have made the same edits itself. */
 function suggestedLanding(root: string, subject: LandingSubject): string | null {
+  // Only a suggestion: when matching fails, there is none.
+  try {
+    return matchingLanding(root, subject);
+  } catch {
+    return null;
+  }
+}
+
+function matchingLanding(root: string, subject: LandingSubject): string | null {
   const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${subject.targetBranch}^{commit}`], { cwd: root });
   if (!targetHead) return null;
   // The most recent commits only, so a long-lived archive stays quick to check.
   const candidates = commitPatchIds(root, ["--max-count=1000", targetHead, `^${subject.finalHeadRevision}`, `^${subject.baseRevision}`]);
   if (candidates.length === 0) return null;
-  const cumulative = gitRawBuffer(["diff", "--no-renames", subject.baseRevision, subject.finalHeadRevision, "--"], { cwd: root });
+  const cumulative = gitRawBuffer(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", subject.baseRevision, subject.finalHeadRevision, "--"], { cwd: root });
   const cumulativeId = cumulative.length === 0 ? undefined : gitRaw(["patch-id", "--stable"], { cwd: root, input: cumulative }).split(" ")[0];
   const squash = candidates.find((candidate) => candidate.patchId === cumulativeId);
   if (squash) return squash.commit;
   const own = commitPatchIds(root, [`${subject.baseRevision}..${subject.finalHeadRevision}`]).map((entry) => entry.patchId);
   if (own.length === 0) return null;
   for (let start = 0; start + own.length <= candidates.length; start++) {
-    if (own.every((patchId, offset) => candidates[start + offset].patchId === patchId)) {
-      const first = candidates[start].commit;
-      const parent = commitParents(root, first)[0];
-      const last = candidates[start + own.length - 1].commit;
-      return parent ? `${parent}..${last}` : last;
-    }
+    const run = candidates.slice(start, start + own.length);
+    if (!own.every((patchId, offset) => run[offset].patchId === patchId)) continue;
+    // Only a chain of commits, each the only parent of the next, is one range.
+    const parents = run.map(({ commit }) => commitParents(root, commit));
+    if (parents.some((list) => list.length !== 1) || run.some((entry, offset) => offset > 0 && parents[offset][0] !== run[offset - 1].commit)) continue;
+    return `${parents[0][0]}..${run.at(-1)?.commit}`;
   }
   return null;
 }
@@ -2743,11 +2759,14 @@ function readArchive(root: string, implementationId: string): { commit: string; 
   return { commit, metadataCommit: parents[0], landing };
 }
 
-/** The archive's shared tag and the commit it names, if it was shared. */
-function sharedArchive(root: string, implementationId: string): { tag: string; commit: string } | undefined {
+/** The archive's shared tag and the commit it names, if it was shared. Any
+ * ref at the tag's name counts as shared, so nothing replaces it. */
+function sharedArchive(root: string, implementationId: string): { tag: string; commit: string | undefined; annotated: boolean } | undefined {
   const tag = archiveTag(implementationId);
-  const commit = gitOptional(["rev-parse", "--verify", "--quiet", `${tag}^{commit}`], { cwd: root });
-  return commit ? { tag, commit } : undefined;
+  const object = gitOptional(["rev-parse", "--verify", "--quiet", tag], { cwd: root });
+  if (!object) return undefined;
+  const annotated = git(["cat-file", "-t", object], { cwd: root }) === "tag";
+  return { tag, commit: gitOptional(["rev-parse", "--verify", "--quiet", `${object}^{commit}`], { cwd: root }), annotated };
 }
 
 function archiveImplementation(
@@ -2783,7 +2802,7 @@ function archiveImplementation(
     ({ ref: `refs/heads/${change.branch}`, next: change.headRevision, previous: change.headRevision }));
   removeArtifact(workspace.root, workspace.snapshot, [
     ...stageChecks,
-    ...(publication.update ? [publication.update] : []),
+    publication.update ?? publication.verify ?? fail("The publication has no metadata ref."),
     { ref, next: commit, previous: ZERO_OID },
     { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
   ]);
@@ -2860,7 +2879,7 @@ function shareArchive(root: string, options: Options): void {
   const shared = sharedArchive(root, implementationId);
   const push = `git push <remote> ${tag}`;
   if (shared) {
-    if (shared.commit !== archive.commit) fail(`Tag ${tag} names archive commit ${shared.commit}, not the current ${archive.commit}; a shared archive tag is never moved.`);
+    if (!shared.annotated || shared.commit !== archive.commit) fail(`${tag} already exists and is not an annotated tag of the current archive commit ${archive.commit}; a shared archive tag is never moved or replaced.`);
     console.log(`The archive of ${implementationId} is already shared as ${tag}. Push it with: ${push}`);
     return;
   }

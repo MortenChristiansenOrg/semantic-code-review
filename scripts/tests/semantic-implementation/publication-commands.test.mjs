@@ -6,6 +6,7 @@ import {
   beginStage,
   createRepository,
   finalizeStage,
+  flowCli,
   initializeImplementation,
 } from "../helpers/repository.mjs";
 
@@ -162,8 +163,8 @@ test("archive records an unknown landing, suggests a squash commit, and takes th
   repository.write("later.txt", "later\n");
   repository.git("add", "later.txt");
   repository.git("commit", "--no-verify", "-m", "Later work");
-  // A supplied commit must be on the target branch.
-  repository.expectSemanticFailure("is not on target branch main", "archive", "--landed", stageTip);
+  // A supplied revision must exist.
+  repository.expectSemanticFailure(/./, "archive", "--landed", "no-such-revision");
   assert.equal(repository.artifact.present(), true);
 
   const archived = repository.semantic("archive");
@@ -408,4 +409,75 @@ test("preparation ignores acceptance criteria outside the review", (t) => {
     "review/reviewed-criteria-only",
   );
   assert.equal(repository.git("rev-parse", "review/reviewed-criteria-only"), stageTip);
+});
+
+test("archive works without the target branch and from a linked worktree, and takes a supplied range", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "gone-target" });
+  beginStage(repository);
+  finalizeStage(repository);
+  // With the target branch deleted, landing is unknown but archiving is not blocked.
+  repository.git("branch", "-D", "main");
+  const archived = repository.semantic("archive");
+  assert.match(archived, /landing unknown/);
+  assert.equal(JSON.parse(repository.git("show", "refs/semantic-review/archive/gone-target:.semantic-review/landing.json")).outcome, "unknown");
+
+  const linked = createRepository(t);
+  initializeImplementation(linked, { implementationId: "linked" });
+  beginStage(linked);
+  finalizeStage(linked);
+  const stageBranch = "semantic-flow/linked/stages/implementation";
+  // A rebase merge on main, which stays checked out in the main worktree.
+  linked.git("switch", "main");
+  linked.git("cherry-pick", stageBranch);
+  const landed = linked.git("rev-parse", "HEAD");
+  const before = linked.git("rev-parse", "HEAD^");
+  const worktree = `${linked.root}-linked`;
+  t.after(() => fs.rmSync(worktree, { recursive: true, force: true }));
+  linked.git("worktree", "add", worktree, stageBranch);
+  const result = linked.result(process.execPath, [flowCli, "archive", "--json", "--project", worktree, "--landed", `${before}..${landed}`]);
+  assert.equal(result.status, 0, result.stderr);
+  const landing = JSON.parse(result.stdout).archive.landing;
+  assert.equal(landing.outcome, "supplied");
+  assert.equal(landing.landedCommits, `${before}..${landed}`);
+  assert.equal(linked.git("rev-parse", "main"), landed);
+  // A commit only the remote target holds is recorded as supplied, with a warning.
+  const elsewhere = createRepository(t);
+  initializeImplementation(elsewhere, { implementationId: "elsewhere" });
+  beginStage(elsewhere);
+  finalizeStage(elsewhere);
+  elsewhere.git("switch", "-c", "remote-main", "main");
+  elsewhere.commitFile("squashed.txt", "squashed\n", "Squash merge on the remote");
+  const squash = elsewhere.git("rev-parse", "HEAD");
+  const warned = elsewhere.result(process.execPath, [flowCli, "implementation", "archive", "--landed", squash]);
+  assert.equal(warned.status, 0, warned.stderr);
+  assert.match(warned.stderr, /not on the local target branch main/);
+});
+
+test("archive refuses a metadata branch that is the target, survives a failing diff driver, and shares only its own annotated tag", (t) => {
+  const collision = createRepository(t);
+  collision.git("switch", "-c", "semantic-flow/clash/metadata");
+  initializeImplementation(collision, { implementationId: "clash", targetBranch: "semantic-flow/clash/metadata" });
+  beginStage(collision);
+  finalizeStage(collision);
+  const target = collision.git("rev-parse", "semantic-flow/clash/metadata");
+  collision.expectSemanticFailure("is the target branch", "archive");
+  assert.equal(collision.git("rev-parse", "semantic-flow/clash/metadata"), target);
+  assert.equal(collision.artifact.present(), true);
+
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "tagged" });
+  beginStage(repository);
+  finalizeStage(repository);
+  repository.git("switch", "main");
+  repository.git("merge", "--squash", "semantic-flow/tagged/stages/implementation");
+  repository.git("commit", "--no-verify", "-m", "Squashed");
+  const squash = repository.git("rev-parse", "HEAD");
+  // An external diff driver that fails does not affect the suggestion.
+  repository.git("config", "diff.external", "false");
+  const result = JSON.parse(repository.flow("archive", "--json"));
+  assert.equal(result.archive.suggestedLanding, squash);
+  repository.git("tag", "semantic-review/archive/tagged", result.archive.commit);
+  repository.expectSemanticFailure("is not an annotated tag", "archive", "share", "--id", "tagged");
+  repository.expectSemanticFailure("never moves", "archive", "landing", "--id", "tagged", "--landed", squash);
 });

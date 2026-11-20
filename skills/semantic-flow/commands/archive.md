@@ -46,7 +46,8 @@ it only when the user confirms:
 ```
 
 Without `--landed`, this records landing once the target branch contains the
-final stage head.
+final stage head. Run this command and `archive share` from a worktree of the
+archived implementation's repository; they take no `--project`.
 
 ## Share
 

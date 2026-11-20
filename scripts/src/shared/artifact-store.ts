@@ -445,7 +445,8 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
     "commit",
     "",
   ].join("\n");
-  gitRaw(["update-ref", "--create-reflog", "-m", "semantic-flow", "--stdin"], { cwd: root, input: commands });
+  // --no-deref: a symbolic ref is replaced, never followed to a branch it names.
+  gitRaw(["update-ref", "--no-deref", "--create-reflog", "-m", "semantic-flow", "--stdin"], { cwd: root, input: commands });
 }
 
 /** The stage heads a stored manifest records, read leniently. */
@@ -885,7 +886,8 @@ export function buildArtifactTree(root: string, files: ArtifactFiles, parent: st
   const env = { GIT_INDEX_FILE: indexFile };
   try {
     gitRaw(["read-tree", parent], { cwd: root, env });
-    gitRaw(["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", directory], { cwd: root, env });
+    // Forced: the scratch index need not match the checkout this runs in.
+    gitRaw(["rm", "--cached", "-r", "-q", "-f", "--ignore-unmatch", "--", directory], { cwd: root, env });
     const entries = listed.map((file) => `100644 ${oids.get(file)}\t${directory}/${file}\0`).join("");
     gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
     return gitRaw(["write-tree"], { cwd: root, env });
