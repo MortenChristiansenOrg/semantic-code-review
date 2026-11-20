@@ -40,7 +40,7 @@ import { cssEsc } from "./util";
     const body = await response.json();
     if (!response.ok || !body.ok) {
       const failure = failureOf(body);
-      if (failure.reviewUnavailable) { unavailable = true; saved = { reviewId: requestReviewId, generation: requestGeneration ?? "", state: {} }; }
+      if (failure.reviewUnavailable) { unavailable = true; saved = { reviewId: requestReviewId, generation: requestGeneration ?? "", state: {}, stateRevision: 0 }; }
       else throw new Error(failure.error || "Review data could not be loaded.");
     } else saved = body;
   } catch (error) {

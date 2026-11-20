@@ -63,10 +63,12 @@ test('independent tab edits merge, retries are idempotent, conflicts are atomic'
   const write = (changes) => patchReviewState(review.id, review.generation, changes);
   write([change(['approvals', 'one'], { rev: 'a' })]);
   write([change(['approvals', 'two'], { rev: 'b' })]);
-  write([change(['approvals', 'one'], { rev: 'a' })]);
+  // A retry changes nothing, so it leaves the state revision.
+  assert.equal(write([change(['approvals', 'one'], { rev: 'a' })]).stateRevision, 2);
   assert.deepEqual(readReview(review.id).state.approvals, { one: { rev: 'a' }, two: { rev: 'b' } });
   assert.throws(() => write([change(['draft'], 'keep'), change(['approvals', 'one'], { rev: 'wrong' })]), /another tab/);
   assert.equal(readReview(review.id).state.draft, undefined);
+  assert.equal(readReview(review.id).stateRevision, 2);
   assert.throws(() => write([{ path: ['draft', 1], before: { present: false }, after: { present: true, value: true } }]), /Invalid/);
 });
 
@@ -301,10 +303,11 @@ test('records saved without a title or lifecycle fields stay readable and listed
   const root = setup(t);
   const review = registerReview(path.join(root, 'a'), 'legacy-id', 'Review');
   const file = path.join(reviewDirectory(review.id), 'review.json');
-  const { title, completedAt, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const { title, completedAt, stateRevision, ...legacy } = JSON.parse(fs.readFileSync(file, 'utf8'));
   fs.writeFileSync(file, JSON.stringify(legacy));
   assert.equal(readReview(review.id).title, '');
   assert.equal(readReview(review.id).completedAt, null);
+  assert.equal(readReview(review.id).stateRevision, 0);
   assert.deepEqual(listReviews().map((record) => record.id), [review.id]);
 });
 

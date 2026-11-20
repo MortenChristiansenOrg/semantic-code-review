@@ -613,6 +613,8 @@ export type ReviewStateResponse = ApiResult<{
   reviewId: string;
   generation: string;
   state: StoredReviewState;
+  /** Counts the saves that changed the state; a save that only repeats stored values leaves it. */
+  stateRevision: number;
 }>;
 
 /** POST `/api/review-state` request. */

@@ -196,7 +196,7 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
       for (const child of ["feedback", "attachments", "snapshots"]) fs.mkdirSync(path.join(directory, child));
       const remote: RemoteReview = { sourceRoot, remoteName, branch, targetBranch };
       const record: ReviewRecord = { id, generation: randomUUID(), repositoryRoot: fs.realpathSync(root), implementationId: key,
-        title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, remote };
+        title: branch, createdAt: now, updatedAt: now, completedAt: null, state: {}, stateRevision: 0, remote };
       return refresh(record, remote);
     } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
   });

@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 const viewer = new URL('../../../viewer/', import.meta.url);
 const source = fs.readFileSync(new URL('../../../skills/semantic-flow/viewer/app.js', import.meta.url), 'utf8');
@@ -32,6 +33,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
   const stores = new Map();
+  const revisions = new Map();
   const attachments = new Map();
   const deleted = new Set();
   const errors = [];
@@ -64,21 +66,33 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     }
     if (url.pathname === '/api/review-state') {
       if (!stores.has(currentId)) stores.set(currentId, structuredClone(saved));
-      const state = stores.get(currentId);
       if (route.request().method() === 'POST') {
-        // Like the review store, every key is an own property, including "__proto__".
+        // Like the review store, every key is an own property, including "__proto__",
+        // a change applies only over its `before` or as an exact retry, and a save applies all its changes or none.
         const own = (target, key, value) => Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
+        const state = structuredClone(stores.get(currentId));
+        const conflict = () => route.fulfill({ status: 409, json: { ok: false, error: 'Review state changed in another tab. Keep your draft text and reload before retrying.' } });
+        let changed = false;
         for (const change of route.request().postDataJSON().changes) {
           let target = state;
           for (const key of change.path.slice(0, -1)) {
             if (!Object.hasOwn(target, key)) own(target, key, {});
             target = target[key];
+            if (!target || typeof target !== 'object' || Array.isArray(target)) return conflict();
           }
-          if (change.after.present) own(target, change.path.at(-1), change.after.value);
-          else delete target[change.path.at(-1)];
+          const key = change.path.at(-1);
+          const current = Object.hasOwn(target, key) ? { present: true, value: target[key] } : { present: false };
+          if (isDeepStrictEqual(current, change.after)) continue;
+          // Tests that stand in for another tab may send a change without `before`.
+          if (change.before && !isDeepStrictEqual(current, change.before)) return conflict();
+          if (change.after.present) own(target, key, change.after.value);
+          else delete target[key];
+          changed = true;
         }
+        stores.set(currentId, state);
+        if (changed) revisions.set(currentId, (revisions.get(currentId) || 0) + 1);
       }
-      return json({ ok: true, reviewId: currentId, generation: 'test', state });
+      return json({ ok: true, reviewId: currentId, generation: 'test', state: stores.get(currentId), stateRevision: revisions.get(currentId) || 0 });
     }
     if (url.pathname === '/api/attachments' && route.request().method() === 'POST') {
       const input = route.request().postDataJSON(), bytes = Buffer.from(input.data, 'base64');
@@ -5470,6 +5484,101 @@ test('reverting a change after a save whose response was lost saves the reversal
   await reload(page);
   await openFile(page);
   await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'false');
+});
+
+/** Fails the page's next review-state save. With `commit`, the server stores it
+ * first, as when only the response is lost; otherwise the request never arrives.
+ * `failed` resolves with the save's URL and changes. */
+async function failNextSave(page, { commit }) {
+  let armed = true, settle;
+  const failed = new Promise((resolve) => { settle = resolve; });
+  await page.route('**/api/review-state*', async (route) => {
+    if (route.request().method() !== 'POST' || !armed) return route.fallback();
+    armed = false;
+    const url = route.request().url(), body = route.request().postData();
+    if (commit) await page.evaluate(([input, payload]) => fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }), [url, body]);
+    await route.abort('failed');
+    settle({ url, changes: JSON.parse(body).changes });
+  });
+  return failed;
+}
+/** Saves changes to the review state as another tab would. */
+async function saveElsewhere(page, url, changes) {
+  await page.evaluate(async ([input, list]) => {
+    const response = await fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reviewId: 'browser-review', generation: 'test', changes: list }) });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error);
+  }, [url, changes]);
+}
+const storedOnServer = (page, url) => page.evaluate(async (input) => (await (await fetch(input)).json()).state, url);
+/** Opens a message draft and saves `text` as its body. */
+async function savedDraft(page, text) {
+  await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  const input = page.locator('textarea[name="nc-body"]');
+  await saveAction(page, () => input.fill(text), (state) => state.editor?.compose?.body === text);
+  await settled(page);
+  return input;
+}
+/** Counts the page's review-state saves from now on. */
+function countSaves(page) {
+  const counter = { saves: 0 };
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') counter.saves += 1; });
+  return counter;
+}
+
+test('a save whose response was lost does not overwrite a value another tab restored', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const lost = failNextSave(page, { commit: true });
+  await input.fill('Edited');
+  const { url, changes } = await lost;
+  await expect(page.locator('#save-status')).toBeVisible();
+  // Another tab, which received the edit, restores the original text.
+  await saveElsewhere(page, url, changes.map(({ path, before, after }) => ({ path, before: after, after: before })));
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await expect(input).toHaveValue('Edited');
+  const stored = await storedOnServer(page, url);
+  expect(stored.editor.compose.body).toBe('Original');
+  expect(stored.wrapLines).toBe(false);
+});
+
+test('undoing an edit whose save never arrived does not retry it over another tab\'s text', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const failed = failNextSave(page, { commit: false });
+  await input.fill('Edited');
+  const { url } = await failed;
+  await expect(page.locator('#save-status')).toBeVisible();
+  await saveElsewhere(page, url, [{ path: ['editor', 'compose', 'body'], before: { present: true, value: 'Original' }, after: { present: true, value: 'Other tab' } }]);
+  const counter = countSaves(page);
+  await input.fill('Original');
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await input.fill('Later text');
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+  expect(counter.saves).toBe(0);
+  await expect(page.locator('#save-status')).toContainText('Review state changed in another tab');
+  await expect(input).toHaveValue('Later text');
+  expect((await storedOnServer(page, url)).editor.compose.body).toBe('Other tab');
+});
+
+test('a save whose response was lost is confirmed before the next change saves', async ({ page }) => {
+  await mount(page, fixture());
+  const input = await savedDraft(page, 'Original');
+  const lost = failNextSave(page, { commit: true });
+  await input.fill('Edited');
+  const { url } = await lost;
+  await expect(page.locator('#save-status')).toBeVisible();
+  const counter = countSaves(page);
+  await page.getByRole('button', { name: 'Wrap lines', exact: true }).first().click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await settled(page);
+  expect(counter.saves).toBe(1);
+  const stored = await storedOnServer(page, url);
+  expect(stored.editor.compose.body).toBe('Edited');
+  expect(stored.wrapLines).toBe(true);
 });
 
 test('turning a failed since-approval comparison off and on loads it again', async ({ page }) => {
