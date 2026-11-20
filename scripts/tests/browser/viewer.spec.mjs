@@ -4974,6 +4974,8 @@ test('a Markdown link names the title of a table it holds while the table is cut
   await page.setViewportSize({ width: 2400, height: 700 });
   await expect.poll(() => isClipped(table)).toBe(false);
   await expect(tooltip).toHaveText('Link title');
+  await expect(tooltip).toHaveClass(/is-shown/);
+  await expect(link).toHaveAttribute('aria-describedby', 'review-tooltip');
   await shows(link, 'Link title', 'focus');
   expect(errors).toEqual([]);
 });

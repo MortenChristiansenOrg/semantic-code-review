@@ -2993,7 +2993,9 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     if (!popOwner?.isConnected) return;
     if (!popOwner.matches(".tag-face[data-tagpop]")) {
       if (!tooltipText(popOwner)) { forceHidePop(); return; }
+      // Filling resets the tooltip's classes, so it is shown again.
       fillPop(popOwner);
+      popEl.classList.add("is-shown");
     }
     positionPop(popOwner);
   });
