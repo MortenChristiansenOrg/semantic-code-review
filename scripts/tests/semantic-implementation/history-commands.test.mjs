@@ -34,7 +34,7 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
   const output = repository.semantic("restack", "--from", "policy");
   assert.match(
     output,
-    /Restacked 2 stage\(s\) from policy; rewrote 1 branch\./,
+    /Restacked 2 stage\(s\) from policy; rewrote 2 branches\./,
   );
   assert.doesNotMatch(output, /[0-9a-f]{40}/);
 
@@ -47,6 +47,10 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
     rewrittenPersistence,
   );
   assert.equal(repository.read("policy.txt"), "policy v2\n");
+  // The correction is folded into the stage's one commit; the checkout stays clean on it.
+  assert.equal(repository.git("rev-list", "--count", `main..${rewrittenPolicy}`), "1");
+  assert.equal(repository.git("rev-parse", "HEAD"), rewrittenPolicy);
+  assert.equal(repository.git("status", "--porcelain"), "");
   repository.semantic("validate", "--publish");
 });
 
@@ -110,11 +114,11 @@ test("restack accepts several edited stage heads in one pass", (t) => {
     repository.semantic("restack", "--from", "policy", "--json"),
   );
   assert.equal(result.refreshedStages, 3);
-  assert.equal(result.rewrittenBranches, 2);
+  assert.equal(result.rewrittenBranches, 3);
   assert.deepEqual(
     result.stages.map(({ id, rewritten }) => ({ id, rewritten })),
     [
-      { id: "policy", rewritten: false },
+      { id: "policy", rewritten: true },
       { id: "persistence", rewritten: true },
       { id: "api", rewritten: true },
     ],
@@ -133,8 +137,13 @@ test("restack accepts several edited stage heads in one pass", (t) => {
       "--format=%an <%ae>%n%B",
       "semantic-flow/test-implementation/stages/persistence",
     ),
-    "Original Author <original@example.test>\nFix persistence",
+    // The fold is authored by whoever ran it; the correction's author is a co-author.
+    "Semantic Flow Test <semantic-flow@example.invalid>\nImplement behavior\n\nAdd the implementation.\n\nCo-authored-by: Original Author <original@example.test>",
   );
+  for (const stage of ["policy", "persistence", "api"]) {
+    const head = repository.git("rev-parse", `semantic-flow/test-implementation/stages/${stage}`);
+    assert.equal(repository.git("rev-list", "--count", `${head}^..${head}`), "1");
+  }
   assert.notEqual(
     repository.git("rev-parse", "semantic-flow/test-implementation/stages/api"),
     originalApi,
@@ -621,4 +630,44 @@ test("restack rewrites only the manifest and the stage inventories follow from G
   );
   assert.equal(repository.git("show", `${prefix}/stages/persistence:policy.txt`), "policy v2");
   repository.semantic("validate");
+});
+
+test("finishing folds a stage's commits into one with a generated message and co-authors", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { title: "Add checks", summary: "Check the input before use." });
+  repository.write("first.txt", "first\n");
+  repository.git("add", "first.txt");
+  repository.git("commit", "--author", "Ada Author <ada@example.test>", "-m", "First part");
+  repository.commitFile("second.txt", "second\n", "Second part\n\nCo-authored-by: Bob Pair <bob@example.test>");
+  repository.commitFile("third.txt", "third\n", "Third part\n\nCo-authored-by: Ada Author <ADA@example.test>");
+  repository.semantic("stage", "record", "--kind", "risk", "--item-id", "risk", "--summary", "May reject input",
+    "--code-path", "second.txt", "--code-start", "1");
+  const workHead = repository.git("rev-parse", "HEAD");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+
+  const head = repository.git("rev-parse", "HEAD");
+  assert.notEqual(head, workHead);
+  assert.equal(repository.git("rev-parse", `${head}^`), repository.git("rev-parse", "main"));
+  assert.equal(repository.git("rev-parse", `${head}^{tree}`), repository.git("rev-parse", `${workHead}^{tree}`));
+  assert.equal(repository.git("symbolic-ref", "--short", "HEAD"), "semantic-flow/test-implementation/stages/implementation");
+  assert.equal(repository.git("status", "--porcelain"), "");
+  assert.equal(
+    repository.git("show", "-s", "--format=%an <%ae>%n%B", head),
+    "Semantic Flow Test <semantic-flow@example.invalid>\nAdd checks\n\nCheck the input before use.\n\nCo-authored-by: Ada Author <ada@example.test>\nCo-authored-by: Bob Pair <bob@example.test>",
+  );
+  const stage = repository.artifact.stage("implementation");
+  assert.equal(stage.change.headRevision, head);
+  // A code target captured before the fold points at the folded commit.
+  assert.equal(stage.risks[0].codeTarget.revision, head);
+  repository.semantic("validate", "--publish");
+
+  // A finalized stage of several commits is rejected.
+  repository.git("commit", "--allow-empty", "-m", "Fourth part");
+  const extra = repository.git("rev-parse", "HEAD");
+  const manifest = repository.artifact.readJson("manifest.json");
+  manifest.stages[0].headRevision = extra;
+  repository.artifact.write("manifest.json", manifest);
+  repository.expectSemanticFailure("has 2 commits", "validate");
 });
