@@ -218,7 +218,7 @@ test('deletion gives a bare repository a new review ID after its only worktree w
   execFileSync('git', ['worktree', 'add', '-q', '--detach', linked], { cwd: bare });
   activate(linked, 'bare-id');
   const review = registerReview(linked, 'bare-id', 'Bare');
-  assert.equal(review.gitCommonDir, fs.realpathSync(bare));
+  assert.equal(fs.realpathSync.native(review.gitCommonDir), fs.realpathSync.native(bare));
   fs.rmSync(linked, { recursive: true });
   assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
   assert.notEqual(storedReviewId(bare, 'bare-id'), review.id);
@@ -544,13 +544,14 @@ test('a committed deletion whose folder waits for cleanup does not block the fre
   assert.notEqual(registered.id, review.id);
   assert.deepEqual(registered.state, {});
   assert.equal(storedReviewId(repo, 'same-id'), registered.id);
-  assert.equal(fs.existsSync(retiredMarker(review)), false);
-  // Cleanup completes the deletion once the folder can be renamed.
+  // The mark stays while the folder waits: it shows that the deletion committed,
+  // wherever the repository is by the time cleanup completes it.
+  assert.ok(fs.existsSync(retiredMarker(review)));
   assert.ok(fs.existsSync(pending));
   renaming.mock.restore();
   registeredReviews();
   assert.equal(fs.existsSync(pending), false);
-  assert.deepEqual(retiredFolders(), []);
+  assert.deepEqual(retiredFolders(), ['.retired-' + review.id]);
 });
 
 test('a deletion that found no snapshot holding the ID records that it committed until its folder is gone', (t) => {

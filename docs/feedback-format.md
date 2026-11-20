@@ -127,8 +127,8 @@ a command runs from the repository or the repository has been missing for 30
 days. When the repository cannot be reached, holds no snapshot with the old ID,
 or an archive in progress claims it, deletion still succeeds and marks the old ID
 retired; the next registration that finds the old ID in the artifact stores a new
-one first and only then removes the mark, and starts the fresh review even while
-the folder waits for cleanup. A folder left behind by a completed deletion is
+one first, and starts the fresh review even while the folder waits for cleanup.
+The mark is removed once a new ID is stored and no folder of the deletion is left. A folder left behind by a completed deletion is
 removed by a later cleanup. A fresh review starts under the new ID.
 Cleanup records when it first finds a local review's Git directory missing and
 removes the review once it has been missing for 30 days; finding the directory

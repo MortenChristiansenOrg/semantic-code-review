@@ -168,9 +168,10 @@ test("review launched after the recorded worktree stopped reaching the review re
     pids.add(Number(started[1]));
     return Number(started[1]);
   };
-  // The review records the linked worktree, which serves it until it is removed.
+  // The review records the linked worktree, which serves it until it stops being
+  // a checkout. Its folder stays: Windows cannot remove the viewer's directory.
   const first = launch(linked);
-  repository.git("worktree", "remove", "--force", linked);
+  fs.rmSync(path.join(linked, ".git"));
   const second = launch(repository.root);
   assert.notEqual(second, first);
   assert.throws(() => process.kill(first, 0), (error) => error.code === "ESRCH");
@@ -913,7 +914,10 @@ test("concurrent review services isolate commands and reopen registered worktree
     await delay(150);
     const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
     assert.equal(responsive.status, 200);
-  } finally { fs.rmSync(heldLock, { recursive: true }); }
+  } finally {
+    // A waiter may briefly hold a file open in it, which delays removal on Windows.
+    fs.rmSync(heldLock, { recursive: true, maxRetries: 10, retryDelay: 50 });
+  }
   assert.equal((await blockedStorage).status, 200);
   const linkedFeedback = module.feedbackDirectory(linked);
   assert.equal(fs.readdirSync(path.join(linkedFeedback, "threads")).length, 1);

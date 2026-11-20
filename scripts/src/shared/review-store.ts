@@ -653,11 +653,9 @@ export function registerReview(root: string, implementationId: string, title: st
         // puts its snapshot back cannot revive the ID. The deletion
         // committed, so a folder it left under the pending name only waits for
         // cleanup to remove it and never blocks the fresh review.
-        const gitDirectory = gitCommonDirectory(root), replacement = newReviewId(repositoryName(gitDirectory), implementationId);
-        // A folder that waits for cleanup keeps the evidence that its deletion
-        // committed once the marker is gone: the ID now stored in its place.
-        if (reviewDeletionPending(id)) fs.writeFileSync(replacementFile(id), JSON.stringify({ reviewId: replacement }), { mode: 0o600 });
-        if (replaceReviewId(gitDirectory, implementationId, id, replacement) === "rotated") fs.rmSync(retiredMarker(id), { force: true });
+        // While a folder of the deletion waits for cleanup, the marker stays as
+        // the evidence that the deletion committed.
+        if (replaceReviewId(gitCommonDirectory(root), implementationId, id) === "rotated" && !reviewDeletionPending(id)) fs.rmSync(retiredMarker(id), { force: true });
         return undefined;
       }
       // Its data would otherwise be shadowed by a new, empty review of the same ID.
