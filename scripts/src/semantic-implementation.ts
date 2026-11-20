@@ -2054,14 +2054,16 @@ function discardStage(workspace: Workspace, options: Options): void {
   if (wasCurrent) {
     git(["switch", "--detach", creationParent], { cwd: workspace.root });
   }
-  if (removeBranch) {
-    git(["branch", "-D", branch], { cwd: workspace.root });
-    branchNote = ` Removed unchanged branch ${branch}.`;
-  }
+  let branchRemoved = false;
   try {
+    if (removeBranch) {
+      git(["branch", "-D", branch], { cwd: workspace.root });
+      branchRemoved = true;
+      branchNote = ` Removed unchanged branch ${branch}.`;
+    }
     commitArtifact(workspace.root, workspace.snapshot, draft);
   } catch (error) {
-    if (removeBranch) git(["branch", branch, creationParent], { cwd: workspace.root, allowFailure: true });
+    if (branchRemoved) git(["branch", branch, creationParent], { cwd: workspace.root, allowFailure: true });
     if (wasCurrent) git(["switch", branch], { cwd: workspace.root, allowFailure: true });
     throw error;
   }

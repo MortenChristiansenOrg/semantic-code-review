@@ -365,15 +365,26 @@ export function exportArtifactFiles(files: ArtifactFiles, destination: string): 
 }
 
 /** Replaces the artifact of a managed review checkout with new files. The
- * change runs in between, while no artifact is present, and the previous
- * artifact is restored when anything fails. */
-export function replaceArtifactFiles(root: string, files: Iterable<readonly [string, Buffer]>, scratch: string, change: () => void): void {
+ * change runs in between, while no artifact is present. When anything fails,
+ * undo reverts the change and then the previous artifact is restored. */
+export function replaceArtifactFiles(
+  root: string,
+  files: Iterable<readonly [string, Buffer]>,
+  scratch: string,
+  change: () => void,
+  undo: () => void = () => {},
+): void {
   const next = path.join(scratch, ".artifact-next");
   const backup = path.join(scratch, ".artifact-previous");
   const active = path.join(root, ACTIVE_DIRECTORY);
   fs.rmSync(next, { recursive: true, force: true });
-  // Each file is written before the next is produced, so large files are not all held at once.
-  for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
+  try {
+    // Each file is written before the next is produced, so large files are not all held at once.
+    for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
+  } catch (error) {
+    fs.rmSync(next, { recursive: true, force: true });
+    throw error;
+  }
   fs.rmSync(backup, { recursive: true, force: true });
   if (fs.existsSync(active)) fs.renameSync(active, backup);
   try {
@@ -381,8 +392,11 @@ export function replaceArtifactFiles(root: string, files: Iterable<readonly [str
     fs.rmSync(active, { recursive: true, force: true });
     fs.renameSync(next, active);
   } catch (error) {
+    // The change is reverted first, so it cannot overwrite the restored artifact.
+    try { undo(); } catch { /* The change's own error says more. */ }
     fs.rmSync(active, { recursive: true, force: true });
     if (fs.existsSync(backup)) fs.renameSync(backup, active);
+    fs.rmSync(next, { recursive: true, force: true });
     throw error;
   }
   // The new artifact is in place; a backup left behind is removed by the next replacement.
