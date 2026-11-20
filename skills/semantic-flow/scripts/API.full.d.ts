@@ -444,7 +444,9 @@ export interface ExportImplementationOptions {
  */
 export declare function exportImplementation(options?: ExportImplementationOptions): void;
 export interface ValidateArtifactOptions {
-    /** Validates JSON schemas only and skips semantic and Git validation. */
+    /** Validates JSON schemas only and skips semantic and Git validation. The
+     * recorded commits must still exist, because the stage inventories that the
+     * schemas validate are derived from them. */
     "schema-only"?: true;
     /** Applies the stricter completion and publication validation gate. */
     publish?: true;

@@ -10,6 +10,8 @@ import {
   initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
+import { readArtifact } from "../../src/shared/artifact-store.ts";
+import { readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
 
 test("init and specification add create complete specification metadata", (t) => {
   const repository = createRepository(t);
@@ -999,8 +1001,22 @@ test("implementation export prints and writes the full form without changing the
 
   fs.writeFileSync(path.join(destination, "manifest.json"), "{}\n");
   repository.expectSemanticFailure(/Export destination .* must be a new or empty directory/, "export", "--destination", destination);
+  repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(repository.root, ".semantic-review", "evidence"));
   assert.deepEqual(Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)])), before);
   repository.semantic("validate");
+});
+
+test("a base revision that is not a commit ID never reaches Git", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+  const manifest = repository.artifact.readJson("manifest.json");
+  const output = path.join(repository.root, "written-by-git");
+  repository.artifact.write("manifest.json", { ...manifest, baseRevision: `--output=${output}` });
+  assert.throws(() => readUnvalidatedImplementation(repository.root, readArtifact(repository.root)), /baseRevision must be a full lowercase SHA-1 commit ID/);
+  repository.expectSemanticFailure(/baseRevision/, "validate");
+  assert.equal(fs.existsSync(output), false);
 });
 
 test("a stage named metadata does not collide with the metadata branch", (t) => {

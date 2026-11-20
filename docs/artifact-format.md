@@ -182,8 +182,9 @@ private to the CLI. It differs from the full form in three places:
 
 One loader turns the active form into the full form for every reader: it names
 each branch, takes each base from the stage below or from the manifest, and
-derives each file inventory from Git. The result is validated against the full
-schemas. Storing a derived field in the active form is an error.
+derives each file inventory from Git. Commands validate the result against the
+full schemas; the viewer narrows each field itself, so it can still show an
+artifact that validation rejects. Storing a derived field in the active form is an error.
 `semantic-flow implementation export` shows the full form.
 
 ## Working stage

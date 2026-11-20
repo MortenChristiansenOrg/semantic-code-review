@@ -59,6 +59,13 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(data.stages[0].id, `commit-${head}`);
   assert.deepEqual(data.stages[0].files.map((f) => f.path), ['code.txt']);
   assert.equal(startRemoteReview(source.root, 'feature').id, review.id);
+  // A review saved by an earlier version kept its projection inside the checkout; reopening projects it again.
+  const projection = path.join(reviewDirectory(review.id), 'artifact');
+  fs.renameSync(projection, path.join(review.repositoryRoot, '.semantic-review'));
+  assert.equal(startRemoteReview(source.root, 'feature').id, review.id);
+  assert.ok(fs.existsSync(path.join(projection, 'manifest.json')));
+  assert.equal(fs.existsSync(path.join(review.repositoryRoot, '.semantic-review')), false);
+  assert.equal(dataFor(review).stages[0].id, `commit-${head}`);
   assert.ok(registeredReviews().find((r) => r.id === review.id).remote);
   assert.equal(source.git('status', '--porcelain'), original); assert.equal(source.git('branch', '--show-current'), branch);
   assert.equal(author.git('branch', '--show-current'), 'main');

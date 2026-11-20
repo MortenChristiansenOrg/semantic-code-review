@@ -68,8 +68,11 @@ function managedCheckoutOwner(root: string): string | undefined {
  * its managed checkout, or else the active artifact of root. */
 export function readReviewArtifact(root: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
   const owner = managedCheckoutOwner(root);
-  const projection = owner === undefined ? undefined : readArtifactDirectory(root, projectionDirectory(owner));
-  if (projection) return { files: projection, projection: true };
+  if (owner !== undefined) {
+    // A managed checkout shows only its review's projection, never files in the checkout.
+    const projection = readArtifactDirectory(root, projectionDirectory(owner));
+    return projection && { files: projection, projection: true };
+  }
   const active = readArtifact(root);
   return active && { files: active, projection: false };
 }

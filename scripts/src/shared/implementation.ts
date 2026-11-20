@@ -123,6 +123,8 @@ function runGit(root: string, args: string[], input?: string) {
 }
 
 function readChangedFiles(root: string, parent: string, commit: string): FileChange[] {
+  // A revision that Git would read as an option is never passed to it.
+  for (const revision of [parent, commit]) if (revision.startsWith("-")) fail(`Invalid revision ${JSON.stringify(revision)}.`);
   const result = runGit(root, ["diff", "--name-status", "-z", "--find-renames=50%", parent, commit]);
   if (result.error || result.status !== 0) {
     fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
@@ -144,6 +146,7 @@ export function changedFiles(root: string, parent: string, commit: string): File
 export function changedFilesOfRanges(root: string, ranges: ReadonlyArray<readonly [string, string]>): FileChange[][] {
   const valid = ranges.every(([parent, commit]) => /^[0-9a-f]{40}$/.test(parent) && /^[0-9a-f]{40}$/.test(commit));
   const distinct = [...new Map(ranges.map(([parent, commit]) => [`${commit} ${parent}`, [parent, commit] as const])).values()];
+  const derived = new Map<string, FileChange[]>();
   if (valid && distinct.length > 1) {
     // Each line names a commit and the one parent to compare it with.
     const result = runGit(root, ["diff-tree", "--stdin", "-r", "-z", "--name-status", "--find-renames=50%"],
@@ -156,11 +159,13 @@ export function changedFilesOfRanges(root: string, ranges: ReadonlyArray<readonl
         if (fields[index] !== commit) continue;
         const { files, next } = parseChanges(fields, index + 1, commit);
         index = next;
-        changedFileFacts(JSON.stringify([root, parent, commit]), () => checkedChanges(files, parent, commit));
+        const key = JSON.stringify([root, parent, commit]);
+        derived.set(key, changedFileFacts(key, () => checkedChanges(files, parent, commit)));
       }
     }
   }
-  return ranges.map(([parent, commit]) => changedFiles(root, parent, commit));
+  // Outside a validation context nothing is cached, so the batch's own results are used.
+  return ranges.map(([parent, commit]) => derived.get(JSON.stringify([root, parent, commit])) ?? changedFiles(root, parent, commit));
 }
 
 // --- Stored forms -------------------------------------------------------------
@@ -224,9 +229,10 @@ export function writeStage(draft: ArtifactDraft, stage: EditableStage): void {
   }
 }
 
-/** Fails when a stored document holds a field that loading derives. */
 /** Each stage's revision range: from its stored base, or else the head below it, to its head. */
-function stackRanges(baseRevision: string, stack: readonly StackEntry[]): Array<[string, string]> {
+function stackRanges(baseRevision: string, stack: readonly StackEntry[], label: string): Array<[string, string]> {
+  // The revisions reach Git commands as arguments, so only commit IDs are accepted.
+  if (!/^[0-9a-f]{40}$/.test(baseRevision)) fail(`${label}/baseRevision must be a full lowercase SHA-1 commit ID.`);
   let parent = baseRevision;
   return stack.map((entry): [string, string] => {
     const range: [string, string] = [entry.baseRevision ?? parent, entry.headRevision];
@@ -235,6 +241,7 @@ function stackRanges(baseRevision: string, stack: readonly StackEntry[]): Array<
   });
 }
 
+/** Fails when a stored document holds a field that loading derives. */
 function withoutDerived(value: unknown, field: string, label: string): JsonRecord {
   if (!isRecord(value)) return {};
   if (Object.hasOwn(value, field)) fail(`${label}: ${field} is derived from Git and must not be stored.`);
@@ -292,7 +299,7 @@ export function loadImplementation(root: string, files: ArtifactFiles, { include
     requirements.set(id, parseDocument(SPECIFICATION_SCHEMA_ID, value, label));
   }
 
-  const ranges = stackRanges(manifest.baseRevision, stack);
+  const ranges = stackRanges(manifest.baseRevision, stack, files.describe("manifest.json"));
   const inventories = changedFilesOfRanges(root, ranges);
   const stages = new Map<string, Stage>();
   let baseBranch = manifest.targetBranch;
@@ -358,7 +365,7 @@ export function readUnvalidatedImplementation(root: string, files: ArtifactFiles
     }
   }
 
-  const ranges = stackRanges(baseRevision, stack);
+  const ranges = stackRanges(baseRevision, stack, label);
   const documents = stack.map(({ id }) => document("stages", id, "stage"));
   const inventories = changedFilesOfRanges(root, ranges);
   const stages = new Map<string, JsonRecord>();

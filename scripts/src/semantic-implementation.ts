@@ -2815,13 +2815,27 @@ function exportImplementation(workspace: Workspace, options: Options): void {
     return;
   }
   const target = path.resolve(process.cwd(), destination);
+  const active = path.join(workspace.root, ".semantic-review");
+  if (target === active || target.startsWith(`${active}${path.sep}`)) {
+    fail(`Export destination ${target} must be outside the active artifact.`);
+  }
   if (fs.existsSync(target) && (!fs.statSync(target).isDirectory() || fs.readdirSync(target).length > 0)) {
     fail(`Export destination ${target} must be a new or empty directory.`);
   }
   const files = fullFormFiles(artifact, workspace.snapshot);
   for (const stage of artifact.workStages.values()) files.writeJson(stageFile(stage), stage);
+  // A failed export removes what it wrote, so it can be retried.
+  let created = target;
+  while (!fs.existsSync(path.dirname(created))) created = path.dirname(created);
+  const existed = fs.existsSync(target);
   fs.mkdirSync(target, { recursive: true });
-  exportArtifactFiles(files, target);
+  try {
+    exportArtifactFiles(files, target);
+  } catch (error) {
+    if (existed) for (const entry of fs.readdirSync(target)) fs.rmSync(path.join(target, entry), { recursive: true, force: true });
+    else fs.rmSync(created, { recursive: true, force: true });
+    throw error;
+  }
   console.log(`Exported ${artifact.manifest.implementationId} to ${target}.`);
 }
 
