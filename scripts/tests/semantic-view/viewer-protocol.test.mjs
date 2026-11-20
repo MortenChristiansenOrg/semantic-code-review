@@ -14,6 +14,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+import { captureCodeTarget } from "../../src/semantic-view.ts";
 import { beginStage, createRepository, finalizeStage, flowCli, initializeImplementation } from "../helpers/repository.mjs";
 
 const protocol = fileURLToPath(new URL("../../src/shared/viewer-protocol.ts", import.meta.url));
@@ -268,10 +269,25 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   // Content the schema rejects, as an older artifact or a remote review may hold.
   const stagePath = ".semantic-review/stages/implementation.json";
   const stage = repository.readJson(stagePath);
-  // The file's only node change has a classification this viewer does not know.
-  stage.nodes[0].changes[0].classification = "mystery";
-  stage.nodes.push({ id: "malformed-change", description: "Changes without a path or with malformed ownership.",
-    changes: [{ classification: "test" }, { path: "implementation.md", classification: "test", hunks: "all" }] });
+  // The file's only change under its node has a classification this viewer does not
+  // know and an ownership that is not a list.
+  Object.assign(stage.nodes[0].changes[0], { classification: "mystery", hunks: "all" });
+  const change = (fields) => ({ path: "implementation.md", classification: "test", ...fields });
+  const span = (start, end) => ({ start, end });
+  const narrowed = [
+    ["no-path", [{ classification: "test" }]],
+    ["hunk-zero", [change({ hunks: [0, 2] })]],
+    ["no-valid-hunk", [change({ hunks: [0, -1, 1.5, "1"] })]],
+    ["inverted-span", [change({ lineRanges: [{ new: span(8, 5) }] })]],
+    ["partial-range", [change({ lineRanges: [{ old: span(1, 2), new: span(8, 5) }, { new: span(0, 1) }, "lines", { old: span(3, 3), new: span(4, 4) }] })]],
+    ["malformed-ranges", [change({ lineRanges: { new: span(1, 1) } })]],
+    ["both-selectors", [change({ hunks: [1], lineRanges: [{ new: span(1, 1) }] })]],
+    ["invalid-hunks-valid-ranges", [change({ hunks: [0], lineRanges: [{ new: span(1, 1) }] })]],
+  ];
+  stage.nodes.push(...narrowed.map(([id, changes]) => ({ id, description: "Ownership the schema rejects.", changes })));
+  // Two risks share an ID; only the first records a code target.
+  const codeTarget = captureCodeTarget(repository.root, stage.change.headRevision, "implementation.md", 1, 1);
+  stage.risks = [{ id: "shared", summary: "Targeted", codeTarget }, { id: "shared", summary: "Untargeted" }];
   (stage.evidence ??= []).push({ id: "call", kind: "video-call", summary: "Walked through the change", inline: "transcript <ok>",
     attachments: [], specificationRefs: [], capturedAt: "2026-10-30T10:00:00Z", nodeRefs: ["implementation-change"] });
   repository.write(stagePath, JSON.stringify(stage));
@@ -279,16 +295,32 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   const { captured, get, post } = await client(viewer.url);
 
   const { implementation: { stages: [served] } } = await get("ImplementationResponse", "api/implementation");
-  // A node change without a path or with malformed ownership is left out; its node, its file
-  // and the rest of the stage are served. An unknown classification is left out of a change
-  // that keeps its file, so the file stays under its node and can be approved.
-  assert.deepEqual(served.nodes.map((node) => [node.id, node.changes]), [
-    ["implementation-change", [{ path: "implementation.md" }]], ["malformed-change", []],
-  ]);
+  // Only a node change without a path is left out. A change with a path keeps its file
+  // under its node with its usable ownership, so the file can still be opened and
+  // approved: malformed or invalid hunks and line ranges are left out, a selector that
+  // keeps none owns the whole file, and hunks win over line ranges. An unknown
+  // classification is kept only as recorded.
+  const expected = [
+    ["implementation-change", { recordedClassification: "mystery" }],
+    ["no-path", undefined],
+    ["hunk-zero", { classification: "test", hunks: [2] }],
+    ["no-valid-hunk", { classification: "test" }],
+    ["inverted-span", { classification: "test" }],
+    ["partial-range", { classification: "test", lineRanges: [{ old: span(1, 2) }, { old: span(3, 3), new: span(4, 4) }] }],
+    ["malformed-ranges", { classification: "test" }],
+    ["both-selectors", { classification: "test", hunks: [1] }],
+    ["invalid-hunks-valid-ranges", { classification: "test", lineRanges: [{ new: span(1, 1) }] }],
+  ];
+  assert.deepEqual(served.nodes.map((node) => [node.id, node.changes]),
+    expected.map(([id, fields]) => [id, fields ? [{ path: "implementation.md", ...fields }] : []]));
   const [file] = served.files;
-  assert.deepEqual(served.files.map(({ path, memberships }) => [path, memberships]), [["implementation.md", [{ nodeId: "implementation-change" }]]]);
+  assert.deepEqual(served.files.map(({ path, memberships }) => [path, memberships]),
+    [["implementation.md", expected.flatMap(([nodeId, fields]) => fields ? [{ nodeId, ...fields }] : [])]]);
   await post("ApprovalSnapshotResponse", "api/approval-snapshots", { stageId: served.id, nodeId: "implementation-change", path: file.path,
     baseRevision: file.baseRevision, headRevision: served.headRevision, fileRevision: file.revision, ownership: file.memberships[0] });
+  // Each insight takes the code target of its own item, not of another with its ID.
+  const risks = served.insights.filter((insight) => insight.collection === "risks");
+  assert.deepEqual(risks.map((risk) => [risk.title, risk.codeTarget?.status]), [["Targeted", "current"], ["Untargeted", undefined]]);
   // Evidence of an unknown kind keeps its output as generic evidence.
   const call = served.insights.find((insight) => insight.collection === "evidence" && insight.id === "call");
   assert.equal(call.meta, "video-call");
@@ -370,6 +402,17 @@ test("a changed protocol fails the typecheck of the server and the page's reques
   const added = typecheckWithProtocol(changeDeclaration(original, exportRequest, (block) => block.replace("{\n", "{\n  addedField: string;\n")));
   assert.ok(errorsIn(added, "scripts/src/shared/viewer-requests.ts", /addedField/).length, added.join("\n"));
   assert.ok(errorsIn(added, "viewer/src/api.ts", /addedField/).length, added.join("\n"));
+
+  // An optional field is not required by the request type, but each builder must list it.
+  const optional = typecheckWithProtocol(changeDeclaration(original, exportRequest, (block) => block.replace("{\n", "{\n  addedOptional?: string;\n")));
+  assert.ok(errorsIn(optional, "viewer/src/api.ts", /addedOptional/).length, optional.join("\n"));
+
+  // A query parameter added to one branch of a union query is listed by its builders too.
+  const diffBranch = "  | { side?: undefined; line?: undefined }";
+  assert.ok(original.includes(diffBranch));
+  const branch = typecheckWithProtocol(original.replace(diffBranch, "  | { side?: undefined; line?: undefined; branchParameter?: string }"));
+  assert.ok(errorsIn(branch, "viewer/src/api.ts", /branchParameter/).length, branch.join("\n"));
+  assert.ok(errorsIn(branch, "scripts/src/semantic-view.ts", /branchParameter/).length, branch.join("\n"));
 
   const renamed = typecheckWithProtocol(changeDeclaration(original, exportRequest, (block) => block.replace("  notes:", "  renamedNotes:")));
   assert.ok(errorsIn(renamed, "scripts/src/shared/viewer-requests.ts", /renamedNotes|'notes'/).length, renamed.join("\n"));

@@ -58,7 +58,7 @@ import { assertKnownOptions, option, parseArguments } from "./shared/arguments.j
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 import type * as Wire from "./shared/viewer-protocol.js";
 import {
-  isClassification, isEvidenceKind, isLineRange, parseAgentResponse, parseApprovalComparison, parseApprovalEndpoint, parseAttachmentQuery,
+  isClassification, isEvidenceKind, isHunkNumber, lineRangeOf, parseAgentResponse, parseApprovalComparison, parseApprovalEndpoint, parseAttachmentQuery,
   parseAttachmentUpload, parseCompletion, parseDiffQuery, parseDraftSnapshotNotes, parseFeedbackExport, parseFeedbackNotes, parseFeedbackReplies,
   parseFeedbackReply, parseFileContentQuery, parseReviewTarget, parseStatePatch, parseStorageAction, parseThreadAction,
   type QueryText, type Received, type ReceivedApprovalEndpoint, type ReceivedFeedbackExport, type ReceivedQuery, type Skipped,
@@ -184,8 +184,8 @@ const fieldsOf = (value: unknown): JsonRecord => isRecord(value) ? value : {};
 // have no $schema, base branch or insight collections. The viewer therefore
 // narrows artifact documents field by field into the wire types it sends. It
 // fails only where it cannot render at all; a missing display value becomes
-// empty, an unknown classification is left out, and a node change whose path or
-// ownership is malformed is left out.
+// empty, an unknown classification is left out, a node change's malformed hunks or
+// line ranges are left out, and only a node change without a path is left out.
 
 /** The implementation manifest fields the viewer reads. */
 interface ViewerManifest {
@@ -258,22 +258,25 @@ const displayString = (value: unknown, key: string): string => stringField(value
 /** The strings of a list of IDs, or none when it is not a list. */
 const stringsOf = (value: unknown): string[] => isList(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
-/** A node's change of one file, or undefined when it is malformed. Ownership decides
- * which lines a node shows, so a change with a malformed path or ownership is left out
- * instead of showing the wrong lines; the stage and the file are still shown. An
- * unknown classification only labels the file, so the change keeps its file without it. */
+/** A node's change of one file, or undefined when it has no path. The page lists a
+ * file under a node only through the node's changes, so a change with a path is
+ * always kept and only its unusable fields are narrowed:
+ * - Hunk numbers that are not positive integers and line ranges or spans that are
+ *   not ordered positive integers are left out. A selector that keeps none, or that
+ *   is not a list, is left out, and the change owns the whole file.
+ * - The schema allows hunks or line ranges, not both. When both keep a valid entry,
+ *   the hunks are kept and the line ranges left out.
+ * - An unknown classification is left out and kept only as the recorded value file
+ *   approval keys use. */
 function readNodeChange(value: unknown): ViewerNodeChange | undefined {
-  const entry = fieldsOf(value);
-  const { path: filePath, classification, hunks, lineRanges } = entry;
-  const isHunk = (hunk: unknown): hunk is number => Number.isInteger(hunk);
+  const { path: filePath, classification, hunks, lineRanges } = fieldsOf(value);
   if (typeof filePath !== "string") return undefined;
-  if (hunks !== undefined && !(isList(hunks) && hunks.every(isHunk))) return undefined;
-  if (lineRanges !== undefined && !(isList(lineRanges) && lineRanges.every(isLineRange))) return undefined;
+  const ownedHunks = listOf(hunks).filter(isHunkNumber);
+  const ownedLineRanges = listOf(lineRanges).flatMap((range) => lineRangeOf(range) ?? []);
   return {
     path: filePath,
-    ...(isClassification(classification) ? { classification } : {}),
-    ...(hunks !== undefined ? { hunks } : {}),
-    ...(lineRanges !== undefined ? { lineRanges } : {}),
+    ...(isClassification(classification) ? { classification } : typeof classification === "string" ? { recordedClassification: classification } : {}),
+    ...(ownedHunks.length ? { hunks: ownedHunks } : ownedLineRanges.length ? { lineRanges: ownedLineRanges } : {}),
   };
 }
 
@@ -1155,8 +1158,8 @@ function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): Wire.
   }
   return insights.map(({ item: source, ...fields }): Wire.Insight => {
     const insight: Wire.Insight = { ...fields, id: fields.id ?? "", title: fields.title ?? "", body: fields.body ?? "", nodeRefs: stringsOf(fieldsOf(source).nodeRefs) };
-    const item = listOf(stage[insight.collection]).find((candidate) => isRecord(candidate) && candidate.id === fields.id);
-    const target = fieldsOf(item).codeTarget;
+    // The insight's own item: another item with the same ID must not lend its target.
+    const target = fieldsOf(source).codeTarget;
     return isCodeTarget(target) ? { ...insight, codeTarget: resolveCodeTarget(repoRoot, target, stage.change.headRevision) } : insight;
   });
 }
@@ -1184,6 +1187,7 @@ function fileRevision(stage: DiffRange, file: { path: string; previousPath?: str
 function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path"> {
   return {
     ...(change.classification ? { classification: change.classification } : {}),
+    ...(change.recordedClassification !== undefined ? { recordedClassification: change.recordedClassification } : {}),
     ...(change.hunks ? { hunks: change.hunks } : {}),
     ...(change.lineRanges ? { lineRanges: change.lineRanges } : {}),
   };

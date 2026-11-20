@@ -38,19 +38,37 @@ export const isDiffMode = (value: unknown): value is Wire.DiffMode => isValueOf(
 export const isDiffSide = (value: unknown): value is Wire.DiffSide => isValueOf(DIFF_SIDES, value);
 export const isEvidenceKind = (value: unknown): value is Wire.EvidenceKind => isValueOf(EVIDENCE_KINDS, value);
 
-const isLineSpan = (value: unknown): value is Wire.LineSpan => isRecord(value) && Number.isInteger(value.start) && Number.isInteger(value.end);
-export function isLineRange(value: unknown): value is Wire.LineRange {
-  return isRecord(value) && (value.old !== undefined || value.new !== undefined) &&
+/** A line number: a positive safe integer, as the artifact schema requires. */
+const isLineNumber = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+
+/** A hunk number: hunks are numbered from 1. */
+export const isHunkNumber = isLineNumber;
+
+const isLineSpan = (value: unknown): value is Wire.LineSpan =>
+  isRecord(value) && isLineNumber(value.start) && isLineNumber(value.end) && value.start <= value.end;
+
+const isLineRange = (value: unknown): value is Wire.LineRange =>
+  isRecord(value) && (value.old !== undefined || value.new !== undefined) &&
     (value.old === undefined || isLineSpan(value.old)) && (value.new === undefined || isLineSpan(value.new));
+
+/** A recorded line range with its invalid spans left out, or undefined when it has no
+ * valid span. A valid range is returned as recorded, so approval keys built from it
+ * stay the same. */
+export function lineRangeOf(value: unknown): Wire.LineRange | undefined {
+  if (isLineRange(value)) return value;
+  if (!isRecord(value)) return undefined;
+  const old = isLineSpan(value.old) ? value.old : undefined, added = isLineSpan(value.new) ? value.new : undefined;
+  if (old) return added ? { old, new: added } : { old };
+  return added ? { new: added } : undefined;
 }
 
 /* ---- queries --------------------------------------------------------------- */
 
 /** A GET request's search parameters as sent: each one's text, or null when absent. */
-export type QueryText<Query> = { [Key in keyof Query]-?: string | null };
+export type QueryText<Query> = { [Key in Wire.KeysOfAny<Query>]-?: string | null };
 
 /** A GET request's query read into its protocol types: each parameter, or null when absent. */
-export type ReceivedQuery<Query> = { [Key in keyof Query]-?: Exclude<Query[Key], undefined> | null };
+export type ReceivedQuery<Query> = { [Key in Wire.KeysOfAny<Query>]-?: Exclude<Wire.ValueOfAny<Query, Key>, undefined> | null };
 
 /** A flag parameter: set only by its one protocol value. */
 const flag = <Value extends string>(value: string | null, set: Value): Value | null => value === set ? set : null;

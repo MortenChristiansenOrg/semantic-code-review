@@ -8,6 +8,7 @@ import type {
   ApprovalComparisonResponse,
   ApprovalEndpoint,
   ApprovalSnapshotResponse,
+  AttachmentQuery,
   AttachmentUploadRequest,
   AttachmentUploadResponse,
   DiffQuery,
@@ -22,6 +23,7 @@ import type {
   ImplementationResponse,
   OkResponse,
   RemoteRefreshResponse,
+  RequestFields,
   ReviewCleanResponse,
   ReviewCompletionRequest,
   ReviewDeleteResponse,
@@ -64,9 +66,14 @@ function scoped(url: URL): URL {
 
 type Query = Record<string, string | undefined>;
 
-/** Every parameter of a query, each possibly undefined: a parameter added to or
- * renamed in the protocol fails the typecheck where a builder lists them. */
-type QueryFields<Q> = { [Key in Extract<keyof Q, string>]: Q[Key] | undefined };
+/** Every parameter of a query, in any branch, each possibly undefined: a parameter
+ * added to or renamed in the protocol fails the typecheck where a builder lists them. */
+type QueryFields<Q> = RequestFields<Q>;
+
+/** A POST body as its protocol request type with every field listed, optional ones
+ * possibly undefined, so a field added to the protocol, optional or not, fails the
+ * typecheck where a builder lists them. Undefined fields are not sent. */
+type Body<T> = T & RequestFields<T>;
 
 function definedEntries(query: Query): [string, string][] {
   return Object.entries(query).filter((entry): entry is [string, string] => entry[1] !== undefined);
@@ -87,8 +94,8 @@ function getJson<T>(input: string): Promise<JsonResponse<T>> {
   return request(input, { cache: "no-store" }) as Promise<JsonResponse<T>>;
 }
 
-// Each builder below rebuilds its body field by field as the protocol request type,
-// so adding, renaming or removing a request field fails the typecheck here.
+// Each builder below rebuilds its body field by field as a Body of the protocol
+// request type, so adding, renaming or removing a request field fails the typecheck here.
 function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
   return request(path, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -98,17 +105,17 @@ function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
 /* ---- review session ---------------------------------------------------- */
 export const getReviewState = () => getJson<ReviewStateResponse>("/api/review-state");
 export const saveReviewState = ({ reviewId, generation, changes }: ReviewStatePatchRequest) =>
-  postJson<ReviewStateResponse>("/api/review-state", { reviewId, generation, changes } satisfies ReviewStatePatchRequest);
+  postJson<ReviewStateResponse>("/api/review-state", { reviewId, generation, changes } satisfies Body<ReviewStatePatchRequest>);
 export const getRevision = () => getJson<RevisionResponse>("/api/revision");
 export const getImplementation = () => getJson<ImplementationResponse>("/api/implementation");
 export const refreshRemote = () => postJson<RemoteRefreshResponse>("/api/remote/refresh", {});
 export const resolveDraftSnapshots = ({ notes }: DraftSnapshotsRequest) =>
-  postJson<DraftSnapshotsResponse>("/api/draft-snapshots", { notes } satisfies DraftSnapshotsRequest);
+  postJson<DraftSnapshotsResponse>("/api/draft-snapshots", { notes } satisfies Body<DraftSnapshotsRequest>);
 
 /* ---- listening agent --------------------------------------------------- */
 export const stopAgent = () => postJson<AgentControlResponse>("/api/agent/stop", {});
 export const respondToAgent = ({ requestId, body }: AgentRespondRequest) =>
-  postJson<AgentControlResponse>("/api/agent/respond", { requestId, body } satisfies AgentRespondRequest);
+  postJson<AgentControlResponse>("/api/agent/respond", { requestId, body } satisfies Body<AgentRespondRequest>);
 
 /* ---- file content ------------------------------------------------------ */
 export function getDiff({ stage, path, base, head, mode, offset, side, line }: DiffQuery): Promise<JsonResponse<DiffResponse>> {
@@ -139,40 +146,41 @@ export const getFileContent = (url: FileContentJsonUrl) => request(url) as Promi
 
 /* ---- approvals --------------------------------------------------------- */
 const approvalEndpoint = ({ stageId, nodeId, path, baseRevision, headRevision, fileRevision, ownership }: ApprovalEndpoint): ApprovalEndpoint =>
-  ({ stageId, nodeId, path, baseRevision, headRevision, fileRevision, ownership });
+  ({ stageId, nodeId, path, baseRevision, headRevision, fileRevision, ownership }) satisfies Body<ApprovalEndpoint>;
 export const captureApprovalSnapshot = (endpoint: ApprovalEndpoint) =>
   postJson<ApprovalSnapshotResponse>("/api/approval-snapshots", approvalEndpoint(endpoint));
 export const compareApproval = ({ snapshotId, offset, mode, scope, ...endpoint }: ApprovalComparisonRequest) =>
-  postJson<ApprovalComparisonResponse>("/api/approval-comparison", { ...approvalEndpoint(endpoint), snapshotId, offset, mode, scope } satisfies ApprovalComparisonRequest);
+  postJson<ApprovalComparisonResponse>("/api/approval-comparison", { ...approvalEndpoint(endpoint), snapshotId, offset, mode, scope } satisfies Body<ApprovalComparisonRequest>);
 
 /* ---- evidence and attachments ------------------------------------------ */
 export function evidenceUrl({ stage, item, index }: EvidenceQuery): string {
-  return apiUrl("/api/evidence", { stage, item, index } satisfies EvidenceQuery).href;
+  return apiUrl("/api/evidence", { stage, item, index } satisfies QueryFields<EvidenceQuery>).href;
 }
 
 /** Loads a URL from evidenceUrl. */
 export const getEvidence = (url: string) => request(url);
 
 export function attachmentUrl(id: string, preview = false): string {
-  return apiUrl(`/api/attachments/${encodeURIComponent(id)}`, { preview: preview ? "1" : undefined }).href;
+  return apiUrl(`/api/attachments/${encodeURIComponent(id)}`, { preview: preview ? "1" : undefined } satisfies QueryFields<AttachmentQuery>).href;
 }
 
 export const uploadAttachment = ({ filename, mediaType, data }: AttachmentUploadRequest) =>
-  postJson<AttachmentUploadResponse>("/api/attachments", { filename, mediaType, data } satisfies AttachmentUploadRequest);
+  postJson<AttachmentUploadResponse>("/api/attachments", { filename, mediaType, data } satisfies Body<AttachmentUploadRequest>);
 
 /* ---- feedback ---------------------------------------------------------- */
 export const exportFeedback = ({ implementationId, notes, replies }: FeedbackExportRequest) =>
-  postJson<FeedbackExportResponse>("/api/feedback/export", { implementationId, notes, replies } satisfies FeedbackExportRequest);
+  postJson<FeedbackExportResponse>("/api/feedback/export", { implementationId, notes, replies } satisfies Body<FeedbackExportRequest>);
 export const threadAction = (kind: ThreadActionKind, { implementationId, threadId, body, attachments, clientId }: ThreadActionRequest) =>
-  postJson<ThreadActionResponse>(`/api/feedback/${kind}`, { implementationId, threadId, body, attachments, clientId } satisfies ThreadActionRequest);
+  postJson<ThreadActionResponse>(`/api/feedback/${kind}`, { implementationId, threadId, body, attachments, clientId } satisfies Body<ThreadActionRequest>);
 
 /* ---- saved reviews ----------------------------------------------------- */
 export const getReviews = () => getJson<ReviewsResponse>("/api/reviews");
-const reviewTarget = ({ reviewId, generation }: ReviewTarget): ReviewTarget => ({ reviewId, generation });
-const storageAction = ({ fingerprint, ...target }: ReviewStorageActionRequest): ReviewStorageActionRequest => ({ ...reviewTarget(target), fingerprint });
+const reviewTarget = ({ reviewId, generation }: ReviewTarget): ReviewTarget => ({ reviewId, generation }) satisfies Body<ReviewTarget>;
+const storageAction = ({ fingerprint, ...target }: ReviewStorageActionRequest): ReviewStorageActionRequest =>
+  ({ ...reviewTarget(target), fingerprint }) satisfies Body<ReviewStorageActionRequest>;
 export const inspectReviewStorage = (target: ReviewTarget) => postJson<ReviewStorageResponse>("/api/reviews/storage", reviewTarget(target));
 export const deleteReviewData = (action: ReviewStorageActionRequest) => postJson<ReviewDeleteResponse>("/api/reviews/delete", storageAction(action));
 export const cleanUnusedReviewData = (action: ReviewStorageActionRequest) => postJson<ReviewCleanResponse>("/api/reviews/clean-unused", storageAction(action));
 export const setReviewCompletion = ({ completed, expectedCompletedAt, ...target }: ReviewCompletionRequest) =>
-  postJson<OkResponse>("/api/reviews/completion", { ...reviewTarget(target), completed, expectedCompletedAt } satisfies ReviewCompletionRequest);
-export const openReview = (target: ReviewOpenRequest) => postJson<ReviewOpenResponse>("/api/reviews/open", reviewTarget(target) satisfies ReviewOpenRequest);
+  postJson<OkResponse>("/api/reviews/completion", { ...reviewTarget(target), completed, expectedCompletedAt } satisfies Body<ReviewCompletionRequest>);
+export const openReview = (target: ReviewOpenRequest) => postJson<ReviewOpenResponse>("/api/reviews/open", reviewTarget(target) satisfies Body<ReviewOpenRequest>);

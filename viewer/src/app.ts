@@ -969,7 +969,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const entry = approvalEntry(id);
     if (!entry?.file.revision) return null;
     const m = entry.membership;
-    return JSON.stringify([entry.file.revision, m.classification, m.hunks || null, m.lineRanges || null]);
+    // An unknown classification keys the approval as recorded, as it did before the server narrowed it.
+    return JSON.stringify([entry.file.revision, m.classification ?? m.recordedClassification, m.hunks || null, m.lineRanges || null]);
   }
   function approvalRevision(rec) {
     // Older approvals included the base commit, although the file revision

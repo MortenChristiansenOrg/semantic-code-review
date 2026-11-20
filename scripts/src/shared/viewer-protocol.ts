@@ -30,6 +30,18 @@ export type ApiSuccess<Response> = Omit<Extract<Response, { ok: true }>, "ok">;
 /** A body that only reports success. */
 export type OkResponse = ApiResult<{}>;
 
+/** The keys of every branch of a type. `keyof` a union names only the keys all
+ * its branches share, so a field added to one branch would be missed. */
+export type KeysOfAny<T> = T extends unknown ? keyof T : never;
+
+/** The values a key has in the branches of a type that have it. */
+export type ValueOfAny<T, Key extends PropertyKey> = T extends unknown ? Key extends keyof T ? T[Key] : never : never;
+
+/** Every field of a request, in any branch, each possibly undefined. Request builders
+ * and parsers that list their fields with this type must name each one, optional
+ * ones included, so a field added to or renamed in the protocol fails the typecheck. */
+export type RequestFields<T> = { [Key in Extract<KeysOfAny<T>, string>]: ValueOfAny<T, Key> | undefined };
+
 /** Selects one review session; its generation changes when the review is recreated. */
 export interface ReviewTarget {
   reviewId: string;
@@ -98,6 +110,9 @@ export interface FileMembership {
   nodeId: string;
   /** Absent when the artifact records a classification this viewer does not know. */
   classification?: Classification;
+  /** The classification the artifact records when this viewer does not know it.
+   * Only file approval keys use it, so approvals saved under it still match. */
+  recordedClassification?: string;
   hunks?: number[];
   lineRanges?: LineRange[];
 }
@@ -106,6 +121,8 @@ export interface NodeChange {
   path: string;
   /** Absent when the artifact records a classification this viewer does not know. */
   classification?: Classification;
+  /** The classification the artifact records when this viewer does not know it. */
+  recordedClassification?: string;
   hunks?: number[];
   lineRanges?: LineRange[];
 }
@@ -382,7 +399,8 @@ export interface ApprovalEndpoint {
 /** `ReviewState.approvals` values. Keys are a stage ID (stage approvals, `rev: null`)
  * or `m:` followed by the JSON array `[stageId, nodeId, path]` (file approvals). */
 export interface ApprovalRecord extends Partial<ApprovalEndpoint> {
-  /** File approvals: JSON of [file revision, classification, hunks, lineRanges].
+  /** File approvals: JSON of [file revision, classification, hunks, lineRanges], where
+   * an unknown classification is the one the artifact records.
    * Older viewers saved [file revision, base revision, classification, hunks,
    * lineRanges]; the viewer drops the base revision before comparing, so compare
    * through that normalisation rather than directly. */
