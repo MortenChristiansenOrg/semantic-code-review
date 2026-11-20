@@ -905,15 +905,24 @@ test("concurrent review services isolate commands and reopen registered worktree
   assert.equal(a.existsAbsolute(a.feedbackPath("manifest.json")), false);
   assert.equal(b.existsAbsolute(b.feedbackPath("manifest.json")), false);
   const module = await import("../../src/semantic-view.ts");
-  // A management request waiting on B's lock must not block A's HTTP loop.
-  const heldLock = path.join(process.env.SEMANTIC_FLOW_HOME, "locks", third.reviewId + ".lock");
+  // A management request waiting on B's lock must not block A's HTTP loop. A's
+  // data is loaded first, so the probe below does not wait for a cold load.
+  assert.equal((await request(first, "api/implementation")).status, 200);
+  const locks = path.join(process.env.SEMANTIC_FLOW_HOME, "locks");
+  const heldLock = path.join(locks, third.reviewId + ".lock");
   fs.mkdirSync(heldLock);
   fs.writeFileSync(path.join(heldLock, "owner-00000000-0000-4000-8000-000000000000.json"), JSON.stringify({ pid: process.pid }));
   const blockedStorage = request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation });
+  let storageAnswered = false;
+  blockedStorage.then(() => { storageAnswered = true; }, () => { storageAnswered = true; });
   try {
-    await delay(150);
-    const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
-    assert.equal(responsive.status, 200);
+    // A waiter publishes its claim next to the lock before it starts waiting.
+    while (!storageAnswered && !fs.readdirSync(locks).some((name) => name.startsWith(`${third.reviewId}.lock.claim-`))) await delay(10);
+    // The lock stays held until A answers, so an answer while the storage request
+    // still waits shows the loop was free. No deadline: a request runs Git several
+    // times, which can take seconds on a busy Windows runner.
+    for (const route of ["api/whoami", "api/implementation"]) assert.equal((await request(first, route)).status, 200);
+    assert.equal(storageAnswered, false, "Storage lock blocked the HTTP loop");
   } finally {
     // Moved aside before removal: removing it in place could remove a lock a waiter
     // has just taken at the same path. A waiter may briefly hold a file open in it,
