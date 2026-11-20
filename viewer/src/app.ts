@@ -2682,8 +2682,89 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const t = labelFor(c.kind, c.id, c.stageId);
     return { text: t, title: t };
   }
+  /* ---- what rendering cannot keep ---------------------------------------
+     lit keeps every element a keyed template still renders, and with it the
+     element's draft text, caret and selection, the open state of a disclosure
+     and the page's scroll position. Two things are lost even so, and so are
+     carried across each render here:
+     - Focus. Moving an element, as a keyed list does when it reorders, blurs
+       it although it survives; a control rendered anew, as a draft's editor is
+       when it moves between its inline thread and the notes panel, starts
+       unfocused. The browser tests for agent answers, Markdown previews, moved
+       file buttons and drafts in the notes panel fail without it.
+     - The scroll of an open file's diff or Markdown preview, which moving or
+       recreating the element around it, as keyed lists do when stages, steps
+       or groups change, resets. The browser test for a Markdown preview whose
+       group is renamed fails without it. */
+  function captureFocus() {
+    const focused = document.activeElement;
+    // A control replaced by the render passes focus to the one that matches
+    // all it is identified by: its data attributes other than tooltips, and
+    // its name and value. A control for something else, such as another
+    // draft's Delete, never matches, so focus then stays where it fell.
+    const selector = focused?.matches?.("[data-action], textarea[name], input[name]")
+      ? [...focused.attributes].filter(({ name }) => name === "name" || name === "value" || name.startsWith("data-") && !name.startsWith("data-tooltip"))
+        .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
+      : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
+        ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
+        : null;
+    // A moved element keeps its caret; a replacement takes the old one's.
+    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+    return { focused, selector, caret };
+  }
+  function restoreFocus({ focused, selector, caret }) {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    if (focused?.isConnected && focused !== document.body && typeof focused.focus === "function") {
+      focused.focus({ preventScroll: true });
+    } else if (!focused?.isConnected && selector) {
+      // A closed panel stays in the page, inert; only a usable control takes focus.
+      const replacement = [...app.querySelectorAll(selector)].find((el) => !el.closest("[inert]"));
+      if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
+    }
+  }
+  // The scrolling parts of an open file's diff. Only a visible scroller reports
+  // its position, and only the same scroller, still visible, gets it back.
+  const fileScrollers = [".diff-scroll", ".markdown-preview"];
+  function captureFileScrolls() {
+    const scrolls = new Map();
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!activeFileNodeId(fid)) return;
+      const holder = fileRowElement(fid)?.nextElementSibling;
+      if (!holder?.classList.contains("cinema-diff")) return;
+      for (const selector of fileScrollers) {
+        const scroller = holder.querySelector(selector);
+        if (scroller?.getClientRects().length) scrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
+      }
+    });
+    return scrolls;
+  }
+  function restoreFileScrolls(scrolls) {
+    if (!scrolls.size) return;
+    Object.keys(state.activeFiles).forEach((fid) => {
+      if (!activeFileNodeId(fid) || !fileById.has(fid)) return;
+      const holder = cinemaHolder(fid);
+      for (const selector of fileScrollers) {
+        const saved = scrolls.get(`${fid}\0${selector}`);
+        const scroller = saved && holder?.querySelector(selector);
+        if (scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
+      }
+    });
+  }
+
   /* ---- render ----------------------------------------------------------- */
   function render() {
+    // A render may move, replace or change what the open tooltip describes,
+    // so it closes; pointer or focus opens it again on what is there now.
+    forceHidePop();
+    const focus = captureFocus(), scrolls = captureFileScrolls();
+    renderView();
+    restoreFileScrolls(scrolls);
+    document.body.classList.toggle("no-scroll", state.notesOpen);
+    restoreFocus(focus);
+    loadOpenDiffs();
+    resumePendingLazyJump();
+  }
+  function renderView() {
     if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
     selectedThreadLists = threadListsInSelection();
     heldThreadLists = new Set();
@@ -3310,8 +3391,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   }
 
   // Mark a thread resolved / reopen it. Only the reviewer controls closure.
-  // The render wrapper preserves scroll and drafts while refreshing every count
-  // and grouped list after a successful mutation.
+  // Rendering keeps scroll and drafts while refreshing every count and grouped
+  // list after a successful mutation.
   async function threadAction(threadId, kind) {
     const thread = artifactThreadById(threadId);
     if (!thread) return;
@@ -3827,68 +3908,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     scheduleSelectionRefresh();
   });
 
-  // The scrolling parts of an open file's diff.
-  const fileScrollers = [".diff-scroll", ".markdown-preview"];
-  const _render = render;
-  render = function () {
-    forceHidePop();
-    const focused = document.activeElement;
-    // A control replaced by the render, as a draft's editor is when it moves
-    // between its inline thread and the notes panel, passes focus to the one
-    // that matches all it is identified by: its data attributes other than
-    // tooltips, and its name and value. A control for something else, such as
-    // another draft's Delete, never matches, so focus then stays where it fell.
-    const focusSelector = focused?.matches?.("[data-action], textarea[name], input[name]")
-      ? [...focused.attributes].filter(({ name }) => name === "name" || name === "value" || name.startsWith("data-") && !name.startsWith("data-tooltip"))
-        .map(({ name, value }) => `[${name}="${cssEsc(value)}"]`).join("")
-      : focused?.tagName === "SUMMARY" && focused.parentElement?.matches("details.node")
-        ? `.stage[data-stage="${cssEsc(focused.closest(".stage")?.dataset.stage)}"] details.node[data-node="${cssEsc(focused.parentElement.dataset.node)}"] > summary`
-        : null;
-    const caret = focused && typeof focused.selectionStart === "number" ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
-    // Each open file's diff has its own inner scroll; capture it per file so
-    // adding a line note (or any re-render) never resets where the reviewer is
-    // looking within the diff.
-    // Moving or recreating an element, as keyed lists do when stages, steps
-    // or groups change, also resets the scroll of the diff or Markdown preview
-    // inside it. Only a visible scroller reports its position, and only the
-    // same scroller, still visible, gets it back after this render.
-    const viewScrolls = new Map();
-    Object.keys(state.activeFiles).forEach((fid) => {
-      if (!activeFileNodeId(fid)) return;
-      const holder = fileRowElement(fid)?.nextElementSibling;
-      if (!holder?.classList.contains("cinema-diff")) return;
-      for (const selector of fileScrollers) {
-        const scroller = holder.querySelector(selector);
-        if (scroller?.getClientRects().length) viewScrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
-      }
-    });
-    _render();
-    Object.keys(state.activeFiles).forEach((fid) => {
-      if (!activeFileNodeId(fid)) return;
-      const row = fileRowElement(fid);
-      const entry = fileById.get(fid);
-      if (row && entry) {
-        const holder = cinemaHolder(fid);
-        for (const selector of fileScrollers) {
-          const saved = viewScrolls.get(`${fid}\0${selector}`);
-          const scroller = saved && holder?.querySelector(selector);
-          if (scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
-        }
-      }
-    });
-    document.body.classList.toggle("no-scroll", state.notesOpen);
-    // Moving a node, as a keyed list does when it reorders, blurs it although it survives.
-    const focusLost = !document.activeElement || document.activeElement === document.body;
-    if (focused?.isConnected && focused !== document.body && focusLost && typeof focused.focus === "function") {
-      focused.focus({ preventScroll: true });
-    } else if (!focused?.isConnected && focusLost && focusSelector) {
-      // A closed panel stays in the page, inert; only a usable control takes focus.
-      const replacement = [...app.querySelectorAll(focusSelector)].find((el) => !el.closest("[inert]"));
-      if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
-    }
-    loadOpenDiffs();
-    resumePendingLazyJump();
-  };
 
   const legacyDrafts = [...state.comments, compose].filter(note => note?.kind === "line" && !note.exported && note.snapshot && !note.snapshot.fileRevision);
   if (legacyDrafts.length && !reviewDeleted) {

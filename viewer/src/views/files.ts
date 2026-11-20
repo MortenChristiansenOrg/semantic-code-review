@@ -128,8 +128,8 @@ function fileGroup(view: NodeFilesView, group: FileGroupView): TemplateResult {
 /** Every file of a step. Files are always visible: a step is rarely worth
  * opening without also inspecting its files. Groups are keyed by name so a
  * focused group control keeps acting on its own group when groups change; a
- * file that changes group is rendered anew, and the render wrapper restores
- * the scroll of its open diff or preview. */
+ * file that changes group is rendered anew, and rendering restores the
+ * scroll of its open diff or preview (restoreFileScrolls). */
 export function nodeFiles(view: NodeFilesView): TemplateResult {
   return html`<div class="payload ${view.allApproved ? "all-done" : ""}" data-node-files=${view.nodeId}>
       <div class="fgroups">${repeat(view.groups, (group) => group.name, (group) => fileGroup(view, group))}</div>
