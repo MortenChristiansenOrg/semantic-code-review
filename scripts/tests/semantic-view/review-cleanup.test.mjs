@@ -474,6 +474,7 @@ test('an interrupted deletion of a repository that moved long ago is rolled back
   assert.deepEqual(registered.state.comments, [{ mode: 'personal', body: 'Keep me' }]);
   assert.equal(fs.existsSync(pendingFolder(review)), false);
   assert.equal(storedReviewId(moved, 'same-id'), review.id);
+  assert.equal(readReview(review.id).missingSince, undefined);
 });
 
 test('a deletion that reads the refs during an archive rollback does not take the review ID for gone', (t) => {

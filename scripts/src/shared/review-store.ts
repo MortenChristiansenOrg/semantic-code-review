@@ -269,7 +269,16 @@ function interruptedDeletionOutcome(id: string, holdingRoot?: string): "committe
   // the same lock, so it did not commit, however long the recorded location has
   // been gone. Moving the folder back loses nothing even if an archive claims the
   // implementation right after: its review then remains like any archived one's.
-  if (holdingRoot !== undefined) return "uncommitted";
+  // The grace period starts over first, so a crash before registration records
+  // the new location cannot let cleanup count the old location's absence.
+  if (holdingRoot !== undefined) {
+    if (record.missingSince !== undefined) {
+      const { missingSince: _cleared, ...current } = record;
+      try { atomicJson(file, current); }
+      catch { return "unknown"; }
+    }
+    return "uncommitted";
+  }
   const presence = repositoryPresence(record);
   if (presence === "missing" && missingLongEnough(record)) return "committed";
   try {
