@@ -910,10 +910,16 @@ test("concurrent review services isolate commands and reopen registered worktree
   fs.mkdirSync(heldLock);
   fs.writeFileSync(path.join(heldLock, "owner-00000000-0000-4000-8000-000000000000.json"), JSON.stringify({ pid: process.pid }));
   const blockedStorage = request(first, "api/reviews/storage", { reviewId: third.reviewId, generation: third.generation });
+  let storageAnswered = false;
+  blockedStorage.then(() => { storageAnswered = true; }, () => { storageAnswered = true; });
   try {
     await delay(150);
-    const responsive = await Promise.race([request(first, "api/implementation"), delay(1500).then(() => { throw new Error("Storage lock blocked the HTTP loop"); })]);
+    // The lock stays held until A answers, so an answer while the storage request
+    // still waits shows the loop was free. No deadline: a first, uncached request
+    // runs Git many times, which takes seconds on a busy Windows runner.
+    const responsive = await request(first, "api/implementation");
     assert.equal(responsive.status, 200);
+    assert.equal(storageAnswered, false, "Storage lock blocked the HTTP loop");
   } finally {
     // Moved aside before removal: removing it in place could remove a lock a waiter
     // has just taken at the same path. A waiter may briefly hold a file open in it,
