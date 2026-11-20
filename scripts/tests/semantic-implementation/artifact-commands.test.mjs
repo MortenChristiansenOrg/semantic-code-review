@@ -1004,12 +1004,12 @@ test("implementation export prints and writes the full form without changing the
   repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(repository.root, ".semantic-review", "evidence"));
   if (process.platform !== "win32") {
     // A link outside the artifact that leads into it is refused too.
-    fs.mkdirSync(path.join(repository.root, ".semantic-review", "empty"));
+    fs.mkdirSync(path.join(repository.root, ".semantic-review", "empty"), { recursive: true });
     const link = path.join(path.dirname(destination), `${path.basename(destination)}-link`);
     fs.symlinkSync(path.join(repository.root, ".semantic-review", "empty"), link);
     t.after(() => fs.rmSync(link, { force: true }));
     repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(link, "out"));
-    fs.rmdirSync(path.join(repository.root, ".semantic-review", "empty"));
+    fs.rmSync(path.join(repository.root, ".semantic-review"), { recursive: true });
   }
   assert.deepEqual(Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)])), before);
   repository.semantic("validate");

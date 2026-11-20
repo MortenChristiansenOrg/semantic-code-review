@@ -192,10 +192,13 @@ export const archivingRef = (implementationId: string) => `${ARCHIVING_REF_PREFI
 
 /** Explains how to recover implementations whose archiving was interrupted. */
 export function interruptedArchiveNote(root: string): string {
-  const claims = git(["for-each-ref", "--format=%(refname)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
-  return (claims ?? "").split(/\r?\n/).filter(Boolean).map((claim) => {
+  const claims = git(["for-each-ref", "--format=%(objectname) %(refname)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
+  return (claims ?? "").split(/\r?\n/).filter(Boolean).map((line) => {
+    const [snapshot, claim] = line.split(" ");
     const id = claim.slice(ARCHIVING_REF_PREFIX.length);
-    return ` Archiving ${id} was interrupted. If its archive commit is missing, make it active again with \`git update-ref ${activeRef(id)} ${claim}\`; then remove the claim with \`git update-ref -d ${claim}\`.`;
+    // One transaction moves the snapshot back, and only while nothing else took the ID.
+    const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --stdin`;
+    return ` Archiving ${id} was interrupted. If its archive commit is missing, unstage and remove the archive files it left (git status lists them), then make it active again with \`${restore}\`.`;
   }).join("");
 }
 
@@ -443,8 +446,9 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
+    // An update that keeps a ref's value only verifies it.
     ...updates.map(({ ref, next, previous }) =>
-      next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
+      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
     "prepare",
     "commit",
     "",
@@ -524,8 +528,14 @@ export function commitArtifact(
   const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
   const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
   const previous = base?.version ?? ZERO_OID;
+  // A new implementation may not take the ID of one whose archiving was interrupted.
+  const claim = archivingRef(implementationId);
+  if (!base && git(["rev-parse", "--verify", "--quiet", claim], { cwd: root, allowFailure: true })) {
+    fail(`An implementation with implementation ID ${implementationId} is being archived.${interruptedArchiveNote(root)}`);
+  }
+  const unclaimed = base ? [] : [{ ref: claim, next: ZERO_OID, previous: ZERO_OID }];
   // The artifact's ref goes last, so no other update can fail after it moved.
-  moveArtifactRef(root, implementationId, previous, [...refUpdates, { ref: activeRef(implementationId), next: commit, previous }]);
+  moveArtifactRef(root, implementationId, previous, [...refUpdates, ...unclaimed, { ref: activeRef(implementationId), next: commit, previous }]);
   return commit;
 }
 

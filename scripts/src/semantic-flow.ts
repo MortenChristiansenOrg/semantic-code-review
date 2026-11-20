@@ -287,7 +287,7 @@ function resolveSingle(
     );
   }
   if (implementationId) {
-    fail(`No active semantic implementation has implementation ID ${implementationId}.`);
+    fail(`No active semantic implementation has implementation ID ${implementationId}.${interruptedArchiveNote(inspection.repositoryRoot)}`);
   }
   const choices = inspection.candidates
     .map(

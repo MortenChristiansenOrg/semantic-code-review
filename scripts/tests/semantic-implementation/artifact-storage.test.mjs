@@ -159,7 +159,7 @@ test("the longest branch prefix that matches the checked-out branch claims it", 
   assert.equal(JSON.parse(repo.semantic("export")).manifest.implementationId, "alpha");
 });
 
-test("an interrupted archive keeps its snapshot and says how to recover it", (t) => {
+test("an interrupted archive keeps its snapshot and says how to recover it", { skip: process.platform === "win32" && "The recovery command is for a POSIX shell." }, (t) => {
   const repo = createRepository(t);
   initializeImplementation(repo);
   beginStage(repo);
@@ -168,8 +168,17 @@ test("an interrupted archive keeps its snapshot and says how to recover it", (t)
   repo.git("update-ref", "refs/semantic-review/archiving/test-implementation", snapshot);
   repo.git("update-ref", "-d", ACTIVE);
   repo.expectSemanticFailure(/Archiving test-implementation was interrupted/, "validate");
-  repo.git("update-ref", ACTIVE, "refs/semantic-review/archiving/test-implementation");
-  repo.git("update-ref", "-d", "refs/semantic-review/archiving/test-implementation");
+  // The ID stays taken until the claim is resolved.
+  assert.throws(() => initializeImplementation(repo), /is being archived/);
+
+  // The suggested recovery is one compare-and-swap transaction.
+  const result = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
+  const command = /`(printf [^`]+)`/.exec(result.stderr)?.[1];
+  assert.ok(command, result.stderr);
+  const restored = spawnSync("sh", ["-c", command], { cwd: repo.root, encoding: "utf8" });
+  assert.equal(restored.status, 0, restored.stderr);
+  assert.equal(repo.git("rev-parse", ACTIVE), snapshot);
+  assert.equal(repo.git("for-each-ref", "refs/semantic-review/archiving/"), "");
   repo.semantic("validate");
 });
 

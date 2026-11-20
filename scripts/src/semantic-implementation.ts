@@ -2676,7 +2676,9 @@ function archiveImplementation(
   ) {
     fail("Archive destination must end in .semantic-review inside the repository.");
   }
-  if (fs.existsSync(destination)) {
+  const relativeDestination = formatPath(path.relative(workspace.root, destination));
+  // A sparse checkout can hide a destination that the target branch tracks.
+  if (fs.existsSync(destination) || gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}`], { cwd: workspace.root }) !== undefined) {
     fail(`Archive destination already exists: ${destinationOption}.`);
   }
 
@@ -2685,18 +2687,19 @@ function archiveImplementation(
   const implementationId = artifact.manifest.implementationId;
   const claim = archivingRef(implementationId);
   const version = workspace.snapshot.version;
-  const relativeDestination = formatPath(path.relative(workspace.root, destination));
-  // The topmost directory the archive creates, removed again when archiving fails.
-  let created = destination;
-  while (!fs.existsSync(path.dirname(created))) created = path.dirname(created);
-  // The archive commit holds the archived manifest; nothing else proves it exists.
-  const archived = () => gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}/manifest.json`], { cwd: workspace.root }) !== undefined;
+  const startHead = git(["rev-parse", "HEAD"], { cwd: workspace.root });
+  // Only a new commit on top of the starting one that holds the archived
+  // manifest proves the archive exists; the destination was absent before.
+  const archived = () =>
+    gitOptional(["rev-parse", "HEAD^"], { cwd: workspace.root }) === startHead &&
+    gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}/manifest.json`], { cwd: workspace.root }) !== undefined;
+  let removeWritten = () => {};
   // Moving the snapshot from the active ref to an archiving claim first makes a
   // concurrent writer fail instead of changing an artifact that is being
   // archived, and keeps the snapshot reachable if archiving is interrupted.
   removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
   try {
-    exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
+    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
     git(["add", "-f", "--", relativeDestination], { cwd: workspace.root });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: workspace.root,
@@ -2722,7 +2725,8 @@ function archiveImplementation(
         cwd: workspace.root,
         allowFailure: true,
       });
-      fs.rmSync(created, { recursive: true, force: true });
+      // Only what the archive wrote is removed; anything a hook left beside it stays.
+      removeWritten();
       updateRefs(workspace.root, [
         { ref: claim, next: ZERO_OID, previous: version },
         { ref: activeRef(implementationId), next: version, previous: ZERO_OID },
