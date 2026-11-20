@@ -32,6 +32,7 @@ export function clearPopDescription(): void {
   if (ids.length) popOwner.setAttribute("aria-describedby", ids.join(" "));
   else popOwner.removeAttribute("aria-describedby");
 }
+let popHint: HTMLSpanElement | null = null;
 export function ensurePop(): HTMLDivElement {
   if (popEl) return popEl;
   const pop = document.createElement("div");
@@ -42,6 +43,11 @@ export function ensurePop(): HTMLDivElement {
   // Chromium would make it a tab stop while it scrolls; its keys come from
   // the element it describes instead (see scrollPopFromKey).
   pop.tabIndex = -1;
+  // The keys that scroll a cut-off tooltip; hidden from its description.
+  popHint = document.createElement("span");
+  popHint.className = "pop-scroll-hint";
+  popHint.setAttribute("aria-hidden", "true");
+  pop.append(popHint);
   document.body.appendChild(pop);
   pop.addEventListener("pointerenter", () => clearTimeout(popTimer));
   pop.addEventListener("pointerleave", () => { if (!popSticky) scheduleHide(); });
@@ -53,26 +59,27 @@ export function fillPop(btn: HTMLElement): void {
   const text = tooltipText(btn);
   if (text) {
     el.className = "tag-pop-float is-tooltip";
-    renderLit(tooltipView(text), el);
+    renderLit(tooltipView(text), el, { renderBefore: popHint });
     return;
   }
   const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
   el.className = `tag-pop-float type-${d.type}${d.vstat ? ` vstat-${d.vstat}` : ""}`;
-  renderLit(tagPopoverView({ kind: kindLine, title: d.title ?? "", body: d.body || "" }), el);
+  renderLit(tagPopoverView({ kind: kindLine, title: d.title ?? "", body: d.body || "" }), el, { renderBefore: popHint });
 }
 export function positionPop(btn: Element): void {
   if (!popEl) return;
   const r = btn.getBoundingClientRect();
-  const p = popEl.getBoundingClientRect();
+  // Its layout size, not the size its opening transition scales it to.
+  const width = popEl.offsetWidth, height = popEl.offsetHeight;
   const margin = 12, gap = 9;
-  let left = Math.max(margin, Math.min(r.left, window.innerWidth - p.width - margin));
+  let left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
   let top = r.bottom + gap;
-  if (top + p.height > window.innerHeight - margin && r.top - gap - p.height > margin) {
-    top = r.top - gap - p.height; popEl.classList.add("is-above");
+  if (top + height > window.innerHeight - margin && r.top - gap - height > margin) {
+    top = r.top - gap - height; popEl.classList.add("is-above");
   } else {
     popEl.classList.remove("is-above");
     // A popover too tall for either side stays on screen and scrolls.
-    top = Math.max(margin, Math.min(top, window.innerHeight - p.height - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
   }
   popEl.style.left = `${left}px`;
   popEl.style.top = `${top}px`;
@@ -117,10 +124,12 @@ function popOverflows(): boolean {
 }
 /** Shows the scrolling keys on a cut-off tooltip while focus is on what it describes. */
 export function markKeyScrollable(): void {
-  if (!popEl) return;
-  popEl.classList.remove("is-key-scrollable");
+  if (!popEl || !popHint) return;
+  const scrollTop = popEl.scrollTop;
+  popHint.textContent = "";
   const focused = document.activeElement;
-  if (popOwner && focused && popOwner.contains(focused) && popOverflows()) popEl.classList.add("is-key-scrollable");
+  if (popOwner && focused && popOwner.contains(focused) && popOverflows()) popHint.textContent = "\u2191\u2193 PgUp PgDn to scroll";
+  popEl.scrollTop = scrollTop;
 }
 const POP_SCROLL_KEYS = new Set(["ArrowDown", "ArrowUp", "PageDown", "PageUp", "Home", "End"]);
 /**
@@ -184,9 +193,12 @@ export function installPopover(): void {
     if (!popOwner?.isConnected) return;
     if (!popOwner.matches(".tag-face[data-tagpop]")) {
       if (!tooltipText(popOwner)) { forceHidePop(); return; }
-      // Filling resets the tooltip's classes, so it is shown again.
+      // Filling resets the tooltip's classes, so it is shown again where it was read to.
+      const scrollTop = popEl?.scrollTop ?? 0;
       fillPop(popOwner);
       popEl?.classList.add("is-shown");
+      markKeyScrollable();
+      if (popEl) popEl.scrollTop = scrollTop;
     }
     positionPop(popOwner);
     markKeyScrollable();

@@ -618,14 +618,14 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   });
   const keyTaken = () => page.evaluate(() => window.keyTaken.splice(0));
   const tooltip = page.locator('#review-tooltip');
-  const hint = () => tooltip.evaluate((el) => getComputedStyle(el, '::after').content);
+  const hint = tooltip.locator('.pop-scroll-hint');
 
   // A tooltip that fits keeps the keys for the page.
   const short = page.locator('[data-tooltip]:not(.rationale-label)').first();
   await short.focus();
   await expect(tooltip).toHaveClass(/is-shown/);
   expect(await tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(false);
-  expect(await hint()).toBe('none');
+  await expect(hint).toBeHidden();
   await page.keyboard.press('ArrowDown');
   expect(await keyTaken()).toEqual([false]);
 
@@ -636,8 +636,14 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   // Screen readers still get the full text, without the visible key hint.
   await expect(label).toHaveAttribute('aria-describedby', 'review-tooltip');
   await expect(label).toHaveAccessibleDescription(data.stages[0].rationale);
-  await expect(tooltip).toHaveClass(/is-key-scrollable/);
-  expect(await hint()).toContain('to scroll');
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText('to scroll');
+  // The tooltip shows on screen in full, its hint included, and is no tab stop.
+  await expect.poll(() => tooltip.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return box.top >= 0 && box.bottom <= innerHeight;
+  })).toBe(true);
+  await expect(tooltip).toHaveAttribute('tabindex', '-1');
   await expect.poll(() => tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight)).toBe(true);
   const pageScroll = await page.evaluate(() => scrollY);
@@ -649,12 +655,13 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   expect(await atEnd()).toBe(true);
   expect(await keyTaken()).toEqual(Array(presses).fill(true));
   // The final line is inside the tooltip's visible area, above the key hint.
-  expect(await tooltip.evaluate((el) => {
+  const lastLineShown = () => tooltip.evaluate((el) => {
     const range = document.createRange();
     range.selectNodeContents(el.querySelector('strong'));
     const last = [...range.getClientRects()].at(-1), box = el.getBoundingClientRect();
-    return last.top >= box.top && last.bottom <= box.bottom - 20;
-  })).toBe(true);
+    return last.top >= box.top && last.bottom <= el.querySelector('.pop-scroll-hint').getBoundingClientRect().top;
+  });
+  expect(await lastLineShown()).toBe(true);
   await expect(label).toBeFocused();
   await expect(tooltip).toBeVisible();
   expect(await page.evaluate(() => scrollY)).toBe(pageScroll);
@@ -663,15 +670,18 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   await page.keyboard.press('End');
   await expect.poll(atEnd).toBe(true);
 
-  // The next long tooltip opens at its start, and the open one is no tab stop.
+  // The next long tooltip opens at its start.
   const next = page.locator('.stage[data-stage="second"] .rationale-label');
   await next.focus();
   await expect(tooltip.locator('strong')).toHaveText(data.stages[1].rationale);
   expect(await tooltip.evaluate((el) => el.scrollTop)).toBe(0);
   await page.keyboard.press('End');
   await expect.poll(atEnd).toBe(true);
-  await page.keyboard.press('Tab');
-  expect(await page.evaluate(() => document.activeElement?.id)).not.toBe('review-tooltip');
+  // A resize keeps the reader's place, with the last line above the hint.
+  await page.setViewportSize({ width: 395, height: 600 });
+  await expect(hint).toBeVisible();
+  await expect.poll(atEnd).toBe(true);
+  expect(await lastLineShown()).toBe(true);
   // Reopened after Escape closed it, it starts again at the top.
   await next.focus();
   await page.keyboard.press('Escape');
