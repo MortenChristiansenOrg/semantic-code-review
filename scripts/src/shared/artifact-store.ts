@@ -481,9 +481,9 @@ function recordedHeads(files: ArtifactFiles | undefined): string[] {
  * those the base recorded that the draft no longer does. Keeping them as the
  * snapshot's parents keeps earlier stage heads reachable, so feedback anchored
  * to them survives garbage collection. */
-function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft): string[] {
+function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft, retain: readonly string[] = []): string[] {
   const current = new Set(recordedHeads(draft));
-  const heads = [...(base?.active.supersededHeads ?? []), ...recordedHeads(base)];
+  const heads = [...(base?.active.supersededHeads ?? []), ...recordedHeads(base), ...retain];
   return [...new Set(heads)].filter((head) => !current.has(head));
 }
 
@@ -521,18 +521,21 @@ function moveArtifactRef(root: string, implementationId: string, previous: strin
 /** Commits a draft as the new snapshot of its implementation and moves the
  * implementation's ref to it together with the other ref updates, in one
  * transaction. Fails without changing anything when the artifact changed since
- * base was read; without base, when the implementation already exists. */
+ * base was read; without base, when the implementation already exists.
+ * Superseded stage heads stay reachable as the snapshot's parents, as do the
+ * retained commits, such as the commits a fold replaced. */
 export function commitArtifact(
   root: string,
   base: ArtifactSnapshot | undefined,
   draft: ArtifactDraft,
   refUpdates: readonly RefUpdate[] = [],
+  retain: readonly string[] = [],
 ): string {
   if (base !== undefined && !(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be committed.");
   const implementationId = activeImplementationId(root, draft);
   if (base && base.implementationId !== implementationId) fail("A command may not change the implementation ID.");
   const tree = writeDraftTree(root, draft);
-  const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
+  const parents = supersededHeads(base, draft, retain).flatMap((head) => ["-p", head]);
   const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
   const previous = base?.version ?? ZERO_OID;
   // A new implementation may not take the ID of an archived one, whose archive

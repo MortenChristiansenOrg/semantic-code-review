@@ -294,7 +294,7 @@ function currentIdentity(root: string, variable: "GIT_AUTHOR_IDENT" | "GIT_COMMI
   return git(["var", variable], { cwd: root }).replace(/ \d+ [+-]\d{4}$/, "");
 }
 
-const CO_AUTHOR_TRAILER = /^Co-authored-by:[ \t]*(.+?)[ \t]*$/gim;
+const IDENTITY = /^[^<>\n]+ <[^<>\n]+>$/;
 const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?.toLowerCase() ?? identity.toLowerCase();
 
 /** The message of a stage commit: the stage's title and summary, then a
@@ -307,13 +307,15 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coA
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
  * author, in order of first appearance. */
 function rangeCoAuthors(root: string, base: string, head: string, author: string): string[] {
-  const log = gitRaw(["log", "--reverse", "--format=%an <%ae>%x00%B%x01", `${base}..${head}`], { cwd: root });
+  // Only the trailer block counts: a Co-authored-by line in the body is text, not attribution.
+  const log = gitRaw(["log", "--reverse", "--format=%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,separator=%x02)%x01", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\x01")) {
-    const [identity, message = ""] = entry.replace(/^\r?\n/, "").split("\0");
+    const [identity, trailerBlock = ""] = entry.replace(/^\r?\n/, "").split("\0");
+    const trailers = trailerBlock.split("\x02");
     if (!identity) continue;
-    for (const candidate of [identity, ...[...message.matchAll(CO_AUTHOR_TRAILER)].map((match) => match[1])]) {
+    for (const candidate of [identity, ...trailers.map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer))]) {
       const key = identityEmail(candidate);
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1756,7 +1758,9 @@ function organizeStage(workspace: Workspace, options: Options): void {
   if (updated.$schema === STAGE_SCHEMA_ID) {
     const { change } = updated;
     baseRevision = change.baseRevision;
+    assertDirectRefs(workspace.root, [`refs/heads/${change.branch}`]);
     headRevision = branchCommit(workspace.root, change.branch);
+    branchHead = headRevision;
     if (
       currentBranch(workspace.root) !== change.branch ||
       commitObject(workspace.root, "HEAD") !== headRevision
@@ -1768,7 +1772,6 @@ function organizeStage(workspace: Workspace, options: Options): void {
     finalizedStageMoved = headRevision !== change.headRevision;
     if (finalizedStageMoved) {
       // A corrected stage is recorded as one commit again.
-      branchHead = headRevision;
       headRevision = foldStage(workspace.root, updated, baseRevision, branchHead, `Stage ${stageId}`);
       retargetFoldedCode(workspace.root, updated, baseRevision, branchHead, headRevision);
       change.headRevision = headRevision;
@@ -1804,11 +1807,13 @@ function organizeStage(workspace: Workspace, options: Options): void {
     quiet: true,
     validateGit: finalized && !finalizedStageMoved,
   }, draft);
-  const fold = updated.$schema === STAGE_SCHEMA_ID && branchHead !== undefined && branchHead !== headRevision
+  const fold = updated.$schema === STAGE_SCHEMA_ID && branchHead !== undefined
     ? [{ ref: `refs/heads/${updated.change.branch}`, next: headRevision, previous: branchHead }]
     : [];
-  // The checked-out branch moves to a commit with the same tree, so the checkout stays as it is.
-  commitArtifact(workspace.root, workspace.snapshot, draft, fold);
+  // The checked-out branch moves to a commit with the same tree, so the checkout
+  // stays as it is; an unchanged branch is verified. The folded commits stay reachable.
+  commitArtifact(workspace.root, workspace.snapshot, draft, fold,
+    branchHead !== undefined && branchHead !== headRevision ? [branchHead] : []);
   console.log(
     `Organized ${finalized ? "finalized " : ""}stage ${stageId} into ${updated.nodes.length} node(s).`,
   );
@@ -1849,6 +1854,8 @@ function finishStage(workspace: Workspace, options: Options): void {
     options,
     commandOptionNames(semanticImplementationApi, "stage finish"),
   );
+  // Reject a malformed --json before finishing rewrites the branch.
+  const json = flag(options, "json");
   const artifact = validateArtifact(workspace, { quiet: true });
   assertCleanWorkingTree(workspace.root, "Finalizing a stage");
   const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
@@ -1863,6 +1870,7 @@ function finishStage(workspace: Workspace, options: Options): void {
       `Finalizing ${id} requires checked-out stage branch ${workStage.branch}, not ${branch ?? "detached HEAD"}.`,
     );
   }
+  assertDirectRefs(workspace.root, [`refs/heads/${workStage.branch}`]);
   let headRevision = branchCommit(workspace.root, workStage.branch);
   if (commitObject(workspace.root, "HEAD") !== headRevision) {
     fail(`HEAD does not match stage branch ${workStage.branch}.`);
@@ -1891,11 +1899,14 @@ function finishStage(workspace: Workspace, options: Options): void {
   writeManifest(draft, artifact);
   draft.remove(workFile);
   validateArtifact(workspace, { quiet: true, movingBranches: new Map([[workStage.branch, headRevision]]) }, draft);
-  // The checked-out branch moves to a commit with the same tree, so the checkout stays as it is.
+  // The checked-out branch moves to a commit with the same tree, so the checkout
+  // stays as it is; an unchanged branch is verified. The folded commits stay
+  // reachable for code targets captured on them.
   commitArtifact(workspace.root, workspace.snapshot, draft,
-    headRevision === workHead ? [] : [{ ref: `refs/heads/${workStage.branch}`, next: headRevision, previous: workHead }]);
+    [{ ref: `refs/heads/${workStage.branch}`, next: headRevision, previous: workHead }],
+    headRevision === workHead ? [] : [workHead]);
   reportEvidenceWarnings([stage]);
-  if (flag(options, "json")) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
+  if (json) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
   else console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
 }
 
@@ -2157,6 +2168,10 @@ function restackStages(
     }
   }
   const startIndex = baseOption ? 0 : fromIndex;
+  assertDirectRefs(workspace.root, [
+    `refs/heads/${artifact.manifest.targetBranch}`,
+    ...artifact.manifest.stages.map((id) => `refs/heads/${finalizedStage(artifact, id).change.branch}`),
+  ]);
   const newBase = baseOption
     ? commitObject(workspace.root, baseOption)
     : artifact.manifest.baseRevision;
@@ -2174,6 +2189,10 @@ function restackStages(
     `semantic-implementation-restack-${process.pid}-${Date.now()}.index`,
   );
   const plans: RestackPlan[] = [];
+  // Refs the restack relies on but leaves in place, verified when it commits.
+  const kept: RefUpdate[] = baseOption
+    ? [{ ref: `refs/heads/${artifact.manifest.targetBranch}`, next: newBase, previous: newBase }]
+    : [];
   let parentBranch = artifact.manifest.targetBranch;
   let parentHead = newBase;
 
@@ -2187,6 +2206,7 @@ function restackStages(
             `Stage ${id} moved before the requested restack range; start from ${id}.`,
           );
         }
+        kept.push({ ref: `refs/heads/${stage.change.branch}`, next: actualHead, previous: actualHead });
         parentBranch = stage.change.branch;
         parentHead = actualHead;
         continue;
@@ -2236,11 +2256,14 @@ function restackStages(
     }
 
     const branchUpdates = plans.filter(({ previousHead, nextHead }) => previousHead !== nextHead);
-    const refUpdates = branchUpdates.map(({ branch, previousHead, nextHead }): RefUpdate => ({
+    // Unchanged stage branches are verified rather than moved.
+    const refUpdates = [...kept, ...plans.map(({ branch, previousHead, nextHead }): RefUpdate => ({
       ref: `refs/heads/${branch}`,
       previous: previousHead,
       next: nextHead,
-    }));
+    }))];
+    // Corrections folded away stay reachable for code targets captured on them.
+    const corrections = plans.filter(({ stage, previousHead }) => previousHead !== stage.change.headRevision).map(({ previousHead }) => previousHead);
     const checkedOut = checkedOutBranches(workspace.root);
     // A checked-out branch may only move to a commit with the same tree, as a fold does.
     const sameTree = (left: string, right: string) => git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: workspace.root }).split(/\r?\n/).every((tree, _, trees) => tree === trees[0]);
@@ -2275,7 +2298,7 @@ function restackStages(
     writeManifest(draft, artifact);
     validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
     withArtifactLock(workspace, artifact.manifest.implementationId, () => {
-      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates);
+      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, corrections);
     });
 
     return {
@@ -2284,7 +2307,7 @@ function restackStages(
       targetBranch: artifact.manifest.targetBranch,
       baseRevision: newBase,
       refreshedStages: plans.length,
-      rewrittenBranches: refUpdates.length,
+      rewrittenBranches: branchUpdates.length,
       stages: plans.map((plan) => ({
         id: plan.id,
         branch: plan.branch,
@@ -2844,7 +2867,7 @@ function readArchive(root: string, implementationId: string): { commit: string; 
 function assertDirectRefs(root: string, refs: readonly string[]): void {
   for (const ref of refs) {
     const target = gitOptional(["symbolic-ref", "--quiet", ref], { cwd: root });
-    if (target) fail(`${ref} is a symbolic ref to ${target}; archiving writes only direct refs. Replace it with a branch or remove it.`);
+    if (target) fail(`${ref} is a symbolic ref to ${target}; Semantic Flow writes only direct refs. Replace it with a branch or remove it.`);
   }
 }
 

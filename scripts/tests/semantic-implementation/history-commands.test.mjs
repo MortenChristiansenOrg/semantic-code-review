@@ -31,6 +31,16 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
 
   repository.git("switch", "semantic-flow/test-implementation/stages/policy");
   repository.commitFile("policy.txt", "policy v2\n", "Fix policy");
+  const correction = repository.git("rev-parse", "HEAD");
+  // A stage branch that is a symbolic ref would move the branch it names.
+  repository.git("branch", "unrelated", "main");
+  const persistenceRef = "refs/heads/semantic-flow/test-implementation/stages/persistence";
+  repository.git("update-ref", "-d", persistenceRef);
+  repository.git("symbolic-ref", persistenceRef, "refs/heads/unrelated");
+  repository.expectSemanticFailure("is a symbolic ref", "restack", "--from", "policy");
+  assert.equal(repository.git("rev-parse", "unrelated"), repository.git("rev-parse", "main"));
+  repository.git("symbolic-ref", "--delete", persistenceRef);
+  repository.git("update-ref", persistenceRef, originalPersistence);
   const output = repository.semantic("restack", "--from", "policy");
   assert.match(
     output,
@@ -49,6 +59,7 @@ test("restack refreshes an edited stage branch and rebuilds branches above it", 
   assert.equal(repository.read("policy.txt"), "policy v2\n");
   // The correction is folded into the stage's one commit; the checkout stays clean on it.
   assert.equal(repository.git("rev-list", "--count", `main..${rewrittenPolicy}`), "1");
+  repository.git("merge-base", "--is-ancestor", correction, "refs/semantic-review/active/test-implementation");
   assert.equal(repository.git("rev-parse", "HEAD"), rewrittenPolicy);
   assert.equal(repository.git("status", "--porcelain"), "");
   repository.semantic("validate", "--publish");
@@ -641,10 +652,15 @@ test("finishing folds a stage's commits into one with a generated message and co
   repository.git("commit", "--author", "Ada Author <ada@example.test>", "-m", "First part");
   repository.commitFile("second.txt", "second\n", "Second part\n\nCo-authored-by: Bob Pair <bob@example.test>");
   repository.commitFile("third.txt", "third\n", "Third part\n\nCo-authored-by: Ada Author <ADA@example.test>");
+  // Only the trailer block credits anyone; this line is part of the body.
+  repository.commitFile("fourth.txt", "fourth\n", "Fourth part\n\nFor example:\nCo-authored-by: Example Person <example@example.test>\n\nNo trailers here.");
   repository.semantic("stage", "record", "--kind", "risk", "--item-id", "risk", "--summary", "May reject input",
     "--code-path", "second.txt", "--code-start", "1");
   const workHead = repository.git("rev-parse", "HEAD");
   organizeStage(repository);
+  // A malformed option fails before the branch is rewritten.
+  repository.expectSemanticFailure("Option --json is a flag", "stage", "finish", "--json=no");
+  assert.equal(repository.git("rev-parse", "HEAD"), workHead);
   repository.semantic("stage", "finish");
 
   const head = repository.git("rev-parse", "HEAD");
@@ -661,6 +677,8 @@ test("finishing folds a stage's commits into one with a generated message and co
   assert.equal(stage.change.headRevision, head);
   // A code target captured before the fold points at the folded commit.
   assert.equal(stage.risks[0].codeTarget.revision, head);
+  // The folded commits stay reachable from the artifact for targets that keep their revision.
+  repository.git("merge-base", "--is-ancestor", workHead, "refs/semantic-review/active/test-implementation");
   repository.semantic("validate", "--publish");
 
   // A finalized stage of several commits is rejected.
