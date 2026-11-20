@@ -364,6 +364,11 @@ export function exportArtifactFiles(files: ArtifactFiles, destination: string): 
   }
 }
 
+/** A thrown value's message; describing it never throws. */
+function describeFailure(failure: unknown): string {
+  try { return errorMessage(failure); } catch { return "an unprintable error"; }
+}
+
 /** Replaces the artifact of a managed review checkout with new files. The
  * change runs in between, while no artifact is present. When anything fails,
  * undo reverts the change and then the previous artifact is restored. */
@@ -389,15 +394,19 @@ export function replaceArtifactFiles(
       fs.renameSync(next, active);
     } catch (error) {
       // The change is reverted first, so it cannot overwrite the restored artifact.
-      const failures: string[] = [];
-      try { undo(); } catch (failure) { failures.push(`Reverting the change also failed: ${errorMessage(failure)}`); }
+      // Both rollback steps run before any failure is described.
+      const failures: Array<[string, unknown]> = [];
+      try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
         fs.rmSync(active, { recursive: true, force: true });
         if (fs.existsSync(backup)) fs.renameSync(backup, active);
       } catch (failure) {
-        failures.push(`Restoring the previous artifact from ${backup} also failed: ${errorMessage(failure)}`);
+        failures.push([`Restoring the previous artifact from ${backup} also failed`, failure]);
       }
-      if (failures.length > 0) throw new Error([errorMessage(error), ...failures].join(" "), { cause: error });
+      if (failures.length > 0) {
+        throw new AggregateError([error, ...failures.map(([, failure]) => failure)],
+          [describeFailure(error), ...failures.map(([what, failure]) => `${what}: ${describeFailure(failure)}`)].join(" "));
+      }
       throw error;
     }
   } finally {
