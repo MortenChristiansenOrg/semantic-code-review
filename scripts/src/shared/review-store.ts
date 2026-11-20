@@ -6,6 +6,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseJson } from "./json.js";
+import { activeImplementationId } from "./artifact-store.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
 
@@ -49,12 +50,7 @@ export function reviewId(root: string, implementationId: string) {
 }
 /** Resolves private feedback without registering a review or creating files. */
 export function feedbackDirectory(root: string, implementationId?: string) {
-  if (implementationId === undefined) {
-    const file = path.join(root, ".semantic-review", "manifest.json");
-    if (!fs.existsSync(file)) throw new Error("No active .semantic-review artifact exists.");
-    implementationId = stringField(parseJson(fs.readFileSync(file, "utf8")), "implementationId");
-    if (implementationId === undefined) throw new Error("The active .semantic-review manifest has no implementation ID.");
-  }
+  if (implementationId === undefined) implementationId = activeImplementationId(root);
   return path.join(reviewDirectory(reviewId(root, implementationId)), "feedback");
 }
 /** Caller must hold this review's lock. */

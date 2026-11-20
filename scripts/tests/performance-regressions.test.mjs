@@ -152,9 +152,10 @@ test('viewer sends a failed batch once and deterministic retries do not duplicat
 
 test('snapshot read failure does not publish or retain a partially refreshed snapshot', (t) => {
   const { repository: repo } = createImplementationWithStages(t);
+  repo.feedback('init'); repo.feedback('thread', 'add-batch', '--threads', JSON.stringify(lineThreads(1)));
   let failRead = false;
   const reader = createSnapshotReader(repo.root, { readFile(file) {
-    if (failRead && file.endsWith('implementation.json')) throw new Error('Temporary read failure');
+    if (failRead && file.endsWith('thread-0.json')) throw new Error('Temporary read failure');
     return fs.readFileSync(file, 'utf8');
   } });
   const initial = reader();

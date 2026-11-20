@@ -40,9 +40,15 @@ export function readJson(file: string): unknown {
   } catch (error) {
     fail(`Cannot read ${file}: ${errorMessage(error)}`);
   }
+  return parseJsonDocument(text, file);
+}
 
+/** Parses the text of a stored JSON document, which label names in errors.
+ * Byte-order marks, comments, trailing commas and duplicate keys are rejected.
+ * The result is unvalidated: validate it against its schema before use. */
+export function parseJsonDocument(text: string, label: string): unknown {
   if (text.charCodeAt(0) === 0xfeff) {
-    fail(`${file}: UTF-8 byte-order marks are not allowed.`);
+    fail(`${label}: UTF-8 byte-order marks are not allowed.`);
   }
 
   // jsonc-parser checks the syntax and finds duplicate keys. It builds objects
@@ -60,25 +66,30 @@ export function readJson(file: string): unknown {
           `${jsonc.printParseErrorCode(error.error)} at character ${error.offset}`,
       )
       .join(", ");
-    fail(`${file}: invalid JSON: ${details}.`);
+    fail(`${label}: invalid JSON: ${details}.`);
   }
 
   const duplicateErrors: string[] = [];
-  findDuplicateKeys(tree, file, duplicateErrors);
+  findDuplicateKeys(tree, label, duplicateErrors);
   if (duplicateErrors.length > 0) {
     fail(duplicateErrors.join("\n"));
   }
   try {
     return parseJson(text);
   } catch (error) {
-    fail(`${file}: invalid JSON: ${errorMessage(error)}.`);
+    fail(`${label}: invalid JSON: ${errorMessage(error)}.`);
   }
+}
+
+/** The bytes writeJson stores for value. */
+export function jsonBytes(value: unknown): Buffer {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 export function writeJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  fs.writeFileSync(temporary, jsonBytes(value));
   fs.renameSync(temporary, file);
 }
 

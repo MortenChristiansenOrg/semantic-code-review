@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { atomicJson, hasPendingDeletion, readReview, reviewDirectory, reviewId, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
-import { parseJson } from "./json.js";
+import { jsonBytes, parseJson } from "./json.js";
+import { hasFile, readPublishedArtifact, replaceArtifactFiles, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
 import { isDocument } from "./schema-validation.js";
 import { reviewEnvironment } from "./review-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
@@ -19,11 +20,12 @@ function git(root: string, args: string[]) {
 }
 function optional(root: string, args: string[]) { try { return git(root, args); } catch { return null; } }
 const MAX_REMOTE_EVIDENCE_BYTES = 10 * MAX_EVIDENCE_TOTAL_BYTES;
-type EvidenceFile = { source: string; sha256: string; size: number };
-function gitBytes(root: string, args: string[]) {
-  return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
-    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, windowsHide: true,
-    maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
+type EvidenceFile = { files: ArtifactFiles; source: string; sha256: string; size: number };
+/** Runs Git in the managed clone for the artifact store, which may pass input. */
+function gitRunner(root: string): GitRunner {
+  return (args, input) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
+    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, windowsHide: true, input,
+    maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
   });
 }
 function branchName(root: string, name: string) {
@@ -47,12 +49,13 @@ function stage(root: string, id: string, title: string, summary: string, base: s
     nodes: [{ id: "changes", description: title, changes: changed.map((file) => ({ path: file.path, classification: "behavior" })) }] };
 }
 function artifact(root: string, ref: string, head: string) {
-  const text = optional(root, ["show", `${ref}:.semantic-review/manifest.json`]);
-  if (!text) return null;
+  const files = readPublishedArtifact(root, ref, gitRunner(root));
+  if (!files || !hasFile(files, "manifest.json")) return null;
+  const document = (file: string) => parseJson(files.read(file).toString("utf8"));
   try {
-    const manifest = parseJson(text);
+    const manifest = document("manifest.json");
     if (!isDocument(MANIFEST_SCHEMA_ID, manifest) || !manifest.stages.length) return null;
-    let stages = manifest.stages.map((id) => parseJson(git(root, ["show", `${ref}:.semantic-review/stages/${id}.json`])))
+    let stages = manifest.stages.map((id) => document(`stages/${id}.json`))
       .filter((s, index): s is Stage => isDocument(STAGE_SCHEMA_ID, s) && s.id === manifest.stages[index]);
     if (stages.length !== manifest.stages.length) return null;
     // Only reuse metadata for this exact reviewed range, never unrelated or stale published work.
@@ -66,26 +69,26 @@ function artifact(root: string, ref: string, head: string) {
       }
       if (optional(root, ["merge-base", "--is-ancestor", s.change.headRevision, head]) === null) return null;
     }
-    const requirements = manifest.requirements.map((id) => parseJson(git(root, ["show", `${ref}:.semantic-review/requirements/${id}.json`])))
+    const requirements = manifest.requirements.map((id) => document(`requirements/${id}.json`))
       .filter((r, index): r is Specification => isDocument(SPECIFICATION_SCHEMA_ID, r) && r.id === manifest.requirements[index]);
     if (requirements.length !== manifest.requirements.length) return null;
-    return { manifest, stages, requirements, ref };
+    return { manifest, stages, requirements, files };
   } catch { return null; }
 }
 // Unusable attachments stay listed but aren't extracted, so the viewer reports them as unavailable.
 // Remote metadata is untrusted, so only an inventory is built here: each file is read once, within a budget.
-function projectEvidence(root: string, ref: string, stageId: string, item: Linked<Evidence>, evidenceFiles: Map<string, EvidenceFile>): Linked<Evidence> {
+function projectEvidence(files: ArtifactFiles, stageId: string, item: Linked<Evidence>, evidenceFiles: Map<string, EvidenceFile>): Linked<Evidence> {
   if (!item.attachments) return item;
   const prefix = `evidence/${stageId}/`;
   const attachments = item.attachments.map((attachment) => {
     if (!attachment.path.startsWith(prefix)) return attachment;
     const projected = { ...attachment, path: `evidence/semantic-${stageId}/${attachment.path.slice(prefix.length)}` };
     if (evidenceFiles.has(projected.path)) return projected;
-    const source = `${ref}:.semantic-review/${attachment.path}`;
-    const size = optional(root, ["cat-file", "-s", source]);
+    const source = attachment.path;
+    const size = hasFile(files, source) ? files.size(source) : null;
     const used = [...evidenceFiles.values()].reduce((sum, file) => sum + file.size, 0);
-    if (size !== null && Number(size) <= MAX_EVIDENCE_ATTACHMENT_BYTES && used + Number(size) <= MAX_REMOTE_EVIDENCE_BYTES) {
-      evidenceFiles.set(projected.path, { source, sha256: attachment.sha256, size: Number(size) });
+    if (size !== null && size <= MAX_EVIDENCE_ATTACHMENT_BYTES && used + size <= MAX_REMOTE_EVIDENCE_BYTES) {
+      evidenceFiles.set(projected.path, { files, source, sha256: attachment.sha256, size });
     }
     return projected;
   });
@@ -101,11 +104,11 @@ function projection(record: ReviewRecord, remote: RemoteReview, head: string) {
     for (const ref of refs) { semantic = artifact(root, ref, head); if (semantic) break; }
   }
   if (semantic) {
-    const { ref } = semantic;
+    const { files } = semantic;
     // Keep authored and reconstructed stage identities separate across refreshes.
     const evidenceFiles = new Map<string, EvidenceFile>();
     const stages = semantic.stages.map((s) => ({ ...s, id: `semantic-${s.id}`, dependsOn: s.dependsOn.map((id) => `semantic-${id}`),
-      evidence: s.evidence.map((item) => projectEvidence(root, ref, s.id, item, evidenceFiles)) }));
+      evidence: s.evidence.map((item) => projectEvidence(files, s.id, item, evidenceFiles)) }));
     return { ...semantic, stages, evidenceFiles, manifest: { ...semantic.manifest, implementationId: record.implementationId, stages: stages.map((s) => s.id) } };
   }
   const target = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.targetBranch}^{commit}`]);
@@ -125,33 +128,23 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   git(root, ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
   const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
   const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
-  const next = path.join(reviewDirectory(record.id), ".artifact-next");
-  fs.rmSync(next, { recursive: true, force: true });
-  for (const child of ["stages", "requirements"]) fs.mkdirSync(path.join(next, child), { recursive: true });
-  for (const s of projected.stages) atomicJson(path.join(next, "stages", `${s.id}.json`), s);
-  for (const r of projected.requirements) atomicJson(path.join(next, "requirements", `${r.id}.json`), r);
-  for (const [file, { source, sha256 }] of projected.evidenceFiles) {
-    const bytes = gitBytes(root, ["show", source]);
-    if (sha256Hex(bytes) !== sha256) continue;
-    fs.mkdirSync(path.dirname(path.join(next, file)), { recursive: true });
-    fs.writeFileSync(path.join(next, file), bytes);
+  const files = new Map<string, Buffer>();
+  for (const s of projected.stages) files.set(`stages/${s.id}.json`, jsonBytes(s));
+  for (const r of projected.requirements) files.set(`requirements/${r.id}.json`, jsonBytes(r));
+  for (const [file, { files: source, source: sourcePath, sha256 }] of projected.evidenceFiles) {
+    const bytes = source.read(sourcePath);
+    if (sha256Hex(bytes) === sha256) files.set(file, bytes);
   }
-  atomicJson(path.join(next, "manifest.json"), projected.manifest);
-  const artifactPath = path.join(root, ".semantic-review"), backup = path.join(reviewDirectory(record.id), ".artifact-previous");
+  files.set("manifest.json", jsonBytes(projected.manifest));
   const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
-  fs.rmSync(backup, { recursive: true, force: true });
-  if (fs.existsSync(artifactPath)) fs.renameSync(artifactPath, backup);
-  try {
-    git(root, ["checkout", "--force", "--detach", head]);
-    fs.rmSync(artifactPath, { recursive: true, force: true });
-    fs.renameSync(next, artifactPath);
-  } catch (error) {
-    if (previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
-    fs.rmSync(artifactPath, { recursive: true, force: true });
-    if (fs.existsSync(backup)) fs.renameSync(backup, artifactPath);
-    throw error;
-  }
-  fs.rmSync(backup, { recursive: true, force: true });
+  replaceArtifactFiles(root, files, reviewDirectory(record.id), () => {
+    try {
+      git(root, ["checkout", "--force", "--detach", head]);
+    } catch (error) {
+      if (previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
+      throw error;
+    }
+  });
   record.remote = { ...remote, headRevision: head, refreshedAt: new Date().toISOString() };
   record.title = projected.manifest.title;
   atomicJson(path.join(reviewDirectory(record.id), "review.json"), record);

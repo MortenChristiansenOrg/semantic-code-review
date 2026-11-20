@@ -42,8 +42,9 @@ import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { errorMessage, isRecord, isStringArray, stringField } from "./shared/narrow.js";
-import { parseDocument, readDocument } from "./shared/schema-validation.js";
+import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
+import { parseDocument, type SchemaId } from "./shared/schema-validation.js";
+import { activeImplementationId, readArtifact, readArtifactJson } from "./shared/artifact-store.js";
 import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
 import { isDeepStrictEqual } from "node:util";
@@ -68,7 +69,6 @@ interface FeedbackPaths {
   requester: FeedbackRequester | null;
   implementationId: string;
   reviewId: string;
-  semantic: string;
   feedback: string;
   feedbackManifest: string;
   threads: string;
@@ -116,18 +116,16 @@ function repositoryRoot(): string {
 }
 
 function pathsFor(root: string, requester: FeedbackRequester | null = null): FeedbackPaths {
-  const manifestPath = path.join(root, ".semantic-review", "manifest.json");
-  if (!fs.existsSync(manifestPath)) fail("No active .semantic-review artifact exists.");
+  const snapshot = readArtifact(root);
+  if (!snapshot) fail("No active .semantic-review artifact exists.");
   // Only the identity is needed here; commands that use the artifact validate it.
-  const implementationId = stringField(readJson(manifestPath), "implementationId");
-  if (implementationId === undefined) fail("The active .semantic-review manifest has no implementation ID.");
+  const implementationId = activeImplementationId(root, snapshot);
   const feedback = feedbackDirectory(root, implementationId);
   return {
     root,
     requester,
     implementationId,
     reviewId: reviewId(root, implementationId),
-    semantic: path.join(root, ".semantic-review"),
     feedback,
     feedbackManifest: path.join(feedback, "manifest.json"),
     threads: path.join(feedback, "threads"),
@@ -177,22 +175,16 @@ function listJsonIds(directory: string): string[] {
 }
 
 function semanticArtifact(paths: FeedbackPaths): SemanticArtifact {
-  if (!fs.existsSync(path.join(paths.semantic, "manifest.json"))) {
-    fail("No active .semantic-review artifact exists.");
-  }
-  const manifest = readDocument(MANIFEST_SCHEMA_ID, path.join(paths.semantic, "manifest.json"));
+  const files = readArtifact(paths.root);
+  if (!files) fail("No active .semantic-review artifact exists.");
+  const document = <K extends SchemaId>(id: K, file: string) => parseDocument(id, readArtifactJson(files, file), files.describe(file));
+  const manifest = document(MANIFEST_SCHEMA_ID, "manifest.json");
   if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
   const requirements = new Map(
-    manifest.requirements.map((id) => [
-      id,
-      readDocument(SPECIFICATION_SCHEMA_ID, path.join(paths.semantic, "requirements", `${id}.json`)),
-    ]),
+    manifest.requirements.map((id) => [id, document(SPECIFICATION_SCHEMA_ID, `requirements/${id}.json`)]),
   );
   const stages = new Map(
-    manifest.stages.map((id) => [
-      id,
-      readDocument(STAGE_SCHEMA_ID, path.join(paths.semantic, "stages", `${id}.json`)),
-    ]),
+    manifest.stages.map((id) => [id, document(STAGE_SCHEMA_ID, `stages/${id}.json`)]),
   );
   return { manifest, requirements, stages };
 }
