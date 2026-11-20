@@ -172,29 +172,40 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   branchName(sourceRoot, branch);
   let url = git(sourceRoot, ["remote", "get-url", remoteName]);
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !/^[^/]+:/.test(url)) url = path.resolve(sourceRoot, url);
-  const hash = createHash("sha256").update(JSON.stringify([url, branch])).digest("hex");
-  const key = `remote-${hash.slice(0, 24)}`;
+  const { key, hash, keys, label } = remoteIdentity(url, branch);
   // A remote review has a random ID and is found again by what it reviews, so any
   // checkout opens the same review. This lock name only serializes starting it.
   const startLock = `remote--${key}--${hash}`;
   return withReviewLock(startLock, () => {
-    const existing = findRemoteReview(key);
+    const existing = findRemoteReview(keys);
     if (existing) return existing; // Opening preserves the reviewed snapshot; refresh is explicit.
-    const repository = url.replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/, "") || "remote";
-    const id = newReviewId(repository, branch);
+    const id = newReviewId(label, branch);
     return withReviewLock(id, () => startNewRemoteReview(id, sourceRoot, remoteName, url, branch, key));
   });
 }
-/** The remote review whose key, a hash of the remote URL and branch, is given, if
- * one is registered. The URL itself is not stored, since it may hold credentials.
- * Damaged records are skipped, so one cannot hide the others. */
-function findRemoteReview(key: string): ReviewRecord | undefined {
+/** What identifies the remote review of a remote URL and branch: its key, a hash
+ * of the URL without credentials and the branch, every key a saved review of them
+ * may have, and the repository name for its review ID. Credentials neither name
+ * nor identify a review, so changing them keeps the review. */
+export function remoteIdentity(url: string, branch: string) {
+  const plain = url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+  const hashOf = (value: string) => createHash("sha256").update(JSON.stringify([value, branch])).digest("hex");
+  const hash = hashOf(plain), key = `remote-${hash.slice(0, 24)}`;
+  // Earlier versions hashed the URL as configured, credentials included.
+  const keys = plain === url ? [key] : [key, `remote-${hashOf(url).slice(0, 24)}`];
+  const label = plain.replace(/[\\/]+$/, "").split(/[\\/:]/).pop()?.replace(/\.git$/, "") || "remote";
+  return { key, hash, keys, label };
+}
+/** The remote review with one of the keys, if one is registered. The URL itself
+ * is not stored, since it may hold credentials. Damaged records are skipped, so
+ * one cannot hide the others. */
+function findRemoteReview(keys: readonly string[]): ReviewRecord | undefined {
   const directory = path.join(reviewHome(), "reviews");
   if (!fs.existsSync(directory)) return undefined;
   for (const id of fs.readdirSync(directory).filter(isReviewId).sort()) {
     let record: ReviewRecord;
     try { record = readReview(id); } catch { continue; }
-    if (record.remote && record.implementationId === key) return record;
+    if (record.remote && keys.includes(record.implementationId)) return record;
   }
   return undefined;
 }
