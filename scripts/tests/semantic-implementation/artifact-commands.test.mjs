@@ -1021,6 +1021,11 @@ test("ranges that share a head keep their own inventories", (t) => {
   const head = repository.commitFile("feature.txt", "feature\n", "Add feature");
   // The empty range comes first, so a batch could hand it the other range's inventory.
   assert.throws(() => changedFilesOfRanges(repository.root, [[head, head], [base, head]]), /has no changes relative to/);
+  // A reader that shows invalid artifacts gets the empty inventory instead.
+  assert.deepEqual(changedFilesOfRanges(repository.root, [[head, head], [base, head]], { allowEmpty: true }), [
+    [],
+    [{ path: "feature.txt", kind: "added" }],
+  ]);
   assert.deepEqual(changedFilesOfRanges(repository.root, [[base, head], [base, head]]), [
     [{ path: "feature.txt", kind: "added" }],
     [{ path: "feature.txt", kind: "added" }],

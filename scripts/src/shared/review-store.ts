@@ -74,7 +74,8 @@ function moveLegacyProjection(owner: string, root: string, directory: string): v
   if (!fs.existsSync(path.join(legacy, "manifest.json"))) return;
   withReviewLock(owner, () => {
     if (fs.existsSync(directory) || !fs.existsSync(path.join(legacy, "manifest.json"))) return;
-    const tracked = spawnSync("git", ["ls-files", "--", ".semantic-review/manifest.json"], { cwd: root, encoding: "utf8", windowsHide: true });
+    // Any tracked file inside means the checked-out branch owns the folder.
+    const tracked = spawnSync("git", ["ls-files", "--", ".semantic-review"], { cwd: root, encoding: "utf8", windowsHide: true });
     if (tracked.status !== 0 || tracked.stdout.trim()) return;
     try { fs.renameSync(legacy, directory); } catch { /* It stays unavailable until reopened. */ }
   });

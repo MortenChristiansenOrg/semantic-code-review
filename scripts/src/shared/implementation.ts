@@ -92,9 +92,9 @@ function parseChanges(fields: string[], index: number, commit: string): { files:
 }
 
 /** Checks one stage's inventory as the format requires it. */
-function checkedChanges(files: FileChange[], parent: string, commit: string): FileChange[] {
+function checkedChanges(files: FileChange[], parent: string, commit: string, allowEmpty = false): FileChange[] {
   files.sort((left, right) => compareOrdinal(left.path, right.path));
-  if (files.length === 0) {
+  if (files.length === 0 && !allowEmpty) {
     fail(`Stage head ${commit} has no changes relative to ${parent}.`);
   }
   for (const file of files) {
@@ -122,7 +122,7 @@ function runGit(root: string, args: string[], input?: string) {
   });
 }
 
-function readChangedFiles(root: string, parent: string, commit: string): FileChange[] {
+function readChangedFiles(root: string, parent: string, commit: string, allowEmpty = false): FileChange[] {
   // A revision that Git would read as an option is never passed to it.
   for (const revision of [parent, commit]) if (revision.startsWith("-")) fail(`Invalid revision ${JSON.stringify(revision)}.`);
   const result = runGit(root, ["diff", "--name-status", "-z", "--find-renames=50%", parent, commit]);
@@ -132,7 +132,7 @@ function readChangedFiles(root: string, parent: string, commit: string): FileCha
   const fields = result.stdout.toString("utf8").split("\0").filter((field) => field.length > 0);
   const { files, next } = parseChanges(fields, 0, commit);
   if (next !== fields.length) fail(`Malformed Git change record for commit ${commit}.`);
-  return checkedChanges(files, parent, commit);
+  return checkedChanges(files, parent, commit, allowEmpty);
 }
 
 /** The files that change from parent to commit. */
@@ -142,8 +142,14 @@ export function changedFiles(root: string, parent: string, commit: string): File
 
 /** Derives the inventories of several revision ranges with one Git process.
  * Within a validation context, later changedFiles calls for them reuse the
- * result. When Git fails, each range is derived alone, so the error names it. */
-export function changedFilesOfRanges(root: string, ranges: ReadonlyArray<readonly [string, string]>): FileChange[][] {
+ * result. When Git fails, each range is derived alone, so the error names it.
+ * A range without changes fails unless allowEmpty, for readers that show
+ * artifacts validation rejects. */
+export function changedFilesOfRanges(
+  root: string,
+  ranges: ReadonlyArray<readonly [string, string]>,
+  { allowEmpty = false }: { allowEmpty?: boolean } = {},
+): FileChange[][] {
   const valid = ranges.every(([parent, commit]) => /^[0-9a-f]{40}$/.test(parent) && /^[0-9a-f]{40}$/.test(commit));
   const unique = [...new Map(ranges.map(([parent, commit]) => [`${commit} ${parent}`, [parent, commit] as const])).values()];
   // Git heads each batched inventory with its commit alone, so a head shared by
@@ -170,7 +176,8 @@ export function changedFilesOfRanges(root: string, ranges: ReadonlyArray<readonl
     }
   }
   // Outside a validation context nothing is cached, so the batch's own results are used.
-  return ranges.map(([parent, commit]) => derived.get(JSON.stringify([root, parent, commit])) ?? changedFiles(root, parent, commit));
+  return ranges.map(([parent, commit]) => derived.get(JSON.stringify([root, parent, commit])) ??
+    (allowEmpty ? readChangedFiles(root, parent, commit, true) : changedFiles(root, parent, commit)));
 }
 
 // --- Stored forms -------------------------------------------------------------
@@ -372,7 +379,7 @@ export function readUnvalidatedImplementation(root: string, files: ArtifactFiles
 
   const ranges = stackRanges(baseRevision, stack, label);
   const documents = stack.map(({ id }) => document("stages", id, "stage"));
-  const inventories = changedFilesOfRanges(root, ranges);
+  const inventories = changedFilesOfRanges(root, ranges, { allowEmpty: true });
   const stages = new Map<string, JsonRecord>();
   let baseBranch = targetBranch;
   for (const [index, { id }] of stack.entries()) {

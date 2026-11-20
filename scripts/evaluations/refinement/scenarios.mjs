@@ -152,6 +152,8 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
     manifest = artifact.manifest;
     stages = manifest.stages.map(id => artifact.stages[id]);
   } catch (error) {
+    // A failure of the evaluator itself is not the implementation's.
+    if (error.infrastructure) throw error;
     add('artifact-readable', false, error.message);
     return { checks, evidence, transcriptChecks: scenarios[scenario].transcriptChecks };
   }
