@@ -194,9 +194,9 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
     // The session as the agent left it orders its exit after Stop without comparing wall-clock stamps.
     // Only a missing file means no session; an unreadable one invalidates the attempt.
     try {
-      const current = review ?? findReview(), file = current && path.join(current.directory, 'agent.json');
-      record.sessionAtExit = file && fs.existsSync(file) ? readJson(file).session ?? null : null;
-    } catch (error) { exitSnapshotFailure = error; }
+      const current = review ?? findReview();
+      record.sessionAtExit = current ? readJson(path.join(current.directory, 'agent.json')).session ?? null : null;
+    } catch (error) { if (error.code !== 'ENOENT') exitSnapshotFailure = error; }
     note('agent-exited', { exitCode: execution.exitCode, timedOut: execution.timedOut });
   });
   const aborted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
