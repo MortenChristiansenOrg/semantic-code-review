@@ -99,6 +99,54 @@ test("validate resolves the artifact and runs both validators", (t) => {
   assert.match(output, /Artifact:/);
 });
 
+test("commands fail without writing when the active artifact has no review ID", (t) => {
+  const repository = createRepository(t, "semantic-flow-no-review-id-");
+  initializeImplementation(repository, { implementationId: "no-review-id" });
+  repository.artifact.remove("review.json");
+  const ref = () => repository.git("rev-parse", "refs/semantic-review/active/no-review-id");
+  const reviews = () => { try { return fs.readdirSync(path.join(process.env.SEMANTIC_FLOW_HOME, "reviews")).sort(); } catch { return []; } };
+  const before = ref(), stored = reviews();
+  for (const command of ["status", "validate", "prepare", "review"]) {
+    const result = repository.result(process.execPath, [flowCli, command]);
+    assert.notEqual(result.status, 0, `${command} succeeded`);
+    assert.match(result.stderr, /The semantic implementation no-review-id has no review identity; it was created by an unreleased development build\. Start it again\./);
+    assert.equal(ref(), before, `${command} wrote the artifact`);
+    assert.deepEqual(reviews(), stored, `${command} wrote review data`);
+  }
+  assert.equal(repository.artifact.exists("review.json"), false);
+});
+
+test("review launched from another worktree of the repository reuses the running viewer", async (t) => {
+  const port = await reserveViewerPort();
+  const pids = new Set();
+  t.after(async () => { for (const pid of pids) await stopViewer(port, pid).catch(() => { try { process.kill(pid); } catch { /* Gone. */ } }); });
+  const repository = createRepository(t, "semantic-flow-shared-viewer-");
+  initializeImplementation(repository, { implementationId: "shared-viewer" });
+  // The review records the main worktree, which keeps reaching it.
+  repository.feedback("init");
+  const linked = path.join(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "semantic-linked-")), "linked");
+  t.after(() => fs.rmSync(path.dirname(linked), { recursive: true, force: true }));
+  repository.git("worktree", "add", "-q", "--detach", linked);
+  rememberImplementation(linked, "shared-viewer");
+  const launch = () => {
+    const result = spawnSync(process.execPath, [flowCli, "review"], {
+      cwd: linked, encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const started = /running persistently in the background \(PID (\d+)\)/.exec(result.stdout);
+    assert.ok(started, result.stdout);
+    pids.add(Number(started[1]));
+    return Number(started[1]);
+  };
+  const first = launch();
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.processId, first);
+  assert.equal(identity.repositoryRoot, repository.root);
+  assert.equal(launch(), first);
+  assert.equal(pids.size, 1);
+});
+
 test("review leaves a detached viewer running after the command exits", async (t) => {
   const port = await reserveViewerPort();
   let viewerPid;

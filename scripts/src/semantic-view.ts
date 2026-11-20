@@ -2876,16 +2876,20 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
   }
 }
 
-async function serve(repoRoot: string, requested: RequestedReview | null) {
+async function serve(launchRoot: string, requested: RequestedReview | null) {
   const viewerDir = locateViewerDir();
-  const implementation = implementationSummary(repoRoot);
+  const implementation = implementationSummary(launchRoot);
   // A direct start keeps acting on the implementation it found, whatever else becomes active later.
   if (!requested) selectImplementation(implementation.implementationId);
   const registered = requested
     ? readReview(requested.reviewId)
-    : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
+    : registerReview(launchRoot, implementation.implementationId, implementation.title ?? "");
   const context = captureReviewContext(registered.id);
-  if (requested && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
+  if (requested && (reviewId(launchRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
+  // All worktrees of the repository share the review. The viewer serves the one the
+  // review records, whichever worktree launched it, so its identity matches the
+  // review context and a later launch from any worktree finds it running.
+  const repoRoot = context.repositoryRoot;
   const dataSource = createViewerWorker(repoRoot, context, false);
   startupWorker = dataSource;
   const fingerprint = createHash("sha256");

@@ -3,9 +3,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentIds, readReview, removeReviewDirectory, retireReviewId, reviewDirectory, withReviewLock } from "./review-store.js";
+import { attachmentIds, readReview, removeRetiredDirectory, restoreReviewDirectory, retireReviewDirectory, retireReviewId, reviewDirectory, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
-import { errorCode, isRecord, stringField } from "./narrow.js";
+import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
 import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage } from "./viewer-protocol.js";
 
 const GRACE_MS = 60 * 60 * 1000;
@@ -87,16 +87,28 @@ function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T
 export function inspectReviewStorage(id: string, generation: string): ReviewStorage {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry cleanup.", () => inspect(id, generation));
 }
-/** Deleting a review gives its implementation a fresh review ID before the
- * review's folder is removed, so nothing reaches the deleted review again and the
- * next review of the implementation starts empty. */
+/** Deleting a review first moves its folder aside, so its writers fail from then
+ * on, then gives its implementation a fresh review ID, so nothing reaches the
+ * deleted review again and the next review of the implementation starts empty.
+ * When either step fails, nothing has changed. */
 export function deleteReviewData(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewDeleteResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return { deleted: true }; // Exact retry after completion.
     const preview = inspect(id, generation);
     if (typeof fingerprint !== "string" || fingerprint !== preview.fingerprint) throw new Error("Review data changed since the preview. Refresh the details before deleting.");
-    retireReviewId(readReview(id));
-    removeReviewDirectory(id);
+    const record = readReview(id);
+    const retired = retireReviewDirectory(id);
+    try { retireReviewId(record); }
+    catch (error) {
+      try { restoreReviewDirectory(id, retired); }
+      catch (restoreError) {
+        // The review stays deleted: a later cleanup removes the folder, and a new
+        // review of the implementation gets a new generation that stale tabs lack.
+        throw new Error(`The implementation could not be given a new review ID (${errorMessage(error)}), and the review's data could not be moved back (${errorMessage(restoreError)}). The review data is deleted.`);
+      }
+      throw error;
+    }
+    removeRetiredDirectory(retired);
     return { deleted: true };
   });
 }

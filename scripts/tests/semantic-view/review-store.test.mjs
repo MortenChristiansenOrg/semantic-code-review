@@ -188,12 +188,8 @@ test('relative user-store overrides cannot change meaning between CLI worktrees'
 
 test('registry lifecycle is explicit, generation guarded, and retains unavailable entries', (t) => {
   const root = setup(t), repo = path.join(root, 'a');
-  // The artifact is stored in the repository's Git refs. One written before
-  // review IDs were stored gets its ID when first reviewed.
-  const artifact = new ArtifactDraft(undefined);
-  artifact.writeJson('manifest.json', { implementationId: 'id' });
-  commitArtifact(repo, undefined, artifact);
-  const review = registerActiveReview(repo, 'id', 'Review');
+  // The artifact is stored in the repository's Git refs.
+  const review = registerReview(repo, 'id', 'Review');
   assert.deepEqual(JSON.parse(readArtifact(repo, 'id').read('review.json')), { reviewId: review.id });
   assert.equal(registeredReviews()[0].available, true);
   assert.equal(setReviewCompleted(review.id, review.generation, true, null).completedAt, readReview(review.id).updatedAt);
@@ -208,6 +204,22 @@ test('registry lifecycle is explicit, generation guarded, and retains unavailabl
   assert.equal(registeredReviews()[0].available, false);
   assert.match(registeredReviews()[0].unavailableReason, /unavailable/);
   assert.equal(listReviews().length, 1);
+});
+
+test('an active artifact without a review ID is an error and reading it never writes', (t) => {
+  const root = setup(t), repo = path.join(root, 'a');
+  const artifact = new ArtifactDraft(undefined);
+  artifact.writeJson('manifest.json', { implementationId: 'id' });
+  commitArtifact(repo, undefined, artifact);
+  const ref = () => execFileSync('git', ['rev-parse', 'refs/semantic-review/active/id'], { cwd: repo, encoding: 'utf8' });
+  const before = ref();
+  const missing = /The semantic implementation id has no review identity; it was created by an unreleased development build\. Start it again\./;
+  assert.throws(() => activeReviewId(repo, 'id'), missing);
+  assert.throws(() => feedbackDirectory(repo, 'id'), missing);
+  assert.throws(() => registerActiveReview(repo, 'id', 'Review'), missing);
+  assert.equal(ref(), before);
+  assert.equal(readArtifact(repo, 'id').type('review.json'), undefined);
+  assert.equal(fs.existsSync(path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews')), false);
 });
 
 test('review edits update activity timestamps while navigation preferences do not', (t) => {

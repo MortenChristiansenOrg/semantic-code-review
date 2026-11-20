@@ -29,8 +29,14 @@ another worktree records the new location. Folder names use
 `my-project--order-cancellation--<64 hex characters>`. The readable parts are
 normalized and capped at 24 and 40 characters. Changing the display title does not
 rename the folder. Deleting a review gives the implementation a new review ID, so
-the next review starts empty. Reviews whose repository no longer exists are
-removed when saved reviews are listed or a review is started. There is no migration
+the next review starts empty. A review whose repository's Git directory is missing
+and that has not been used for 30 days is removed when saved reviews are listed or
+another review is started. A repository that is missing only for now, such as one
+on a drive that is not mounted, keeps its review through that period, and a
+repository moved together with its Git directory keeps its review whenever a
+command runs from the new location. An implementation started by an unreleased
+development build may have no review ID; commands then fail and ask to start it
+again. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
 the same field or draft list fail visibly rather than overwrite another tab.
 Unfinished composers are shared review state; preserve conflicting text before
@@ -719,8 +725,9 @@ storage size, drafts, personal notes, approvals, feedback, attachments, and save
 snapshots. **Delete review data** confirms removal of that review's local data.
 Unsent drafts and unresolved feedback are highlighted before confirmation.
 Completion never deletes data automatically; unavailable reviews can be cleaned
-too. Only a review whose repository is gone is removed without asking. Source files, branches, implementation artifacts, publications, and archives
-are preserved.
+too. Only a review whose repository has been gone and that has not been used for
+30 days is removed without asking. Source files, branches, implementation
+artifacts, publications, and archives are preserved.
 
 **Clean unused files** reclaims unreferenced uploads and snapshots separately.
 Files referenced by saved messages, drafts, feedback, or approvals are retained.
@@ -730,10 +737,12 @@ when requested, not automatically when that hour expires. Deleting a whole
 review removes its data regardless of age. If another process
 changes the data after the preview, refresh the details before confirming.
 
-Deletion gives the implementation a new review ID, then moves the review's folder
-aside and removes it. Stale tabs and CLI requests cannot recreate the deleted
-review. Files that cannot be removed at once are removed by a later cleanup. If
-the folder cannot be moved, deletion fails and can be retried. The error
+Deletion moves the review's folder aside, then gives the implementation a new
+review ID, then removes the folder. Once the folder is moved, stale tabs and CLI
+requests fail and cannot recreate the deleted review. Files that cannot be removed
+at once are removed by a later cleanup. If the folder cannot be moved, or the new
+review ID cannot be stored, deletion fails without changing anything and can be
+retried. The error
 identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
 Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,

@@ -14,6 +14,7 @@ import { collectResults, grade, invalidate, redact, report, validateGrades } fro
 import { gradeSchema } from '../evaluations/refinement/grade-schema.mjs';
 import { sandboxProbeCommand } from '../evaluations/refinement/preflight.mjs';
 import { ArtifactDraft, commitArtifact } from '../src/shared/artifact-store.ts';
+import { writeReviewId } from '../src/shared/review-store.ts';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'), skill = path.join(source, 'skills/semantic-flow');
 const sample = () => readJson(path.join(source, '.agents/skills/refine-semantic-flow/assets/baseline.json'));
@@ -374,7 +375,7 @@ test('acceptance checks the final cumulative head when a lower stage is checked 
 test('malformed agent artifact is a failed check, not an evaluator infrastructure error', t => {
   const { root, env, fixture: f } = fixture(t, 'implement-small');
   // An artifact is stored under its implementation ID, so only the rest of the manifest is malformed.
-  const draft = new ArtifactDraft(undefined); draft.write('manifest.json', '{"implementationId": "broken"}\n'); commitArtifact(f.repo, undefined, draft);
+  const draft = new ArtifactDraft(undefined); draft.write('manifest.json', '{"implementationId": "broken"}\n'); writeReviewId(draft, f.repo, 'broken'); commitArtifact(f.repo, undefined, draft);
   const checks = verifyFixture(f, root, skill, 'implement-small', env);
   assert.equal(checks.checks.find(c => c.id === 'artifact-publication').passed, false);
 });
