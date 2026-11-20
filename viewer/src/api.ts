@@ -69,24 +69,21 @@ const UNREACHABLE_MS = 5000;
 const OUTAGE_GAP_MS = 5000;
 /** How long a poll for a new revision may wait for its answer. */
 const POLL_DEADLINE_MS = 3000;
-/** How long loading a changed implementation may take. */
+/** How long loading a changed implementation, or the review data the page starts with, may take. */
 const IMPLEMENTATION_DEADLINE_MS = 30_000;
+/** How long exchanging a launch code may take. */
+const SESSION_DEADLINE_MS = 10_000;
 
 let outageSince = 0;
 let lastFailure = 0;
-/** The key of the requests the current outage counts. */
-let outageKey = "";
 /** Counts a request that did not reach the server. A viewer that stopped, for
  * example for an update, comes back with new secrets, so an outage that lasts
- * asks for a fresh link. Failures count only against the key they used, and
- * only while the page still uses it: a key from a fresh link starts a new count. */
+ * asks for a fresh link. Failures count only while the page still uses the key
+ * they used. */
 function noteUnreachable(used: Access): void {
   if (used.key !== currentAccess()?.key) return;
   const now = Date.now();
-  if (!outageSince || now - lastFailure > OUTAGE_GAP_MS || used.key !== outageKey) {
-    outageSince = now;
-    outageKey = used.key;
-  }
+  if (!outageSince || now - lastFailure > OUTAGE_GAP_MS) outageSince = now;
   lastFailure = now;
   if (now - outageSince >= UNREACHABLE_MS) loseAccess(used);
 }
@@ -184,8 +181,10 @@ function postJson<T>(path: string, body: object): Promise<JsonResponse<T>> {
  * spent or expired code leaves the access the page has alone. */
 export const startSession = ({ code }: SessionRequest) => window.fetch(new URL("/api/session", window.location.href).href, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code } satisfies Body<SessionRequest>),
+  // The deadline also covers reading the answer.
+  signal: AbortSignal.timeout(SESSION_DEADLINE_MS),
 }) as Promise<JsonResponse<SessionResponse>>;
-export const getBootstrap = () => getJson<BootstrapResponse>("/api/bootstrap");
+export const getBootstrap = () => getJson<BootstrapResponse>("/api/bootstrap", IMPLEMENTATION_DEADLINE_MS);
 
 /* ---- review session ---------------------------------------------------- */
 export const getReviewState = () => getJson<ReviewStateResponse>("/api/review-state");

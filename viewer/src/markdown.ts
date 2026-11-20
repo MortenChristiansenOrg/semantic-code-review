@@ -17,7 +17,9 @@ function viewerAddress(value: string): boolean {
   try {
     const host = new URL(value).hostname.toLowerCase();
     return host === window.location.hostname.toLowerCase() || host === 'localhost' || host.endsWith('.localhost') ||
-      host === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(host) || host === '0.0.0.0';
+      host === '[::1]' || /^127\.\d+\.\d+\.\d+$/.test(host) || host === '0.0.0.0' || host === '[::]' ||
+      // IPv6 addresses that embed one of the IPv4 addresses above.
+      /^\[::ffff:(?:7f[0-9a-f]{2}:[0-9a-f]{1,4}|0:0)\]$/.test(host);
   } catch { return true; }
 }
 

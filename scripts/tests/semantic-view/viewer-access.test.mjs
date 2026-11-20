@@ -134,6 +134,8 @@ test("every kind of API route refuses a missing or wrong key", async (t) => {
   assert.equal(bootstrap.status, 200);
   assert.equal(bootstrap.json.implementation.stages.length, 1);
   assert.equal((await viewer.get("/implementation-data.js")).status, 404);
+  const unknown = await viewer.get(`/api/unknown?${viewer.scope}`);
+  assert.deepEqual([unknown.status, unknown.json], [404, { ok: false, error: "Unknown request." }]);
   assert.equal((await viewer.get("/api/whoami")).json.port, viewer.port);
   assert.equal(exited(viewer.pid), false);
 });

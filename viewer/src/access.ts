@@ -26,11 +26,19 @@ export function storedAccess(): Access | null {
   return null;
 }
 
-/** Stores the access for reloads of this tab; false when session storage is unavailable. */
-function storeAccess(access: Access | null): boolean {
+/** Stores the access for reloads of this tab when session storage is available. */
+function storeAccess(access: Access | null): void {
   try {
     if (access) sessionStorage.setItem(STORAGE_KEY, JSON.stringify(access));
     else sessionStorage.removeItem(STORAGE_KEY);
+  } catch { /* The page keeps the access in memory only. */ }
+}
+
+/** Whether session storage can keep access for a reload of this tab. */
+export function accessSurvivesReload(): boolean {
+  try {
+    sessionStorage.setItem(`${STORAGE_KEY}-probe`, "");
+    sessionStorage.removeItem(`${STORAGE_KEY}-probe`);
     return true;
   } catch { return false; }
 }
@@ -40,12 +48,12 @@ export function currentAccess(): Access | null {
   return window.SEMANTIC_ACCESS ?? null;
 }
 
-/** Makes requests use these secrets. Returns whether a reload of this tab keeps
- * them: without session storage the page holds them in memory only. */
-export function useAccess(access: Access): boolean {
+/** Makes requests use these secrets. Without session storage the page holds
+ * them in memory only. */
+export function useAccess(access: Access): void {
   window.SEMANTIC_ACCESS = access;
   document.getElementById("fresh-link-notice")?.remove();
-  return storeAccess(access);
+  storeAccess(access);
 }
 
 /** Drops the secrets a request used after the server refused them, and shows how

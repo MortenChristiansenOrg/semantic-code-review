@@ -1,7 +1,7 @@
 /* Starts the viewer page. The page receives its secrets through a single-use
    launch code in the URL fragment, loads the review data with them, and only
    then loads the app, whose modules read that data when they load. */
-import { currentAccess, showFreshLinkNotice, storedAccess, takeLaunchCode, useAccess, type Access } from "./access";
+import { accessSurvivesReload, showFreshLinkNotice, storedAccess, takeLaunchCode, useAccess, type Access } from "./access";
 import * as api from "./api";
 
 declare global {
@@ -37,18 +37,21 @@ let appLoaded = false;
 async function start(access: Access): Promise<void> {
   useAccess(access);
   let start;
+  // Only the server's own explanation replaces the general one.
+  let failure = "Review data could not be loaded.";
   try {
     const response = await api.getBootstrap();
     const body = await response.json();
     if (!response.ok || !body.ok) {
       // The request already showed how to get a fresh link.
       if (!body.ok && body.keyRequired) return;
-      throw new Error(body.ok ? "" : body.error);
+      if (!body.ok && body.error) failure = body.error;
+      throw new Error(failure);
     }
     start = body;
-  } catch (error) {
+  } catch {
     const app = document.querySelector("#app");
-    if (app && !document.getElementById("fresh-link-notice")) app.textContent = `${error instanceof Error && error.message ? error.message : "Review data could not be loaded."} Reload to retry.`;
+    if (app && !document.getElementById("fresh-link-notice")) app.textContent = `${failure} Reload to retry.`;
     return;
   }
   if (appLoaded) return;
@@ -72,9 +75,10 @@ void (async function boot() {
 // fragment. Its code may belong to a restarted viewer on the same port, or to
 // another review's viewer that took the port.
 window.addEventListener("hashchange", () => {
-  // A page that has not started, whatever stopped it, starts again from the link:
-  // a reload keeps the fragment, and the new page redeems it as a first load does.
-  if (!window.SEMANTIC_APP?.started()) {
+  // A page that has not started, whatever stopped it, starts again from the link,
+  // and so does a page that cannot keep access across a reload: a reload keeps the
+  // fragment, and the new page redeems it as a first load does.
+  if (!window.SEMANTIC_APP?.started() || !accessSurvivesReload()) {
     if (window.location.hash.startsWith("#launch=")) window.location.reload();
     return;
   }
@@ -84,8 +88,8 @@ window.addEventListener("hashchange", () => {
     const access = await redeem(code);
     // A spent or expired link leaves a working page as it is.
     if (!access) return;
-    // A reload loads the page the server now serves, when this tab keeps the
-    // access across it; otherwise the running page continues with the new access.
-    if (useAccess(access)) window.location.reload();
+    // The reload loads the page the server now serves.
+    useAccess(access);
+    window.location.reload();
   })();
 });

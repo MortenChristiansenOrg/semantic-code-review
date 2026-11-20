@@ -244,32 +244,49 @@ test('a poll that never answers counts as the server being unreachable', async (
   await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.', { timeout: 20_000 });
 });
 
-test('a fresh link starts a new count of failures for its key', async ({ page }) => {
-  // Without session storage the page keeps the new key in memory instead of reloading.
+test('without session storage a fresh link reloads a running page, which redeems the link', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
   });
-  const polls = await controlRevisionPolls(page);
   await mount(page);
-  await expect.poll(polls.issued).toBe(1);
-  await expect.poll(polls.failed).toBe(0);
-  const keys = [];
-  await page.route('http://localhost/api/revision**', (route) => { keys.push(route.request().headers()['x-semantic-flow-key']); return route.abort('connectionrefused'); });
-  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(polls.failed).toBe(count); expect(keys).toHaveLength(count); };
-  // Four seconds of failures with the first key.
-  for (let count = 1; count <= 5; count++) await poll(count);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
   await page.route('http://localhost/api/session', (route) => route.fulfill({ json: { ok: true, key: 'second-key', read: 'second-read' } }));
   const exchanged = page.waitForResponse((response) => response.url().endsWith('/api/session'));
   await page.evaluate(() => { window.sameDocument = true; window.location.hash = '#launch=second'; });
   await exchanged;
+  // The link may come from another review that took the port, so the page loads anew.
   await expect.poll(() => page.evaluate(() => window.SEMANTIC_ACCESS?.key)).toBe('second-key');
-  // The failures of the first key do not count against the second.
-  for (let count = 6; count <= 10; count++) await poll(count);
-  expect(keys.slice(5)).toEqual(Array(5).fill('second-key'));
+  expect(await page.evaluate(() => window.sameDocument)).toBeUndefined();
+  await expect(page.locator('.stage')).not.toHaveCount(0);
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
-  await poll(11);
+});
+
+test('a launch code exchange that never answers asks for a fresh link', async ({ page }) => {
+  await page.clock.install();
+  await mount(page);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await page.route('http://localhost/api/session', () => {});
+  await page.evaluate(() => sessionStorage.clear());
+  const exchange = page.waitForRequest((request) => request.url().endsWith('/api/session'));
+  // A new page, not a fragment change of the running one.
+  await page.goto('about:blank');
+  await page.goto('http://localhost/#launch=stalled');
+  await exchange;
+  await page.clock.runFor(10_000);
   await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.');
-  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+});
+
+test('review data that never arrives shows that it could not be loaded', async ({ page }) => {
+  await page.clock.install();
+  await mount(page);
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await page.route('http://localhost/api/bootstrap**', () => {});
+  const bootstrap = page.waitForRequest((request) => request.url().includes('/api/bootstrap'));
+  await page.goto('about:blank');
+  await page.goto('http://localhost/#launch=again');
+  await bootstrap;
+  await page.clock.runFor(30_000);
+  await expect(page.locator('#app')).toHaveText('Review data could not be loaded. Reload to retry.');
 });
 
 test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {

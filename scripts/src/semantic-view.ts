@@ -2626,7 +2626,7 @@ function serveViewer({
       return;
     }
 
-    if (pathname.startsWith("/api/")) { failure(404, "Unknown request."); return; }
+    if (pathname.startsWith("/api/")) { failure(404, new Error("Unknown request.")); return; }
     const contentType = STATIC_FILES.get(pathname);
     if (!contentType) { plain(response, 404, "Not found"); return; }
     if (request.method !== "GET" && request.method !== "HEAD") { plain(response, 405, "Method not allowed."); return; }

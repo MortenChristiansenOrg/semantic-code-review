@@ -78,7 +78,8 @@ folder by hand. Later updates use `/semantic-flow update` again.
 After installation, ask for `/semantic-flow update`. It displays release notes,
 including skipped versions, verifies the download and all file digests, and then
 replaces the installed directory. A matching viewer is stopped only after
-validation and restarted at the same URL. Current browser drafts stay in place.
+validation and restarted on the same port. Open pages then need a fresh link: run
+the review again to get one. Drafts saved by the viewer stay in place.
 Repository code, artifact files, and feedback files are untouched.
 
 For a chosen version, run `node /path/to/semantic-flow/scripts/semantic-flow.mjs update --version X.Y.Z`.

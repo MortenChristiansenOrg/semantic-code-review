@@ -170,6 +170,7 @@ test('a Markdown image at the viewer\'s own address is refused while repository 
   await expect(preview.locator('h1')).toHaveText('Guide');
   const own = preview.locator('img[alt="Own address"]');
   await expect(own).not.toHaveAttribute('src', /./);
+  await expect(preview.locator('img[alt="Mapped address"]')).not.toHaveAttribute('src', /./);
   const pixel = preview.locator('img[alt="Pixel"]');
   await expect(pixel).toHaveAttribute('src', /[?&]read=/);
   await expect.poll(() => pixel.evaluate((image) => image.complete && image.naturalWidth)).toBe(1);
@@ -292,7 +293,7 @@ async function disableSessionStorage(context) {
   });
 }
 
-test('without session storage a fresh link from a restarted viewer keeps the review open in the same tab', async ({ browser }) => {
+test('without session storage a fresh link from a restarted viewer reloads the tab with the review', async ({ browser }) => {
   const { context, page, errors } = await openPage(browser);
   await disableSessionStorage(context);
   await openLink(page, await freshLaunchUrl(reviews.a));
@@ -303,10 +304,10 @@ test('without session storage a fresh link from a restarted viewer keeps the rev
   const relaunched = launch(reviews.a);
   expect(record(reviews.a).viewer.key).not.toBe(before);
   expect(await openLink(page, relaunched)).toBe(200);
-  // The page keeps the new key in memory, as a reload would lose it, and the
-  // restarted viewer accepts it.
+  // A reload would lose access the page redeemed, so the reloaded page redeems
+  // the link itself, and the restarted viewer accepts the key it gets.
   await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
-  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+  expect(await page.evaluate(() => window.sameDocument)).toBeUndefined();
   await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
   expect(await violations(page)).toEqual([]);
