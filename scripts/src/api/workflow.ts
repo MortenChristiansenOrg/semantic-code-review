@@ -214,11 +214,13 @@ export interface ArchiveSemanticFlowOptions {
   project?: string;
   /** Selects an implementation across linked worktrees. */
   "implementation-id"?: string;
-  /** Emits the archived implementation and validated stack as JSON. */
+  /** The commit, or the range `<base>..<head>`, that landed the work, as the reviewer supplied it. */
+  landed?: string;
+  /** Emits the archived implementation, its landing record and validated stack as JSON. */
   json?: true;
 }
 
-/** Validates landed artifact and resolved feedback, then archives on the target branch.
+/** Validates the artifact and resolved feedback, then archives it under its archive ref with a landing record. Never touches the target branch.
  * @cli semantic-flow.mjs
  * @command archive
  */

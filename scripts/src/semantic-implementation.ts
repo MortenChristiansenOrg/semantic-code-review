@@ -24,6 +24,7 @@ import {
   type Options,
 } from "./shared/arguments.js";
 import {
+  LANDING_SCHEMA_ID,
   MANIFEST_SCHEMA_ID,
   SPECIFICATION_SCHEMA_ID,
   STAGE_ORGANIZATION_SCHEMA_ID,
@@ -35,6 +36,7 @@ import {
   type ImplementationManifest,
   type InsightCollection,
   type InsightItem,
+  type LandingRecord,
   type NodeFileChange,
   type Specification,
   type Stage,
@@ -60,15 +62,16 @@ import {
 } from "./shared/implementation.js";
 import {
   ArtifactDraft,
+  archiveRef,
+  archiveTag,
   buildArtifactTree,
   commitArtifact,
   exportArtifactFiles,
   hasFile,
-  interruptedArchiveNote,
   listJsonIds,
   readArtifact,
   activeRef,
-  archivingRef,
+  readPublishedArtifact,
   rememberImplementation,
   removeArtifact,
   requireArtifact,
@@ -104,6 +107,9 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const skillDirectory = path.resolve(scriptDirectory, "..");
 
 const HELP = renderCliHelp(semanticImplementationApi);
+
+/** The landing record an archive adds to the published artifact. */
+const ARCHIVE_LANDING_FILE = "landing.json";
 
 /** The worktree a command runs in and the artifact snapshot it read there. */
 interface Workspace {
@@ -709,16 +715,17 @@ function validateSemantic(
   }
 
   const base = commitObject(workspace.root, manifest.baseRevision);
-  const targetHead = branchCommit(workspace.root, manifest.targetBranch);
   const finalStageId = manifest.stages.at(-1);
   const finalStageHead = finalStageId
     ? finalizedStage(artifact, finalStageId).change.headRevision
     : undefined;
+  // With drift allowed the target is not read at all, so it may even be gone.
+  const targetHead = allowTargetDrift ? base : branchCommit(workspace.root, manifest.targetBranch);
   const targetContainsLandedStack =
     allowLandedTarget &&
     finalStageHead !== undefined &&
     isAncestor(workspace.root, finalStageHead, targetHead);
-  if (targetHead !== base && !targetContainsLandedStack && !allowTargetDrift) {
+  if (targetHead !== base && !targetContainsLandedStack) {
     fail(
       `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; check it out, then run restack --base ${manifest.targetBranch}.`,
     );
@@ -2301,10 +2308,10 @@ function buildMetadataCommit(workspace: Workspace, artifact: Artifact, parent: s
 
 // Reuse expensive immutable validation, but re-read documents and refs before
 // each mutation in a combined workflow. A prior success never validates edits.
-function assertValidatedArtifactCurrent(workspace: Workspace, artifact: Artifact, allowLandedTarget = false): void {
+function assertValidatedArtifactCurrent(workspace: Workspace, artifact: Artifact, ignoreTarget = false): void {
   const changed = "Semantic implementation changed during the workflow; retry after the current edit completes.";
   if (readArtifact(workspace.root)?.version !== workspace.snapshot.version) fail(changed);
-  const expected = new Map<string, string>([[artifact.manifest.targetBranch, artifact.manifest.baseRevision]]);
+  const expected = new Map<string, string>(ignoreTarget ? [] : [[artifact.manifest.targetBranch, artifact.manifest.baseRevision]]);
   for (const stage of artifact.stages.values()) expected.set(stage.change.branch, stage.change.headRevision);
   const refs = git(["for-each-ref", "--format=%(refname:strip=2) %(objectname)", ...[...expected.keys()].map((branch) => `refs/heads/${branch}`)], { cwd: workspace.root });
   // Branch names contain no spaces, so the first space separates name and object.
@@ -2315,7 +2322,6 @@ function assertValidatedArtifactCurrent(workspace: Workspace, artifact: Artifact
   for (const [branch, head] of expected) {
     const actualHead = actual.get(branch);
     if (actualHead === head) continue;
-    if (allowLandedTarget && branch === artifact.manifest.targetBranch && actualHead !== undefined && isAncestor(workspace.root, lastStageHead(artifact), actualHead)) continue;
     fail(`Branch ${branch} changed during the workflow; validate the current stack before retrying.`);
   }
 }
@@ -2324,12 +2330,17 @@ interface MetadataPublication {
   branch: string;
   commit: string;
   update: RefUpdate | undefined;
+  /** When the branch already publishes the artifact: a check that it still does. */
+  verify?: RefUpdate;
 }
 
 function metadataPublicationPlan(workspace: Workspace, artifact: Artifact, message: string): MetadataPublication {
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
+  if (branch === artifact.manifest.targetBranch) {
+    fail(`Metadata branch ${branch} is the target branch; publishing there would rewrite it.`);
+  }
   const publication = buildMetadataCommit(workspace, artifact, stageTip, message);
   const existing = gitOptional(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: workspace.root,
@@ -2340,7 +2351,7 @@ function metadataPublicationPlan(workspace: Workspace, artifact: Artifact, messa
     });
     const parents = commitParents(workspace.root, existing);
     if (parents.length === 1 && parents[0] === stageTip && existingTree === publication.tree) {
-      return { branch, commit: existing, update: undefined };
+      return { branch, commit: existing, update: undefined, verify: { ref: `refs/heads/${branch}`, next: existing, previous: existing } };
     }
     const pathsChanged = parents.length === 1
       ? changedPathNames(workspace.root, parents[0], existing)
@@ -2612,158 +2623,288 @@ function prepareBranch(
   }
 }
 
+/** What `archive` did, as `semantic-flow archive --json` reports it. */
+export interface ArchiveSummary {
+  ref: string;
+  commit: string;
+  metadataCommit: string;
+  landing: LandingRecord;
+  /** A target commit or range whose changes match the implementation's, offered
+   * only when landing is unknown; matching does not show that it landed them. */
+  suggestedLanding: string | null;
+}
+
+/** Where an implementation was archived from: enough to tell where it landed. */
+interface LandingSubject {
+  implementationId: string;
+  targetBranch: string;
+  baseRevision: string;
+  finalHeadRevision: string;
+}
+
+/** The commit or range a reviewer supplied as landing, in full revisions. The
+ * local target branch may be behind the remote one, so it only warns when the
+ * landing is not on it. */
+function suppliedLanding(root: string, targetBranch: string, value: string): string {
+  const parts = value.split("..");
+  if (parts.length > 2 || parts.some((part) => part === "" || part.startsWith("."))) {
+    fail(`--landed takes a commit or a range <base>..<head>, not ${value}.`);
+  }
+  const revisions = parts.map((part) => commitObject(root, part));
+  const head = revisions.at(-1) ?? fail("--landed requires a revision.");
+  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}^{commit}`], { cwd: root });
+  if (!targetHead || !isAncestor(root, head, targetHead)) {
+    console.error(`Warning: landing commit ${head} is not on the local target branch ${targetBranch}; it is recorded as supplied.`);
+  }
+  if (revisions.length === 2) {
+    const [base] = revisions;
+    if (base === head || !isAncestor(root, base, head)) fail(`Landing range ${value} must name commits after ${base} up to ${head}.`);
+  }
+  return revisions.join("..");
+}
+
+/** The landing record of an implementation: the commits the reviewer supplied,
+ * else the target branch head when it contains the final stage head, else unknown. */
+function landingRecord(root: string, subject: LandingSubject, landed: string | undefined): LandingRecord {
+  const record: LandingRecord = {
+    $schema: LANDING_SCHEMA_ID,
+    implementationId: subject.implementationId,
+    targetBranch: subject.targetBranch,
+    finalHeadRevision: subject.finalHeadRevision,
+    outcome: "unknown",
+    recordedAt: new Date().toISOString(),
+  };
+  if (landed !== undefined) return { ...record, outcome: "supplied", landedCommits: suppliedLanding(root, subject.targetBranch, landed) };
+  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${subject.targetBranch}^{commit}`], { cwd: root });
+  if (targetHead && isAncestor(root, subject.finalHeadRevision, targetHead)) return { ...record, outcome: "ancestry", targetRevision: targetHead };
+  return record;
+}
+
+/** Patch IDs of the commits a `git log -p` range lists, oldest first. */
+function commitPatchIds(root: string, range: string[]): Array<{ commit: string; patchId: string }> {
+  const log = gitRawBuffer(["log", "--no-merges", "--no-renames", "--no-ext-diff", "--no-textconv", "--reverse", "-p", "--format=commit %H", ...range], { cwd: root });
+  if (log.length === 0) return [];
+  const ids = new Map(gitRaw(["patch-id", "--stable"], { cwd: root, input: log }).split(/\r?\n/).filter(Boolean).map((line) => {
+    const [patchId, commit] = line.split(" ");
+    return [commit, patchId] as const;
+  }));
+  // patch-id skips commits without a diff; the log's order is kept.
+  return gitRaw(["rev-list", "--no-merges", "--reverse", ...range], { cwd: root }).split(/\r?\n/).filter(Boolean)
+    .flatMap((commit) => { const patchId = ids.get(commit); return patchId ? [{ commit, patchId }] : []; });
+}
+
+/** Commits of the target branch since the implementation's base whose changes
+ * match the implementation's: one commit with all of them, as a squash merge
+ * makes, or a run of commits matching its commits one by one, as a rebase merge
+ * makes. Only a suggestion: the target may have made the same edits itself. */
+function suggestedLanding(root: string, subject: LandingSubject): string | null {
+  // Only a suggestion: when matching fails, there is none.
+  try {
+    return matchingLanding(root, subject);
+  } catch {
+    return null;
+  }
+}
+
+function matchingLanding(root: string, subject: LandingSubject): string | null {
+  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${subject.targetBranch}^{commit}`], { cwd: root });
+  if (!targetHead) return null;
+  // The most recent commits only, so a long-lived archive stays quick to check.
+  const candidates = commitPatchIds(root, ["--max-count=1000", targetHead, `^${subject.finalHeadRevision}`, `^${subject.baseRevision}`]);
+  if (candidates.length === 0) return null;
+  const cumulative = gitRawBuffer(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", subject.baseRevision, subject.finalHeadRevision, "--"], { cwd: root });
+  const cumulativeId = cumulative.length === 0 ? undefined : gitRaw(["patch-id", "--stable"], { cwd: root, input: cumulative }).split(" ")[0];
+  const squash = candidates.find((candidate) => candidate.patchId === cumulativeId);
+  if (squash) return squash.commit;
+  const own = commitPatchIds(root, [`${subject.baseRevision}..${subject.finalHeadRevision}`]).map((entry) => entry.patchId);
+  if (own.length === 0) return null;
+  for (let start = 0; start + own.length <= candidates.length; start++) {
+    const run = candidates.slice(start, start + own.length);
+    if (!own.every((patchId, offset) => run[offset].patchId === patchId)) continue;
+    // Only a chain of commits, each the only parent of the next, is one range.
+    const parents = run.map(({ commit }) => commitParents(root, commit));
+    if (parents.some((list) => list.length !== 1) || run.some((entry, offset) => offset > 0 && parents[offset][0] !== run[offset - 1].commit)) continue;
+    return `${parents[0][0]}..${run.at(-1)?.commit}`;
+  }
+  return null;
+}
+
+/** One line telling what a landing record says. */
+function describeLanding(record: LandingRecord): string {
+  if (record.outcome === "ancestry") return `landed: ${record.targetBranch} at ${record.targetRevision} contains final stage head ${record.finalHeadRevision}`;
+  if (record.outcome === "supplied") return `landed by ${record.landedCommits} on ${record.targetBranch}, as supplied`;
+  return "landing unknown";
+}
+
+/** A commit on top of the published metadata commit that adds the landing record
+ * to the published artifact. */
+function buildArchiveCommit(root: string, metadataCommit: string, record: LandingRecord, message: string): string {
+  const published = readPublishedArtifact(root, metadataCommit) ?? fail(`Metadata commit ${metadataCommit} publishes no artifact.`);
+  const files = new ArtifactDraft(published);
+  files.writeJson(ARCHIVE_LANDING_FILE, parseDocument(LANDING_SCHEMA_ID, record, ARCHIVE_LANDING_FILE));
+  const tree = buildArtifactTree(root, files, metadataCommit);
+  return gitRaw(["commit-tree", tree, "-p", metadataCommit], { cwd: root, input: `${message}\n` });
+}
+
+/** The archive of an implementation: its commit, the metadata commit below it, and its landing record. */
+function readArchive(root: string, implementationId: string): { commit: string; metadataCommit: string; landing: LandingRecord } {
+  const ref = archiveRef(implementationId);
+  const commit = gitOptional(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: root });
+  if (!commit) fail(`No archive of ${implementationId} exists at ${ref}.`);
+  const parents = commitParents(root, commit);
+  if (parents.length !== 1) fail(`Archive ${ref} must have the metadata commit as its only parent.`);
+  const files = readPublishedArtifact(root, commit) ?? fail(`Archive ${ref} holds no artifact.`);
+  if (!hasFile(files, ARCHIVE_LANDING_FILE)) fail(`Archive ${ref} has no landing record.`);
+  const landing = parseDocument(LANDING_SCHEMA_ID, parseJson(files.read(ARCHIVE_LANDING_FILE).toString("utf8")), files.describe(ARCHIVE_LANDING_FILE));
+  return { commit, metadataCommit: parents[0], landing };
+}
+
+/** Fails when any of refs is a symbolic ref, even a dangling one: a write
+ * through it would move whatever ref it names, such as the target branch. */
+function assertDirectRefs(root: string, refs: readonly string[]): void {
+  for (const ref of refs) {
+    const target = gitOptional(["symbolic-ref", "--quiet", ref], { cwd: root });
+    if (target) fail(`${ref} is a symbolic ref to ${target}; archiving writes only direct refs. Replace it with a branch or remove it.`);
+  }
+}
+
+/** The archive's shared tag and the commit it names, if it was shared. Any
+ * ref at the tag's name counts as shared, so nothing replaces it. */
+function sharedArchive(root: string, implementationId: string): { tag: string; commit: string | undefined; annotated: boolean } | undefined {
+  const tag = archiveTag(implementationId);
+  const object = gitOptional(["rev-parse", "--verify", "--quiet", tag], { cwd: root });
+  if (!object) return undefined;
+  const annotated = git(["cat-file", "-t", object], { cwd: root }) === "tag";
+  return { tag, commit: gitOptional(["rev-parse", "--verify", "--quiet", `${object}^{commit}`], { cwd: root }), annotated };
+}
+
 function archiveImplementation(
   workspace: Workspace,
   options: Options,
   validatedArtifact: Artifact | undefined = undefined,
   quiet = false,
-): void {
+): ArchiveSummary {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive"));
+  // The target may have moved on in any way: landing is recorded, never required.
   const artifact = validatedArtifact ?? validateArtifact(workspace, {
     publish: true,
     quiet: true,
-    allowLandedTarget: true,
+    allowTargetDrift: true,
   });
-  assertCleanWorkingTree(workspace.root, "Implementation archival");
   if (validatedArtifact) assertValidatedArtifactCurrent(workspace, artifact, true);
-  const current = currentBranch(workspace.root);
-  if (current !== artifact.manifest.targetBranch) {
-    fail(
-      `Archive requires checked-out target branch ${artifact.manifest.targetBranch}, not ${current ?? "detached HEAD"}.`,
-    );
-  }
-  const stageTip = lastStageHead(artifact);
-  const targetHead = branchCommit(workspace.root, artifact.manifest.targetBranch);
-  if (!isAncestor(workspace.root, stageTip, targetHead)) {
-    fail(
-      `Archive requires target branch ${artifact.manifest.targetBranch} to contain final stage head ${stageTip}.`,
-    );
-  }
-  const publicationBranch = metadataBranch(artifact);
-  const publicationHead = gitOptional(
-    ["rev-parse", "--verify", `refs/heads/${publicationBranch}`],
-    { cwd: workspace.root },
-  );
-  if (!publicationHead) {
-    fail(`Archive requires published metadata branch ${publicationBranch}.`);
-  }
-  const publicationParents = commitParents(workspace.root, publicationHead);
-  const publicationTree = git(
-    ["show", "-s", "--format=%T", publicationHead],
-    { cwd: workspace.root },
-  );
-  const expectedTree = publishedTree(workspace, artifact, stageTip);
-  if (
-    publicationParents.length !== 1 ||
-    publicationParents[0] !== stageTip ||
-    publicationTree !== expectedTree
-  ) {
-    fail(
-      `Metadata branch ${publicationBranch} does not publish the current semantic implementation; run publish again before archiving.`,
-    );
-  }
-
-  const destinationOption = option(options, "destination")
-    ?? `.semantic-review-history/${artifact.manifest.implementationId}/.semantic-review`;
-  if (
-    path.isAbsolute(destinationOption) ||
-    destinationOption.split(/[\\/]/).includes("..")
-  ) {
-    fail("Archive destination must be a repository-relative path without '..'.");
-  }
-  const destination = path.resolve(workspace.root, destinationOption);
-  if (
-    destination === workspace.root ||
-    !destination.startsWith(`${workspace.root}${path.sep}`) ||
-    path.basename(destination) !== ".semantic-review"
-  ) {
-    fail("Archive destination must end in .semantic-review inside the repository.");
-  }
-  const realDestination = resolvedPath(destination), realRoot = resolvedPath(workspace.root);
-  if (!realDestination.startsWith(`${realRoot}${path.sep}`)) {
-    fail("Archive destination must not lead outside the repository through a link.");
-  }
-  const relativeDestination = formatPath(path.relative(workspace.root, destination));
-  // A sparse checkout can hide a destination that the target branch tracks.
-  if (fs.existsSync(destination) || gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}`], { cwd: workspace.root }) !== undefined) {
-    fail(`Archive destination already exists: ${destinationOption}.`);
-  }
-
-  const message = option(options, "message")
-    ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
-  const implementationId = artifact.manifest.implementationId;
-  const claim = archivingRef(implementationId);
-  const version = workspace.snapshot.version;
-  const startHead = git(["rev-parse", "HEAD"], { cwd: workspace.root });
-  const archiveFiles = fullFormFiles(artifact, workspace.snapshot);
-  // The archive is built like a publication, from blobs no filter changed, so
-  // its bytes, paths and modes are known as one tree before anything is written.
-  const archiveTree = buildArtifactTree(workspace.root, archiveFiles, startHead, relativeDestination);
-  const expectedArchive = git(["rev-parse", `${archiveTree}:${relativeDestination}`], { cwd: workspace.root });
-  // Only a new commit on top of the starting one that holds exactly that tree
-  // proves the archive exists; the destination was absent before.
-  const archived = () => {
-    // One resolution of HEAD, so both checks see the same commit.
-    const head = gitOptional(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: workspace.root });
-    return head !== undefined && head !== "" &&
-      gitOptional(["rev-parse", `${head}^`], { cwd: workspace.root }) === startHead &&
-      gitOptional(["rev-parse", `${head}:${relativeDestination}`], { cwd: workspace.root }) === expectedArchive;
+  const { implementationId } = artifact.manifest;
+  const subject: LandingSubject = {
+    implementationId,
+    targetBranch: artifact.manifest.targetBranch,
+    baseRevision: artifact.manifest.baseRevision,
+    finalHeadRevision: lastStageHead(artifact),
   };
-  let removeWritten = () => {};
-  // Moving the snapshot from the active ref to an archiving claim first makes a
-  // concurrent writer fail instead of changing an artifact that is being
-  // archived, and keeps the snapshot reachable if archiving is interrupted.
-  removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
-  try {
-    removeWritten = exportArtifactFiles(archiveFiles, destination);
-    // The index takes the archive's blobs as built, not the files through Git's filters.
-    const entries = gitRaw(["ls-tree", "-r", "-z", "--full-tree", archiveTree, "--", relativeDestination], { cwd: workspace.root });
-    gitRaw(["update-index", "-z", "--index-info"], { cwd: workspace.root, input: entries });
-    const staged = git(["diff", "--cached", "--name-only"], {
-      cwd: workspace.root,
-    })
-      .split(/\r?\n/)
-      .filter(Boolean);
-    if (
-      staged.length === 0 ||
-      !staged.every(
-        (file) =>
-          file.startsWith(`${relativeDestination}/`),
-      )
-    ) {
-      fail("Archival staged files outside the active and destination artifacts.");
-    }
-    git(
-      ["commit", "-m", message],
-      { cwd: workspace.root },
-    );
-  } catch (error) {
-    // While the branch has not moved, nothing was committed and everything is undone.
-    if (gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root }) === startHead) {
-      git(["reset", "--", destinationOption], {
-        cwd: workspace.root,
-        allowFailure: true,
-      });
-      // Only what the archive wrote is removed; anything a hook left beside it stays.
-      removeWritten();
-      updateRefs(workspace.root, [
-        { ref: claim, next: ZERO_OID, previous: version },
-        { ref: activeRef(implementationId), next: version, previous: ZERO_OID },
-      ]);
-      throw error;
-    }
-    // The branch moved although Git reported a failure, such as a failing hook;
-    // whether the commit holds the archive is checked below.
-    console.error(`semantic-implementation: ${errorMessage(error)}`);
+  const landing = landingRecord(workspace.root, subject, option(options, "landed"));
+  assertDirectRefs(workspace.root, [`refs/heads/${artifact.manifest.targetBranch}`, `refs/heads/${metadataBranch(artifact)}`, archiveRef(implementationId), archiveTag(implementationId)]);
+  // What is archived is what is published: an unpublished or outdated artifact is published now.
+  const publication = metadataPublicationPlan(workspace, artifact, `Publish ${implementationId} semantic implementation`);
+  const message = option(options, "message") ?? `Archive ${implementationId} semantic implementation`;
+  const commit = buildArchiveCommit(workspace.root, publication.commit, landing, message);
+  const ref = archiveRef(implementationId);
+  // One transaction publishes, archives and removes the active artifact; the
+  // stage branches must still hold the archived heads.
+  const stageChecks = [...artifact.stages.values()].map(({ change }): RefUpdate =>
+    ({ ref: `refs/heads/${change.branch}`, next: change.headRevision, previous: change.headRevision }));
+  removeArtifact(workspace.root, workspace.snapshot, [
+    ...stageChecks,
+    publication.update ?? publication.verify ?? fail("The publication has no metadata ref."),
+    { ref, next: commit, previous: ZERO_OID },
+    { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
+  ]);
+  const suggestion = landing.outcome === "unknown" ? suggestedLanding(workspace.root, subject) : null;
+  if (!quiet) {
+    if (publication.update) console.log(`Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`);
+    console.log(`Archived ${implementationId} at ${ref} (${describeLanding(landing)}).`);
+    if (suggestion) console.log(landingSuggestion(implementationId, suggestion));
   }
-  if (!archived()) {
-    // A hook or an interruption can change what is committed; the claim keeps the snapshot until someone checks.
-    fail(`The archive commit does not hold the whole artifact at ${relativeDestination}, so ${implementationId} stays claimed.${interruptedArchiveNote(workspace.root)}`);
+  return { ref, commit, metadataCommit: publication.commit, landing, suggestedLanding: suggestion };
+}
+
+function landingSuggestion(implementationId: string, suggestion: string): string {
+  return `Target ${suggestion.includes("..") ? "commits" : "commit"} ${suggestion} ${suggestion.includes("..") ? "match" : "matches"} the implementation's changes. Matching does not show that ${suggestion.includes("..") ? "they" : "it"} landed them; once the reviewer confirms it, record it with: semantic-flow.mjs implementation archive landing --id ${implementationId} --landed ${suggestion}`;
+}
+
+/** The --id of a command on an archived implementation. */
+function archivedImplementationId(root: string, options: Options): string {
+  const implementationId = option(options, "id", { required: true });
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(implementationId)) fail(`Invalid implementation ID ${implementationId}.`);
+  git(["check-ref-format", archiveRef(implementationId)], { cwd: root });
+  return implementationId;
+}
+
+/** Records where an archived implementation landed: the commits the reviewer
+ * supplies, or the target branch once it contains the final stage head. */
+function recordArchiveLanding(root: string, options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive landing"));
+  const implementationId = archivedImplementationId(root, options);
+  assertDirectRefs(root, [archiveRef(implementationId), archiveTag(implementationId)]);
+  const archive = readArchive(root, implementationId);
+  const landed = option(options, "landed");
+  const shared = sharedArchive(root, implementationId);
+  const subject: LandingSubject = {
+    implementationId,
+    targetBranch: archive.landing.targetBranch,
+    baseRevision: loadPublishedBase(root, archive.metadataCommit),
+    finalHeadRevision: archive.landing.finalHeadRevision,
+  };
+  const next = landingRecord(root, subject, landed);
+  // Without supplied commits, only finding the landing replaces an unknown one.
+  const unchanged = landed === undefined
+    ? archive.landing.outcome !== "unknown" || next.outcome === "unknown"
+    : archive.landing.outcome === "supplied" && archive.landing.landedCommits === next.landedCommits;
+  if (unchanged) {
+    console.log(`Archive of ${implementationId} keeps its record (${describeLanding(archive.landing)}).`);
+    if (archive.landing.outcome === "unknown") {
+      const suggestion = suggestedLanding(root, subject);
+      if (suggestion) console.log(landingSuggestion(implementationId, suggestion));
+    }
+    return;
   }
-  updateRefs(workspace.root, [{ ref: claim, next: ZERO_OID, previous: version }]);
-  if (!quiet) console.log(
-    `Archived ${implementationId} at ${relativeDestination}.`,
-  );
+  if (shared) fail(`The archive of ${implementationId} is shared as tag ${shared.tag}, which never moves, so its landing record stays as shared.`);
+  const message = gitRaw(["show", "-s", "--format=%B", archive.commit], { cwd: root }).trimEnd();
+  const commit = buildArchiveCommit(root, archive.metadataCommit, next, message);
+  updateRefs(root, [
+    { ref: archiveRef(implementationId), next: commit, previous: archive.commit },
+    { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
+  ]);
+  console.log(`Recorded the landing of ${implementationId} (${describeLanding(next)}).`);
+}
+
+/** The base revision a published artifact records. */
+function loadPublishedBase(root: string, metadataCommit: string): string {
+  const files = readPublishedArtifact(root, metadataCommit) ?? fail(`Metadata commit ${metadataCommit} publishes no artifact.`);
+  return parseDocument(MANIFEST_SCHEMA_ID, parseJson(files.read("manifest.json").toString("utf8")), files.describe("manifest.json")).baseRevision;
+}
+
+/** Shares an archive as an annotated tag. The tag is created once and never moved. */
+function shareArchive(root: string, options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive share"));
+  const implementationId = archivedImplementationId(root, options);
+  assertDirectRefs(root, [archiveRef(implementationId), archiveTag(implementationId)]);
+  const archive = readArchive(root, implementationId);
+  const tag = archiveTag(implementationId);
+  const shared = sharedArchive(root, implementationId);
+  const push = `git push <remote> ${tag}`;
+  if (shared) {
+    if (!shared.annotated || shared.commit !== archive.commit) fail(`${tag} already exists and is not an annotated tag of the current archive commit ${archive.commit}; a shared archive tag is never moved or replaced.`);
+    console.log(`The archive of ${implementationId} is already shared as ${tag}. Push it with: ${push}`);
+    return;
+  }
+  const message = option(options, "message") ?? `Semantic implementation ${implementationId}, ${describeLanding(archive.landing)}`;
+  const tagger = git(["var", "GIT_COMMITTER_IDENT"], { cwd: root });
+  const tagName = tag.slice("refs/tags/".length);
+  // mktag writes the tag object without signing or hooks; the ref is created only if absent.
+  const object = gitRaw(["mktag"], { cwd: root, input: `object ${archive.commit}\ntype commit\ntag ${tagName}\ntagger ${tagger}\n\n${message}\n` });
+  updateRefs(root, [
+    { ref: archiveRef(implementationId), next: archive.commit, previous: archive.commit },
+    { ref: tag, next: object, previous: ZERO_OID },
+  ]);
+  console.log(`Shared the archive of ${implementationId} as ${tag}. Push it with: ${push}`);
 }
 
 /** A path with every existing ancestor's links resolved, so containment checks see where it leads. */
@@ -2817,6 +2958,8 @@ export interface WorkflowSummary extends StackSummary {
   worktree: string;
   implementationId: string;
   workingStages: string[];
+  /** What `archive` recorded; only in its summary. */
+  archive?: ArchiveSummary;
 }
 
 /** One validation boundary for a workflow; standalone commands keep their own gates. */
@@ -2827,7 +2970,7 @@ export function implementationWorkflow(
 ): WorkflowSummary {
   const workspace = openWorkspace(root);
   const publish = mode !== "validate" || flag(options, "publish");
-  const artifact = validateArtifact(workspace, { quiet: true, publish, allowLandedTarget: mode === "archive" });
+  const artifact = validateArtifact(workspace, { quiet: true, publish, allowTargetDrift: mode === "archive" });
   const summary: WorkflowSummary = {
     worktree: root,
     implementationId: artifact.manifest.implementationId,
@@ -2843,7 +2986,8 @@ export function implementationWorkflow(
       publishArtifact(workspace, new Map(), artifact, flag(options, "json"));
     }
   } else if (mode === "archive") {
-    archiveImplementation(workspace, new Map(), artifact, flag(options, "json"));
+    const landed = option(options, "landed");
+    summary.archive = archiveImplementation(workspace, new Map(landed === undefined ? [] : [["landed", [landed]]]), artifact, flag(options, "json"));
   }
   return summary;
 }
@@ -2926,6 +3070,8 @@ function dispatch(root: string, positionals: string[], options: Options): void {
     archiveImplementation(openWorkspace(root), options);
     return;
   }
+  if (command === "archive" && subcommand === "landing") return recordArchiveLanding(root, options);
+  if (command === "archive" && subcommand === "share") return shareArchive(root, options);
   if (command === "validate" && subcommand === undefined) {
     assertKnownOptions(
       options,

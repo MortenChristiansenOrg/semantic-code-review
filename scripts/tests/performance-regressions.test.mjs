@@ -90,8 +90,10 @@ test('combined validation, preparation and landed archive preserve feedback gate
   assert.equal(JSON.parse(repo.flow('prepare', '--branch', 'review-ready', '--json')).finalHeadRevision, verified.finalHeadRevision);
   assert.equal(repo.git('rev-parse', 'review-ready'), verified.finalHeadRevision);
   repo.git('switch', 'main'); repo.git('merge', '--ff-only', 'review-ready');
-  assert.equal(JSON.parse(repo.flow('archive', '--json')).finalHeadRevision, verified.finalHeadRevision);
-  assert.equal(repo.exists('.semantic-review-history/test-implementation/.semantic-review/manifest.json'), true);
+  const archived = JSON.parse(repo.flow('archive', '--json'));
+  assert.equal(archived.finalHeadRevision, verified.finalHeadRevision);
+  assert.equal(archived.archive.landing.outcome, 'ancestry');
+  assert.equal(repo.git('rev-parse', 'refs/semantic-review/archive/test-implementation'), archived.archive.commit);
 });
 
 test('viewer snapshot reads unchanged documents only on fallback and sees external changes/deletion', (t) => {

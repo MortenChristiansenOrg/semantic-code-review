@@ -114,6 +114,21 @@ long-running processes such as the viewer and feedback waits must see writes
 from other processes. An unchanged viewer poll costs one `for-each-ref`, since
 the snapshot commit identifies the artifact's content.
 
+## Archive as a ref (#176)
+
+`archive` no longer stages and commits files in the target checkout. It builds
+the archive commit from the published tree and moves the refs in one
+`git update-ref --stdin` transaction. Same fixture (ten stages, landed by
+fast-forward), Linux, Node 24.20.0, two runs each:
+
+| Operation / fixture | Before | After |
+| --- | ---: | ---: |
+| Archive landed stack | 101 Git calls, 745–754 ms | 89 Git calls, 694–756 ms |
+
+The time is dominated by validation, which is unchanged. When landing is
+unknown, matching target commits for a suggestion adds a `git log -p` over at
+most 1,000 target commits and two `git patch-id` runs.
+
 ## Functional effects and limits
 
 - API references are grouped under `scripts/api/`; `API.d.ts` is the small index

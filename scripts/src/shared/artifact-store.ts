@@ -169,7 +169,9 @@ export function readArtifactDirectory(root: string, directory: string): Artifact
 // --- Active artifacts ---------------------------------------------------------
 
 /** The namespace of the refs holding active artifacts, one per implementation. */
-export const ACTIVE_REF_PREFIX = "refs/semantic-review/active/";
+/** Refs only Semantic Flow writes, all of them direct. */
+const OWN_REF_PREFIX = "refs/semantic-review/";
+export const ACTIVE_REF_PREFIX = `${OWN_REF_PREFIX}active/`;
 /** Where earlier versions kept the active artifact, relative to a worktree root. */
 const LEGACY_DIRECTORY = ".semantic-review";
 /** The file in a worktree's Git directory naming the implementation last
@@ -185,27 +187,14 @@ const SNAPSHOT_IDENTITY = {
 
 export const activeRef = (implementationId: string) => `${ACTIVE_REF_PREFIX}${implementationId}`;
 
-/** While an implementation is archived, its snapshot moves from the active ref
- * to this claim, which keeps it reachable until the archive commit exists. */
-export const ARCHIVING_REF_PREFIX = "refs/semantic-review/archiving/";
-export const archivingRef = (implementationId: string) => `${ARCHIVING_REF_PREFIX}${implementationId}`;
-
-/** Explains how to recover implementations whose archiving was interrupted. */
-export function interruptedArchiveNote(root: string): string {
-  const claims = git(["for-each-ref", "--format=%(objectname) %(refname) %(symref)", ARCHIVING_REF_PREFIX], { cwd: root, allowFailure: true });
-  return (claims ?? "").split(/\r?\n/).filter(Boolean).map((line) => {
-    const [snapshot, claim, symref = ""] = line.split(" ");
-    const id = claim.slice(ARCHIVING_REF_PREFIX.length);
-    // Only a plain claim whose ID can name an implementation is put into a shell command.
-    if (symref !== "" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[0-9a-f]{40,64}$/.test(snapshot)) {
-      return ` The archiving claim ${JSON.stringify(claim)} is left from an interrupted archive.`;
-    }
-    // One transaction moves the snapshot back, and only while nothing else took the ID.
-    const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --no-deref --stdin`;
-    const finish = `git update-ref --no-deref -d ${claim} ${snapshot}`;
-    return ` Archiving ${id} was interrupted. If its archive commit exists and holds the whole artifact, finish with \`${finish}\`. Otherwise revert any commit that holds part of the archive, unstage and remove the archive files left behind (git status lists them), then make it active again with \`${restore}\`.`;
-  }).join("");
-}
+/** An archived implementation: a commit on top of its published metadata
+ * commit that adds the landing record. Archiving moves the implementation from
+ * its active ref to this one in one transaction. */
+export const ARCHIVE_REF_PREFIX = `${OWN_REF_PREFIX}archive/`;
+export const archiveRef = (implementationId: string) => `${ARCHIVE_REF_PREFIX}${implementationId}`;
+/** The annotated tag that shares an archive. It is never moved once created. */
+export const ARCHIVE_TAG_PREFIX = "refs/tags/semantic-review/archive/";
+export const archiveTag = (implementationId: string) => `${ARCHIVE_TAG_PREFIX}${implementationId}`;
 
 /** An active implementation, as its ref names it. */
 export interface ActiveImplementation {
@@ -217,12 +206,20 @@ export interface ActiveImplementation {
   supersededHeads: string[];
 }
 
-/** Every active implementation of the repository of root, read with one Git process. */
+/** An active ref must be direct: it names its snapshot, and every write moves it. */
+function assertDirectActiveRef(ref: string, symref: string): void {
+  if (symref) fail(`${ref} is a symbolic ref to ${symref}, not an active artifact; remove it with git symbolic-ref --delete.`);
+}
+
+/** Every active implementation of the repository of root, read with one Git
+ * process. A symbolic ref at an active ref's name fails every read: skipping it
+ * would let selection fall back to another implementation. */
 export function listActiveImplementations(root: string): ActiveImplementation[] {
-  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ACTIVE_REF_PREFIX], { cwd: root });
-  return output.split(/\r?\n/).filter(Boolean).map((line) => {
-    const [commit, ref, parents = ""] = line.split("\t");
-    return { implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) };
+  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ACTIVE_REF_PREFIX], { cwd: root });
+  return output.split(/\r?\n/).filter(Boolean).flatMap((line) => {
+    const [commit, ref, parents = "", symref = ""] = line.split("\t");
+    assertDirectActiveRef(ref, symref);
+    return [{ implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) }];
   }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
 }
 
@@ -322,7 +319,7 @@ export function assertNoLegacyArtifact(root: string): void {
   // A checkout of a metadata branch or an archive tracks its artifact files.
   const tracked = git(["ls-files", "--", `${LEGACY_DIRECTORY}/manifest.json`], { cwd: root, allowFailure: true });
   if (tracked) return;
-  fail(`${path.join(root, LEGACY_DIRECTORY)} holds a semantic implementation written by an earlier Semantic Flow version. Implementations are now stored in Git, and an earlier one cannot be continued across this change: finish it with the earlier version, or remove ${LEGACY_DIRECTORY}/ and start again.${interruptedArchiveNote(root)}`);
+  fail(`${path.join(root, LEGACY_DIRECTORY)} holds a semantic implementation written by an earlier Semantic Flow version. Implementations are now stored in Git, and an earlier one cannot be continued across this change: finish it with the earlier version, or remove ${LEGACY_DIRECTORY}/ and start again.`);
 }
 
 const snapshotTrees = new Map<string, TreeFiles>();
@@ -379,7 +376,7 @@ export function requireArtifact(root: string, implementationId = selectedImpleme
   if (snapshot) return snapshot;
   fail((implementationId === undefined
     ? "No active semantic implementation exists in this repository."
-    : `No active semantic implementation has implementation ID ${implementationId}.`) + interruptedArchiveNote(root));
+    : `No active semantic implementation has implementation ID ${implementationId}.`));
 }
 
 // --- Drafts and commits -----------------------------------------------------
@@ -451,9 +448,14 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
   if (updates.length === 0) return;
   const commands = [
     "start",
-    // An update that keeps a ref's value only verifies it.
-    ...updates.map(({ ref, next, previous }) =>
-      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`),
+    // An update that keeps a ref's value only verifies it. Semantic Flow's own
+    // refs are never symbolic, so one made symbolic since it was read is
+    // replaced rather than followed to the branch it names; the expected
+    // value is still checked.
+    ...updates.flatMap(({ ref, next, previous }) => [
+      ...(ref.startsWith(OWN_REF_PREFIX) ? ["option no-deref"] : []),
+      next === previous ? `verify ${ref} ${previous}` : next === ZERO_OID ? `delete ${ref} ${previous}` : `update ${ref} ${next} ${previous}`,
+    ]),
     "prepare",
     "commit",
     "",
@@ -533,14 +535,15 @@ export function commitArtifact(
   const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
   const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
   const previous = base?.version ?? ZERO_OID;
-  // A new implementation may not take the ID of one whose archiving was interrupted.
-  const claim = archivingRef(implementationId);
-  if (!base && git(["rev-parse", "--verify", "--quiet", claim], { cwd: root, allowFailure: true })) {
-    fail(`An implementation with implementation ID ${implementationId} is being archived.${interruptedArchiveNote(root)}`);
+  // A new implementation may not take the ID of an archived one, whose archive
+  // ref and shared tag are named by it.
+  const archived = [archiveRef(implementationId), archiveTag(implementationId)];
+  if (!base && archived.some((ref) => git(["rev-parse", "--verify", "--quiet", ref], { cwd: root, allowFailure: true }))) {
+    fail(`Implementation ID ${implementationId} belongs to an archived implementation; choose another ID.`);
   }
-  const unclaimed = base ? [] : [{ ref: claim, next: ZERO_OID, previous: ZERO_OID }];
+  const unarchived = base ? [] : archived.map((ref) => ({ ref, next: ZERO_OID, previous: ZERO_OID }));
   // The artifact's ref goes last, so no other update can fail after it moved.
-  moveArtifactRef(root, implementationId, previous, [...refUpdates, ...unclaimed, { ref: activeRef(implementationId), next: commit, previous }]);
+  moveArtifactRef(root, implementationId, previous, [...refUpdates, ...unarchived, { ref: activeRef(implementationId), next: commit, previous }]);
   return commit;
 }
 
@@ -563,12 +566,13 @@ export function replaceArtifactFileInGitDirectory(
   const gitDir = `--git-dir=${gitDirectory}`;
   const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
   const ref = activeRef(implementationId);
-  const read = () => run(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ref]).toString("utf8")
+  const read = () => run(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ref]).toString("utf8")
     .split(/\r?\n/).find((entry) => entry.split("\t")[1] === ref);
   for (let attempt = 0; ; attempt++) {
     const line = read();
     if (!line) return false;
-    const [commit, , parents = ""] = line.split("\t");
+    const [commit, , parents = "", symref = ""] = line.split("\t");
+    assertDirectActiveRef(ref, symref);
     const files = treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
     const bytes = replace(files);
     if (bytes === undefined) return false;
@@ -582,7 +586,7 @@ export function replaceArtifactFileInGitDirectory(
     const next = gitRaw([gitDir, "commit-tree", tree, ...parents.split(" ").filter(Boolean).flatMap((parent) => ["-p", parent]),
       "-m", `Semantic implementation ${implementationId}`], { env: SNAPSHOT_IDENTITY });
     try {
-      run(["update-ref", "--create-reflog", "-m", "semantic-flow", ref, next, commit]);
+      run(["update-ref", "--no-deref", "--create-reflog", "-m", "semantic-flow", ref, next, commit]);
       return true;
     } catch (error) {
       // Only another writer moving the ref first is worth deciding again.
@@ -591,39 +595,27 @@ export function replaceArtifactFileInGitDirectory(
   }
 }
 
-/** The snapshots an implementation has in the repository whose Git directory is
- * gitDirectory: its active artifact and the archiving claim an archive in
- * progress, or an interrupted one, holds. Both refs are read in one Git command,
- * and every Git command is given that directory, as in
- * replaceArtifactFileInGitDirectory. The read is not atomic: an archive rolling
- * back may restore the active ref after it was read and remove the claim before
- * it was read, so both look absent. confirmed() tells whether both refs still
- * hold what was read, checked together in one ref transaction; false when either
- * changed or is busy. */
-export function readImplementationRefsInGitDirectory(
+/** The active artifact of an implementation in the repository whose Git
+ * directory is gitDirectory, read as in replaceArtifactFileInGitDirectory.
+ * confirmed() tells whether the ref still holds what was read, checked in a ref
+ * transaction; false when it changed or another writer holds it. */
+export function readActiveArtifactInGitDirectory(
   gitDirectory: string,
   implementationId: string,
-): { active?: ArtifactFiles; archiving?: ArtifactFiles; confirmed: () => boolean } {
+): { active?: ArtifactFiles; confirmed: () => boolean } {
   const gitDir = `--git-dir=${gitDirectory}`;
   const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
-  const refs = [activeRef(implementationId), archivingRef(implementationId)];
-  const commits = new Map(run(["for-each-ref", "--format=%(objectname)%09%(refname)", ...refs]).toString("utf8")
-    .split(/\r?\n/).filter(Boolean).map((line) => {
-      const [commit, ref] = line.split("\t");
-      return [ref, commit] as const;
-    }));
-  const read = (ref: string) => {
-    const commit = commits.get(ref);
-    return commit === undefined ? undefined : treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
-  };
+  const ref = activeRef(implementationId);
+  const commit = run(["for-each-ref", "--format=%(objectname)%09%(refname)", ref]).toString("utf8")
+    .split(/\r?\n/).map((line) => line.split("\t")).find(([, name]) => name === ref)?.[0];
   const confirmed = () => {
-    // A transaction of verify commands locks every ref and compares it, so it
-    // fails when either ref moved since the read, or another writer holds it.
-    const commands = refs.map((ref) => `verify ${ref} ${commits.get(ref) ?? ZERO_OID}\n`).join("");
-    try { run(["update-ref", "--stdin"], Buffer.from(commands, "utf8")); return true; }
+    // A verify command locks the ref and compares it, so it fails when the ref
+    // moved since the read, or another writer holds it.
+    try { run(["update-ref", "--stdin"], Buffer.from(`verify ${ref} ${commit ?? ZERO_OID}\n`, "utf8")); return true; }
     catch { return false; }
   };
-  return { active: read(refs[0]), archiving: read(refs[1]), confirmed };
+  const active = commit === undefined ? undefined : treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
+  return { active, confirmed };
 }
 
 /** Removes the active artifact read as base, together with the other ref
@@ -899,23 +891,29 @@ function writeBlobs(root: string, files: ArtifactFiles, paths: readonly string[]
   return oids;
 }
 
-/** The tree of parent with the artifact's files below directory in place of
- * whatever the parent stored there. */
-export function buildArtifactTree(root: string, files: ArtifactFiles, parent: string, directory = PUBLISHED_DIRECTORY): string {
+/** The tree of parent with the artifact's files in its .semantic-review
+ * directory, in place of whatever the parent stored there. The artifact's
+ * subtree is written from a fresh index and spliced into the parent's root
+ * tree, so neither the checkout nor a sparse checkout setting takes part. */
+export function buildArtifactTree(root: string, files: ArtifactFiles, parent: string): string {
   const listed = files.list();
   for (const file of listed) if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
   const oids = writeBlobs(root, files, listed);
   const indexFile = path.join(os.tmpdir(), `semantic-artifact-${process.pid}-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexFile };
+  let artifactTree: string;
   try {
-    gitRaw(["read-tree", parent], { cwd: root, env });
-    gitRaw(["rm", "--cached", "-r", "-q", "--ignore-unmatch", "--", directory], { cwd: root, env });
-    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${directory}/${file}\0`).join("");
+    gitRaw(["read-tree", "--empty"], { cwd: root, env });
+    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${file}\0`).join("");
     gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
-    return gitRaw(["write-tree"], { cwd: root, env });
+    artifactTree = gitRaw(["write-tree"], { cwd: root, env });
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
+  const rootEntries = gitRaw(["ls-tree", "-z", `${parent}^{tree}`], { cwd: root }).split("\0")
+    .filter((entry) => entry && entry.slice(entry.indexOf("\t") + 1) !== PUBLISHED_DIRECTORY);
+  rootEntries.push(`040000 tree ${artifactTree}\t${PUBLISHED_DIRECTORY}`);
+  return gitRaw(["mktree", "-z"], { cwd: root, input: rootEntries.map((entry) => `${entry}\0`).join("") });
 }
 
 // --- Identity -----------------------------------------------------------------

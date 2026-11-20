@@ -3,11 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import childProcess, { execFile, execFileSync } from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, registeredReviews, setReviewCompleted, recordViewer, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck, assertReviewContext, captureReviewContext, viewerLaunchCurrent } from '../../src/semantic-view.ts';
-import { activeRef, archivingRef, ArtifactDraft, commitArtifact, readArtifact, replaceArtifactFileInGitDirectory } from '../../src/shared/artifact-store.ts';
+import { activeRef, ArtifactDraft, commitArtifact, readArtifact, replaceArtifactFileInGitDirectory } from '../../src/shared/artifact-store.ts';
 import { newReviewId, removeOrphanedReviews, writeReviewId } from '../../src/shared/review-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
@@ -328,19 +327,6 @@ function rotateStoredReviewId(review) {
   assert.ok(replaceArtifactFileInGitDirectory(review.gitCommonDir, review.implementationId, 'review.json', () => Buffer.from(JSON.stringify({ reviewId: replacement }))));
 }
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-/** Moves the active artifact to an archiving claim, as an archive in progress does. */
-function claimForArchive(repo, implementationId) {
-  const snapshot = git(repo, 'rev-parse', activeRef(implementationId));
-  git(repo, 'update-ref', archivingRef(implementationId), snapshot, '0'.repeat(40));
-  git(repo, 'update-ref', '-d', activeRef(implementationId), snapshot);
-  return snapshot;
-}
-/** Puts the snapshot back from the claim, as a failing archive does. */
-function failArchive(repo, implementationId, snapshot) {
-  git(repo, 'update-ref', activeRef(implementationId), snapshot, '0'.repeat(40));
-  git(repo, 'update-ref', '-d', archivingRef(implementationId), snapshot);
-}
-
 test('a deletion interrupted after it gave the implementation a new review ID is completed, never moved back', (t) => {
   const { root, review } = setup(t), repo = path.join(root, 'repo');
   patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Deleted' }])]);
@@ -374,7 +360,7 @@ test('a deletion interrupted after it gave the implementation a new review ID is
   assert.equal(readReview(third.id).generation, third.generation);
 });
 
-test('an interrupted deletion stays pending while its repository cannot be reached or an archive claims its ID', (t) => {
+test('an interrupted deletion stays pending while its repository cannot be reached', (t) => {
   const { root, review } = setup(t), repo = path.join(root, 'repo'), away = path.join(root, 'away');
   fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
   fs.renameSync(repo, away);
@@ -382,12 +368,8 @@ test('an interrupted deletion stays pending while its repository cannot be reach
   assert.ok(fs.existsSync(pendingFolder(review)));
   assert.throws(() => deleteReviewData(review.id, review.generation, 'any'), /interrupted/);
   assert.ok(fs.existsSync(pendingFolder(review)));
+  // Back in place, the artifact still holds the ID: the deletion did not commit.
   fs.renameSync(away, repo);
-  const snapshot = claimForArchive(repo, 'same-id');
-  registeredReviews();
-  assert.ok(fs.existsSync(pendingFolder(review)));
-  // The archive fails and puts the snapshot back, which still holds the ID: the deletion did not commit.
-  failArchive(repo, 'same-id', snapshot);
   registeredReviews();
   assert.equal(fs.existsSync(pendingFolder(review)), false);
   assert.equal(readReview(review.id).generation, review.generation);
@@ -413,43 +395,6 @@ test('a committed deletion whose folder cannot be renamed keeps it whole until c
   registeredReviews();
   assert.equal(fs.existsSync(pending), false);
   assert.deepEqual(retiredFolders(), ['.retired-' + review.id]);
-});
-
-test('a review deleted while an archive claims its implementation stays deleted when the archive fails', (t) => {
-  const { root, review } = setup(t), repo = path.join(root, 'repo');
-  const fingerprint = preview(review).fingerprint;
-  const snapshot = claimForArchive(repo, 'same-id');
-  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
-  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
-  // Replacement of the ID could not be established, so it is marked retired.
-  assert.ok(fs.existsSync(retiredMarker(review)));
-  registeredReviews();
-  assert.ok(fs.existsSync(retiredMarker(review)));
-  // The archive fails and puts back the snapshot, which still holds the old ID.
-  failArchive(repo, 'same-id', snapshot);
-  assert.equal(storedReviewId(repo, 'same-id'), review.id);
-  const registered = registerReview(repo, 'same-id', 'Fresh');
-  assert.notEqual(registered.id, review.id);
-  assert.deepEqual(registered.state, {});
-  assert.equal(storedReviewId(repo, 'same-id'), registered.id);
-  assert.equal(fs.existsSync(retiredMarker(review)), false);
-  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
-});
-
-test('a retired ID keeps its marker while an archive claims it', (t) => {
-  const { root, review } = setup(t), repo = path.join(root, 'repo'), away = path.join(root, 'away');
-  fs.renameSync(repo, away);
-  assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
-  assert.ok(fs.existsSync(retiredMarker(review)));
-  fs.renameSync(away, repo);
-  const snapshot = claimForArchive(repo, 'same-id');
-  // Nothing can register the implementation while it is claimed, and the marker stays.
-  assert.throws(() => registerReview(repo, 'same-id', 'Fresh'), /no longer active|being archived|No active/);
-  assert.ok(fs.existsSync(retiredMarker(review)));
-  failArchive(repo, 'same-id', snapshot);
-  const registered = registerReview(repo, 'same-id', 'Fresh');
-  assert.notEqual(registered.id, review.id);
-  assert.equal(fs.existsSync(retiredMarker(review)), false);
 });
 
 test('an interrupted deletion is completed only when a reachable artifact holds another review ID', (t) => {
@@ -496,34 +441,6 @@ test('an interrupted deletion of a repository that moved long ago is rolled back
   assert.equal(fs.existsSync(pendingFolder(review)), false);
   assert.equal(storedReviewId(moved, 'same-id'), review.id);
   assert.equal(readReview(review.id).missingSince, undefined);
-});
-
-test('a deletion that reads the refs during an archive rollback does not take the review ID for gone', (t) => {
-  const { root, review } = setup(t), repo = path.join(root, 'repo');
-  const fingerprint = preview(review).fingerprint;
-  const snapshot = claimForArchive(repo, 'same-id');
-  const spawn = childProcess.spawnSync;
-  let torn = false;
-  t.mock.method(childProcess, 'spawnSync', (command, args, options) => {
-    if (!torn && command === 'git' && args.includes('for-each-ref') && args.includes(archivingRef('same-id'))) {
-      // The archive fails while both refs are read: the active ref is read before
-      // the rollback puts it back, the claim after the rollback removed it.
-      torn = true;
-      failArchive(repo, 'same-id', snapshot);
-      const empty = Buffer.alloc(0);
-      return { pid: 0, output: [null, empty, empty], stdout: empty, stderr: empty, status: 0, signal: null };
-    }
-    return spawn(command, args, options);
-  });
-  syncBuiltinESMExports();
-  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
-  assert.ok(torn);
-  // The refs did not confirm the read, so the deletion looked again and replaced the ID.
-  assert.notEqual(storedReviewId(repo, 'same-id'), review.id);
-  const registered = registerReview(repo, 'same-id', 'Fresh');
-  assert.notEqual(registered.id, review.id);
-  assert.deepEqual(registered.state, {});
 });
 
 test('a committed deletion whose folder waits for cleanup does not block the fresh review of a retired ID', (t) => {

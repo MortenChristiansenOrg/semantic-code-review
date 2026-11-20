@@ -126,10 +126,13 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   representing the whole reviewed change for a conventional remote review.
   Preparation binds the name locally and safely moves the same branch after
   later reviewed changes.
-- **Archive**: Storing a landed implementation's artifact under
-  `.semantic-review-history/<implementation-id>/` so its provenance remains
-  available if stage branches are later deleted, and removing its active ref.
-  Archiving does not delete branches.
+- **Archive**: Storing a finished implementation's published artifact under
+  the private ref `refs/semantic-review/archive/<implementation-id>`, with a
+  record of where it landed (found by ancestry, supplied by the reviewer, or
+  unknown), so its provenance remains available if stage branches are later
+  deleted, and removing its active ref. Archiving adds nothing to the target
+  branch and does not delete branches. An archive is shared as the annotated
+  tag `semantic-review/archive/<implementation-id>`, which is never moved.
 - **Artifact worktree**: The repository worktree from which artifact and
   feedback commands operate on an active implementation: the one with one of
   its stage branches or its metadata branch checked out, or else the one where
