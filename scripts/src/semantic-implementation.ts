@@ -2759,6 +2759,15 @@ function readArchive(root: string, implementationId: string): { commit: string; 
   return { commit, metadataCommit: parents[0], landing };
 }
 
+/** Fails when any of refs is a symbolic ref, even a dangling one: a write
+ * through it would move whatever ref it names, such as the target branch. */
+function assertDirectRefs(root: string, refs: readonly string[]): void {
+  for (const ref of refs) {
+    const target = gitOptional(["symbolic-ref", "--quiet", ref], { cwd: root });
+    if (target) fail(`${ref} is a symbolic ref to ${target}; archiving writes only direct refs. Replace it with a branch or remove it.`);
+  }
+}
+
 /** The archive's shared tag and the commit it names, if it was shared. Any
  * ref at the tag's name counts as shared, so nothing replaces it. */
 function sharedArchive(root: string, implementationId: string): { tag: string; commit: string | undefined; annotated: boolean } | undefined {
@@ -2791,6 +2800,7 @@ function archiveImplementation(
     finalHeadRevision: lastStageHead(artifact),
   };
   const landing = landingRecord(workspace.root, subject, option(options, "landed"));
+  assertDirectRefs(workspace.root, [`refs/heads/${artifact.manifest.targetBranch}`, `refs/heads/${metadataBranch(artifact)}`, archiveRef(implementationId), archiveTag(implementationId)]);
   // What is archived is what is published: an unpublished or outdated artifact is published now.
   const publication = metadataPublicationPlan(workspace, artifact, `Publish ${implementationId} semantic implementation`);
   const message = option(options, "message") ?? `Archive ${implementationId} semantic implementation`;
@@ -2832,6 +2842,7 @@ function archivedImplementationId(root: string, options: Options): string {
 function recordArchiveLanding(root: string, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive landing"));
   const implementationId = archivedImplementationId(root, options);
+  assertDirectRefs(root, [archiveRef(implementationId), archiveTag(implementationId)]);
   const archive = readArchive(root, implementationId);
   const landed = option(options, "landed");
   const shared = sharedArchive(root, implementationId);
@@ -2874,6 +2885,7 @@ function loadPublishedBase(root: string, metadataCommit: string): string {
 function shareArchive(root: string, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "archive share"));
   const implementationId = archivedImplementationId(root, options);
+  assertDirectRefs(root, [archiveRef(implementationId), archiveTag(implementationId)]);
   const archive = readArchive(root, implementationId);
   const tag = archiveTag(implementationId);
   const shared = sharedArchive(root, implementationId);

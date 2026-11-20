@@ -445,8 +445,7 @@ export function updateRefs(root: string, updates: readonly RefUpdate[]): void {
     "commit",
     "",
   ].join("\n");
-  // --no-deref: a symbolic ref is replaced, never followed to a branch it names.
-  gitRaw(["update-ref", "--no-deref", "--create-reflog", "-m", "semantic-flow", "--stdin"], { cwd: root, input: commands });
+  gitRaw(["update-ref", "--create-reflog", "-m", "semantic-flow", "--stdin"], { cwd: root, input: commands });
 }
 
 /** The stage heads a stored manifest records, read leniently. */
@@ -876,24 +875,29 @@ function writeBlobs(root: string, files: ArtifactFiles, paths: readonly string[]
   return oids;
 }
 
-/** The tree of parent with the artifact's files below directory in place of
- * whatever the parent stored there. */
-export function buildArtifactTree(root: string, files: ArtifactFiles, parent: string, directory = PUBLISHED_DIRECTORY): string {
+/** The tree of parent with the artifact's files in its .semantic-review
+ * directory, in place of whatever the parent stored there. The artifact's
+ * subtree is written from a fresh index and spliced into the parent's root
+ * tree, so neither the checkout nor a sparse checkout setting takes part. */
+export function buildArtifactTree(root: string, files: ArtifactFiles, parent: string): string {
   const listed = files.list();
   for (const file of listed) if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
   const oids = writeBlobs(root, files, listed);
   const indexFile = path.join(os.tmpdir(), `semantic-artifact-${process.pid}-${randomUUID()}.index`);
   const env = { GIT_INDEX_FILE: indexFile };
+  let artifactTree: string;
   try {
-    gitRaw(["read-tree", parent], { cwd: root, env });
-    // Forced: the scratch index need not match the checkout this runs in.
-    gitRaw(["rm", "--cached", "-r", "-q", "-f", "--ignore-unmatch", "--", directory], { cwd: root, env });
-    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${directory}/${file}\0`).join("");
+    gitRaw(["read-tree", "--empty"], { cwd: root, env });
+    const entries = listed.map((file) => `100644 ${oids.get(file)}\t${file}\0`).join("");
     gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
-    return gitRaw(["write-tree"], { cwd: root, env });
+    artifactTree = gitRaw(["write-tree"], { cwd: root, env });
   } finally {
     fs.rmSync(indexFile, { force: true });
   }
+  const rootEntries = gitRaw(["ls-tree", "-z", `${parent}^{tree}`], { cwd: root }).split("\0")
+    .filter((entry) => entry && entry.slice(entry.indexOf("\t") + 1) !== PUBLISHED_DIRECTORY);
+  rootEntries.push(`040000 tree ${artifactTree}\t${PUBLISHED_DIRECTORY}`);
+  return gitRaw(["mktree", "-z"], { cwd: root, input: rootEntries.map((entry) => `${entry}\0`).join("") });
 }
 
 // --- Identity -----------------------------------------------------------------

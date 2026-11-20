@@ -481,3 +481,30 @@ test("archive refuses a metadata branch that is the target, survives a failing d
   repository.expectSemanticFailure("is not an annotated tag", "archive", "share", "--id", "tagged");
   repository.expectSemanticFailure("never moves", "archive", "landing", "--id", "tagged", "--landed", squash);
 });
+
+test("archive writes only direct refs and replaces a stale artifact folder under a sparse checkout", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile(".semantic-review/stale.txt", "stale\n", "Unrelated file where the artifact goes");
+  initializeImplementation(repository, { implementationId: "direct" });
+  beginStage(repository);
+  finalizeStage(repository);
+  repository.git("sparse-checkout", "set", "--no-cone", "/*", "!/.semantic-review/");
+  repository.semantic("publish");
+  // A target that is a symbolic ref to the metadata branch would move with it.
+  repository.git("switch", "--detach");
+  const target = repository.git("rev-parse", "main");
+  repository.git("branch", "-D", "main");
+  repository.git("symbolic-ref", "refs/heads/main", "refs/heads/semantic-flow/direct/metadata");
+  repository.expectSemanticFailure("refs/heads/main is a symbolic ref", "archive");
+  repository.git("symbolic-ref", "--delete", "refs/heads/main");
+  repository.git("branch", "main", target);
+  repository.semantic("archive");
+  const archive = "refs/semantic-review/archive/direct";
+  assert.notEqual(repository.result("git", ["cat-file", "-e", `${archive}:.semantic-review/stale.txt`]).status, 0);
+  assert.equal(repository.git("rev-parse", `${archive}:.semantic-review/manifest.json`), repository.git("rev-parse", "semantic-flow/direct/metadata:.semantic-review/manifest.json"));
+  // A dangling symbolic ref at the tag name is not overwritten.
+  repository.git("symbolic-ref", "refs/tags/semantic-review/archive/direct", "refs/tags/elsewhere");
+  repository.expectSemanticFailure("is a symbolic ref", "archive", "share", "--id", "direct");
+  repository.expectSemanticFailure("is a symbolic ref", "archive", "landing", "--id", "direct", "--landed", target);
+  assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", "refs/tags/elsewhere"]).status, 1);
+});
