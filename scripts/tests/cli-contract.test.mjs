@@ -594,7 +594,9 @@ test("the skill, package, build, CI, release and documentation state one Node.js
   assert.match(checks, new RegExp(`os: \\[ubuntu-latest, windows-latest, macos-latest\\]\\s+node: \\[${minimum}\\]`));
   assert.match(checks, /node-version: \$\{\{ matrix\.node \}\}/);
   // Newer LTS lines run on Linux; at least one newer line is always supported.
-  const newer = [...checks.matchAll(/- os: ubuntu-latest\s+node: (\d+)$/gm)].map((match) => Number(match[1]));
+  assert.doesNotMatch(checks, /exclude:/);
+  const included = checks.slice(checks.indexOf("include:"));
+  const newer = [...included.matchAll(/- os: ubuntu-latest\s+node: (\d+)$/gm)].map((match) => Number(match[1]));
   assert.ok(newer.length > 0 && newer.every((node) => node > minimum && node % 2 === 0), String(newer));
   assert.deepEqual([...new Set([...read(".github", "workflows", "release.yml").matchAll(/node-version: (\S+)/g)].map((match) => match[1]))], [String(minimum)]);
   // The skill's preflight in every platform guide.
