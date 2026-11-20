@@ -926,7 +926,7 @@ test("stored derived data and malformed manifest stage entries are rejected", (t
 
   const stage = repository.artifact.read("stages/implementation.json");
   repository.artifact.write("stages/implementation.json", { ...JSON.parse(stage), change: derived });
-  repository.expectSemanticFailure(/stages\/implementation\.json: change is derived from Git and must not be stored/, "validate", "--schema-only");
+  repository.expectSemanticFailure(/stages[\\/]implementation\.json: change is derived from Git and must not be stored/, "validate", "--schema-only");
   repository.artifact.write("stages/implementation.json", stage);
 
   const work = repository.artifact.read(".work/stages/persistence.json");
