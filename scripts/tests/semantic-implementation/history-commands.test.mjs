@@ -8,8 +8,10 @@ import {
   createRepository,
   finalizeStage,
   initializeImplementation,
+  implementationFromScript,
   organizeStage,
 } from "../helpers/repository.mjs";
+import { createViewerDataSource } from "../../src/semantic-view.ts";
 
 test("restack refreshes an edited stage branch and rebuilds branches above it", (t) => {
   const repository = createRepository(t);
@@ -435,6 +437,9 @@ test("a stage the target already contains stays as a marked empty stage that pre
   assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: true$/m);
   assert.deepEqual(repository.artifact.stage("policy").change.files, []);
   repository.semantic("validate", "--publish");
+  // The viewer shows the emptied stage with its nodes and no diff.
+  const viewed = implementationFromScript(createViewerDataSource(repository.root).implementationDataScript());
+  assert.deepEqual(viewed.stages.map((stage) => stage.id), ["policy", "api"]);
   const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
   assert.deepEqual(stack.emptyStages, ["policy"]);
   assert.deepEqual(stack.stages.map(({ stageId, baseBranch, position }) => ({ stageId, baseBranch, position })), [{ stageId: "api", baseBranch: "main", position: 1 }]);
