@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -332,6 +333,17 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
   fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
   repository.expectSemanticFailure("unstaged changes", "restack", "--continue");
   gitIn(worktree, "add", "shared.txt");
+  // A new file that is not added would be lost too.
+  fs.writeFileSync(path.join(worktree, "notes.txt"), "notes\n");
+  repository.expectSemanticFailure("notes.txt", "restack", "--continue");
+  fs.rmSync(path.join(worktree, "notes.txt"));
+  // A --continue that cannot finish keeps the staged resolution for the next one.
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-other-"));
+  t.after(() => fs.rmSync(other, { recursive: true, force: true }));
+  repository.git("worktree", "add", path.join(other, "api"), "semantic-flow/test-implementation/stages/api");
+  repository.expectSemanticFailure("checked out in a worktree", "restack", "--continue");
+  assert.equal(gitIn(worktree, "show", ":shared.txt"), "setting=resolved\npersistence=true\napi=true");
+  repository.git("worktree", "remove", path.join(other, "api"));
   const result = JSON.parse(repository.semantic("restack", "--continue", "--json"));
   assert.deepEqual(result.stages.map(({ id, rewritten }) => ({ id, rewritten })),
     [{ id: "policy", rewritten: true }, { id: "persistence", rewritten: true }, { id: "api", rewritten: true }]);
@@ -350,6 +362,9 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
 test("restack --continue refuses once a ref moved, and restack --abort discards the restack", (t) => {
   const { repository } = conflictingStack(t);
   const worktree = conflictWorktree(repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy"));
+  // A reset there discards the conflict, so the restack cannot be continued.
+  gitIn(worktree, "reset", "--quiet", "--hard");
+  repository.expectSemanticFailure("no longer holds the conflict of stage api", "restack", "--continue");
   fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
   gitIn(worktree, "add", "shared.txt");
   const api = "refs/heads/semantic-flow/test-implementation/stages/api";
@@ -426,15 +441,18 @@ test("a stage the target already contains stays as a marked empty stage that pre
   finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
   beginStage(repository, { id: "api", dependencies: ["policy"] });
   finalizeStage(repository, { id: "api", file: "api.txt", contents: "api\n" });
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  const originalPolicy = repository.git("rev-parse", policy);
   repository.git("switch", "main");
   repository.commitFile("policy.txt", "policy\n", "Land the policy elsewhere");
 
   const result = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
   assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }, { id: "api", emptied: false }]);
-  const policy = "semantic-flow/test-implementation/stages/policy";
   assert.equal(repository.git("rev-parse", `${policy}^`), repository.git("rev-parse", "main"));
   assert.equal(repository.git("rev-parse", `${policy}^{tree}`), repository.git("rev-parse", "main^{tree}"));
-  assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: true$/m);
+  // The marker names the stage commit it replaced.
+  const marker = new RegExp(`^Semantic-Flow-Empty: ${originalPolicy}$`, "m");
+  assert.match(repository.git("show", "-s", "--format=%B", policy), marker);
   assert.deepEqual(repository.artifact.stage("policy").change.files, []);
   repository.semantic("validate", "--publish");
   // The viewer shows the emptied stage with its nodes and no diff.
@@ -446,8 +464,29 @@ test("a stage the target already contains stays as a marked empty stage that pre
   // Restacking again keeps it empty.
   repository.commitFile("other.txt", "other\n", "Other work");
   repository.semantic("restack", "--base", "main");
-  assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: true$/m);
+  assert.match(repository.git("show", "-s", "--format=%B", policy), marker);
   repository.semantic("validate", "--publish");
+  // Once the target no longer contains them, the stage's changes come back.
+  repository.git("rm", "--quiet", "policy.txt");
+  repository.git("commit", "--quiet", "-m", "Revert the policy");
+  const revived = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.deepEqual(revived.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: false }, { id: "api", emptied: false }]);
+  assert.deepEqual(repository.artifact.stage("policy").change.files.map((file) => file.path), ["policy.txt"]);
+  assert.equal(repository.git("show", `${policy}:policy.txt`), "policy");
+  repository.semantic("validate", "--publish");
+});
+
+test("a stage the target fast-forwarded to is emptied, and preparing an all-empty stack is refused", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  const head = finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", head);
+  const result = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }]);
+  repository.semantic("validate", "--publish");
+  repository.expectSemanticFailure("already contains every stage", "prepare-branch", "--branch", "review/policy");
 });
 
 test("restack applies the finalized net stage diff", (t) => {

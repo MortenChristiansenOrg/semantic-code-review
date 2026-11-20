@@ -163,7 +163,7 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    conflicts are resolved in the reported scratch worktree and completed with
    `restack --continue` (or discarded with `--abort`) instead of the manual
    recipe, and that a stage the target already contains stays as a marked
-   empty stage that preparation skips.
+   empty stage that stack preparation skips.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

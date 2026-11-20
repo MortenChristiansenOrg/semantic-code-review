@@ -440,7 +440,8 @@ The command:
 2. Replays every branch above it, bottom-up, by cherry-picking its stage commit
    in a scratch worktree under the user data root, outside your checkouts. A
    stage whose changes the target already contains stays as a marked empty
-   stage, which validation accepts and preparation skips.
+   stage, which validation accepts and stack preparation skips; preparing a
+   cumulative branch is refused when every stage is empty.
 3. Moves all affected refs only after every replay succeeds. On a conflict it
    moves nothing and keeps the scratch worktree with normal Git conflict state:
    resolve and `git add` there, then run `restack --continue`, or discard the
