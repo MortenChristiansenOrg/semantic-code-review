@@ -214,6 +214,33 @@ test('a poll that never answers counts as the server being unreachable', async (
   await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.', { timeout: 20_000 });
 });
 
+test('a fresh link starts a new count of failures for its key', async ({ page }) => {
+  // Without session storage the page keeps the new key in memory instead of reloading.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
+  });
+  await page.clock.install();
+  await mount(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+  const keys = [];
+  await page.route('http://localhost/api/revision**', (route) => { keys.push(route.request().headers()['x-semantic-flow-key']); return route.abort('connectionrefused'); });
+  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(() => keys.length).toBe(count); };
+  // Four seconds of failures with the first key.
+  for (let count = 1; count <= 5; count++) await poll(count);
+  await page.route('http://localhost/api/session', (route) => route.fulfill({ json: { ok: true, key: 'second-key', read: 'second-read' } }));
+  const exchanged = page.waitForResponse((response) => response.url().endsWith('/api/session'));
+  await page.evaluate(() => { window.sameDocument = true; window.location.hash = '#launch=second'; });
+  await exchanged;
+  await expect.poll(() => page.evaluate(() => window.SEMANTIC_ACCESS?.key)).toBe('second-key');
+  // The failures of the first key do not count against the second.
+  for (let count = 6; count <= 10; count++) await poll(count);
+  expect(keys.slice(5)).toEqual(Array(5).fill('second-key'));
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  await poll(11);
+  await expect(page.locator('#fresh-link-notice')).toContainText('This review page needs a fresh link.');
+  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+});
+
 test('file names with quotes, angle brackets and carriage returns stay text and keep their controls working', async ({ page }) => {
   const name = '"><img src=x onerror="window.injected=1">\r.js';
   const path = `src/${name}`;

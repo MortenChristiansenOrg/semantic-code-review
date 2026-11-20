@@ -310,11 +310,11 @@ test("the page and its files are sent with a policy that blocks inline script an
 
 test("a request target that is not a path is refused before it is parsed", async (t) => {
   const viewer = await startViewer(t);
-  for (const target of ["/api\\whoami", "/\\attacker.example/", "//attacker.example/", "*"]) {
+  for (const target of ["/api\\whoami", "/\\attacker.example/", "//attacker.example/", "*", "/api/whoami#x", "/#launch=code"]) {
     assert.equal((await viewer.get(target, {})).status, 400, target);
   }
   assert.equal(originFormTarget("/api/whoami?x=1"), true);
-  for (const target of [undefined, "", "*", "attacker.example:80", "http://127.0.0.1/", "//x/", "/a\\b", "\\a"]) {
+  for (const target of [undefined, "", "*", "attacker.example:80", "http://127.0.0.1/", "//x/", "/a\\b", "\\a", "/#x", "/api/evidence?read=r#x"]) {
     assert.equal(originFormTarget(target), false, String(target));
   }
 });
@@ -337,13 +337,20 @@ test("the browser opens the launch URL itself on Windows or when asked, and a pr
   assert.equal(opensLaunchUrl("darwin", {}), false);
   assert.equal(opensLaunchUrl("linux", { SEMANTIC_VIEW_OPEN_URL: "1" }), true);
   assert.equal(opensLaunchUrl("darwin", { SEMANTIC_VIEW_OPEN_URL: "1" }), true);
-  // The URL is one argument that no shell parses.
-  assert.deepEqual(browserOpener(url, "win32"), ["rundll32.exe", ["url.dll,FileProtocolHandler", url]]);
+  // The URL is one argument that no shell parses. On Windows the opener runs by
+  // its full path from the system directory, so nothing in the reviewed worktree
+  // (the current directory) can stand in for it.
+  const present = new Set(["C:\\Windows\\System32\\rundll32.exe", "D:\\WinNT\\System32\\rundll32.exe"]);
+  const exists = (file) => present.has(file);
+  assert.deepEqual(browserOpener(url, "win32", {}, exists), { command: "C:\\Windows\\System32\\rundll32.exe", args: ["url.dll,FileProtocolHandler", url], cwd: "C:\\Windows\\System32" });
+  assert.deepEqual(browserOpener(url, "win32", { SystemRoot: "D:\\WinNT" }, exists), { command: "D:\\WinNT\\System32\\rundll32.exe", args: ["url.dll,FileProtocolHandler", url], cwd: "D:\\WinNT\\System32" });
+  assert.throws(() => browserOpener(url, "win32", { SystemRoot: "E:\\Missing" }, exists), /rundll32\.exe was not found/);
+  assert.throws(() => browserOpener(url, "win32", { SystemRoot: "Windows" }, () => true), /was not found/);
   for (const unsafe of ["C:\\Users\\a&b\\launch.html", "http://127.0.0.1:29180/#launch=a&calc", "http://127.0.0.1:29180/#launch=a b", 'http://127.0.0.1:29180/#launch="a"']) {
-    assert.throws(() => browserOpener(unsafe, "win32"), /Only launch URLs/, unsafe);
+    assert.throws(() => browserOpener(unsafe, "win32", {}, exists), /Only launch URLs/, unsafe);
   }
-  assert.deepEqual(browserOpener("/home/a b/launch.html", "linux"), ["xdg-open", ["/home/a b/launch.html"]]);
-  assert.deepEqual(browserOpener(url, "darwin"), ["open", [url]]);
+  assert.deepEqual(browserOpener("/home/a b/launch.html", "linux"), { command: "xdg-open", args: ["/home/a b/launch.html"] });
+  assert.deepEqual(browserOpener(url, "darwin"), { command: "open", args: [url] });
 });
 
 /** A loopback HTTP server for one test. */
@@ -418,8 +425,9 @@ test("a refusing occupant is waited for only while this review may still record 
 
 test("a viewer records itself only when no running viewer of its review got there first", async (t) => {
   const viewer = await startViewer(t);
-  const own = { reviewId: viewer.identity.reviewId, generation: viewer.identity.generation };
-  const original = readReview(own.reviewId).viewer;
+  const review = readReview(viewer.identity.reviewId);
+  const own = { reviewId: review.id, generation: review.generation, repositoryRoot: review.repositoryRoot };
+  const original = review.viewer;
   t.after(() => recordViewer(own.reviewId, own.generation, original));
   const late = { port: await reservePort(), processId: process.pid, viewerVersion: original.viewerVersion, skillDirectory: original.skillDirectory, key: "l".repeat(43) };
   const sameReview = (occupant) => occupant?.reviewId === own.reviewId && occupant.generation === own.generation;
@@ -439,4 +447,33 @@ test("a viewer records itself only when no running viewer of its review got ther
   recordViewer(own.reviewId, own.generation, { ...original, processId: gone });
   assert.equal(await claimViewerRecord(own, late, sameReview), null);
   assert.deepEqual(readReview(own.reviewId).viewer, late);
+
+  // A concurrent launch records its viewer after this launch read the record:
+  // the claim reads the record again and yields to that viewer.
+  const stale = { ...original, port: await reservePort(), processId: process.pid };
+  recordViewer(own.reviewId, own.generation, stale);
+  let concurrent = false;
+  const afterRead = (occupant) => {
+    if (occupant === null && !concurrent) { concurrent = true; recordViewer(own.reviewId, own.generation, original); }
+    return sameReview(occupant);
+  };
+  const yielded = await claimViewerRecord(own, late, afterRead);
+  assert.equal(concurrent, true);
+  assert.equal(yielded?.port, viewer.port);
+  assert.deepEqual(readReview(own.reviewId).viewer, original);
+});
+
+test("a launch for a worktree the review no longer records does not record its viewer", async (t) => {
+  const viewer = await startViewer(t);
+  const review = readReview(viewer.identity.reviewId);
+  const original = review.viewer;
+  t.after(() => recordViewer(review.id, review.generation, original));
+  const outdated = { reviewId: review.id, generation: review.generation, repositoryRoot: path.join(review.repositoryRoot, "elsewhere") };
+  const late = { port: await reservePort(), processId: process.pid, viewerVersion: original.viewerVersion, skillDirectory: original.skillDirectory, key: "l".repeat(43) };
+  // Neither with the running viewer recorded nor with none.
+  for (const recorded of [original, undefined]) {
+    recordViewer(review.id, review.generation, recorded);
+    await assert.rejects(claimViewerRecord(outdated, late, () => false), /review changed while this viewer started/);
+    assert.deepEqual(readReview(review.id).viewer, recorded);
+  }
 });

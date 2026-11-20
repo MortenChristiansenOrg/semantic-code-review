@@ -74,14 +74,34 @@ const IMPLEMENTATION_DEADLINE_MS = 30_000;
 
 let outageSince = 0;
 let lastFailure = 0;
+/** The key of the requests the current outage counts. */
+let outageKey = "";
 /** Counts a request that did not reach the server. A viewer that stopped, for
  * example for an update, comes back with new secrets, so an outage that lasts
- * asks for a fresh link. */
-function noteUnreachable(used: Access | null): void {
+ * asks for a fresh link. Failures count only against the key they used, and
+ * only while the page still uses it: a key from a fresh link starts a new count. */
+function noteUnreachable(used: Access): void {
+  if (used.key !== currentAccess()?.key) return;
   const now = Date.now();
-  if (!outageSince || now - lastFailure > OUTAGE_GAP_MS) outageSince = now;
+  if (!outageSince || now - lastFailure > OUTAGE_GAP_MS || used.key !== outageKey) {
+    outageSince = now;
+    outageKey = used.key;
+  }
   lastFailure = now;
   if (now - outageSince >= UNREACHABLE_MS) loseAccess(used);
+}
+
+/** Statuses whose responses have no body. */
+const NO_BODY = new Set([101, 103, 204, 205, 304]);
+
+/** Reads a response completely. The server is reached only once the whole body
+ * arrived: a body that breaks off or stalls past the request's deadline fails
+ * like a request that got no answer. */
+async function readFully(response: Response): Promise<Response> {
+  const body = await response.arrayBuffer();
+  return new Response(NO_BODY.has(response.status) ? null : body, {
+    status: response.status, statusText: response.statusText, headers: response.headers,
+  });
 }
 
 /** Whether a response is the server's refusal of a missing or outdated key. */
@@ -139,7 +159,7 @@ async function request(input: string, init: RequestInit = {}): Promise<Response>
   const headers = new Headers(init.headers);
   if (url.origin === window.location.origin) headers.set(KEY_HEADER, current.key);
   let response: Response;
-  try { response = await window.fetch(url.href, { ...init, headers }); }
+  try { response = await readFully(await window.fetch(url.href, { ...init, headers })); }
   catch (error) { noteUnreachable(current); throw error; }
   outageSince = 0;
   if (await keyRefused(response)) loseAccess(current);

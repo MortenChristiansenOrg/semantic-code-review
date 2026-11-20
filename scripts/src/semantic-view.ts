@@ -2222,7 +2222,7 @@ export function reviewSessionUnavailable(context: ReviewContext) {
  * review: the review still records the worktree the launch serves. A launch that
  * read the review before another launch recorded a different worktree is
  * outdated, and the viewer of the recorded worktree is the one to keep. */
-export function viewerLaunchCurrent(context: ReviewContext) {
+export function viewerLaunchCurrent(context: Pick<ReviewContext, "reviewId" | "generation" | "repositoryRoot">) {
   try {
     const record = readReview(context.reviewId);
     return record.generation === context.generation && record.repositoryRoot === context.repositoryRoot;
@@ -2873,8 +2873,8 @@ const browserOpening = () => !process.env.SEMANTIC_VIEW_NO_OPEN;
 function openBrowser(reviewId: string, port: number, code: string) {
   try {
     const target = opensLaunchUrl() ? launchUrl(port, code) : writeLaunchFile(reviewId, port, code);
-    const [command, args] = browserOpener(target);
-    execFileSync(command, args, { stdio: "ignore", windowsHide: true });
+    const { command, args, cwd } = browserOpener(target);
+    execFileSync(command, args, { cwd, stdio: "ignore", windowsHide: true });
   } catch {
     // Non-fatal: the URL is printed for manual use.
   }
@@ -2915,9 +2915,11 @@ export async function identifyOccupant(context: Pick<ReviewContext, "reviewId">,
 /** Records this process as the review's viewer. When the record already names a
  * running viewer of the same review on another port that `reusable` accepts, a
  * concurrent launch got there first: that viewer is returned and the record is
- * left alone. */
+ * left alone. The record is written only while it is unchanged since it was read
+ * and the review still records the worktree this launch serves; a launch that a
+ * later launch outdated fails and leaves the record to that launch's viewer. */
 export async function claimViewerRecord<Running extends ViewerIdentity>(
-  context: Pick<ReviewContext, "reviewId" | "generation">,
+  context: Pick<ReviewContext, "reviewId" | "generation" | "repositoryRoot">,
   viewer: ViewerRecord,
   reusable: (occupant: ViewerIdentity | null) => occupant is Running,
 ): Promise<Running | null> {
@@ -2927,7 +2929,11 @@ export async function claimViewerRecord<Running extends ViewerIdentity>(
       const occupant = await probeViewer(current.port, { key: current.key });
       if (reusable(occupant)) return occupant;
     }
-    if (recordViewer(context.reviewId, context.generation, viewer, current)) return null;
+    const recorded = withReviewLock(context.reviewId, () => {
+      if (!viewerLaunchCurrent(context)) throw new Error("The review changed while this viewer started, so another viewer serves it now. Launch the review again to open it.");
+      return recordViewer(context.reviewId, context.generation, viewer, current);
+    });
+    if (recorded) return null;
   }
   throw new Error("The review's viewer record kept changing during startup. Launch the review again.");
 }

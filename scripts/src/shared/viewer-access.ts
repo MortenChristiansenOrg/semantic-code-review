@@ -83,9 +83,10 @@ function ownHosts(port: number): Set<string> {
 
 /** Whether a request target is a path, as in `GET /path?query`. Other forms
  * (absolute URLs, `*`, authority form, paths that a URL parser would read as
- * another host or rewrite) are refused before any parsing. */
+ * another host or rewrite, and targets with a fragment, which a client never
+ * sends) are refused before any parsing. */
 export function originFormTarget(target: string | undefined): target is string {
-  return typeof target === "string" && target.startsWith("/") && !target.startsWith("//") && !target.includes("\\");
+  return typeof target === "string" && target.startsWith("/") && !target.startsWith("//") && !target.includes("\\") && !target.includes("#");
 }
 
 /** Whether the Host header names this viewer exactly. Other names, including
@@ -133,16 +134,30 @@ export function opensLaunchUrl(platform: NodeJS.Platform = process.platform, env
   return platform === "win32" || env.SEMANTIC_VIEW_OPEN_URL === "1";
 }
 
+/** How to run the program that opens a launch URL or launch file. */
+export interface BrowserOpener {
+  command: string;
+  args: string[];
+  /** The working directory to run it in; without one, the current directory. */
+  cwd?: string;
+}
+
 /** The program and arguments that open a launch URL or launch file. Each target
  * is passed as one literal argument; no shell parses it. */
-export function browserOpener(target: string, platform: NodeJS.Platform = process.platform): [string, string[]] {
+export function browserOpener(target: string, platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env, exists: (file: string) => boolean = fs.existsSync): BrowserOpener {
   if (platform === "win32") {
     // rundll32 hands the rest of its command line to the URL handler as is, so
     // the target must not need quoting: launch URLs consist of safe characters only.
     if (!/^http:\/\/127\.0\.0\.1:\d+\/#launch=[A-Za-z0-9_-]+$/.test(target)) throw new Error("Only launch URLs open on Windows.");
-    return ["rundll32.exe", ["url.dll,FileProtocolHandler", target]];
+    // Windows looks for a program named without a full path in the current
+    // directory first, which is the reviewed worktree. The program runs from the
+    // system directory by its full path, so no file in the worktree is run.
+    const system = path.win32.join(env.SystemRoot ?? "C:\\Windows", "System32");
+    const command = path.win32.join(system, "rundll32.exe");
+    if (!path.win32.isAbsolute(command) || !exists(command)) throw new Error(`${command} was not found.`);
+    return { command, args: ["url.dll,FileProtocolHandler", target], cwd: system };
   }
-  return [platform === "darwin" ? "open" : "xdg-open", [target]];
+  return { command: platform === "darwin" ? "open" : "xdg-open", args: [target] };
 }
 
 /* ---- launch files -------------------------------------------------------- */

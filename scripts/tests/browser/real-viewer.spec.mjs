@@ -285,16 +285,26 @@ test('an old link opened in a working tab leaves the review working', async ({ b
   await context.close();
 });
 
-test('without session storage a fresh link in the same tab keeps the review open', async ({ browser }) => {
-  const { context, page, errors } = await openPage(browser);
+/** Makes session storage of every page of the context unavailable. */
+async function disableSessionStorage(context) {
   await context.addInitScript(() => {
     Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
   });
+}
+
+test('without session storage a fresh link from a restarted viewer keeps the review open in the same tab', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  await disableSessionStorage(context);
   await openLink(page, await freshLaunchUrl(reviews.a));
   await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
   await page.evaluate(() => { window.sameDocument = true; });
-  expect(await openLink(page, await freshLaunchUrl(reviews.a))).toBe(200);
-  // A reload would lose the access the page holds only in memory.
+  const before = record(reviews.a).viewer.key;
+  await stop(reviews.a);
+  const relaunched = launch(reviews.a);
+  expect(record(reviews.a).viewer.key).not.toBe(before);
+  expect(await openLink(page, relaunched)).toBe(200);
+  // The page keeps the new key in memory, as a reload would lose it, and the
+  // restarted viewer accepts it.
   await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
   expect(await page.evaluate(() => window.sameDocument)).toBe(true);
   await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
@@ -302,6 +312,89 @@ test('without session storage a fresh link in the same tab keeps the review open
   expect(await violations(page)).toEqual([]);
   expect(errors).toEqual([]);
   await context.close();
+});
+
+test('a page whose start failed because the viewer restarted starts with a fresh link', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  await disableSessionStorage(context);
+  // The viewer restarts after the page loaded the review data and before it
+  // loaded the saved review, which the restarted viewer refuses.
+  let relaunched;
+  await page.route('**/api/review-state**', async (route) => {
+    if (!relaunched) {
+      await stop(reviews.a);
+      relaunched = launch(reviews.a);
+    }
+    await route.continue();
+  });
+  const refused = page.waitForResponse((response) => response.url().includes('/api/review-state') && response.status() === 403);
+  await openLink(page, await freshLaunchUrl(reviews.a));
+  await refused;
+  await expect(page.locator('#fresh-link-notice')).toContainText(NOTICE);
+  await expect(page.locator('.stage')).toHaveCount(0);
+  await page.evaluate(() => { window.sameDocument = true; });
+  expect(await openLink(page, relaunched)).toBe(200);
+  await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+  await expect(page.locator('.stage')).not.toHaveCount(0);
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+  await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
+  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+  expect(await violations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+/** A proxy at another port in front of a viewer, which passes requests on under
+ * the names the viewer accepts. With `stall` set, it answers revision polls with
+ * headers and the start of a body, and then sends nothing more. */
+async function stallingProxy(review) {
+  const target = new URL(review.base);
+  const proxy = { stall: false, stalled: 0 };
+  const sockets = new Set();
+  const server = http.createServer((request, response) => {
+    if (proxy.stall && request.url.startsWith('/api/revision')) {
+      proxy.stalled += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write('{"ok":true,');
+      return;
+    }
+    const headers = { ...request.headers, host: target.host };
+    if (headers.origin) headers.origin = target.origin;
+    const forwarded = http.request({ host: target.hostname, port: target.port, method: request.method, path: request.url, headers }, (answer) => {
+      response.writeHead(answer.statusCode, answer.headers);
+      answer.pipe(response);
+    });
+    forwarded.on('error', () => response.destroy());
+    request.pipe(forwarded);
+  });
+  server.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  proxy.base = `http://127.0.0.1:${server.address().port}/`;
+  proxy.close = () => { for (const socket of sockets) socket.destroy(); server.close(); };
+  return proxy;
+}
+
+test('polls whose answers stop after the headers count as the viewer being unreachable', async ({ browser }) => {
+  const proxy = await stallingProxy(reviews.a);
+  const { context, page, errors } = await openPage(browser);
+  try {
+    const link = new URL(await freshLaunchUrl(reviews.a));
+    await openLink(page, `${proxy.base}${link.hash}`);
+    await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+    await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
+    await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
+    proxy.stall = true;
+    // Each poll gives up three seconds after it started; the third failure comes
+    // more than five seconds after the first.
+    await expect(page.locator('#fresh-link-notice')).toContainText(NOTICE, { timeout: 20_000 });
+    expect(proxy.stalled).toBeGreaterThanOrEqual(3);
+    await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  } finally {
+    await context.close();
+    proxy.close();
+  }
 });
 
 test('a page from another local server cannot read the viewer, and the viewer refuses its requests', async ({ browser }) => {

@@ -4,6 +4,19 @@
 import { currentAccess, showFreshLinkNotice, storedAccess, takeLaunchCode, useAccess, type Access } from "./access";
 import * as api from "./api";
 
+declare global {
+  interface Window {
+    /** Set by app.js when it runs: the start of the page, which a fresh link
+     * repeats when it failed, for example because the viewer restarted. */
+    SEMANTIC_APP?: {
+      /** Whether the page started, once the current attempt settled. */
+      started(): Promise<boolean>;
+      /** Starts the page unless it started already; whether it started. */
+      start(): Promise<boolean>;
+    };
+  }
+}
+
 async function redeem(code: string): Promise<Access | null> {
   try {
     const response = await api.startSession({ code });
@@ -68,6 +81,14 @@ window.addEventListener("hashchange", () => {
     // A spent or expired link leaves a working page as it is.
     if (!access) { if (!currentAccess()) showFreshLinkNotice(); return; }
     if (!appLoaded) { await start(access); return; }
+    // An app whose start failed starts with the new access. One that has not
+    // run yet uses the access when it does.
+    const app = window.SEMANTIC_APP;
+    if (!app || !await app.started()) {
+      useAccess(access);
+      if (app) await app.start();
+      return;
+    }
     // A reload loads the page the server now serves, when this tab keeps the
     // access across it; otherwise the running page continues with the new access.
     if (useAccess(access)) window.location.reload();

@@ -27,7 +27,10 @@ import { installUnreadReplies } from "./unread-replies";
 import { cssEsc } from "./util";
 
 
-(async function () {
+/** Loads the saved review and starts the page. Returns false, having started
+ * nothing, when the saved review could not be loaded, so a later attempt, for
+ * example with the access of a fresh link, can start it. */
+async function startApp(): Promise<boolean> {
   "use strict";
 
   const requestReviewId = window.SEMANTIC_REVIEW_CONTEXT?.reviewId || data.reviewId;
@@ -45,7 +48,7 @@ import { cssEsc } from "./util";
     } else saved = body;
   } catch (error) {
     app.textContent = `${errorMessage(error)} Reload to retry.`;
-    return;
+    return false;
   }
   rebuildFileSearchIndex();
   initState(saved, unavailable);
@@ -106,4 +109,12 @@ import { cssEsc } from "./util";
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
   void pollViewerRevision();
-})();
+  return true;
+}
+
+// Attempts run one after another, and none after one has started the page.
+let attempt = startApp();
+window.SEMANTIC_APP = {
+  started: () => attempt,
+  start: () => (attempt = attempt.then((started) => started || startApp())),
+};
