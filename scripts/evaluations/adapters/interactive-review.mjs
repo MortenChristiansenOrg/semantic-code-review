@@ -166,8 +166,9 @@ export async function prepare({ root, skill, env, capabilities }) {
     fs.rmSync(organization);
   }
   cli('feedback', 'init');
-  const heads = Object.fromEntries(stages.map(stage => [stage.id, readJson(path.join(repo, '.semantic-review/stages', `${stage.id}.json`)).change.headRevision]));
-  return { repo, request: '/semantic-flow review -i',
+  const exported = JSON.parse(cli('implementation', 'export'));
+  const heads = Object.fromEntries(stages.map(stage => [stage.id, exported.stages[stage.id].change.headRevision]));
+  return { repo, skill, request: '/semantic-flow review -i',
     agentSetup: 'The implementation in this repository is complete and ready for review. In this environment the review viewer serves on 127.0.0.1 without opening a browser.',
     before: { baseRevision, heads, template: stages[2].content } };
 }
@@ -193,7 +194,8 @@ export async function drive({ fixture, env, capabilities, signal, agentExited })
   const thread = id => { try { return readJson(path.join(review.directory, 'feedback', 'threads', `${id}.json`)); } catch { return null; } };
   const format = () => {
     try {
-      const head = readJson(path.join(fixture.repo, '.semantic-review/stages/notifications.json')).change.headRevision;
+      const exported = JSON.parse(checked(cliCommand(capabilities.tools.node.path, fixture.skill, ['implementation', 'export']), fixture.repo, env));
+      const head = exported.stages.notifications.change.headRevision;
       return JSON.parse(checked([capabilities.tools.git.path, 'show', `${head}:notifications.json`], fixture.repo, env)).format;
     } catch { return null; }
   };
@@ -346,8 +348,10 @@ export async function verify({ fixture, root, skill, env, capabilities, driver }
 
   let head, reviewDirectory;
   try {
-    const manifest = readJson(path.join(fixture.repo, '.semantic-review/manifest.json'));
-    head = readJson(path.join(fixture.repo, '.semantic-review/stages', `${manifest.stages.at(-1)}.json`)).change.headRevision;
+    const exported = invoke('artifact-export', cli('implementation', 'export'));
+    if (exported.exitCode !== 0) throw new Error(`The artifact could not be exported: ${exported.stderr}`);
+    const artifact = JSON.parse(exported.stdout);
+    head = artifact.stages[artifact.manifest.stages.at(-1)].change.headRevision;
     reviewDirectory = path.join(env.SEMANTIC_FLOW_HOME, 'reviews', driver?.viewer?.reviewId ?? fs.readdirSync(path.join(env.SEMANTIC_FLOW_HOME, 'reviews'))[0]);
   } catch (error) { add('round-one-changes', false, error.message); return done(); }
   const show = file => { const result = git('show', `${head}:${file}`); return result.exitCode === 0 ? result.stdout : null; };

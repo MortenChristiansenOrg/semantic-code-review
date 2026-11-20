@@ -260,7 +260,7 @@ test('release update restarts the matching viewer and preserves repository artif
   });
   const fixture = await updateFixture(t);
   initializeImplementation(fixture.repository);
-  const beforeArtifact = fixture.repository.read('.semantic-review/manifest.json');
+  const beforeArtifact = fixture.repository.artifact.read('manifest.json');
   const server = net.createServer();
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   port = server.address().port; server.close(); await once(server, 'close');
@@ -273,7 +273,7 @@ test('release update restarts the matching viewer and preserves repository artif
   const after = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((r) => r.json());
   assert.notEqual(before.processId, after.processId);
   assert.equal(after.skillDirectory, fixture.installed);
-  assert.equal(beforeArtifact, fixture.repository.read('.semantic-review/manifest.json'));
+  assert.equal(beforeArtifact, fixture.repository.artifact.read('manifest.json'));
 });
 
 test('release downgrade restarts the viewer with the executable the older release ships', async (t) => {

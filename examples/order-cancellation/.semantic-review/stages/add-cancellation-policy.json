@@ -29,7 +29,7 @@
     }
   ],
   "change": {
-    "branch": "semantic-flow/customer-order-cancellation/01-add-cancellation-policy",
+    "branch": "semantic-flow/customer-order-cancellation/stages/add-cancellation-policy",
     "baseBranch": "main",
     "baseRevision": "1111111111111111111111111111111111111111",
     "headRevision": "2222222222222222222222222222222222222222",

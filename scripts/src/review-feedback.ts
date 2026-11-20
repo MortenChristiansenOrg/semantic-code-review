@@ -20,9 +20,6 @@ import {
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   INSIGHT_COLLECTIONS,
-  MANIFEST_SCHEMA_ID,
-  SPECIFICATION_SCHEMA_ID,
-  STAGE_SCHEMA_ID,
   THREAD_SCHEMA_ID,
   isFeedbackId,
   type Comment,
@@ -43,9 +40,10 @@ import { factCache, withValidationContext } from "./shared/validation-context.js
 import { git, gitRaw } from "./shared/git.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
-import { parseDocument, type SchemaId } from "./shared/schema-validation.js";
-import { activeImplementationId, readArtifact, readArtifactJson } from "./shared/artifact-store.js";
-import { atomicJson, feedbackDirectory, readReview, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
+import { parseDocument } from "./shared/schema-validation.js";
+import { activeImplementationId, readArtifact } from "./shared/artifact-store.js";
+import { loadImplementation } from "./shared/implementation.js";
+import { atomicJson, feedbackDirectory, readReview, readReviewArtifact, registerReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
@@ -116,7 +114,9 @@ function repositoryRoot(): string {
 }
 
 function pathsFor(root: string, requester: FeedbackRequester | null = null): FeedbackPaths {
-  const snapshot = readArtifact(root);
+  // A remote review's checkout has no active artifact; its projection names the
+  // review, so feedback commands reach the remote review's own refusal.
+  const snapshot = readReviewArtifact(root)?.files;
   if (!snapshot) fail("No active .semantic-review artifact exists.");
   // Only the identity is needed here; commands that use the artifact validate it.
   const implementationId = activeImplementationId(root, snapshot);
@@ -177,15 +177,8 @@ function listJsonIds(directory: string): string[] {
 function semanticArtifact(paths: FeedbackPaths): SemanticArtifact {
   const files = readArtifact(paths.root);
   if (!files) fail("No active .semantic-review artifact exists.");
-  const document = <K extends SchemaId>(id: K, file: string) => parseDocument(id, readArtifactJson(files, file), files.describe(file));
-  const manifest = document(MANIFEST_SCHEMA_ID, "manifest.json");
+  const { manifest, requirements, stages } = loadImplementation(paths.root, files, { includeWork: false });
   if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
-  const requirements = new Map(
-    manifest.requirements.map((id) => [id, document(SPECIFICATION_SCHEMA_ID, `requirements/${id}.json`)]),
-  );
-  const stages = new Map(
-    manifest.stages.map((id) => [id, document(STAGE_SCHEMA_ID, `stages/${id}.json`)]),
-  );
   return { manifest, requirements, stages };
 }
 

@@ -108,7 +108,7 @@ test("all insight kinds and validation support optional capture, replacement, re
     ["question", "openQuestions", ["--question", "Which inputs?"]],
     ["validation", "validation", ["--type", "analysis", "--status", "passed", "--summary", "Inspected check"]],
   ];
-  const read = () => repo.readJson(".semantic-review/.work/stages/implementation.json");
+  const read = () => repo.artifact.readJson(".work/stages/implementation.json");
   for (const [kind, collection, fields] of kinds) {
     const args = ["stage", kind === "validation" ? "validation" : "record", ...(kind === "validation" ? [] : ["--kind", kind]), "--item-id", kind, ...fields];
     repo.semantic(...args, "--code-path", "src/check.js", "--code-start", "3", "--code-end", "4");
@@ -139,15 +139,15 @@ test("code targets validate stored context and batch recording is atomic", t => 
   repo.commitFile("src/check.js", content, "Add check");
   const args = { kind: "risk", "item-id": "check", summary: "Check", "code-path": "src/check.js", "code-start": "3" };
   repo.expectSemanticFailure(/line range/, "stage", "record-batch", "--items", JSON.stringify([args, { ...args, "item-id": "bad", "code-start": "999" }]));
-  const file = ".semantic-review/.work/stages/implementation.json";
-  assert.equal(repo.readJson(file).risks.length, 0);
+  const file = ".work/stages/implementation.json";
+  assert.equal(repo.artifact.readJson(file).risks.length, 0);
   repo.semantic("stage", "record-batch", "--items", JSON.stringify([args]));
-  const stage = repo.readJson(file);
+  const stage = repo.artifact.readJson(file);
   stage.risks[0].codeTarget.context[0] = "forged";
-  repo.write(file, JSON.stringify(stage));
+  repo.artifact.write(file, stage);
   repo.expectSemanticFailure(/does not match/, "validate");
   stage.risks[0].codeTarget.endLine = 999;
-  repo.write(file, JSON.stringify(stage));
+  repo.artifact.write(file, stage);
   repo.expectSemanticFailure(/complete ordered line range/, "validate", "--schema-only");
 });
 
@@ -158,21 +158,21 @@ test("restacking resolves from the original anchor and publication preserves it"
   repo.commitFile("src/check.js", content, "Add check");
   repo.semantic("stage", "record", "--kind", "decision", "--item-id", "check", "--category", "engineering", "--summary", "Check input", "--rationale", "Required", "--code-path", "src/check.js", "--code-start", "3", "--code-end", "4");
   organizeStage(repo); repo.semantic("stage", "finish");
-  const file = ".semantic-review/stages/implementation.json";
-  const original = repo.readJson(file).decisions[0].codeTarget;
+  const file = "stages/implementation.json";
+  const original = repo.artifact.readJson(file).decisions[0].codeTarget;
   repo.commitFile("src/check.js", "// inserted\n" + content, "Shift lines");
   repo.semantic("restack", "--from", "implementation");
-  assert.deepEqual(repo.readJson(file).decisions[0].codeTarget, original);
+  assert.deepEqual(repo.artifact.readJson(file).decisions[0].codeTarget, original);
   const viewer = createViewerDataSource(repo.root);
   const readViewer = () => implementationFromScript(viewer.implementationDataScript());
   assert.equal(readViewer().stages[0].insights[0].codeTarget.startLine, 4);
   repo.semantic("publish");
-  const published = JSON.parse(repo.git("show", "semantic-flow/test-implementation/metadata:" + file));
+  const published = JSON.parse(repo.git("show", "semantic-flow/test-implementation/metadata:.semantic-review/" + file));
   assert.deepEqual(published.decisions[0].codeTarget, original);
   repo.commitFile("src/check.js", content.replace("'missing'", "'required'"), "Change target");
   repo.semantic("restack", "--from", "implementation");
   assert.equal(readViewer().stages[0].insights[0].codeTarget.status, "needs-review");
   repo.semantic("stage", "target", "--stage", "implementation", "--finalized", "--collection", "decisions", "--item-id", "check", "--code-path", "src/check.js", "--code-start", "3", "--code-end", "4");
   assert.equal(readViewer().stages[0].insights[0].codeTarget.status, "current");
-  assert.equal(repo.readJson(file).decisions[0].rationale, "Required");
+  assert.equal(repo.artifact.readJson(file).decisions[0].rationale, "Required");
 });

@@ -6,6 +6,7 @@ import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, registeredReviews, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck } from '../../src/semantic-view.ts';
+import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 function setup(t) {
@@ -28,7 +29,8 @@ function oldAttachment(review, filename) {
 test('storage previews count drafts and feedback; confirmed deletion preserves other reviews and repository files', (t) => {
   const { root, review, other } = setup(t);
   fs.writeFileSync(path.join(root, 'repo', 'source.txt'), 'source');
-  fs.mkdirSync(path.join(root, 'repo', '.semantic-review')); fs.writeFileSync(path.join(root, 'repo', '.semantic-review', 'manifest.json'), 'artifact');
+  const artifact = new ArtifactDraft(undefined); artifact.write('manifest.json', 'artifact');
+  commitArtifact(path.join(root, 'repo'), undefined, artifact);
   const file = oldAttachment(review, 'context.log');
   const otherFile = storeAttachment(other.id, other.generation, 'context.log', 'text/plain', Buffer.from('context'));
   patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'feedback', body: 'Unsent', attachments: [file] }, { mode: 'personal', body: 'Personal' }]), change('editor', { compose: { body: 'Typing' } })]);
@@ -40,7 +42,7 @@ test('storage previews count drafts and feedback; confirmed deletion preserves o
   assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).deleted, true);
   assert.throws(() => readReview(review.id), /deleted/);
   assert.equal(fs.readFileSync(path.join(root, 'repo', 'source.txt'), 'utf8'), 'source');
-  assert.equal(fs.readFileSync(path.join(root, 'repo', '.semantic-review', 'manifest.json'), 'utf8'), 'artifact');
+  assert.equal(readArtifact(path.join(root, 'repo')).read('manifest.json').toString('utf8'), 'artifact');
   assert.ok(fs.existsSync(resolveAttachment(other.id, otherFile.id).localPath));
   assert.deepEqual(deleteReviewData(review.id, review.generation, before.fingerprint), { deleted: true, cleanupPending: false });
   const reopened = registerReview(path.join(root, 'repo'), 'same-id', 'Fresh'); assert.notEqual(reopened.generation, review.generation);

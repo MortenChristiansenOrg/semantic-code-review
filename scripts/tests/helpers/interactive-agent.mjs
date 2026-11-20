@@ -17,7 +17,7 @@ function run(command, args) {
 }
 const git = (...args) => run('git', args).trim();
 const cli = (...args) => run(process.execPath, [path.join(skill, 'scripts', 'semantic-flow.mjs'), ...args]);
-const branchOf = id => JSON.parse(fs.readFileSync(path.join(repo, '.semantic-review/stages', `${id}.json`), 'utf8')).change.branch;
+const branchOf = id => JSON.parse(cli('implementation', 'export')).stages[id].change.branch;
 let sequence = 0;
 const reply = (id, claim, body) => cli('feedback', 'thread', 'reply', '--id', id, '--comment-id', `agent-${++sequence}`, '--author', 'agent', '--claim', claim, '--body', body);
 function edit(stage, file, change) {

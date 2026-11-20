@@ -31,7 +31,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
-import { registerReview, readReview, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, reviewDeletionPath, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, isolateReviewEnvironment, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
@@ -51,7 +51,8 @@ import { agentStatus, liveSession, markSending, readAgentState, respondToRequest
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { activeImplementationId, locateArtifactRoot, readArtifactJson, requireArtifact, type ArtifactFiles } from "./shared/artifact-store.js";
+import { activeImplementationId, readArtifactJson, type ArtifactSnapshot } from "./shared/artifact-store.js";
+import { readUnvalidatedImplementation } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { ReviewRecord } from "./shared/review-store.js";
@@ -102,8 +103,10 @@ function resolveRepositoryRoot(positional: string[]) {
     fail(VIEWER_USAGE);
   }
   const start = path.resolve(process.cwd(), positional[0] ?? ".");
-  const root = locateArtifactRoot(start);
-  if (root !== undefined) return root;
+  for (let directory = start; ; directory = path.dirname(directory)) {
+    if (readReviewArtifact(directory)) return directory;
+    if (path.dirname(directory) === directory) break;
+  }
   fail(
     `no .semantic-review/manifest.json found in ${start} or any parent directory.`,
   );
@@ -274,9 +277,8 @@ function readNodeChange(value: unknown): ViewerNodeChange | undefined {
   };
 }
 
-function readManifest(files: ArtifactFiles): ViewerManifest {
-  const file = files.describe("manifest.json");
-  const value = fieldsOf(readArtifactJson(files, "manifest.json"));
+function readManifest(document: unknown, file: string): ViewerManifest {
+  const value = fieldsOf(document);
   const { stages, requirements } = value;
   if (!isStringArray(stages)) throw new Error(`${file}: missing stage list.`);
   return {
@@ -289,8 +291,8 @@ function readManifest(files: ArtifactFiles): ViewerManifest {
 }
 
 /** A specification; one without an ID keeps the ID the manifest lists it by. */
-function readSpecification(files: ArtifactFiles, specificationId: string): ViewerSpecification {
-  const value = fieldsOf(readArtifactJson(files, `requirements/${specificationId}.json`));
+function readSpecification(document: unknown, specificationId: string): ViewerSpecification {
+  const value = fieldsOf(document);
   const url = stringField(value.source, "url");
   return {
     id: stringField(value, "id") ?? specificationId, title: displayString(value, "title"), summary: displayString(value, "summary"),
@@ -299,9 +301,8 @@ function readSpecification(files: ArtifactFiles, specificationId: string): Viewe
   };
 }
 
-function readStageDocument(artifact: ArtifactFiles, stageId: string): StageDocument {
-  const file = artifact.describe(`stages/${stageId}.json`);
-  const value = fieldsOf(readArtifactJson(artifact, `stages/${stageId}.json`));
+function readStageDocument(document: unknown, file: string): StageDocument {
+  const value = fieldsOf(document);
   const change = fieldsOf(value.change);
   if (!isList(change.files)) throw new Error(`${file}: missing change file list.`);
   const files = change.files.map((item): StageDocumentFile => {
@@ -333,6 +334,46 @@ function readStageDocument(artifact: ArtifactFiles, stageId: string): StageDocum
     if (isList(items)) stage[collection] = items;
   }
   return stage;
+}
+
+/** The artifact a viewer shows, as one read found it. */
+interface ViewerArtifact {
+  files: ArtifactSnapshot;
+  manifest: ViewerManifest;
+  specification(id: string): ViewerSpecification;
+  stage(id: string): StageDocument;
+}
+
+/** Reads the artifact of a review: the active artifact through the loader
+ * that derives its stage data, or the projection of a remote review, whose
+ * documents are narrowed field by field. */
+function readViewerArtifact(repoRoot: string): ViewerArtifact {
+  const source = readReviewArtifact(repoRoot);
+  if (!source) throw new Error(`No semantic implementation exists in ${repoRoot}.`);
+  const { files } = source;
+  const label = (file: string) => files.describe(file);
+  if (source.projection) {
+    return {
+      files,
+      manifest: readManifest(readArtifactJson(files, "manifest.json"), label("manifest.json")),
+      specification: (id) => readSpecification(readArtifactJson(files, `requirements/${id}.json`), id),
+      stage: (id) => readStageDocument(readArtifactJson(files, `stages/${id}.json`), label(`stages/${id}.json`)),
+    };
+  }
+  // The documents are narrowed field by field, as a projection's are, so an
+  // artifact that validation rejects still opens.
+  const model = readUnvalidatedImplementation(repoRoot, files);
+  return {
+    files,
+    manifest: readManifest(model.manifest, label("manifest.json")),
+    specification: (id) => readSpecification(model.requirements.get(id), id),
+    stage: (id) => readStageDocument(model.stages.get(id), label(`stages/${id}.json`)),
+  };
+}
+
+/** The implementation ID of the artifact a review of root shows. */
+function reviewedImplementationId(repoRoot: string): string {
+  return activeImplementationId(repoRoot, readReviewArtifact(repoRoot)?.files);
 }
 
 /** A file's bytes, or undefined when it does not exist. */
@@ -389,7 +430,7 @@ interface ViewerRevision {
 }
 
 export function viewerSnapshot(repoRoot: string): ViewerRevision {
-  const implementationId = activeImplementationId(repoRoot);
+  const implementationId = reviewedImplementationId(repoRoot);
   return withReviewLock(reviewId(repoRoot, implementationId), () => {
     requireImplementation(repoRoot, implementationId);
     const snapshot = readViewerSnapshot(repoRoot, implementationId);
@@ -399,7 +440,7 @@ export function viewerSnapshot(repoRoot: string): ViewerRevision {
 }
 
 function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerRevision {
-  const artifact = requireArtifact(repoRoot);
+  const artifact = readViewerArtifact(repoRoot).files;
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const files: string[] = [];
   const feedbackManifestPath = path.join(feedbackRoot, "manifest.json");
@@ -486,13 +527,15 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
       nextDocuments.set(file, document);
       return document.value;
     };
-    const implementationId = activeImplementationId(repoRoot);
+    const implementationId = reviewedImplementationId(repoRoot);
     const feedback = feedbackDirectory(repoRoot, implementationId);
     let awaitingAgentReplies = 0;
     let nextArtifactVersion = artifactVersion;
     // Artifact writers that change several documents hold this lock, so one snapshot is never mixed.
     withReviewLock(reviewId(repoRoot, implementationId), () => {
-      nextArtifactVersion = requireArtifact(repoRoot).version;
+      const artifact = readReviewArtifact(repoRoot);
+      if (!artifact) throw new Error(`No semantic implementation exists in ${repoRoot}.`);
+      nextArtifactVersion = artifact.files.version;
       if (nextArtifactVersion !== artifactVersion) changed = true;
       if (fs.existsSync(path.join(feedback, "manifest.json"))) {
         for (const id of listedThreadIds(read(path.join(feedback, "manifest.json")))) {
@@ -515,7 +558,7 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
 }
 
 function requireImplementation(repoRoot: string, implementationId: string) {
-  if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
+  if (reviewedImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
 }
 
 function humanizeId(id: string) {
@@ -727,10 +770,10 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
 
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
-function readViewerStages(artifact: ArtifactFiles, manifest: ViewerManifest = readManifest(artifact)): ViewerStage[] {
+function readViewerStages(artifact: ViewerArtifact): ViewerStage[] {
   const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
-  return manifest.stages.map((id) => {
-    const stage = readStageDocument(artifact, id);
+  return artifact.manifest.stages.map((id) => {
+    const stage = artifact.stage(id);
     const files = stage.change.files.map((file): ViewerFile => {
       const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
       const { previousPath: ignored, ...current } = file;
@@ -1172,14 +1215,14 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture): Wire.ImplementationData {
-  const artifact = requireArtifact(repoRoot);
-  const manifest = readManifest(artifact);
+  const artifact = readViewerArtifact(repoRoot);
+  const { manifest } = artifact;
   const requirements = manifest.requirements.map((specificationId): Wire.Requirement =>
-    readSpecification(artifact, specificationId),
+    artifact.specification(specificationId),
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
-  const stages = readViewerStages(artifact, manifest).map((s): Wire.Stage => {
+  const stages = readViewerStages(artifact).map((s): Wire.Stage => {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const stats = statsForStage(s);
@@ -1307,11 +1350,10 @@ export function createViewerDataSource(
     return record;
   };
 
-  const readStage = (stageId: string | null, artifact: ArtifactFiles = requireArtifact(repoRoot)): ViewerStage => {
-    const manifest = readManifest(artifact);
-    const stage = stageId === null || !manifest.stages.includes(stageId)
+  const readStage = (stageId: string | null, artifact: ViewerArtifact = readViewerArtifact(repoRoot)): ViewerStage => {
+    const stage = stageId === null || !artifact.manifest.stages.includes(stageId)
       ? undefined
-      : readViewerStages(artifact, manifest).find((candidate) => candidate.id === stageId);
+      : readViewerStages(artifact).find((candidate) => candidate.id === stageId);
     if (!stage) throw new Error(`unknown stage "${stageId}"`);
     return stage;
   };
@@ -1338,14 +1380,14 @@ export function createViewerDataSource(
 
   return {
     evidenceFile(stageId: string | null, itemId: string | null, index: string | null) {
-      const artifact = requireArtifact(repoRoot);
+      const artifact = readViewerArtifact(repoRoot);
       const stage = readStage(stageId, artifact);
       const item = listOf(stage.evidence).find((candidate) => isRecord(candidate) && candidate.id === itemId);
       const attachment = listOf(fieldsOf(item).attachments)[Number(index)];
       const attachmentPath = stringField(attachment, "path"), mediaType = stringField(attachment, "mediaType"), sha256 = stringField(attachment, "sha256");
       if (attachmentPath === undefined || mediaType === undefined || !evidenceMediaTypeMatches({ path: attachmentPath, mediaType })) throw new Error("Evidence attachment does not exist.");
-      const { file } = resolveEvidenceFile(artifact, stage.id, attachmentPath);
-      const bytes = artifact.read(file);
+      const { file } = resolveEvidenceFile(artifact.files, stage.id, attachmentPath);
+      const bytes = artifact.files.read(file);
       if (sha256Hex(bytes) !== sha256) throw new Error("Evidence attachment is damaged.");
       return { mediaType, content: bytes.toString("base64") };
     },
@@ -1649,12 +1691,12 @@ export function mapNoteTarget(note: Pick<Wire.FeedbackNoteExport, "kind" | "id" 
 }
 
 export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
-  const artifact = requireArtifact(repoRoot);
-  const manifest = readManifest(artifact);
+  const artifact = readViewerArtifact(repoRoot);
+  const { manifest } = artifact;
   return {
     implementationId: manifest.implementationId,
     stages: manifest.stages.map((stageId) => {
-      const stage = readStageDocument(artifact, stageId);
+      const stage = artifact.stage(stageId);
       const stats = stageFileStats(repoRoot, stage, gitCapture);
       return {
         id: stage.id,
@@ -2052,7 +2094,7 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
       sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
-    const currentImplementationId = activeImplementationId(context.repoRoot);
+    const currentImplementationId = reviewedImplementationId(context.repoRoot);
     const input = isRecord(payload) ? parseThreadAction(payload) : undefined;
     if (!input || input.implementationId !== context.implementationId || input.implementationId !== currentImplementationId) {
       sendJson<Wire.ApiFailure>(response, 409, {
@@ -2662,7 +2704,7 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
   const review = () => { assertReviewContext(context); }; // Includes queued repository reads and commands.
   const implementation = (implementationId: string) => {
     review();
-    if (activeImplementationId(root) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
+    if (reviewedImplementationId(root) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
   };
   const storedState = (record: ReviewRecord) => ({ reviewId: record.id, generation: record.generation, state: record.state, stateRevision: record.stateRevision, lastSaveId: record.lastSaveId ?? null });
   return {
@@ -2777,10 +2819,10 @@ function openBrowser(url: string) {
 }
 
 function implementationSummary(repoRoot: string) {
-  const artifact = requireArtifact(repoRoot);
-  const manifest = readManifest(artifact);
+  const artifact = readViewerArtifact(repoRoot);
+  const { manifest } = artifact;
   const fileCount = manifest.stages.reduce((total, stageId) => {
-    const stage = readStageDocument(artifact, stageId);
+    const stage = artifact.stage(stageId);
     return total + stage.change.files.length;
   }, 0);
   return {

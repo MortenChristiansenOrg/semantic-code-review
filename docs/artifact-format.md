@@ -17,6 +17,9 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
 6. A stage may contain multiple linear commits. Merge commits are invalid.
 7. Immutable base/head snapshots make mutable branches and feedback anchors
    verifiable.
+8. The active artifact stores only what Git cannot tell. Branch names, base
+   revisions and file inventories follow from the stage order and the head
+   revisions; published and archived artifacts store them in full.
 
 ## Layout
 
@@ -62,14 +65,18 @@ Fields (required unless marked optional):
 | `requirements` | Indexed specification IDs |
 | `stages` | Stage IDs in bottom-to-top branch order |
 
-The default prefix is `semantic-flow/<implementation-id>`. Writers SHOULD use:
+The default prefix is `semantic-flow/<implementation-id>`. Stage branches are
+named:
 
 ```text
-<branch-prefix>/<two-digit-position>-<stage-id>
+<branch-prefix>/stages/<stage-id>
 ```
 
-This deterministic convention groups related branches in clients such as
-GitKraken.
+The name carries no position, so a stage can be inserted, split, reordered or
+removed without renaming the branches above it; stage order comes only from the
+manifest. The `stages/` level keeps a stage whose ID is `metadata` apart from
+the `<branch-prefix>/metadata` publication branch, and groups related branches
+in clients such as GitKraken.
 
 `baseRevision` MUST equal `targetBranch` when initialized. If trunk advances,
 restacking updates `baseRevision` and every affected stage snapshot.
@@ -146,7 +153,7 @@ baseBranch = previousStage.change.branch
 baseRevision = previousStage.change.headRevision
 ```
 
-`branch` MUST equal the deterministic branch name for its manifest position.
+`branch` MUST equal `<branch-prefix>/stages/<stage-id>`.
 The local branch ref MUST point to `headRevision` during an active implementation.
 `headRevision` MUST descend linearly from `baseRevision` and the range MUST
 contain at least one commit and no merge commit.
@@ -159,12 +166,33 @@ git diff --name-status --find-renames=50% <baseRevision> <headRevision>
 
 Supported kinds are `added`, `modified`, `deleted`, and `renamed`.
 
+## Active form
+
+The active artifact of the reference tooling stores a compact form that is
+private to the CLI. It differs from the full form in three places:
+
+- The manifest's `stages` lists `{ "id": "<stage-id>", "headRevision": "<sha>" }`
+  entries in bottom-to-top order instead of IDs. An entry also has a
+  `baseRevision` while the stage does not build on the recorded head below it:
+  after a lower stage's corrected head was recorded and before restacking
+  moves the stage onto it. Validation with Git reports that state and names
+  the restack that ends it.
+- Stage documents omit `change`.
+- Working stage documents omit `branch`.
+
+One loader turns the active form into the full form for every reader: it names
+each branch, takes each base from the stage below or from the manifest, and
+derives each file inventory from Git. Commands validate the result against the
+full schemas; the viewer narrows each field itself, so it can still show an
+artifact that validation rejects. Storing a derived field in the active form is an error.
+`semantic-flow implementation export` shows the full form.
+
 ## Working stage
 
 Tooling may store one working stage under `.semantic-review/.work/stages/`.
-It includes the deterministic `branch` but no canonical `change`. `stage begin`
-creates and checks out that branch at the current stack tip. Finalization
-derives `change` from Git and removes the working document.
+In its full form it includes the deterministic `branch` but no canonical
+`change`. `stage begin` creates and checks out that branch at the current stack
+tip. Finalization records the branch head and removes the working document.
 
 ## Restacking
 
@@ -174,8 +202,8 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
 2. Replay each branch above it onto the newly computed lower head, bottom-up.
 3. Abort without moving refs if any patch conflicts.
 4. Move affected branch refs as one transaction.
-5. Refresh each affected `baseBranch`, `baseRevision`, `headRevision`, and
-   `files`.
+5. Record each affected `headRevision` (and the manifest's `baseRevision` when
+   the target advanced); the other `change` fields follow from them.
 
 The operation MUST refuse to overwrite an affected branch that changed after
 it was read. Tools SHOULD use compare-and-swap ref updates and
@@ -204,13 +232,15 @@ outside this format.
 
 Validation layers:
 
-1. Parse indexed JSON and validate schemas.
-2. Validate IDs, references, dependencies, and deterministic branch names.
+1. Parse indexed JSON, derive the full form, and validate schemas.
+2. Validate IDs, references, and dependencies.
 3. Resolve every base/head revision and stage branch.
 4. Verify the branch ref equals `headRevision`.
-5. Verify each base branch/revision relationship.
-6. Verify linear ancestry, no merges, unique branches/heads, exact file
-   inventories, and exclusion of semantic metadata from stage diffs.
+5. Verify linear ancestry, no merges, unique heads, node coverage of the
+   derived inventories, and exclusion of semantic metadata from stage diffs.
+
+The active form stores no branch names, bases or inventories, so validation
+does not compare stored copies with Git.
 
 Publication validation also requires at least one finalized stage and no
 working stage. Stage specification references define the criteria included in
@@ -245,8 +275,9 @@ The recommended publication branch is:
 <branch-prefix>/metadata
 ```
 
-It contains one metadata-only commit parented by the final stage head. Keeping
-it separate prevents implementation metadata from appearing in implementation diffs.
+It contains one metadata-only commit parented by the final stage head, with the
+artifact in its full form and without working stages. Keeping it separate
+prevents implementation metadata from appearing in implementation diffs.
 
 After the result is landed, the artifact may be archived under:
 
@@ -254,8 +285,8 @@ After the result is landed, the artifact may be archived under:
 .semantic-review-history/<implementation-id>/.semantic-review/
 ```
 
-Archived artifacts preserve branch and revision provenance even if stage
-branches are later deleted.
+Archived artifacts store the full form, so they preserve branch and revision
+provenance even if stage branches are later deleted.
 
 ## Deliberate exclusions
 

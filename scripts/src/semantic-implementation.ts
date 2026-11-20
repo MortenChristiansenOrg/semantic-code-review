@@ -2,7 +2,6 @@
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
 import { assertEvidenceDirectories, ensureEvidenceAttributes, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -46,8 +45,19 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.js";
-import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { parseJson, readJson } from "./shared/json.js";
+import {
+  changedFiles,
+  fullFormFiles,
+  loadImplementation,
+  loadManifest,
+  stageBranchName,
+  stageFile,
+  writeManifest,
+  writeStage,
+  type Artifact,
+  type EditableStage,
+} from "./shared/implementation.js";
 import {
   ArtifactDraft,
   buildArtifactTree,
@@ -58,7 +68,6 @@ import {
   hasIncompleteArtifact,
   listJsonIds,
   readArtifact,
-  readArtifactJson,
   removeArtifact,
   requireArtifact,
   updateRefs,
@@ -67,14 +76,13 @@ import {
   type ArtifactSnapshot,
   type RefUpdate,
 } from "./shared/artifact-store.js";
-import { errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared/narrow.js";
+import { errorMessage, isStringArray, type JsonRecord } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
 import { reviewId, withReviewLock } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
 const linearRangeFacts = factCache<void>();
-const changedFileFacts = factCache<FileChange[]>();
 const changeShapeFacts = factCache<DiffChangeShape>();
 
 // Validation and inventory errors list item collections in this order.
@@ -99,17 +107,6 @@ interface Workspace {
   root: string;
   snapshot: ArtifactSnapshot;
 }
-
-/** A loaded implementation artifact; every document has passed its schema. */
-interface Artifact {
-  manifest: ImplementationManifest;
-  requirements: Map<string, Specification>;
-  stages: Map<string, Stage>;
-  workStages: Map<string, WorkStage>;
-}
-
-/** A finalized or working stage that a command edits. */
-type EditableStage = Stage | WorkStage;
 
 function isInsightCollection(value: string): value is InsightCollection {
   return STAGE_ITEM_COLLECTIONS.some((collection) => collection === value);
@@ -144,86 +141,8 @@ function openWorkspace(root: string): Workspace {
   return { root, snapshot: requireArtifact(root) };
 }
 
-/** Where a stage document is stored in the artifact. */
-function stageFile(stage: EditableStage): string {
-  return stage.$schema === STAGE_SCHEMA_ID ? `stages/${stage.id}.json` : `.work/stages/${stage.id}.json`;
-}
-
 function formatPath(value: string): string {
   return value.split(path.sep).join("/");
-}
-
-function compareOrdinal(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-interface UnvalidatedDocument {
-  id: string;
-  /** How messages name the document. */
-  file: string;
-  value: unknown;
-}
-
-/** The validated manifest and the documents it lists, before their schema validation. */
-interface UnvalidatedArtifact {
-  manifest: ImplementationManifest;
-  requirements: UnvalidatedDocument[];
-  stages: UnvalidatedDocument[];
-  workStages: UnvalidatedDocument[];
-}
-
-/** Validates the manifest, then reads every document, failing on missing files
- * and working stage ID mismatches. Only validated IDs name files. */
-function readArtifactDocuments(files: ArtifactFiles, { includeWork = true }: { includeWork?: boolean } = {}): UnvalidatedArtifact {
-  if (!hasFile(files, "manifest.json")) {
-    fail(`No semantic implementation manifest exists at ${files.describe("manifest.json")}.`);
-  }
-
-  // Each document must carry its own kind's $schema; an unknown one keeps the
-  // "unsupported schema" message of the former dispatch by $schema.
-  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readArtifactJson(files, "manifest.json"), files.describe("manifest.json"));
-  const read = (directory: string, id: string, kind: string): UnvalidatedDocument => {
-    const file = `${directory}/${id}.json`;
-    if (!hasFile(files, file)) fail(`Manifest ${kind} ${id} is missing ${files.describe(file)}.`);
-    return { id, file: files.describe(file), value: readArtifactJson(files, file) };
-  };
-  const requirementDocuments = manifest.requirements.map((id) => read("requirements", id, "specification"));
-  const stageDocuments = manifest.stages.map((id) => read("stages", id, "stage"));
-
-  const workDocuments: UnvalidatedDocument[] = [];
-  if (includeWork) {
-    for (const filenameId of listJsonIds(files, ".work/stages")) {
-      const file = `.work/stages/${filenameId}.json`;
-      const value = readArtifactJson(files, file);
-      const internalId = isRecord(value) ? value.id : undefined;
-      if (internalId !== filenameId) {
-        fail(`Working stage file ${file} has internal ID ${String(internalId)}.`);
-      }
-      workDocuments.push({ id: filenameId, file: files.describe(file), value });
-    }
-  }
-  return { manifest, requirements: requirementDocuments, stages: stageDocuments, workStages: workDocuments };
-}
-
-/** Loads the artifact and validates every document. After the manifest, every
- * file is located before any is validated, so missing files and ID mismatches
- * are reported ahead of schema errors; the first invalid document fails. */
-function loadArtifact(files: ArtifactFiles, options: { includeWork?: boolean } = {}): Artifact {
-  const documents = readArtifactDocuments(files, options);
-  const { manifest } = documents;
-  const requirements = new Map<string, Specification>();
-  for (const { id, file, value } of documents.requirements) {
-    requirements.set(id, parseDocument(SPECIFICATION_SCHEMA_ID, value, file));
-  }
-  const stages = new Map<string, Stage>();
-  for (const { id, file, value } of documents.stages) {
-    stages.set(id, parseDocument(STAGE_SCHEMA_ID, value, file));
-  }
-  const workStages = new Map<string, WorkStage>();
-  for (const { id, file, value } of documents.workStages) {
-    workStages.set(id, parseDocument(WORK_STAGE_SCHEMA_ID, value, file));
-  }
-  return { manifest, requirements, stages, workStages };
 }
 
 /** A finalized stage the manifest lists; loading guarantees its document exists. */
@@ -357,91 +276,6 @@ function checkLinearRange(root: string, base: string, head: string, label: strin
   if (merges) {
     fail(`${label} must not contain merge commits.`);
   }
-}
-
-function stageBranchName(manifest: ImplementationManifest, index: number, id: string): string {
-  return `${manifest.branchPrefix}/${String(index + 1).padStart(2, "0")}-${id}`;
-}
-
-function changedFiles(root: string, parent: string, commit: string): FileChange[] {
-  return changedFileFacts(JSON.stringify([root, parent, commit]), () => readChangedFiles(root, parent, commit));
-}
-
-/** Format 0.1 kind of a non-rename Git name-status code. */
-function changeKind(code: string): "added" | "modified" | "deleted" | undefined {
-  return code === "A" ? "added" : code === "M" ? "modified" : code === "D" ? "deleted" : undefined;
-}
-
-function readChangedFiles(root: string, parent: string, commit: string): FileChange[] {
-  const result = spawnSync(
-    "git",
-    ["diff", "--name-status", "-z", "--find-renames=50%", parent, commit],
-    {
-      cwd: root,
-      encoding: "buffer",
-      windowsHide: true,
-      maxBuffer: SUBPROCESS_MAX_BUFFER,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  if (result.error || result.status !== 0) {
-    fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
-  }
-
-  const fields = result.stdout
-    .toString("utf8")
-    .split("\0")
-    .filter((field) => field.length > 0);
-  const files: FileChange[] = [];
-  for (let index = 0; index < fields.length; ) {
-    const status = fields[index];
-    index += 1;
-    const code = status[0];
-
-    if (code === "R") {
-      const previousPath = fields[index];
-      const currentPath = fields[index + 1];
-      if (!previousPath || !currentPath) {
-        fail(`Malformed Git rename record for commit ${commit}.`);
-      }
-      files.push({
-        path: currentPath,
-        kind: "renamed",
-        previousPath,
-      });
-      index += 2;
-      continue;
-    }
-
-    const currentPath = fields[index];
-    if (!currentPath) {
-      fail(`Malformed Git change record for commit ${commit}.`);
-    }
-    const kind = changeKind(code);
-    if (!kind) {
-      fail(
-        `Git status ${status} for ${currentPath} is unsupported by format 0.1.`,
-      );
-    }
-    files.push({ path: currentPath, kind });
-    index += 1;
-  }
-
-  files.sort((left, right) => compareOrdinal(left.path, right.path));
-  if (files.length === 0) {
-    fail(`Stage head ${commit} has no changes relative to ${parent}.`);
-  }
-  for (const file of files) {
-    if (
-      file.path === ".semantic-review" ||
-      file.path.startsWith(".semantic-review/") ||
-      file.previousPath === ".semantic-review" ||
-      file.previousPath?.startsWith(".semantic-review/")
-    ) {
-      fail(`Stage head ${commit} contains semantic implementation artifact files.`);
-    }
-  }
-  return files;
 }
 
 interface DiffHunk {
@@ -697,10 +531,6 @@ function stageNodeErrors(stage: EditableStage, files: FileChange[], diffContext:
   return errors;
 }
 
-function sameChanges(left: FileChange[], right: FileChange[]): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function unresolvedRefHint(criterionIds: Map<string, Set<string>>, specificationId: string): string {
   const known = criterionIds.get(specificationId);
   if (!known) {
@@ -766,7 +596,6 @@ function validateSemantic(
 
   const dependencies = new Map<string, string[]>();
   const seenStages = new Set<string>();
-  const branches = new Set<string>();
   const heads = new Set<string>();
   for (const id of manifest.stages) {
     const stage = finalizedStage(artifact, id);
@@ -801,23 +630,9 @@ function validateSemantic(
     }
     errors.push(...stageNodeErrors(stage, stage.change.files));
     errors.push(...evidenceItemErrors(stage));
-    const expectedBranch = stageBranchName(
-      manifest,
-      manifest.stages.indexOf(id),
-      id,
-    );
-    if (stage.change.branch !== expectedBranch) {
-      errors.push(
-        `Stage ${id} branch ${stage.change.branch} should be ${expectedBranch}.`,
-      );
-    }
-    if (branches.has(stage.change.branch)) {
-      errors.push(`Stage ${id} repeats branch ${stage.change.branch}.`);
-    }
     if (heads.has(stage.change.headRevision)) {
       errors.push(`Stage ${id} repeats head ${stage.change.headRevision}.`);
     }
-    branches.add(stage.change.branch);
     heads.add(stage.change.headRevision);
     seenStages.add(id);
   }
@@ -876,12 +691,6 @@ function validateSemantic(
           `Working stage ${id} repeats ${collection} ID ${duplicate}.`,
         );
       }
-      const expectedBranch = stageBranchName(manifest, manifest.stages.length, id);
-      if (stage.branch !== expectedBranch) {
-        errors.push(
-          `Working stage ${id} branch ${stage.branch} should be ${expectedBranch}.`,
-        );
-      }
     }
   }
   if (workStages.size > 1) {
@@ -911,24 +720,12 @@ function validateSemantic(
       `Target branch ${manifest.targetBranch} moved from ${base} to ${targetHead}; check it out, then run restack --base ${manifest.targetBranch}.`,
     );
   }
-  let expectedBaseBranch = manifest.targetBranch;
-  let expectedParent = base;
-  for (const [index, id] of manifest.stages.entries()) {
+  // Branch names, bases and inventories are derived from the stage order and
+  // heads; only the mutable branch refs and the recorded commits are checked.
+  let below: Stage | undefined;
+  for (const id of manifest.stages) {
     const stage = finalizedStage(artifact, id);
-    const { branch, baseBranch, baseRevision, headRevision } = stage.change;
-    if (branch !== stageBranchName(manifest, index, id)) {
-      fail(`Stage ${id} branch ${branch} does not follow the stack convention.`);
-    }
-    if (baseBranch !== expectedBaseBranch) {
-      fail(
-        `Stage ${id} base branch ${baseBranch} should be ${expectedBaseBranch}.`,
-      );
-    }
-    if (baseRevision !== expectedParent) {
-      fail(
-        `Stage ${id} base revision ${baseRevision} should be ${expectedParent}.`,
-      );
-    }
+    const { branch, baseRevision, headRevision, files } = stage.change;
     const branchHead = branchCommit(workspace.root, branch);
     const head = commitObject(workspace.root, headRevision);
     if (branchHead !== head) {
@@ -936,23 +733,23 @@ function validateSemantic(
         `Stage ${id} branch ${branch} moved from ${head} to ${branchHead}; check it out, then run restack --from ${id}.`,
       );
     }
-    assertLinearRange(workspace.root, expectedParent, head, `Stage ${id}`);
-    const actualFiles = changedFiles(workspace.root, expectedParent, head);
-    if (!sameChanges(stage.change.files, actualFiles)) {
-      fail(
-        `Stage ${id} file inventory is stale.\nExpected: ${JSON.stringify(actualFiles)}\nActual:   ${JSON.stringify(stage.change.files)}`,
-      );
+    // A stage keeps its own base only until restacking moves it onto the new head below it.
+    const expectedBase = below ? below.change.headRevision : base;
+    if (commitObject(workspace.root, baseRevision) !== expectedBase) {
+      fail(below
+        ? `Stage ${id} still builds on ${baseRevision}, not on the head ${expectedBase} of stage ${below.id}; check out ${below.change.branch}, then run restack --from ${below.id}.`
+        : `Stage ${id} still builds on ${baseRevision}, not on ${expectedBase}; check out ${manifest.targetBranch}, then run restack --base ${manifest.targetBranch}.`);
     }
-    const nodeErrors = stageNodeErrors(stage, actualFiles, {
+    below = stage;
+    assertLinearRange(workspace.root, baseRevision, head, `Stage ${id}`);
+    const nodeErrors = stageNodeErrors(stage, files, {
       root: workspace.root,
-      baseRevision: expectedParent,
+      baseRevision,
       headRevision: head,
     });
     if (nodeErrors.length > 0) {
       fail(nodeErrors.join("\n"));
     }
-    expectedBaseBranch = branch;
-    expectedParent = head;
   }
 }
 
@@ -976,7 +773,7 @@ function validateArtifact(
   files: ArtifactFiles | undefined = workspace.snapshot,
 ): Artifact {
   if (!files) throw new Error("Validation requires the artifact's files.");
-  const artifact = loadArtifact(files);
+  const artifact = loadImplementation(workspace.root, files);
 
   for (const stage of [...artifact.stages.values(), ...artifact.workStages.values()]) {
     for (const collection of STAGE_ITEM_COLLECTIONS) for (const item of stageItems(stage, collection)) {
@@ -1105,7 +902,7 @@ function initialize(root: string, options: Options): void {
     );
   }
   const branchPrefix = option(options, "branch-prefix") ?? `semantic-flow/${implementationId}`;
-  git(["check-ref-format", "--branch", `${branchPrefix}/01-probe`], {
+  git(["check-ref-format", "--branch", stageBranchName(branchPrefix, "probe")], {
     cwd: root,
   });
   const versionFile = path.join(skillDirectory, "VERSION");
@@ -1129,7 +926,7 @@ function initialize(root: string, options: Options): void {
 
   const draft = new ArtifactDraft(undefined);
   draft.writeJson(`requirements/${specification.id}.json`, specification);
-  draft.writeJson("manifest.json", manifest);
+  writeManifest(draft, { manifest, stages: new Map() });
   validateArtifact({ root }, { quiet: true }, draft);
   ensureArtifactExcluded(root);
   commitArtifact(root, undefined, draft);
@@ -1151,7 +948,7 @@ function addSpecification(workspace: Workspace, options: Options): void {
   artifact.manifest.requirements.push(specification.id);
   const draft = new ArtifactDraft(workspace.snapshot);
   draft.writeJson(`requirements/${specification.id}.json`, specification);
-  draft.writeJson("manifest.json", artifact.manifest);
+  writeManifest(draft, artifact);
   validateArtifact(workspace, { quiet: true }, draft);
   commitArtifact(workspace.root, workspace.snapshot, draft);
   console.log(`Added specification ${specification.id}.`);
@@ -1179,12 +976,7 @@ function beginStage(workspace: Workspace, options: Options): void {
     fail(`Working stage ${id} already exists.`);
   }
 
-  const branch = stageBranchName(artifact.manifest, artifact.manifest.stages.length, id);
-  const ordinalPrefix = branch.slice(0, branch.lastIndexOf("/") + 1)
-    + `${String(artifact.manifest.stages.length + 1).padStart(2, "0")}-`;
-  const ordinalRefs = git(["for-each-ref", "--format=%(refname:short)", `refs/heads/${artifact.manifest.branchPrefix}/`], { cwd: workspace.root });
-  const collision = ordinalRefs.split(/\r?\n/).find((ref) => ref.startsWith(ordinalPrefix));
-  if (collision) fail(`Stage ordinal already exists on branch ${collision}; resolve it before beginning another stage.`);
+  const branch = stageBranchName(artifact.manifest.branchPrefix, id);
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
   const existingBranch = gitOptional(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: workspace.root,
@@ -1225,7 +1017,7 @@ function beginStage(workspace: Workspace, options: Options): void {
   const stage = parseDocument(WORK_STAGE_SCHEMA_ID, stageInput, "Stage input");
 
   const draft = new ArtifactDraft(workspace.snapshot);
-  draft.writeJson(file, stage);
+  writeStage(draft, stage);
   validateArtifact(workspace, { quiet: true }, draft);
   const originalBranch = currentBranch(workspace.root);
   git(["switch", "-c", branch, parent], { cwd: workspace.root });
@@ -1281,9 +1073,9 @@ interface StageBatch {
 }
 
 /** Applies one edit to a stage in a draft and validates the edited artifact. */
-function saveStage(workspace: Workspace, draft: ArtifactDraft, file: string, stage: EditableStage, update: StageUpdate): EditableStage {
+function saveStage(workspace: Workspace, draft: ArtifactDraft, stage: EditableStage, update: StageUpdate): EditableStage {
   const updated = update(structuredClone(stage));
-  draft.writeJson(file, updated);
+  writeStage(draft, updated);
   validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
   return updated;
 }
@@ -1310,14 +1102,14 @@ function updateStage(
   const edit = draft ?? new ArtifactDraft(workspace.snapshot);
   let updated: EditableStage;
   if (!finalized) {
-    const { file, stage } = workingStage(artifact, id);
-    updated = saveStage(workspace, edit, file, stage, update);
+    const { stage } = workingStage(artifact, id);
+    updated = saveStage(workspace, edit, stage, update);
   } else {
     const stage = artifact.stages.get(id);
     if (!stage) {
       fail(`Finalized stage ${id} does not exist.`);
     }
-    updated = saveStage(workspace, edit, `stages/${id}.json`, stage, update);
+    updated = saveStage(workspace, edit, stage, update);
   }
   if (!draft) commitArtifact(workspace.root, workspace.snapshot, edit);
   return updated;
@@ -1686,7 +1478,7 @@ function evidenceInputs(options: Options): EvidenceInput[] {
 // Evidence edits wait for each other instead of failing as concurrent writes:
 // the artifact is read again once the lock is held.
 function withEvidenceLock<T>(workspace: Workspace, write: (current: Workspace) => T): T {
-  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readArtifactJson(workspace.snapshot, "manifest.json"), workspace.snapshot.describe("manifest.json"));
+  const manifest = loadManifest(workspace.snapshot);
   return withArtifactLock(workspace, manifest.implementationId, () => write(openWorkspace(workspace.root)));
 }
 
@@ -1792,7 +1584,7 @@ function recordStageBatch(workspace: Workspace, options: Options): void {
     } else recordStageItem(workspace, input, batch);
   }
   const draft = new ArtifactDraft(workspace.snapshot);
-  draft.writeJson(stageFile(stage), batch.stage);
+  writeStage(draft, batch.stage);
   validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
   commitArtifact(workspace.root, workspace.snapshot, draft);
   console.log(JSON.stringify({ stageId: id, recorded: entries.length }));
@@ -1924,7 +1716,11 @@ function organizeStage(workspace: Workspace, options: Options): void {
   }
 
   const draft = new ArtifactDraft(workspace.snapshot);
-  draft.writeJson(stageFile(stage), updated);
+  writeStage(draft, updated);
+  if (updated.$schema === STAGE_SCHEMA_ID && finalizedStageMoved) {
+    artifact.stages.set(stageId, updated);
+    writeManifest(draft, artifact);
+  }
   validateArtifact(workspace, {
     quiet: true,
     validateGit: finalized && !finalizedStageMoved,
@@ -2004,8 +1800,9 @@ function finishStage(workspace: Workspace, options: Options): void {
   artifact.manifest.stages.push(id);
 
   const draft = new ArtifactDraft(workspace.snapshot);
-  draft.writeJson(canonicalFile, stage);
-  draft.writeJson("manifest.json", artifact.manifest);
+  artifact.stages.set(id, stage);
+  writeStage(draft, stage);
+  writeManifest(draft, artifact);
   draft.remove(workFile);
   validateArtifact(workspace, { quiet: true }, draft);
   commitArtifact(workspace.root, workspace.snapshot, draft);
@@ -2035,12 +1832,12 @@ function discardStage(workspace: Workspace, options: Options): void {
   let removeBranch = false;
   if (branchHead) {
     if (branchHead !== creationParent) {
-      branchNote = ` Branch ${branch} has local commits and was kept; delete it manually before reusing the ordinal.`;
+      branchNote = ` Branch ${branch} has local commits and was kept; delete it manually before reusing the stage ID.`;
     } else if (
       checkedOutBranches(workspace.root).has(branch) &&
       currentBranch(workspace.root) !== branch
     ) {
-      branchNote = ` Branch ${branch} is checked out in another worktree and was kept; remove that worktree or delete the branch manually before reusing the ordinal.`;
+      branchNote = ` Branch ${branch} is checked out in another worktree and was kept; remove that worktree or delete the branch manually before reusing the stage ID.`;
     } else {
       removeBranch = true;
     }
@@ -2407,9 +2204,8 @@ function restackStages(
         headRevision: plan.nextHead,
         files: changedFiles(workspace.root, plan.baseRevision, plan.nextHead),
       };
-      draft.writeJson(`stages/${plan.id}.json`, plan.stage);
     }
-    draft.writeJson("manifest.json", artifact.manifest);
+    writeManifest(draft, artifact);
     validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
     withArtifactLock(workspace, artifact.manifest.implementationId, () => {
       commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates);
@@ -2440,7 +2236,7 @@ function restackStages(
 function repairArtifact(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "repair"));
   const files = workspace.snapshot;
-  const manifest = parseDocument(MANIFEST_SCHEMA_ID, readArtifactJson(files, "manifest.json"), files.describe("manifest.json"));
+  const manifest = loadManifest(files);
   const removals: string[] = [];
   const ambiguous: string[] = [];
 
@@ -2564,8 +2360,13 @@ function preparedBranchBinding(root: string, artifact: Artifact): PreparedBindin
   return bindings[0];
 }
 
-function buildMetadataCommit(workspace: Workspace, parent: string, message: string): { commit: string; tree: string } {
-  const tree = buildArtifactTree(workspace.root, workspace.snapshot, parent);
+/** The tree that publishes the artifact in its full form on top of parent. */
+function publishedTree(workspace: Workspace, artifact: Artifact, parent: string): string {
+  return buildArtifactTree(workspace.root, fullFormFiles(artifact, workspace.snapshot), parent);
+}
+
+function buildMetadataCommit(workspace: Workspace, artifact: Artifact, parent: string, message: string): { commit: string; tree: string } {
+  const tree = publishedTree(workspace, artifact, parent);
   const commit = gitRaw(["commit-tree", tree, "-p", parent], {
     cwd: workspace.root,
     input: `${message}\n`,
@@ -2604,7 +2405,7 @@ function metadataPublicationPlan(workspace: Workspace, artifact: Artifact, messa
   const stageTip = lastStageHead(artifact);
   const branch = metadataBranch(artifact);
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
-  const publication = buildMetadataCommit(workspace, stageTip, message);
+  const publication = buildMetadataCommit(workspace, artifact, stageTip, message);
   const existing = gitOptional(["rev-parse", "--verify", `refs/heads/${branch}`], {
     cwd: workspace.root,
   });
@@ -2926,7 +2727,7 @@ function archiveImplementation(
     ["show", "-s", "--format=%T", publicationHead],
     { cwd: workspace.root },
   );
-  const expectedTree = buildArtifactTree(workspace.root, workspace.snapshot, stageTip);
+  const expectedTree = publishedTree(workspace, artifact, stageTip);
   if (
     publicationParents.length !== 1 ||
     publicationParents[0] !== stageTip ||
@@ -2960,8 +2761,9 @@ function archiveImplementation(
   const message = option(options, "message")
     ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
   const currentHead = gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root });
+  let removeWritten = () => {};
   try {
-    exportArtifactFiles(workspace.snapshot, destination);
+    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
     const relativeDestination = formatPath(
       path.relative(workspace.root, destination),
     );
@@ -2994,10 +2796,53 @@ function archiveImplementation(
       allowFailure: true,
     });
     if (currentHead === gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root })) {
-      fs.rmSync(destination, { recursive: true, force: true });
+      // Only what the archive wrote is removed; a failed export already removed its own files.
+      removeWritten();
     }
     throw error;
   }
+}
+
+/** A path with every existing ancestor's links resolved, so containment checks see where it leads. */
+function resolvedPath(file: string): string {
+  const missing: string[] = [];
+  let existing = path.resolve(file);
+  while (!fs.existsSync(existing) && path.dirname(existing) !== existing) {
+    missing.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  let real = existing;
+  try { real = fs.realpathSync.native(existing); } catch { /* An unavailable root stays as written. */ }
+  return path.join(real, ...missing);
+}
+
+function exportImplementation(workspace: Workspace, options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "export"));
+  const artifact = loadImplementation(workspace.root, workspace.snapshot);
+  const destination = option(options, "destination");
+  if (destination === undefined) {
+    console.log(JSON.stringify({
+      manifest: artifact.manifest,
+      requirements: Object.fromEntries(artifact.requirements),
+      stages: Object.fromEntries(artifact.stages),
+      workingStages: Object.fromEntries(artifact.workStages),
+    }, null, 2));
+    return;
+  }
+  const target = path.resolve(process.cwd(), destination);
+  const active = resolvedPath(path.join(workspace.root, ".semantic-review"));
+  const resolvedTarget = resolvedPath(target);
+  if (resolvedTarget === active || resolvedTarget.startsWith(`${active}${path.sep}`)) {
+    fail(`Export destination ${target} must be outside the active artifact.`);
+  }
+  if (fs.existsSync(target) && (!fs.statSync(target).isDirectory() || fs.readdirSync(target).length > 0)) {
+    fail(`Export destination ${target} must be a new or empty directory.`);
+  }
+  const files = fullFormFiles(artifact, workspace.snapshot);
+  for (const stage of artifact.workStages.values()) files.writeJson(stageFile(stage), stage);
+  // A failed export removes only what it wrote, so it can be retried.
+  exportArtifactFiles(files, target);
+  console.log(`Exported ${artifact.manifest.implementationId} to ${target}.`);
 }
 
 /** Validates the recorded stack before sync; target ancestry is checked by the caller. */
@@ -3105,6 +2950,7 @@ function dispatch(root: string, positionals: string[], options: Options): void {
     repairArtifact(openWorkspace(root), options);
     return;
   }
+  if (command === "export" && subcommand === undefined) return exportImplementation(openWorkspace(root), options);
   if (command === "publish" && subcommand === undefined) {
     publishArtifact(openWorkspace(root), options);
     return;

@@ -15,14 +15,14 @@ not a story reconstructed afterward.
 - Keep each stage to one coherent behavior, with its tests and directly related
   documentation.
 - Let `stage begin` create and check out the deterministic stage branch.
-- Treat the numeric branch prefix as the finalized manifest position, not a
-  planned position. There must be exactly one implementation branch for each
-  ordinal.
+- Stage branches are named after their stage IDs; the manifest alone orders
+  them. There must be exactly one implementation branch for each stage.
 - Keep all work that belongs to the active stage on its existing branch. If
   its scope changes, update its mutable metadata with `stage set`; do not
-  create another numbered branch for the same stage position.
+  create another stage branch for the same work.
 - Do not use `stage discard` to rename or reorder a stage. It keeps a branch
-  that carries commits; beginning a replacement would collide with that ordinal. If an immutable stage ID or order
+  that carries commits; beginning a replacement with that ID would collide with
+  it. If an immutable stage ID or order
   must change, stop the unsupported restructuring and apply `user-decisions.md`.
   Ask only about changes to scope or independently reviewable behavior; report
   a tooling limitation when no such choice exists.
@@ -34,7 +34,7 @@ not a story reconstructed afterward.
   artificial stages or a catch-all cleanup stage.
 - Correct an omission in the earliest responsible stage and restack later
   branches. Do not append stabilization or acceptance-gap stages for work that
-  belongs in an existing boundary, and do not create a new numbered branch for
+  belongs in an existing boundary, and do not create a new stage branch for
   it.
 
 ## Insights and change organization

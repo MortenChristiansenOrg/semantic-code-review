@@ -26,9 +26,9 @@ function addUpstream(t, repository) {
 function snapshot(repository) {
   return {
     refs: repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"),
-    artifact: repository.read(".semantic-review/manifest.json"),
-    stages: repository.readJson(".semantic-review/manifest.json").stages.map((id) =>
-      repository.read(`.semantic-review/stages/${id}.json`),
+    artifact: repository.artifact.read("manifest.json"),
+    stages: repository.artifact.readJson("manifest.json").stages.map(({ id }) =>
+      repository.artifact.read(`stages/${id}.json`),
     ),
     head: repository.git("rev-parse", "HEAD"),
     branch: repository.git("branch", "--show-current"),
@@ -90,7 +90,7 @@ test("sync --local restacks a stage whose patch exceeds the default 1 MiB subpro
   // Random base64 lines do not compress, so the stage patch is about 2.7 MB.
   const contents = `${randomBytes(2 * 1024 * 1024).toString("base64").match(/.{1,76}/g).join("\n")}\n`;
   finalizeStage(repository, { id: "large", file: "large.txt", contents });
-  const stage = repository.readJson(".semantic-review/stages/large.json");
+  const stage = repository.artifact.stage("large");
   const patch = spawnSync("git", ["diff", "--binary", "--full-index", stage.change.baseRevision, stage.change.headRevision], {
     cwd: repository.root, maxBuffer: 64 * 1024 * 1024,
   });
@@ -209,12 +209,14 @@ test("sync rejects a corrupt recorded base chain before fetching", (t) => {
   const { repository } = createImplementationWithStages(t, ["foundation", "behavior"]);
   const upstream = addUpstream(t, repository);
   upstream.commitFile("trunk.txt", "upstream\n", "Advance upstream");
-  const stage = repository.readJson(".semantic-review/stages/behavior.json");
-  stage.change.baseRevision = repository.git("rev-parse", "main");
-  repository.write(".semantic-review/stages/behavior.json", JSON.stringify(stage));
+  // The recorded base has the target's tree but is not an ancestor of the
+  // first stage head, so only the range check can tell.
+  const unrelated = repository.git("commit-tree", "main^{tree}", "-m", "Unrelated base");
+  const manifest = repository.artifact.readJson("manifest.json");
+  repository.artifact.write("manifest.json", { ...manifest, baseRevision: unrelated });
   const before = snapshot(repository);
   const remoteBefore = repository.git("rev-parse", "upstream/main");
-  expectSyncFailure(repository, /base revision.*should be/);
+  expectSyncFailure(repository, /Stage foundation head [0-9a-f]{40} must descend from/);
   assert.deepEqual(snapshot(repository), before);
   assert.equal(repository.git("rev-parse", "upstream/main"), remoteBefore);
 });
@@ -241,7 +243,7 @@ for (const problem of ["dirty artifact", "unfinished stage", "edited stage", "di
       expected = /diverged from the recorded implementation base/;
     } else {
       const checkout = repository.path("other-worktree");
-      const branch = problem === "dirty target" ? "main" : repository.readJson(".semantic-review/stages/foundation.json").change.branch;
+      const branch = problem === "dirty target" ? "main" : repository.artifact.stage("foundation").change.branch;
       repository.git("worktree", "add", checkout, branch);
       fs.appendFileSync(repository.path(".git/info/exclude"), "other-worktree/\n");
       if (problem === "dirty target") fs.writeFileSync(`${checkout}/README.md`, "user work\n");
@@ -276,12 +278,12 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   const upstream = addUpstream(t, repository);
   const target = upstream.commitFile("shared.txt", "upstream\n", "Conflicting upstream");
   const before = snapshot(repository);
-  const stage = repository.readJson(".semantic-review/stages/behavior.json");
+  const stage = repository.artifact.stage("behavior");
 
   const failure = expectSyncFailure(repository, /Conflict context: stage base/);
   assert.match(failure.stderr, /resume semantic-flow.mjs implementation restack --base main directly/);
   assert.equal(repository.git("rev-parse", "main"), target);
-  assert.equal(repository.read(".semantic-review/manifest.json"), before.artifact);
+  assert.equal(repository.artifact.read("manifest.json"), before.artifact);
   assert.deepEqual(snapshot(repository).stages, before.stages);
   assert.equal(repository.git("branch", "--show-current"), before.branch);
   assert.equal(repository.git("rev-parse", "HEAD"), before.head);

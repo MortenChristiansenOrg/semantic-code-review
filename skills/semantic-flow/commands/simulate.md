@@ -60,7 +60,7 @@ Construct the expected integrated result before creating semantic stages:
 5. Require the target branch still to point to the recorded target commit.
 
 The snapshot is the required final application tree. It is not a semantic
-stage and must not use a numbered branch name. If integration conflicts can be
+stage and must not use a stage branch name. If integration conflicts can be
 resolved mechanically without changing behavior, resolve them and inspect the
 result. If resolution requires a product or design choice, stop and ask the
 user about the desired behavior under `../docs/user-decisions.md`. Do not ask
@@ -98,7 +98,7 @@ target commit and snapshot:
 
 Register only the next stage. For every stage, follow the begin, implement,
 organize, validate, and finish procedure in `implement.md`. Let `stage begin`
-create the numbered branch. Recreate that stage's assigned portion of the
+create the stage branch. Recreate that stage's assigned portion of the
 snapshot on its branch and commit it. Do not cherry-pick merge commits or
 create stage refs with raw Git.
 

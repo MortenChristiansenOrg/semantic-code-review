@@ -60,10 +60,10 @@ test('partial feedback batches report invalid items, keep valid items atomic, an
 test('stage batches roll back together and stage plan reports mechanical selectors', (t) => {
   const repo = createRepository(t); initializeImplementation(repo); beginStage(repo);
   const batch = [{ kind: 'decision', itemId: 'one', category: 'engineering', summary: 'Choose one', rationale: 'Relevant reasoning' }, { kind: 'validation', itemId: 'probe', type: 'manual', status: 'passed', summary: 'Observed behavior' }];
-  const file = '.semantic-review/.work/stages/implementation.json';
-  const before = repo.read(file);
+  const file = '.work/stages/implementation.json';
+  const before = repo.artifact.read(file);
   repo.expectSemanticFailure(/Unsupported record kind/, 'stage', 'record-batch', '--items', JSON.stringify([...batch, { kind: 'invalid', itemId: 'bad' }]));
-  assert.equal(repo.read(file), before);
+  assert.equal(repo.artifact.read(file), before);
   assert.equal(input(repo, 'stage', 'record-batch', '--items', JSON.stringify(batch)).recorded, 2);
   repo.commitFile('code.txt', 'a\nb\n', 'Implement');
   const plan = input(repo, 'stage', 'plan', '--selectors');
@@ -74,13 +74,6 @@ test('stage batches roll back together and stage plan reports mechanical selecto
   const finished = input(repo, 'stage', 'finish', '--json');
   assert.equal(finished.headRevision, plan.headRevision);
   repo.expectSemanticFailure(/node-ref/, 'stage', 'record-batch', '--stage', 'implementation', '--finalized', '--items', JSON.stringify([{ kind: 'risk', itemId: 'risk', summary: 'Needs link' }]));
-});
-
-test('begin rejects a different stage branch with the next ordinal', (t) => {
-  const repo = createRepository(t); initializeImplementation(repo);
-  repo.git('branch', 'semantic-flow/test-implementation/01-other');
-  assert.throws(() => beginStage(repo), /ordinal already exists/);
-  assert.equal(repo.exists('.semantic-review/.work/stages/implementation.json'), false);
 });
 
 test('combined validation, preparation and landed archive preserve feedback gates', (t) => {
@@ -122,7 +115,7 @@ test('large file pages preserve changes, full context, distant line targets and 
   repo.write('large.txt', repo.read('large.txt').replace('line 2000\n', 'updated 2000\n'));
   repo.write('small.txt', 'small\n'); repo.git('add', '.'); repo.git('commit', '-m', 'Review'); organizeStage(repo); repo.semantic('stage', 'finish');
   const source = createViewerDataSource(repo.root);
-  const stage = repo.readJson('.semantic-review/stages/implementation.json');
+  const stage = repo.artifact.stage('implementation');
   const args = ['implementation', 'large.txt', stage.change.baseRevision, stage.change.headRevision];
   const changes = await source.fileDiff(...args);
   assert.ok(changes.lines.length < 20);
@@ -133,7 +126,7 @@ test('large file pages preserve changes, full context, distant line targets and 
   assert.equal(target.offset, 1800); assert.ok(target.lines.some((row) => row.n === 2000 && row.s === 'updated 2000'));
   repo.commitFile('large.txt', 'rewritten\n', 'Rewrite'); repo.semantic('restack', '--from', 'implementation');
   assert.deepEqual(await source.fileDiff(...args, 'full', 900), page);
-  const revised = repo.readJson('.semantic-review/stages/implementation.json');
+  const revised = repo.artifact.stage('implementation');
   const current = await source.fileDiff('implementation', 'large.txt', revised.change.baseRevision, revised.change.headRevision, 'changes');
   assert.ok(current.nextOffset !== null || current.lines.some((row) => row.s === 'rewritten'));
 });
@@ -159,8 +152,8 @@ test('snapshot read failure does not publish or retain a partially refreshed sna
     return fs.readFileSync(file, 'utf8');
   } });
   const initial = reader();
-  const manifest = repo.readJson('.semantic-review/manifest.json'); manifest.title = 'New title';
-  repo.write('.semantic-review/manifest.json', JSON.stringify(manifest));
+  const manifest = repo.artifact.readJson('manifest.json'); manifest.title = 'New title';
+  repo.artifact.write('manifest.json', manifest);
   failRead = true;
   assert.throws(() => reader(true), /Temporary read failure/);
   failRead = false;
@@ -218,7 +211,7 @@ test('streamed rename pages do not include a newly recreated old path', async (t
   repo.write('new.txt', 'renamed change\n' + 'original\n'.repeat(999));
   repo.write('old.txt', 'unrelated replacement\n');
   repo.git('add', '.'); repo.git('commit', '-m', 'Rename and recreate'); organizeStage(repo); repo.semantic('stage', 'finish');
-  const stage = repo.readJson('.semantic-review/stages/implementation.json');
+  const stage = repo.artifact.stage('implementation');
   const source = createViewerDataSource(repo.root);
   const result = await source.fileDiff('implementation', 'new.txt', stage.change.baseRevision, stage.change.headRevision, 'full');
   assert.ok(result.lines.some((row) => row.s === 'renamed change'));
@@ -234,7 +227,7 @@ test('Markdown content uses complete immutable head/base blobs and confines rela
   repo.write('docs/readme.md', repo.read('docs/readme.md') + '\n# Tail\n');
   repo.write('docs/asset.txt', 'head asset');
   repo.git('rm', 'docs/deleted.md'); repo.git('add', '.'); repo.git('commit', '-m', 'Review'); organizeStage(repo); repo.semantic('stage', 'finish');
-  const stage = repo.readJson('.semantic-review/stages/implementation.json');
+  const stage = repo.artifact.stage('implementation');
   const source = createViewerDataSource(repo.root);
   const args = ['implementation', 'docs/readme.md', stage.change.baseRevision, stage.change.headRevision];
   const read = (...input) => { const result = source.fileContent(...input); return { ...result, content: Buffer.from(result.content, 'base64').toString('utf8') }; };

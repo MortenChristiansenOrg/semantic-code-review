@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   beginStage,
   createRepository,
@@ -8,6 +10,8 @@ import {
   initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
+import { readArtifact } from "../../src/shared/artifact-store.ts";
+import { changedFilesOfRanges, readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
 
 test("init and specification add create complete specification metadata", (t) => {
   const repository = createRepository(t);
@@ -22,10 +26,8 @@ test("init and specification add create complete specification metadata", (t) =>
     ],
   });
 
-  const manifest = repository.readJson(".semantic-review/manifest.json");
-  const initial = repository.readJson(
-    ".semantic-review/requirements/story.json",
-  );
+  const manifest = repository.artifact.readJson("manifest.json");
+  const initial = repository.artifact.readJson("requirements/story.json");
   assert.equal(manifest.skillVersion, fs.readFileSync(new URL("../../../skills/semantic-flow/VERSION", import.meta.url), "utf8").trim());
   assert.equal(manifest.baseRevision, base);
   assert.equal(manifest.branchPrefix, "semantic-flow/42-orders");
@@ -50,7 +52,7 @@ test("init and specification add create complete specification metadata", (t) =>
     "actor=The cancelling actor is recorded.",
   );
   assert.deepEqual(
-    repository.readJson(".semantic-review/manifest.json").requirements,
+    repository.artifact.readJson("manifest.json").requirements,
     ["story", "audit"],
   );
 
@@ -105,7 +107,7 @@ test("init rejects dirty repositories and rolls back invalid specifications", (t
     "--criterion",
     "works=Works",
   );
-  assert.equal(repository.exists(".semantic-review"), false);
+  assert.equal(repository.artifact.present(), false);
 
   repository.remove("dirty.txt");
   repository.expectSemanticFailure(
@@ -130,7 +132,7 @@ test("init rejects dirty repositories and rolls back invalid specifications", (t
     "--source-reference",
     "story",
   );
-  assert.equal(repository.exists(".semantic-review"), false);
+  assert.equal(repository.artifact.present(), false);
 });
 
 test("semantic IDs may start with digits", (t) => {
@@ -163,7 +165,7 @@ test("semantic IDs may start with digits", (t) => {
   finalizeStage(repository, { id: "4-stage" });
 
   assert.deepEqual(
-    repository.readJson(".semantic-review/manifest.json").stages,
+    repository.artifact.implementation().manifest.stages,
     ["4-stage"],
   );
 });
@@ -203,7 +205,7 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
   }
 
   expectInvalidInit("portable-implementation", "semantic-flow/CON");
-  assert.equal(repository.exists(".semantic-review"), false);
+  assert.equal(repository.artifact.present(), false);
 
   initializeImplementation(repository, { implementationId: "portable-implementation" });
   repository.expectSemanticFailure(
@@ -224,7 +226,7 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
     "works=Works",
   );
   assert.equal(
-    repository.exists(".semantic-review/requirements/aux.json"),
+    repository.artifact.exists("requirements/aux.json"),
     false,
   );
 
@@ -245,7 +247,7 @@ test("Windows-reserved semantic identifiers are rejected before mutation", (t) =
   );
   assert.equal(repository.git("branch", "--show-current"), "main");
   assert.equal(
-    repository.exists(".semantic-review/.work/stages/nul.json"),
+    repository.artifact.exists(".work/stages/nul.json"),
     false,
   );
 });
@@ -273,9 +275,7 @@ test("stage file inventories use locale-independent ordering", (t) => {
   });
   repository.semantic("stage", "finish");
 
-  const stage = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stage = repository.artifact.stage("implementation");
   assert.deepEqual(
     stage.change.files.map((file) => file.path),
     ["z.txt", "ä.txt"],
@@ -361,7 +361,7 @@ test("JSON input and current stage simplify mutations", (t) => {
   organizeStage(repository);
   repository.semantic("stage", "finish");
   assert.equal(
-    repository.readJson(".semantic-review/stages/implementation.json")
+    repository.artifact.readJson("stages/implementation.json")
       .decisions[0].id,
     "concise-command",
   );
@@ -625,13 +625,11 @@ test("stage commands cover metadata, every insight kind, and validation", (t) =>
     "implementation-change",
   );
 
-  const stage = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stage = repository.artifact.stage("implementation");
   assert.equal(stage.change.headRevision, commit);
   assert.equal(
     stage.change.branch,
-    "semantic-flow/test-implementation/01-implementation",
+    "semantic-flow/test-implementation/stages/implementation",
   );
   assert.equal(stage.change.baseBranch, "main");
   assert.equal(stage.title, "Updated implementation");
@@ -649,7 +647,7 @@ test("stage commands cover metadata, every insight kind, and validation", (t) =>
   });
   repository.semantic("stage", "discard", "--id", "discarded");
   assert.equal(
-    repository.exists(".semantic-review/.work/stages/discarded.json"),
+    repository.artifact.exists(".work/stages/discarded.json"),
     false,
   );
   repository.semantic("validate", "--publish");
@@ -720,9 +718,7 @@ test("stage organization partitions multi-cause files by diff hunk", (t) => {
   organizeStage(repository, { nodes, itemLinks });
   repository.semantic("stage", "finish");
 
-  const stage = repository.readJson(
-    ".semantic-review/stages/implementation.json",
-  );
+  const stage = repository.artifact.readJson("stages/implementation.json");
   assert.equal(stage.nodes.length, 2);
   assert.deepEqual(stage.decisions[0].nodeRefs, [
     "refresh-imports",
@@ -738,13 +734,13 @@ function branchExists(repository, name) {
   );
 }
 
-test("stage discard removes an unchanged generated branch and frees the ordinal", (t) => {
+test("stage discard removes an unchanged generated branch so the stage can begin again", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository);
   finalizeStage(repository);
 
-  const branch = "semantic-flow/test-implementation/02-extra";
+  const branch = "semantic-flow/test-implementation/stages/extra";
   beginStage(repository, { id: "extra", dependencies: ["implementation"] });
   assert.equal(branchExists(repository, branch), true);
 
@@ -763,7 +759,7 @@ test("stage discard keeps a branch that carries local commits", (t) => {
   beginStage(repository);
   finalizeStage(repository);
 
-  const branch = "semantic-flow/test-implementation/02-extra";
+  const branch = "semantic-flow/test-implementation/stages/extra";
   beginStage(repository, { id: "extra", dependencies: ["implementation"] });
   repository.commitFile("extra.txt", "extra\n", "Work in progress");
 
@@ -806,14 +802,14 @@ test("implementation simulation recovers from an unsupported decision category a
   const args = ["stage", "record", "--kind", "decision", "--item-id", "architecture-choice",
     "--summary", "Keep the boundary in one module.", "--rationale", "The implementation has one caller."];
   repository.expectSemanticFailure(/category|engineering|specification/, ...args, "--category", "architecture");
-  assert.equal(repository.readJson(".semantic-review/.work/stages/implementation.json").decisions.length, 0);
+  assert.equal(repository.artifact.readJson(".work/stages/implementation.json").decisions.length, 0);
   assert.equal(repository.read("implementation.txt"), "Valid implementation remains in progress.\n");
   repository.semantic(...args, "--category", "engineering");
   repository.git("add", "implementation.txt");
   repository.git("commit", "-m", "Complete implementation after metadata recovery");
   organizeStage(repository);
   repository.semantic("stage", "finish");
-  const stage = repository.readJson(".semantic-review/stages/implementation.json");
+  const stage = repository.artifact.readJson("stages/implementation.json");
   assert.equal(stage.decisions.length, 1);
   assert.equal(stage.decisions[0].category, "engineering");
   assert.equal(stage.decisions[0].rationale, "The implementation has one caller.");
@@ -822,8 +818,8 @@ test("implementation simulation recovers from an unsupported decision category a
 test("specification sources accept arbitrary providers while retaining reference and URI validation", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository, { sourceKind: "internal-tracker", sourceReference: "TEAM-42", sourceUrl: "https://work.example.com/TEAM-42" });
-  const file = ".semantic-review/requirements/story.json";
-  const specification = repository.readJson(file);
+  const file = "requirements/story.json";
+  const specification = repository.artifact.readJson(file);
   assert.equal(specification.source.kind, "internal-tracker");
   repository.semantic("validate", "--schema-only");
   for (const source of [
@@ -834,7 +830,7 @@ test("specification sources accept arbitrary providers while retaining reference
     { kind: "internal-tracker", reference: "TEAM-42", url: "not a URI" },
     { kind: "url", reference: "TEAM-42" },
   ]) {
-    repository.write(file, JSON.stringify({ ...specification, source }));
+    repository.artifact.write(file, { ...specification, source });
     repository.expectSemanticFailure(/validation|must|source/i, "validate", "--schema-only");
   }
 });
@@ -849,8 +845,9 @@ test("stage set --finalized updates metadata on a finalized stage", (t) => {
   });
   beginStage(repository);
   finalizeStage(repository);
-  const file = ".semantic-review/stages/implementation.json";
-  const before = repository.readJson(file);
+  const file = "stages/implementation.json";
+  const before = repository.artifact.stage("implementation");
+  const stored = repository.artifact.read(file);
 
   repository.expectSemanticFailure(
     "Working stage implementation does not exist",
@@ -864,7 +861,7 @@ test("stage set --finalized updates metadata on a finalized stage", (t) => {
     "unresolved specification ref story#missing",
     "stage", "set", "--finalized", "--id", "implementation", "--specification-ref", "story#missing",
   );
-  assert.deepEqual(repository.readJson(file), before);
+  assert.equal(repository.artifact.read(file), stored);
 
   const output = repository.semantic(
     "stage", "set", "--finalized", "--id", "implementation",
@@ -873,7 +870,7 @@ test("stage set --finalized updates metadata on a finalized stage", (t) => {
     "--specification-ref", "story#persists",
   );
   assert.match(output, /Updated finalized stage implementation\./);
-  const stage = repository.readJson(file);
+  const stage = repository.artifact.stage("implementation");
   assert.deepEqual(stage.specificationRefs, ["story#works", "story#persists"]);
   assert.equal(stage.title, "Implement and persist behavior");
   assert.deepEqual(stage.change, before.change);
@@ -883,8 +880,203 @@ test("stage set --finalized updates metadata on a finalized stage", (t) => {
 test("manifest document IDs are validated before they name files", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
-  const manifest = repository.readJson(".semantic-review/manifest.json");
-  manifest.stages = ["../../outside"];
-  repository.write(".semantic-review/manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+  const manifest = repository.artifact.readJson("manifest.json");
+  manifest.stages = [{ id: "../../outside", headRevision: manifest.baseRevision }];
+  repository.artifact.write("manifest.json", manifest);
   repository.expectSemanticFailure(/manifest\.json\/stages\/0 must match pattern/, "validate");
+});
+
+test("the active artifact stores stage heads and leaves branches, bases and files to Git", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  assert.equal("branch" in repository.artifact.readJson(".work/stages/implementation.json"), false);
+  const policy = finalizeStage(repository);
+  beginStage(repository, { id: "persistence", dependencies: ["implementation"] });
+  const persistence = finalizeStage(repository, { id: "persistence" });
+
+  const stored = repository.artifact.readJson("manifest.json");
+  assert.deepEqual(stored.stages, [
+    { id: "implementation", headRevision: policy },
+    { id: "persistence", headRevision: persistence },
+  ]);
+  for (const id of ["implementation", "persistence"]) {
+    assert.equal("change" in repository.artifact.readJson(`stages/${id}.json`), false);
+  }
+
+  const { change } = repository.artifact.stage("persistence");
+  assert.deepEqual(change, {
+    branch: "semantic-flow/test-implementation/stages/persistence",
+    baseBranch: "semantic-flow/test-implementation/stages/implementation",
+    baseRevision: policy,
+    headRevision: persistence,
+    files: [{ path: "persistence.txt", kind: "added" }],
+  });
+  assert.equal(repository.artifact.stage("implementation").change.baseRevision, stored.baseRevision);
+  repository.semantic("validate");
+});
+
+test("stored derived data and malformed manifest stage entries are rejected", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+  beginStage(repository, { id: "persistence", dependencies: ["implementation"] });
+  const derived = repository.artifact.stage("implementation").change;
+
+  const stage = repository.artifact.read("stages/implementation.json");
+  repository.artifact.write("stages/implementation.json", { ...JSON.parse(stage), change: derived });
+  repository.expectSemanticFailure(/stages[\\/]implementation\.json: change is derived from Git and must not be stored/, "validate", "--schema-only");
+  repository.artifact.write("stages/implementation.json", stage);
+
+  const work = repository.artifact.read(".work/stages/persistence.json");
+  repository.artifact.write(".work/stages/persistence.json", { ...JSON.parse(work), branch: "semantic-flow/test-implementation/stages/persistence" });
+  repository.expectSemanticFailure(/persistence\.json: branch is derived from Git and must not be stored/, "validate", "--schema-only");
+  repository.artifact.write(".work/stages/persistence.json", work);
+
+  const manifest = repository.artifact.read("manifest.json");
+  const entry = JSON.parse(manifest).stages[0];
+  for (const [stages, message] of [
+    [["implementation"], /stages\/0 must have exactly a string id and headRevision/],
+    [[{ id: "implementation" }], /stages\/0 must have exactly a string id and headRevision/],
+    [[{ ...entry, branch: derived.branch }], /stages\/0 must have exactly a string id and headRevision/],
+    [[{ ...entry, headRevision: entry.headRevision.slice(0, 12) }], /stages\/0\/headRevision must be a full lowercase SHA-1 commit ID/],
+  ]) {
+    repository.artifact.write("manifest.json", { ...JSON.parse(manifest), stages });
+    repository.expectSemanticFailure(message, "validate", "--schema-only");
+  }
+  repository.artifact.write("manifest.json", manifest);
+  repository.semantic("validate");
+});
+
+test("a stage branch that moved away from its recorded head fails validation", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  const head = finalizeStage(repository);
+  repository.commitFile("later.txt", "later\n", "Move the stage branch");
+  repository.expectSemanticFailure(
+    new RegExp(`Stage implementation branch semantic-flow/test-implementation/stages/implementation moved from ${head} to [0-9a-f]{40}; check it out, then run restack --from implementation\\.`),
+    "validate",
+  );
+  repository.git("reset", "--hard", head);
+  repository.semantic("validate");
+});
+
+test("implementation export prints and writes the full form without changing the artifact", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  const head = finalizeStage(repository);
+  beginStage(repository, { id: "persistence", dependencies: ["implementation"] });
+  const before = Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)]));
+
+  const exported = JSON.parse(repository.semantic("export"));
+  assert.deepEqual(Object.keys(exported), ["manifest", "requirements", "stages", "workingStages"]);
+  assert.deepEqual(exported.manifest, { ...repository.artifact.readJson("manifest.json"), stages: ["implementation"] });
+  assert.deepEqual(exported.requirements.story, repository.artifact.readJson("requirements/story.json"));
+  assert.deepEqual(exported.stages.implementation, {
+    ...repository.artifact.readJson("stages/implementation.json"),
+    change: {
+      branch: "semantic-flow/test-implementation/stages/implementation",
+      baseBranch: "main",
+      baseRevision: exported.manifest.baseRevision,
+      headRevision: head,
+      files: [{ path: "implementation.txt", kind: "added" }],
+    },
+  });
+  assert.deepEqual(exported.workingStages.persistence, {
+    ...repository.artifact.readJson(".work/stages/persistence.json"),
+    branch: "semantic-flow/test-implementation/stages/persistence",
+  });
+
+  const destination = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-export-"));
+  t.after(() => fs.rmSync(destination, { recursive: true, force: true }));
+  assert.match(repository.semantic("export", "--destination", destination), /Exported test-implementation to /);
+  const written = (file) => JSON.parse(fs.readFileSync(path.join(destination, file), "utf8"));
+  assert.deepEqual(written("manifest.json"), exported.manifest);
+  assert.deepEqual(written("requirements/story.json"), exported.requirements.story);
+  assert.deepEqual(written("stages/implementation.json"), exported.stages.implementation);
+  assert.deepEqual(written(".work/stages/persistence.json"), exported.workingStages.persistence);
+
+  fs.writeFileSync(path.join(destination, "manifest.json"), "{}\n");
+  repository.expectSemanticFailure(/Export destination .* must be a new or empty directory/, "export", "--destination", destination);
+  repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(repository.root, ".semantic-review", "evidence"));
+  if (process.platform !== "win32") {
+    // A link outside the artifact that leads into it is refused too.
+    fs.mkdirSync(path.join(repository.root, ".semantic-review", "empty"));
+    const link = path.join(path.dirname(destination), `${path.basename(destination)}-link`);
+    fs.symlinkSync(path.join(repository.root, ".semantic-review", "empty"), link);
+    t.after(() => fs.rmSync(link, { force: true }));
+    repository.expectSemanticFailure(/must be outside the active artifact/, "export", "--destination", path.join(link, "out"));
+    fs.rmdirSync(path.join(repository.root, ".semantic-review", "empty"));
+  }
+  assert.deepEqual(Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)])), before);
+  repository.semantic("validate");
+});
+
+test("ranges that share a head keep their own inventories", (t) => {
+  const repository = createRepository(t);
+  const base = repository.git("rev-parse", "HEAD");
+  const head = repository.commitFile("feature.txt", "feature\n", "Add feature");
+  // The empty range comes first, so a batch could hand it the other range's inventory.
+  assert.throws(() => changedFilesOfRanges(repository.root, [[head, head], [base, head]]), /has no changes relative to/);
+  // A reader that shows invalid artifacts gets the empty inventory instead.
+  assert.deepEqual(changedFilesOfRanges(repository.root, [[head, head], [base, head]], { allowEmpty: true }), [
+    [],
+    [{ path: "feature.txt", kind: "added" }],
+  ]);
+  assert.deepEqual(changedFilesOfRanges(repository.root, [[base, head], [base, head]]), [
+    [{ path: "feature.txt", kind: "added" }],
+    [{ path: "feature.txt", kind: "added" }],
+  ]);
+});
+
+test("a base revision that is not a commit ID never reaches Git", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository);
+  const manifest = repository.artifact.readJson("manifest.json");
+  const output = path.join(repository.root, "written-by-git");
+  repository.artifact.write("manifest.json", { ...manifest, baseRevision: `--output=${output}` });
+  assert.throws(() => readUnvalidatedImplementation(repository.root, readArtifact(repository.root)), /baseRevision must be a full lowercase SHA-1 commit ID/);
+  repository.expectSemanticFailure(/baseRevision/, "validate");
+  assert.equal(fs.existsSync(output), false);
+});
+
+test("a stage named metadata does not collide with the metadata branch", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "metadata" });
+  const head = finalizeStage(repository, { id: "metadata" });
+  assert.equal(repository.git("rev-parse", "semantic-flow/test-implementation/stages/metadata"), head);
+
+  repository.semantic("publish");
+  const published = repository.git("rev-parse", "semantic-flow/test-implementation/metadata");
+  assert.notEqual(published, head);
+  assert.equal(repository.git("rev-parse", "semantic-flow/test-implementation/stages/metadata"), head);
+  const stage = JSON.parse(repository.git("show", `${published}:.semantic-review/stages/metadata.json`));
+  assert.equal(stage.change.branch, "semantic-flow/test-implementation/stages/metadata");
+  repository.semantic("validate", "--publish");
+});
+
+test("begin accepts any unrelated branch below the prefix and refuses its own existing branch", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  // Branch names hold no position, so a branch named like a former ordinal stage is no conflict.
+  repository.git("branch", "semantic-flow/test-implementation/01-other");
+  repository.git("branch", "semantic-flow/test-implementation/stages/other");
+  repository.git("branch", "semantic-flow/test-implementation/stages/taken");
+  beginStage(repository);
+  assert.equal(repository.git("branch", "--show-current"), "semantic-flow/test-implementation/stages/implementation");
+  finalizeStage(repository);
+
+  assert.throws(
+    () => beginStage(repository, { id: "taken", dependencies: ["implementation"] }),
+    /Stage branch semantic-flow\/test-implementation\/stages\/taken already exists/,
+  );
+  assert.equal(repository.artifact.exists(".work/stages/taken.json"), false);
+  assert.equal(repository.git("branch", "--show-current"), "semantic-flow/test-implementation/stages/implementation");
+  repository.semantic("validate");
 });

@@ -94,8 +94,8 @@ class FolderFiles implements ArtifactSnapshot {
   readonly directory: string;
   readonly #version: string;
 
-  constructor(readonly root: string) {
-    this.directory = path.join(root, ACTIVE_DIRECTORY);
+  constructor(readonly root: string, directory = path.join(root, ACTIVE_DIRECTORY)) {
+    this.directory = directory;
     // Taken when the snapshot is read, so a later comparison detects every
     // write that happened after this read.
     const hash = createHash("sha256");
@@ -160,6 +160,12 @@ class FolderFiles implements ArtifactSnapshot {
 
 function folderHasArtifact(root: string): boolean {
   return fs.existsSync(path.join(root, ACTIVE_DIRECTORY, "manifest.json"));
+}
+
+/** Artifact files stored in a directory outside any worktree, such as a
+ * remote review's projection; Git commands run in root. */
+export function readArtifactDirectory(root: string, directory: string): ArtifactSnapshot | undefined {
+  return fs.existsSync(path.join(directory, "manifest.json")) ? new FolderFiles(root, directory) : undefined;
 }
 
 /** The active artifact of the worktree at root, or undefined when it has none. */
@@ -354,14 +360,51 @@ export function removeArtifact(root: string, base: ArtifactSnapshot): void {
   fs.rmSync(path.join(root, ACTIVE_DIRECTORY), { recursive: true, force: true });
 }
 
-/** Writes every file of an artifact below a directory of the worktree, byte for byte. */
-export function exportArtifactFiles(files: ArtifactFiles, destination: string): void {
-  for (const file of files.list()) {
-    if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
-    const target = path.join(destination, ...file.split("/"));
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, files.read(file), { flag: "wx" });
+/** Writes every file of an artifact below a directory, byte for byte, and
+ * returns a function that removes what it wrote. A failed write removes it. */
+export function exportArtifactFiles(files: ArtifactFiles, destination: string): () => void {
+  const createdFiles: string[] = [];
+  const createdDirectories: string[] = [];
+  // Directories are created one level at a time, so only those this call made are recorded.
+  const makeDirectory = (directory: string) => {
+    const missing: string[] = [];
+    for (let current = directory; !fs.existsSync(current) && path.dirname(current) !== current; current = path.dirname(current)) {
+      missing.unshift(current);
+    }
+    for (const current of missing) {
+      try {
+        fs.mkdirSync(current);
+        createdDirectories.push(current);
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
+    }
+  };
+  // Removes only what this call created, so a concurrent writer's files and
+  // anything else placed beside them are kept.
+  const remove = () => {
+    for (const file of createdFiles.reverse()) fs.rmSync(file, { force: true });
+    for (const directory of createdDirectories.sort((left, right) => right.length - left.length)) {
+      try { fs.rmdirSync(directory); } catch { /* Not empty, or already gone. */ }
+    }
+  };
+  try {
+    makeDirectory(destination);
+    for (const file of files.list()) {
+      if (files.type(file) !== "file") fail(`${files.describe(file)} is not a regular file.`);
+      const target = path.join(destination, ...file.split("/"));
+      const bytes = files.read(file);
+      makeDirectory(path.dirname(target));
+      // Only a file this call opened exclusively is its own to remove.
+      const descriptor = fs.openSync(target, "wx");
+      createdFiles.push(target);
+      try { fs.writeFileSync(descriptor, bytes); } finally { fs.closeSync(descriptor); }
+    }
+  } catch (error) {
+    remove();
+    throw error;
   }
+  return remove;
 }
 
 /** A thrown value's message; describing it never throws. */
@@ -369,39 +412,34 @@ function describeFailure(failure: unknown): string {
   try { return errorMessage(failure); } catch { return "an unprintable error"; }
 }
 
-/** Replaces the artifact of a managed review checkout with new files. The
- * change runs in between, while no artifact is present. When anything fails,
- * undo reverts the change and then the previous artifact is restored. */
-export function replaceArtifactFiles(
-  root: string,
+/** Replaces the files of an artifact directory, such as a remote review's
+ * projection. The change runs first; nothing is replaced when it fails. When
+ * anything fails, undo reverts the change and the previous files stay. */
+export function replaceArtifactDirectory(
+  directory: string,
   files: Iterable<readonly [string, Buffer]>,
-  scratch: string,
   change: () => void,
   undo: () => void = () => {},
 ): void {
-  const next = path.join(scratch, ".artifact-next");
-  const backup = path.join(scratch, ".artifact-previous");
-  const active = path.join(root, ACTIVE_DIRECTORY);
+  const next = `${directory}.next`;
+  const previous = `${directory}.previous`;
   fs.rmSync(next, { recursive: true, force: true });
   try {
     // Each file is written before the next is produced, so large files are not all held at once.
     for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
-    fs.rmSync(backup, { recursive: true, force: true });
-    if (fs.existsSync(active)) fs.renameSync(active, backup);
     try {
       change();
-      fs.rmSync(active, { recursive: true, force: true });
-      fs.renameSync(next, active);
+      fs.rmSync(previous, { recursive: true, force: true });
+      if (fs.existsSync(directory)) fs.renameSync(directory, previous);
+      fs.renameSync(next, directory);
     } catch (error) {
-      // The change is reverted first, so it cannot overwrite the restored artifact.
-      // Both rollback steps run before any failure is described.
+      // The change is reverted first; both rollback steps run before any failure is described.
       const failures: Array<[string, unknown]> = [];
       try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
-        fs.rmSync(active, { recursive: true, force: true });
-        if (fs.existsSync(backup)) fs.renameSync(backup, active);
+        if (!fs.existsSync(directory) && fs.existsSync(previous)) fs.renameSync(previous, directory);
       } catch (failure) {
-        failures.push([`Restoring the previous artifact from ${backup} also failed`, failure]);
+        failures.push([`Restoring the previous files from ${previous} also failed`, failure]);
       }
       if (failures.length > 0) {
         throw new AggregateError([error, ...failures.map(([, failure]) => failure)],
@@ -413,8 +451,8 @@ export function replaceArtifactFiles(
     // The staged files are not needed once the replacement succeeded or failed.
     try { fs.rmSync(next, { recursive: true, force: true }); } catch { /* The operation's own outcome says more. */ }
   }
-  // The new artifact is in place; a backup left behind is removed by the next replacement.
-  try { fs.rmSync(backup, { recursive: true, force: true }); } catch { /* See above. */ }
+  // The new files are in place; a copy left behind is removed by the next replacement.
+  try { fs.rmSync(previous, { recursive: true, force: true }); } catch { /* See above. */ }
 }
 
 // --- Artifacts stored in Git trees ------------------------------------------

@@ -75,14 +75,13 @@ From the current stack tip:
 
 The command creates and checks out the deterministic stage branch. The first
 stage starts at the target branch; each later stage starts at the previous
-stage head. Its numeric prefix is the next finalized manifest position, not
-the stage's planned position. Treat the branch reported by the command as the
-only branch for that ordinal. `depends-on` records direct semantic
-prerequisites.
+stage head. The branch is named after the stage ID; stage order comes only
+from the manifest. Treat the branch reported by the command as the only branch
+for that stage. `depends-on` records direct semantic prerequisites.
 
-`stage begin` checks all branches sharing the next ordinal and refuses a
-collision. Do not repeat that ref enumeration in a separate Git command. Use
-`--json` when the next action needs the returned branch and revisions.
+`stage begin` refuses a stage whose branch already exists. Do not check for it
+in a separate Git command. Use `--json` when the next action needs the
+returned branch and revisions.
 
 Before editing or committing, verify that the reported branch remains checked
 out. Keep every commit for the active stage on that branch until `stage
@@ -91,13 +90,13 @@ finish`.
 Use `stage set` when discovery changes active metadata or scope. Do not discard
 and begin a replacement merely to rename or reorder the stage. `stage discard`
 removes the generated stage branch when it still points at its creation head, so
-a clean discard frees the ordinal for reuse. If the branch already carries local
+a clean discard frees the stage ID for reuse. If the branch already carries local
 commits, discard keeps it and reports that you must delete it manually before
-reusing the ordinal. If the immutable stage ID or order is wrong, preserve the
+reusing the stage ID. If the immutable stage ID or order is wrong, preserve the
 existing work and stop the unsupported restructuring. Apply
 `../docs/user-decisions.md`: ask only if review order or independently working
 behavior needs a user choice; otherwise report the tooling limitation. Do not
-ask the user to choose IDs or create another numbered branch.
+ask the user to choose IDs or create another stage branch.
 
 ### Implement and capture insights
 

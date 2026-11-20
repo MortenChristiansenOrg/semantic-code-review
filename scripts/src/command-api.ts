@@ -189,6 +189,7 @@ export const semanticImplementationApi: CliSignature = {
     },
     { command: "repair" },
     { command: "publish", options: [option("message", "<commit-message>")] },
+    { command: "export", options: [option("destination", "<directory>")] },
     {
       command: "validate-stack",
       options: [option("json")],

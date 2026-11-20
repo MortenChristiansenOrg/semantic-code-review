@@ -35,18 +35,19 @@ or intended behavior needs clarification.
 ## Resume from state
 
 - If a working stage exists, check that its recorded branch is checked out,
-  and that no other numbered branch is being used for its commits. Continue on
+  and that no other branch below the implementation's branch prefix is being
+  used for its commits. Continue on
   the recorded branch through implementation, insight capture, organization,
   validation, and finalization.
 - If no working stage exists and acceptance criteria remain uncovered, require
-  `HEAD` at the last finalized stage head. `stage begin` rejects any branch already using the next ordinal. Then plan the next coherent stage and let `stage begin` create
-  its branch before editing.
-- If a numbered branch below the implementation's branch prefix is not recorded as the
-  active or finalized branch for its ordinal, stop and report the inconsistent
-  state: describe the unassigned work and the risk of incorporating it, with
-  the ref as diagnostic detail. Do not ask for approval of branch repair or
-  absorb its commits into another stage or create another branch
-  with that ordinal.
+  `HEAD` at the last finalized stage head. `stage begin` rejects a stage ID
+  whose branch already exists. Then plan the next coherent stage and let
+  `stage begin` create its branch before editing.
+- If a stage branch below the implementation's branch prefix belongs to no
+  working or finalized stage, stop and report the inconsistent state: describe
+  the unassigned work and the risk of incorporating it, with the ref as
+  diagnostic detail. Do not ask for approval of branch repair, absorb its
+  commits into another stage, or begin a stage with that ID.
 - If all stages are finalized, run the complete acceptance path and whole-stack
   validation described by `implement.md`.
 - If a finalized lower branch changed, restack from the earliest changed stage.

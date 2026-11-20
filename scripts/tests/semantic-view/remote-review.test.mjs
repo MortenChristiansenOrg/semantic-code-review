@@ -19,6 +19,26 @@ function setup(t) {
   source.write('personal.txt', 'untouched\n');
   return { author, source, head };
 }
+/** Publishes a full-form artifact with the author's requirements and the given
+ * stage documents on a metadata branch, as publication stores it, without
+ * touching the author's worktree. */
+function publishMetadata(author, stages, extraFiles = {}) {
+  const { manifest, requirements } = author.artifact.implementation();
+  const files = {
+    'manifest.json': JSON.stringify({ ...manifest, stages: stages.map((stage) => stage.id) }),
+    ...Object.fromEntries(Object.entries(requirements).map(([id, document]) => [`requirements/${id}.json`, JSON.stringify(document)])),
+    ...Object.fromEntries(stages.map((stage) => [`stages/${stage.id}.json`, JSON.stringify(stage)])),
+    ...extraFiles,
+  };
+  const env = { ...process.env, GIT_INDEX_FILE: path.join(author.root, '.git', 'metadata-index') };
+  const git = (args, input) => execFileSync('git', args, { cwd: author.root, env, input, encoding: 'utf8' }).trim();
+  for (const [file, contents] of Object.entries(files)) {
+    const blob = git(['hash-object', '-w', '--stdin'], contents);
+    git(['update-index', '--add', '--cacheinfo', `100644,${blob},.semantic-review/${file}`]);
+  }
+  const commit = git(['commit-tree', git(['write-tree']), '-p', 'main', '-m', 'Publish artifact']);
+  author.git('branch', 'semantic-flow/example/metadata', commit);
+}
 const dataFor = (record) => implementationFromScript(createImplementationDataScript(record.repositoryRoot));
 const change = (path, value) => ({ path, before: { present: false }, after: { present: true, value } });
 function endpoint(data) {
@@ -39,6 +59,13 @@ test('remote review owns its checkout, groups commits, reopens, and deletes all 
   assert.equal(data.stages[0].id, `commit-${head}`);
   assert.deepEqual(data.stages[0].files.map((f) => f.path), ['code.txt']);
   assert.equal(startRemoteReview(source.root, 'feature').id, review.id);
+  // A review saved by an earlier version kept its projection inside the checkout; reading it moves it out whole.
+  const projection = path.join(reviewDirectory(review.id), 'artifact');
+  fs.renameSync(projection, path.join(review.repositoryRoot, '.semantic-review'));
+  assert.equal(startRemoteReview(source.root, 'feature').id, review.id);
+  assert.equal(dataFor(review).stages[0].id, `commit-${head}`);
+  assert.ok(fs.existsSync(path.join(projection, 'manifest.json')));
+  assert.equal(fs.existsSync(path.join(review.repositoryRoot, '.semantic-review')), false);
   assert.ok(registeredReviews().find((r) => r.id === review.id).remote);
   assert.equal(source.git('status', '--porcelain'), original); assert.equal(source.git('branch', '--show-current'), branch);
   assert.equal(author.git('branch', '--show-current'), 'main');
@@ -92,15 +119,15 @@ test('remote feedback is rejected in store, export, and CLI while personal notes
 test('published metadata supplies semantic stages, nodes, requirements and insights', (t) => {
   const { author, source, head } = setup(t);
   initializeImplementation(author);
-  const manifest = author.readJson('.semantic-review/manifest.json');
   const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], evidence: [], openQuestions: [],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }],
     decisions: [{ id: 'why', category: 'engineering', rationale: 'Why', summary: 'Preserved reasoning', nodeRefs: ['semantic-node'] }] };
-  author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
-  author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
-  author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
+  publishMetadata(author, [semanticStage]);
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
+  // The projection is private review data; the managed checkout holds only the branch.
+  assert.ok(fs.existsSync(path.join(reviewDirectory(review.id), 'artifact', 'stages', 'semantic-semantic-stage.json')));
+  assert.equal(fs.existsSync(path.join(review.repositoryRoot, '.semantic-review')), false);
   assert.equal(data.stages.length, 1); assert.equal(data.stages[0].title, 'Semantic title'); assert.equal(data.stages[0].nodes[0].id, 'semantic-node');
   assert.equal(data.stages[0].insights[0].title, 'Preserved reasoning'); assert.ok(data.requirements.length);
 });
@@ -108,17 +135,13 @@ test('published metadata supplies semantic stages, nodes, requirements and insig
 test('published evidence attachments are available in a remote review', (t) => {
   const { author, source, head } = setup(t);
   initializeImplementation(author);
-  const manifest = author.readJson('.semantic-review/manifest.json');
   const bytes = 'published capture\n', sha256 = createHash('sha256').update(bytes).digest('hex');
   const stored = `evidence/semantic-stage/${sha256}.txt`;
   const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
     evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [{ path: stored, mediaType: 'text/plain', sha256 }], capturedAt: '2026-10-30T10:00:00Z', nodeRefs: ['semantic-node'] }],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
-  author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
-  author.write(`.semantic-review/${stored}`, bytes);
-  author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
-  author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
+  publishMetadata(author, [semanticStage], { [stored]: bytes });
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
   const insight = data.stages[0].insights.find((item) => item.collection === 'evidence');
   assert.equal(data.stages[0].id, 'semantic-semantic-stage');
@@ -129,17 +152,13 @@ test('published evidence attachments are available in a remote review', (t) => {
 test('remote evidence extraction reads each file once and keeps empty captures', (t) => {
   const { author, source, head } = setup(t);
   initializeImplementation(author);
-  const manifest = author.readJson('.semantic-review/manifest.json');
   const sha256 = createHash('sha256').update('').digest('hex'), stored = `evidence/semantic-stage/${sha256}.txt`;
   const attachment = { path: stored, mediaType: 'text/plain', sha256 };
   const semanticStage = { $schema: 'https://semantic-code-review.dev/schemas/v0.1/stage.schema.json', id: 'semantic-stage', title: 'Semantic title', summary: 'Semantic summary', rationale: 'Why', dependsOn: [], specificationRefs: ['story#works'], decisions: [], assumptions: [], alternatives: [], failedAttempts: [], risks: [], validation: [], openQuestions: [],
     evidence: [{ id: 'output', kind: 'terminal', summary: 'It runs', attachments: [attachment, attachment], capturedAt: '2026-10-30T10:00:00Z', nodeRefs: ['semantic-node'] }],
     change: { baseRevision: author.git('rev-parse', 'main'), headRevision: head, branch: 'feature', baseBranch: 'main', files: [{ path: 'code.txt', kind: 'added' }] },
     nodes: [{ id: 'semantic-node', description: 'Authored node', changes: [{ path: 'code.txt', classification: 'behavior' }] }] };
-  author.write('.semantic-review/stages/semantic-stage.json', JSON.stringify(semanticStage));
-  author.write(`.semantic-review/${stored}`, '');
-  author.write('.semantic-review/manifest.json', JSON.stringify({ ...manifest, stages: ['semantic-stage'] }));
-  author.git('switch', '-c', 'semantic-flow/example/metadata'); author.git('add', '-f', '.semantic-review'); author.git('commit', '-m', 'Publish artifact'); author.git('switch', 'main');
+  publishMetadata(author, [semanticStage], { [stored]: '' });
   const review = startRemoteReview(source.root, 'feature'), data = dataFor(review);
   const served = createViewerDataSource(review.repositoryRoot).evidenceFile(data.stages[0].id, 'output', '1');
   assert.equal(served.content, '');

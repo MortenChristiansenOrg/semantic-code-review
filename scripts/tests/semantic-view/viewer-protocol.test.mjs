@@ -267,8 +267,9 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   const viewer = viewerCleanup(t);
   const repository = createReviewRepository(t);
   // Content the schema rejects, as an older artifact or a remote review may hold.
-  const stagePath = ".semantic-review/stages/implementation.json";
-  const stage = repository.readJson(stagePath);
+  const stagePath = "stages/implementation.json";
+  const stage = repository.artifact.readJson(stagePath);
+  const { headRevision } = repository.artifact.stage("implementation").change;
   // The file's only change under its node has a classification this viewer does not
   // know and an ownership that is not a list.
   Object.assign(stage.nodes[0].changes[0], { classification: "mystery", hunks: "all" });
@@ -286,11 +287,11 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   ];
   stage.nodes.push(...narrowed.map(([id, changes]) => ({ id, description: "Ownership the schema rejects.", changes })));
   // Two risks share an ID; only the first records a code target.
-  const codeTarget = captureCodeTarget(repository.root, stage.change.headRevision, "implementation.md", 1, 1);
+  const codeTarget = captureCodeTarget(repository.root, headRevision, "implementation.md", 1, 1);
   stage.risks = [{ id: "shared", summary: "Targeted", codeTarget }, { id: "shared", summary: "Untargeted" }];
   (stage.evidence ??= []).push({ id: "call", kind: "video-call", summary: "Walked through the change", inline: "transcript <ok>",
     attachments: [], specificationRefs: [], capturedAt: "2026-10-30T10:00:00Z", nodeRefs: ["implementation-change"] });
-  repository.write(stagePath, JSON.stringify(stage));
+  repository.artifact.write(stagePath, JSON.stringify(stage));
   await startViewer(viewer, repository);
   const { captured, get, post } = await client(viewer.url);
 

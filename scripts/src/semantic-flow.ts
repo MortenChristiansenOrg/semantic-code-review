@@ -25,12 +25,11 @@ import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { parseDocument, readDocument, type DocumentTypes, type SchemaId } from "./shared/schema-validation.js";
-import { activeImplementationId, listJsonIds, readArtifact, readArtifactJson, requireArtifact, type ArtifactFiles } from "./shared/artifact-store.js";
+import { readDocument } from "./shared/schema-validation.js";
+import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
+import { activeImplementationId, listJsonIds, readArtifact, readArtifactJson, requireArtifact } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
-  MANIFEST_SCHEMA_ID,
-  STAGE_SCHEMA_ID,
   THREAD_SCHEMA_ID,
 } from "./shared/documents.js";
 import {
@@ -178,7 +177,7 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
         cwd: root,
         allowFailure: true,
       }) ?? null,
-    finalizedStageIds: strings(isRecord(manifest) ? manifest.stages : undefined),
+    finalizedStageIds: listedStageIds(manifest),
     workingStageIds: listJsonIds(snapshot, ".work/stages"),
     feedbackDirectory: feedbackDirectory(root, implementationId),
     feedbackExists: fs.existsSync(
@@ -187,9 +186,9 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
   };
 }
 
-/** A schema-validated document of an artifact snapshot. */
-function artifactDocument<K extends SchemaId>(snapshot: ArtifactFiles, id: K, file: string): DocumentTypes[K] {
-  return parseDocument(id, readArtifactJson(snapshot, file), snapshot.describe(file));
+/** The validated finalized stages of the active artifact of root, with their derived data. */
+function activeImplementation(root: string): Artifact {
+  return loadImplementation(root, requireArtifact(root), { includeWork: false });
 }
 
 /** Narrows a candidate for commands that act on the implementation. A manifest
@@ -377,7 +376,7 @@ async function status(options: Options): Promise<void> {
   const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
     readArtifactJson(artifact, `requirements/${id}.json`),
   );
-  const finalizedStages = strings(arrayField(manifest, "stages")).map((id) =>
+  const finalizedStages = listedStageIds(manifest).map((id) =>
     readArtifactJson(artifact, `stages/${id}.json`),
   );
   const workingStages = candidate.workingStageIds.map((id) =>
@@ -667,12 +666,11 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     );
   }
 
-  const snapshot = requireArtifact(candidate.worktree);
-  const manifest = artifactDocument(snapshot, MANIFEST_SCHEMA_ID, "manifest.json");
+  const implementation = activeImplementation(candidate.worktree);
+  const { manifest } = implementation;
   const stageBranches = new Set<string>();
   const stageHeads = new Map<string, string>();
-  for (const id of manifest.stages) {
-    const stage = artifactDocument(snapshot, STAGE_SCHEMA_ID, `stages/${id}.json`);
+  for (const [id, stage] of implementation.stages) {
     stageBranches.add(stage.change.branch);
     stageHeads.set(id, stage.change.headRevision);
     const branchHead = git(
@@ -771,7 +769,8 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   }
 
   if (detachedStageId) {
-    const refreshedStage = artifactDocument(requireArtifact(candidate.worktree), STAGE_SCHEMA_ID, `stages/${detachedStageId}.json`);
+    const refreshedStage = activeImplementation(candidate.worktree).stages.get(detachedStageId);
+    if (!refreshedStage) fail(`Stage ${detachedStageId} disappeared during restacking.`);
     git(["switch", "--detach", refreshedStage.change.headRevision], {
       cwd: candidate.worktree,
     });
@@ -1166,9 +1165,7 @@ async function sync(options: Options): Promise<void> {
     fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
   }
   const stageHeads = new Map<string, string>();
-  const snapshot = requireArtifact(root);
-  for (const id of candidate.finalizedStageIds) {
-    const stage = artifactDocument(snapshot, STAGE_SCHEMA_ID, `stages/${id}.json`);
+  for (const [id, stage] of activeImplementation(root).stages) {
     if (revision(`refs/heads/${stage.change.branch}`) !== stage.change.headRevision) {
       fail(`Stage ${id} moved from its recorded head. Reconcile or restack the edited stages before synchronizing the target.`);
     }

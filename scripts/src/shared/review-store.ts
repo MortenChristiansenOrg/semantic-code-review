@@ -1,12 +1,13 @@
 /** User-local review storage. All writes hold a per-review lock and replace one
  * document atomically; private data is never placed in implementation branches. */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseJson } from "./json.js";
-import { activeImplementationId } from "./artifact-store.js";
+import { activeImplementationId, readArtifact, readArtifactDirectory, type ArtifactSnapshot } from "./artifact-store.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
 
@@ -47,6 +48,52 @@ export function reviewId(root: string, implementationId: string) {
   // Stable labels aid manual browsing; the complete hash still distinguishes
   // worktrees and implementation IDs that normalize to the same readable name.
   return `${slug(path.basename(canonicalRoot), 24, "repository")}--${slug(implementationId, 40, "review")}--${hash}`;
+}
+/** Where a remote review keeps the artifact it reconstructed for its managed checkout. */
+export function projectionDirectory(id: string) {
+  return path.join(reviewDirectory(id), "artifact");
+}
+/** The review owning a managed remote checkout at root, if root is one. */
+function managedCheckoutOwner(root: string): string | undefined {
+  let real: string;
+  try { real = fs.realpathSync.native(root); } catch { return undefined; }
+  const owner = path.basename(path.dirname(real));
+  if (path.basename(real) !== "checkout" || !isReviewId(owner) || !fs.existsSync(reviewDirectory(owner))) return undefined;
+  const canonical = (value: string) => {
+    const resolved = fs.realpathSync.native(value);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return canonical(path.dirname(real)) === canonical(reviewDirectory(owner)) ? owner : undefined;
+}
+/** Moves the projection an earlier version kept inside a managed checkout out
+ * of it, whole. It runs under the review's lock, so a refresh that briefly
+ * vacates the projection is never mistaken for a missing one, and it moves
+ * only an untracked folder, never one that the checked-out branch tracks. */
+function moveLegacyProjection(owner: string, root: string, directory: string): void {
+  const legacy = path.join(root, ".semantic-review");
+  if (!fs.existsSync(path.join(legacy, "manifest.json"))) return;
+  withReviewLock(owner, () => {
+    if (fs.existsSync(directory) || !fs.existsSync(path.join(legacy, "manifest.json"))) return;
+    // Any tracked file inside means the checked-out branch owns the folder; the
+    // match ignores case, as the file system may.
+    const tracked = spawnSync("git", ["ls-files", "--", ":(icase).semantic-review"], { cwd: root, encoding: "utf8", windowsHide: true });
+    if (tracked.status !== 0 || tracked.stdout.trim()) return;
+    try { fs.renameSync(legacy, directory); } catch { /* It stays unavailable until reopened. */ }
+  });
+}
+/** The artifact a review of root shows: the projection a remote review made for
+ * its managed checkout, or else the active artifact of root. */
+export function readReviewArtifact(root: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
+  const owner = managedCheckoutOwner(root);
+  if (owner !== undefined) {
+    // A managed checkout shows only its review's projection, never files in the checkout.
+    const directory = projectionDirectory(owner);
+    if (!fs.existsSync(directory)) moveLegacyProjection(owner, root, directory);
+    const projection = readArtifactDirectory(root, directory);
+    return projection && { files: projection, projection: true };
+  }
+  const active = readArtifact(root);
+  return active && { files: active, projection: false };
 }
 /** Resolves private feedback without registering a review or creating files. */
 export function feedbackDirectory(root: string, implementationId?: string) {
