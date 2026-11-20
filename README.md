@@ -29,7 +29,7 @@ You need three things:
 Download the built `semantic-flow-X.Y.Z.zip` and checksum from the
 [latest release](https://github.com/MortenChristiansenOrg/semantic-code-review/releases/latest).
 Follow the [installation and update guide](docs/releases.md#installing-and-updating)
-to verify and install the complete skill folder. Node.js 20 or newer is required.
+to verify and install the complete skill folder. Node.js 22 or newer is required.
 
 Then work through a typical cycle:
 

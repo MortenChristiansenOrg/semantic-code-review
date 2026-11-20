@@ -7,7 +7,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { pipeline } from "node:stream/promises";
 import { ZipFile } from "yazl";
 import { assetName, compareVersions, nextVersion, parseVersion, RELEASE_REPOSITORY } from "./shared/release-version.js";
-import { sha256, skillFiles, unpackDistribution, type ReleaseMetadata } from "./shared/distribution.js";
+import { MINIMUM_NODE_MAJOR, sha256, skillFiles, unpackDistribution, type ReleaseMetadata } from "./shared/distribution.js";
 import { parseJson } from "./shared/json.js";
 import { errorMessage, isRecord, stringField, type JsonRecord } from "./shared/narrow.js";
 
@@ -64,7 +64,7 @@ export async function packageRelease(output: string): Promise<{ archive: string;
   const files = skillFiles(skill);
   if (files.includes("RELEASE.json")) throw new Error("Source skill contains stale release metadata; remove it and rebuild.");
   const metadata: ReleaseMetadata = {
-    version, sourceCommit, repository: RELEASE_REPOSITORY, minimumNodeMajor: 20,
+    version, sourceCommit, repository: RELEASE_REPOSITORY, minimumNodeMajor: MINIMUM_NODE_MAJOR,
     files: Object.fromEntries(files.map((name) => [name, sha256(fs.readFileSync(path.join(skill, name)))])),
   };
   fs.mkdirSync(output, { recursive: true });

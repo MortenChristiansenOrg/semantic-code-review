@@ -35,7 +35,7 @@ For authorized repair:
    nearby behavior. The maintained source uses `npm ci --prefix ./scripts` when
    dependencies are missing, and `npm test --prefix ./scripts` to type-check,
    rebuild complete skill outputs, and run regression tests. Follow changed source
-   instructions if the distribution has evolved. Node.js 20+ and Git are needed
+   instructions if the distribution has evolved. Node.js 22+ and Git are needed
    for the current tooling, not for ordinary reporting.
 5. Only after the user authorizes replacing the affected installation, install
    the **whole built** `skills/semantic-flow/` directory through the supported

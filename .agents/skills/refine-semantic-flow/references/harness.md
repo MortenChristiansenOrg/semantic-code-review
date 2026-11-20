@@ -1,6 +1,6 @@
 # Evaluation harness
 
-Run from the repository root with Node 20+ and Git. The maintained entrypoint is
+Run from the repository root with Node 22+ and Git. The maintained entrypoint is
 `node scripts/evaluations/refine.mjs`. It is not included in the distributed skill.
 No package installation or remote operation is needed for the built-in fixtures.
 

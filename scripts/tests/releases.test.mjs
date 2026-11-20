@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
-import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
+import { MINIMUM_NODE_MAJOR, sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
 import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
@@ -33,7 +33,7 @@ function distribution(version = '0.2.0', extraFiles = {}) {
   for (const [name, content] of Object.entries(extraFiles)) files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
-  const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: 20,
+  const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: MINIMUM_NODE_MAJOR,
     files: Object.fromEntries([...files].map(([name, bytes]) => [name, sha256(bytes)])) };
   files.set('RELEASE.json', Buffer.from(JSON.stringify(metadata)));
   return files;
@@ -131,6 +131,7 @@ test('archive validation rejects wrong versions, missing files, changed contents
   const original = distribution();
   assert.throws(() => validateDistribution(original, '0.3.0'), /does not match/);
   assert.throws(() => validateDistribution(original, '0.2.0', 18), /requires Node/);
+  assert.throws(() => validateDistribution(original, '0.2.0', MINIMUM_NODE_MAJOR - 1), new RegExp(`requires Node\\.js ${MINIMUM_NODE_MAJOR} or newer`));
   for (const mutate of [
     (files) => files.delete('viewer/app.js'),
     (files) => files.set('scripts/semantic-flow.mjs', Buffer.from('tampered')),
