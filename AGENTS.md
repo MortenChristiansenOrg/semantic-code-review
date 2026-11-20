@@ -91,8 +91,8 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
 - **Implementation artifact**: The JSON data describing an implementation: its
   manifest, requirements, and stages. While active it is stored in Git under
   the private ref `refs/semantic-review/active/<implementation-id>`, shared by
-  every worktree; published and archived copies live in a `.semantic-review/`
-  folder of a commit.
+  every worktree; published copies live in a `.semantic-review/` folder of a
+  commit, and archived ones as described under **Archive**.
 - **Snapshot**: One commit of the active ref, whose tree is the whole artifact.
   Every change writes a new one; its parents are the superseded stage heads,
   which keeps them reachable.
@@ -131,9 +131,9 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   available if stage branches are later deleted, and removing its active ref.
   Archiving does not delete branches.
 - **Artifact worktree**: The repository worktree from which artifact and
-  feedback commands operate on an active implementation: the one with its
-  stage branch checked out, or else the one where it was last initialized or
-  begun.
+  feedback commands operate on an active implementation: the one with one of
+  its stage branches or its metadata branch checked out, or else the one where
+  it was last initialized or begun.
 - **Anchor**: A stage head snapshot a feedback thread is attached to. Pending
   non-line anchors may refresh when the exact target still exists; line anchors
   remain immutable. An anchor is **stale** when it no longer matches and cannot

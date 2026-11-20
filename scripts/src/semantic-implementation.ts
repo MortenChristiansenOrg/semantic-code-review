@@ -2700,9 +2700,13 @@ function archiveImplementation(
   const expectedArchive = git(["rev-parse", `${archiveTree}:${relativeDestination}`], { cwd: workspace.root });
   // Only a new commit on top of the starting one that holds exactly that tree
   // proves the archive exists; the destination was absent before.
-  const archived = () =>
-    gitOptional(["rev-parse", "HEAD^"], { cwd: workspace.root }) === startHead &&
-    gitOptional(["rev-parse", `HEAD:${relativeDestination}`], { cwd: workspace.root }) === expectedArchive;
+  const archived = () => {
+    // One resolution of HEAD, so both checks see the same commit.
+    const head = gitOptional(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], { cwd: workspace.root });
+    return head !== undefined && head !== "" &&
+      gitOptional(["rev-parse", `${head}^`], { cwd: workspace.root }) === startHead &&
+      gitOptional(["rev-parse", `${head}:${relativeDestination}`], { cwd: workspace.root }) === expectedArchive;
+  };
   let removeWritten = () => {};
   // Moving the snapshot from the active ref to an archiving claim first makes a
   // concurrent writer fail instead of changing an artifact that is being

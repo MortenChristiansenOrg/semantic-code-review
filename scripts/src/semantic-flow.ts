@@ -214,8 +214,10 @@ function inspect(options: Options): Inspection {
   // worktree that has claimed it, or else from the inspected one.
   const actives = listActiveImplementations(root);
   const worktrees = worktreeRoots(root);
-  // A worktree that still holds an artifact of an earlier version is reported, not ignored.
-  if (actives.length === 0) for (const worktree of [root, ...worktrees]) assertNoLegacyArtifact(worktree);
+  // A worktree that still holds an artifact of an earlier version is reported, not
+  // ignored: the inspected one always, the others when nothing else is active.
+  assertNoLegacyArtifact(root);
+  if (actives.length === 0) for (const worktree of worktrees) assertNoLegacyArtifact(worktree);
   const claimedIn = (worktree: string) => claimedImplementation(worktree, actives)?.implementationId;
   const claims = new Map(worktrees.map((worktree) => [worktree, claimedIn(worktree)]));
   const candidates = actives
@@ -387,10 +389,16 @@ function arrayField(value: unknown, key: string): unknown[] {
 }
 
 async function status(options: Options): Promise<void> {
-  const candidate = resolveSingle(options, "status");
-  const artifact = requireArtifact(candidate.worktree, candidate.implementationId);
+  const selected = resolveSingle(options, "status");
+  const artifact = requireArtifact(selected.worktree, selected.implementationId);
   // Status reports on possibly invalid artifacts; the validation below reports their errors.
   const manifest = readArtifactJson(artifact, "manifest.json");
+  // Another worktree may have changed the artifact since inspection: report this snapshot.
+  const candidate: ArtifactCandidate = {
+    ...selected,
+    finalizedStageIds: listedStageIds(manifest),
+    workingStageIds: listJsonIds(artifact, ".work/stages"),
+  };
   const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
     readArtifactJson(artifact, `requirements/${id}.json`),
   );
@@ -584,7 +592,7 @@ function releaseShips(file: string): boolean {
 
 async function launchViewer(
   worktree: string,
-  { openBrowser = true, replaceExisting = true } = {},
+  { openBrowser = true, replaceExisting = true, implementationId }: { openBrowser?: boolean; replaceExisting?: boolean; implementationId?: string } = {},
 ): Promise<void> {
   const child = spawn(
     process.execPath,
@@ -598,6 +606,9 @@ async function launchViewer(
         ...process.env,
         ...(!openBrowser ? { SEMANTIC_VIEW_NO_OPEN: "1" } : {}),
         ...(!replaceExisting ? { SEMANTIC_VIEW_NO_REPLACE: "1" } : {}),
+        // A restarted viewer serves the implementation it served, not the one
+        // its worktree now selects.
+        ...(implementationId !== undefined ? { SEMANTIC_FLOW_IMPLEMENTATION_ID: implementationId } : {}),
       },
     },
   );
@@ -1527,7 +1538,7 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
 async function restartViewers(viewers: Array<ViewerIdentity & { repositoryRoot: string }>) {
   const failures: unknown[] = [];
   for (const viewer of viewers) {
-    try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+    try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false, implementationId: viewer.implementationId }); }
     catch (error) { failures.push(error); }
   }
   if (failures.length) throw new AggregateError(failures, "Some review services could not restart. Reopen them from the review list.");
@@ -1540,7 +1551,7 @@ async function stopViewersForUpdate(viewers: Array<ViewerIdentity & { repository
   } catch (error) {
     const failures: unknown[] = [error];
     for (const viewer of stopped) {
-      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false }); }
+      try { await launchViewer(viewer.repositoryRoot, { openBrowser: false, replaceExisting: false, implementationId: viewer.implementationId }); }
       catch (restartError) { failures.push(restartError); }
     }
     if (failures.length > 1) throw new AggregateError(failures, "Stopping viewers failed; some stopped viewers could not restart.");

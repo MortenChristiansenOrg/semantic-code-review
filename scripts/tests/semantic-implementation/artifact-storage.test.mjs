@@ -125,6 +125,18 @@ test("an artifact folder from an earlier version is reported, not continued", (t
   const inspected = spawnResult(process.execPath, [flowCli, "inspect"], repo.root);
   assert.notEqual(inspected.status, 0);
   assert.match(inspected.stderr, /written by an earlier Semantic Flow version/);
+  // A worktree holding one is reported even while another worktree has an active implementation.
+  fs.rmSync(path.join(repo.root, ".semantic-review"), { recursive: true });
+  initializeImplementation(repo);
+  const second = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "semantic-legacy-")), "worktree");
+  t.after(() => fs.rmSync(path.dirname(second), { recursive: true, force: true }));
+  repo.git("worktree", "add", "--detach", second, "main");
+  fs.mkdirSync(path.join(second, ".semantic-review"));
+  fs.writeFileSync(path.join(second, ".semantic-review", "manifest.json"), "{}\n");
+  const fromSecond = spawnResult(process.execPath, [flowCli, "inspect"], second);
+  assert.notEqual(fromSecond.status, 0);
+  assert.match(fromSecond.stderr, /written by an earlier Semantic Flow version/);
+  assert.equal(spawnResult(process.execPath, [flowCli, "inspect"], repo.root).status, 0);
 });
 
 test("the longest branch prefix that matches the checked-out branch claims it", (t) => {
