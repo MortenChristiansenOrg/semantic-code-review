@@ -147,6 +147,8 @@ export function verifyFixture(fixture, root, skill, scenario, env, { acceptanceT
   let manifest, stages;
   try {
     const exported = run('artifact-export', cli('implementation', 'export'), repo);
+    // An export larger than the evaluator's capture buffer is the evaluator's limit, not the implementation's failure.
+    if (exported.errorCode === 'ENOBUFS') throw Object.assign(new Error(`Verifier infrastructure failed: ${exported.error}`), { infrastructure: true });
     if (exported.exitCode !== 0) throw new Error(`The artifact could not be exported: ${exported.stderr}`);
     const artifact = JSON.parse(exported.stdout);
     manifest = artifact.manifest;
