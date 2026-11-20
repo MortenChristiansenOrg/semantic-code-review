@@ -88,7 +88,7 @@ import { reviewId, withReviewLock, writeReviewId } from "./shared/review-store.j
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
-const linearRangeFacts = factCache<void>();
+const linearRangeFacts = factCache<number>();
 const changeShapeFacts = factCache<DiffChangeShape>();
 
 // Validation and inventory errors list item collections in this order.
@@ -271,19 +271,97 @@ function isAncestor(root: string, ancestor: string, descendant: string): boolean
   }) === ancestor;
 }
 
-function assertLinearRange(root: string, base: string, head: string, label: string): void {
-  linearRangeFacts(JSON.stringify([root, base, head]), () => checkLinearRange(root, base, head, label));
+/** Fails unless head descends linearly from base; returns the number of commits between them. */
+function assertLinearRange(root: string, base: string, head: string, label: string): number {
+  return linearRangeFacts(JSON.stringify([root, base, head]), () => checkLinearRange(root, base, head, label));
 }
 
-function checkLinearRange(root: string, base: string, head: string, label: string): void {
+function checkLinearRange(root: string, base: string, head: string, label: string): number {
   if (!isAncestor(root, base, head)) {
     fail(`${label} head ${head} must descend from ${base}.`);
   }
-  const merges = git(["rev-list", "--merges", `${base}..${head}`], {
+  const commits = git(["rev-list", "--parents", `${base}..${head}`], {
     cwd: root,
-  });
-  if (merges) {
+  }).split(/\r?\n/).filter(Boolean);
+  if (commits.some((line) => line.split(" ").length > 2)) {
     fail(`${label} must not contain merge commits.`);
+  }
+  return commits.length;
+}
+
+/** The identity Git records for a commit made now, without its date. */
+function currentIdentity(root: string, variable: "GIT_AUTHOR_IDENT" | "GIT_COMMITTER_IDENT" = "GIT_AUTHOR_IDENT"): string {
+  return git(["var", variable], { cwd: root }).replace(/ \d+ [+-]\d{4}$/, "");
+}
+
+const IDENTITY = /^[^<>\x00-\x1f]+ <[^<>\x00-\x1f]+>$/;
+const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?.toLowerCase() ?? identity.toLowerCase();
+
+/** The message of a stage commit: the stage's title and summary, then a
+ * Co-authored-by trailer for each co-author. */
+function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coAuthors: readonly string[]): string {
+  const trailers = coAuthors.map((identity) => `Co-authored-by: ${identity}`);
+  return [stage.title.trim(), stage.summary.trim(), ...(trailers.length ? [trailers.join("\n")] : [])].join("\n\n") + "\n";
+}
+
+/** Everyone who wrote commits in base..head, as authors or co-authors, except
+ * author, in order of first appearance. */
+function rangeCoAuthors(root: string, base: string, head: string, author: string): string[] {
+  // Only the trailer block counts: a Co-authored-by line in the body is text,
+  // not attribution. A message cannot hold NUL, so NUL separates the values
+  // and two of them start each commit.
+  const log = gitRaw(["log", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  const seen = new Set([identityEmail(author)]);
+  const coAuthors: string[] = [];
+  for (const entry of log.split("\0\0").slice(1)) {
+    const [identity, ...trailers] = entry.split("\0").map((value) => value.trim());
+    if (!identity) continue;
+    for (const candidate of [identity, ...trailers.filter((trailer) => IDENTITY.test(trailer))]) {
+      const key = identityEmail(candidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      coAuthors.push(candidate);
+    }
+  }
+  return coAuthors;
+}
+
+/** One commit on base with head's tree and the generated stage message: what a
+ * finalized stage is. Commits made while the stage was worked on or fixed are
+ * folded into it, and their authors become co-authors. A range that is already
+ * that one commit is kept as it is. */
+function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">, base: string, head: string, label: string, keepOneCommit = false): string {
+  const count = assertLinearRange(root, base, head, label);
+  if (count === 0) fail(`${label} has no commits.`);
+  // An unchanged stage keeps its commit, even when its title or summary was edited since.
+  if (count === 1 && keepOneCommit) return head;
+  const author = currentIdentity(root);
+  const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author));
+  const [authorDate, committerDate, existing] = gitRaw(["show", "-s", "--format=%aI%x00%cI%x00%B", head], { cwd: root }).split("\0");
+  if (count === 1 && existing.trimEnd() === message.trimEnd()) return head;
+  // The folded head's dates make the fold repeatable: folding the same commits again gives the same commit.
+  return gitRaw(["commit-tree", `${head}^{tree}`, "-p", base], {
+    cwd: root,
+    input: message,
+    env: { GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: committerDate },
+  });
+}
+
+/** Points code targets captured on commits a fold replaced at the folded
+ * commit, when the targeted lines read the same there. Others keep their
+ * revision, and the viewer maps them as it does after any rewrite. */
+function retargetFoldedCode(root: string, stage: EditableStage, base: string, previousHead: string, foldedHead: string): void {
+  if (previousHead === foldedHead) return;
+  const folded = new Set(git(["rev-list", `${base}..${previousHead}`], { cwd: root }).split(/\r?\n/).filter(Boolean));
+  for (const collection of STAGE_ITEM_COLLECTIONS) for (const item of stageItems(stage, collection)) {
+    const target = item.codeTarget;
+    if (!target || !folded.has(target.revision)) continue;
+    try {
+      const current = captureCodeTarget(root, foldedHead, target.path, target.startLine, target.endLine);
+      if (current.blobId === target.blobId && current.contextStartLine === target.contextStartLine && JSON.stringify(current.context) === JSON.stringify(target.context)) {
+        item.codeTarget = { ...target, revision: foldedHead };
+      }
+    } catch { /* The lines are gone at the folded head; the viewer reports them for review. */ }
   }
 }
 
@@ -560,6 +638,8 @@ function evidenceItemErrors(stage: EditableStage): string[] {
 
 interface SemanticValidationOptions {
   validateGit?: boolean;
+  /** Branch heads the command moves together with the draft it validates. */
+  movingBranches?: ReadonlyMap<string, string>;
   allowLandedTarget?: boolean;
   allowTargetDrift?: boolean;
 }
@@ -568,7 +648,7 @@ function validateSemantic(
   workspace: Pick<Workspace, "root">,
   files: ArtifactFiles,
   artifact: Artifact,
-  { validateGit = true, allowLandedTarget = false, allowTargetDrift = false }: SemanticValidationOptions = {},
+  { validateGit = true, allowLandedTarget = false, allowTargetDrift = false, movingBranches = new Map() }: SemanticValidationOptions = {},
 ): void {
   const errors: string[] = [];
   const { manifest, requirements, stages, workStages } = artifact;
@@ -736,7 +816,7 @@ function validateSemantic(
   for (const id of manifest.stages) {
     const stage = finalizedStage(artifact, id);
     const { branch, baseRevision, headRevision, files } = stage.change;
-    const branchHead = branchCommit(workspace.root, branch);
+    const branchHead = movingBranches.get(branch) ?? branchCommit(workspace.root, branch);
     const head = commitObject(workspace.root, headRevision);
     if (branchHead !== head) {
       fail(
@@ -751,7 +831,10 @@ function validateSemantic(
         : `Stage ${id} still builds on ${baseRevision}, not on ${expectedBase}; check out ${manifest.targetBranch}, then run restack --base ${manifest.targetBranch}.`);
     }
     below = stage;
-    assertLinearRange(workspace.root, baseRevision, head, `Stage ${id}`);
+    const commits = assertLinearRange(workspace.root, baseRevision, head, `Stage ${id}`);
+    if (commits !== 1) {
+      fail(`Stage ${id} has ${commits} commits between ${baseRevision} and ${head}; a finalized stage is one commit.`);
+    }
     const nodeErrors = stageNodeErrors(stage, files, {
       root: workspace.root,
       baseRevision,
@@ -779,6 +862,7 @@ function validateArtifact(
     validateGit = true,
     allowLandedTarget = false,
     allowTargetDrift = false,
+    movingBranches,
   }: ArtifactValidationOptions = {},
   files: ArtifactFiles | undefined = workspace.snapshot,
 ): Artifact {
@@ -791,7 +875,7 @@ function validateArtifact(
     }
   }
   if (!schemaOnly) {
-    validateSemantic(workspace, files, artifact, { validateGit, allowLandedTarget, allowTargetDrift });
+    validateSemantic(workspace, files, artifact, { validateGit, allowLandedTarget, allowTargetDrift, movingBranches });
   }
 
   if (publish) {
@@ -1671,10 +1755,13 @@ function organizeStage(workspace: Workspace, options: Options): void {
   let headRevision: string;
   let files: FileChange[];
   let finalizedStageMoved = false;
+  let branchHead: string | undefined;
   if (updated.$schema === STAGE_SCHEMA_ID) {
     const { change } = updated;
     baseRevision = change.baseRevision;
+    assertDirectRefs(workspace.root, [`refs/heads/${change.branch}`]);
     headRevision = branchCommit(workspace.root, change.branch);
+    branchHead = headRevision;
     if (
       currentBranch(workspace.root) !== change.branch ||
       commitObject(workspace.root, "HEAD") !== headRevision
@@ -1685,6 +1772,9 @@ function organizeStage(workspace: Workspace, options: Options): void {
     files = changedFiles(workspace.root, baseRevision, headRevision);
     finalizedStageMoved = headRevision !== change.headRevision;
     if (finalizedStageMoved) {
+      // A corrected stage is recorded as one commit again.
+      headRevision = foldStage(workspace.root, updated, baseRevision, branchHead, `Stage ${stageId}`);
+      retargetFoldedCode(workspace.root, updated, baseRevision, branchHead, headRevision);
       change.headRevision = headRevision;
       change.files = files;
     }
@@ -1718,7 +1808,13 @@ function organizeStage(workspace: Workspace, options: Options): void {
     quiet: true,
     validateGit: finalized && !finalizedStageMoved,
   }, draft);
-  commitArtifact(workspace.root, workspace.snapshot, draft);
+  const fold = updated.$schema === STAGE_SCHEMA_ID && branchHead !== undefined
+    ? [{ ref: `refs/heads/${updated.change.branch}`, next: headRevision, previous: branchHead }]
+    : [];
+  // The checked-out branch moves to a commit with the same tree, so the checkout
+  // stays as it is; an unchanged branch is verified. The folded commits stay reachable.
+  commitArtifact(workspace.root, workspace.snapshot, draft, fold,
+    branchHead !== undefined && branchHead !== headRevision ? [branchHead] : []);
   console.log(
     `Organized ${finalized ? "finalized " : ""}stage ${stageId} into ${updated.nodes.length} node(s).`,
   );
@@ -1759,6 +1855,8 @@ function finishStage(workspace: Workspace, options: Options): void {
     options,
     commandOptionNames(semanticImplementationApi, "stage finish"),
   );
+  // Reject a malformed --json before finishing rewrites the branch.
+  const json = flag(options, "json");
   const artifact = validateArtifact(workspace, { quiet: true });
   assertCleanWorkingTree(workspace.root, "Finalizing a stage");
   const id = selectedWorkingStageId(artifact, option(options, "id"), "id");
@@ -1773,7 +1871,8 @@ function finishStage(workspace: Workspace, options: Options): void {
       `Finalizing ${id} requires checked-out stage branch ${workStage.branch}, not ${branch ?? "detached HEAD"}.`,
     );
   }
-  const headRevision = branchCommit(workspace.root, workStage.branch);
+  assertDirectRefs(workspace.root, [`refs/heads/${workStage.branch}`]);
+  let headRevision = branchCommit(workspace.root, workStage.branch);
   if (commitObject(workspace.root, "HEAD") !== headRevision) {
     fail(`HEAD does not match stage branch ${workStage.branch}.`);
   }
@@ -1782,7 +1881,10 @@ function finishStage(workspace: Workspace, options: Options): void {
     ? finalizedStage(artifact, previousId).change.branch
     : artifact.manifest.targetBranch;
   const baseRevision = stackTip(artifact);
-  assertLinearRange(workspace.root, baseRevision, headRevision, `Stage ${id}`);
+  const workHead = headRevision;
+  // The finalized stage is one commit: the stage's commits fold into it.
+  headRevision = foldStage(workspace.root, workStage, baseRevision, workHead, `Stage ${id}`);
+  retargetFoldedCode(workspace.root, workStage, baseRevision, workHead, headRevision);
   const files = changedFiles(workspace.root, baseRevision, headRevision);
   const canonicalFile = `stages/${id}.json`;
   const stage = canonicalStage(
@@ -1797,10 +1899,20 @@ function finishStage(workspace: Workspace, options: Options): void {
   writeStage(draft, stage);
   writeManifest(draft, artifact);
   draft.remove(workFile);
-  validateArtifact(workspace, { quiet: true }, draft);
-  commitArtifact(workspace.root, workspace.snapshot, draft);
+  validateArtifact(workspace, { quiet: true, movingBranches: new Map([[workStage.branch, headRevision]]) }, draft);
+  // The checked-out branch moves to a commit with the same tree, so the checkout
+  // stays as it is; an unchanged branch is verified. The folded commits stay
+  // reachable for code targets captured on them.
+  // The finalized stages below, which the new stage builds on, are verified.
+  const lower = artifact.manifest.stages.filter((stageId) => stageId !== id).map((stageId): RefUpdate => {
+    const { branch, headRevision: head } = finalizedStage(artifact, stageId).change;
+    return { ref: `refs/heads/${branch}`, next: head, previous: head };
+  });
+  commitArtifact(workspace.root, workspace.snapshot, draft,
+    [...lower, { ref: `refs/heads/${workStage.branch}`, next: headRevision, previous: workHead }],
+    headRevision === workHead ? [] : [workHead]);
   reportEvidenceWarnings([stage]);
-  if (flag(options, "json")) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
+  if (json) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch: workStage.branch, baseRevision, headRevision, next: "stage begin or review" }));
   else console.log(`Finalized stage ${id} on ${workStage.branch} at ${headRevision}.`);
 }
 
@@ -1962,26 +2074,6 @@ function applyCommitPatch({
   });
 }
 
-function replayRange(
-  root: string,
-  indexFile: string,
-  oldBase: string,
-  oldHead: string,
-  newBase: string,
-  label: string,
-): string {
-  assertLinearRange(root, oldBase, oldHead, label);
-  return applyCommitPatch({
-    root,
-    indexFile,
-    baseTree: newBase,
-    patchParent: oldBase,
-    patchCommit: oldHead,
-    metadataCommit: oldHead,
-    newParent: newBase,
-  });
-}
-
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
 function withArtifactLock<T>(workspace: Workspace, implementationId: string, write: () => T): T {
   const review = reviewId(workspace.root, implementationId);
@@ -2019,6 +2111,31 @@ export interface RestackSummary {
     baseRevision: string;
     rewritten: boolean;
   }>;
+}
+
+/** Where a stage's own changes start. A stage rebuilt on the stage below's
+ * current head starts there; one rebuilt on an earlier correction below starts
+ * at the newest commit it shares with that stage. Either way the correction is
+ * not replayed as the stage's own change. Otherwise it starts at its recorded
+ * base. When the stage below took in this stage's recorded commit other than
+ * through the target, no start tells their changes apart, so the restack stops
+ * before moving anything. */
+function rebuiltStageBase(
+  root: string,
+  stage: { id: string; recordedBase: string; recordedHead: string; head: string },
+  below: { id: string; head: string } | undefined,
+  target: string,
+): string {
+  const { recordedBase, recordedHead, head } = stage;
+  if (below === undefined || below.head === recordedBase) return recordedBase;
+  // A target that merged this stage passes its commit to a stage rebuilt on it; the stage replays from its recorded base.
+  if (isAncestor(root, recordedHead, target)) return recordedBase;
+  if (isAncestor(root, recordedHead, below.head)) {
+    fail(`Stage ${below.id} holds the commit ${recordedHead} of stage ${stage.id}, so restack cannot tell their changes apart. No refs were changed. Remove that commit from ${below.id}'s branch, or move its changes into one of the stages.`);
+  }
+  if (isAncestor(root, below.head, head)) return below.head;
+  const shared = gitOptional(["merge-base", below.head, head], { cwd: root });
+  return shared && shared !== recordedBase && isAncestor(root, recordedBase, shared) ? shared : recordedBase;
 }
 
 function restack(workspace: Workspace, options: Options): void {
@@ -2082,6 +2199,10 @@ function restackStages(
     }
   }
   const startIndex = baseOption ? 0 : fromIndex;
+  assertDirectRefs(workspace.root, [
+    `refs/heads/${artifact.manifest.targetBranch}`,
+    ...artifact.manifest.stages.map((id) => `refs/heads/${finalizedStage(artifact, id).change.branch}`),
+  ]);
   const newBase = baseOption
     ? commitObject(workspace.root, baseOption)
     : artifact.manifest.baseRevision;
@@ -2099,38 +2220,56 @@ function restackStages(
     `semantic-implementation-restack-${process.pid}-${Date.now()}.index`,
   );
   const plans: RestackPlan[] = [];
+  // Refs the restack relies on but leaves in place, verified when it commits.
+  const kept: RefUpdate[] = baseOption
+    ? [{ ref: `refs/heads/${artifact.manifest.targetBranch}`, next: newBase, previous: newBase }]
+    : [];
   let parentBranch = artifact.manifest.targetBranch;
   let parentHead = newBase;
+  // The head the stage below had before this restack, which a corrected stage above may already build on.
+  let belowHead: string | undefined;
 
   try {
     for (const [index, id] of artifact.manifest.stages.entries()) {
       const stage = finalizedStage(artifact, id);
       const actualHead = branchCommit(workspace.root, stage.change.branch);
+      const observedBelow = belowHead;
+      belowHead = actualHead;
       if (index < startIndex) {
         if (actualHead !== stage.change.headRevision) {
           fail(
             `Stage ${id} moved before the requested restack range; start from ${id}.`,
           );
         }
+        kept.push({ ref: `refs/heads/${stage.change.branch}`, next: actualHead, previous: actualHead });
         parentBranch = stage.change.branch;
         parentHead = actualHead;
         continue;
       }
 
       let nextHead: string;
+      // A stage whose branch moved was corrected; it is folded into one commit again.
+      const unchanged = actualHead === stage.change.headRevision;
+      const stageBase = rebuiltStageBase(
+        workspace.root,
+        { id, recordedBase: stage.change.baseRevision, recordedHead: stage.change.headRevision, head: actualHead },
+        observedBelow === undefined ? undefined : { id: artifact.manifest.stages[index - 1], head: observedBelow },
+        newBase,
+      );
       if (isAncestor(workspace.root, parentHead, actualHead)) {
-        assertLinearRange(workspace.root, parentHead, actualHead, `Stage ${id}`);
-        nextHead = actualHead;
+        nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);
       } else {
+        const stageCommit = foldStage(workspace.root, stage, stageBase, actualHead, `Stage ${id}`, unchanged);
         try {
-          nextHead = replayRange(
-            workspace.root,
+          nextHead = applyCommitPatch({
+            root: workspace.root,
             indexFile,
-            stage.change.baseRevision,
-            actualHead,
-            parentHead,
-            `Stage ${id}`,
-          );
+            baseTree: parentHead,
+            patchParent: stageBase,
+            patchCommit: stageCommit,
+            metadataCommit: stageCommit,
+            newParent: parentHead,
+          });
         } catch (error) {
           if (!(error instanceof PatchConflictError)) throw error;
           const detail = error.message;
@@ -2138,7 +2277,7 @@ function restackStages(
             [
               `Restacking stage ${id} onto ${parentHead} failed.`,
               "No stage refs or artifacts were changed.",
-              `Conflict context: stage base ${stage.change.baseRevision}, stage head ${actualHead}, new parent ${parentHead}.`,
+              `Conflict context: stage base ${stageBase}, stage head ${actualHead}, new parent ${parentHead}.`,
               detail,
             ].join("\n"),
           );
@@ -2158,15 +2297,20 @@ function restackStages(
     }
 
     const branchUpdates = plans.filter(({ previousHead, nextHead }) => previousHead !== nextHead);
-    const refUpdates = branchUpdates.map(({ branch, previousHead, nextHead }): RefUpdate => ({
+    // Unchanged stage branches are verified rather than moved.
+    const refUpdates = [...kept, ...plans.map(({ branch, previousHead, nextHead }): RefUpdate => ({
       ref: `refs/heads/${branch}`,
       previous: previousHead,
       next: nextHead,
-    }));
+    }))];
+    // Corrections folded away stay reachable for code targets captured on them.
+    const corrections = plans.filter(({ stage, previousHead }) => previousHead !== stage.change.headRevision).map(({ previousHead }) => previousHead);
     const checkedOut = checkedOutBranches(workspace.root);
+    // A checked-out branch may only move to a commit with the same tree, as a fold does.
+    const sameTree = (left: string, right: string) => git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: workspace.root }).split(/\r?\n/).every((tree, _, trees) => tree === trees[0]);
     const checkedOutUpdates = branchUpdates
-      .map(({ branch }) => branch)
-      .filter((branch) => checkedOut.has(branch));
+      .filter(({ branch, previousHead, nextHead }) => checkedOut.has(branch) && !sameTree(previousHead, nextHead))
+      .map(({ branch }) => branch);
     if (checkedOutUpdates.length > 0) {
       fail(
         `Cannot move branch(es) checked out in a worktree: ${checkedOutUpdates.join(", ")}.`,
@@ -2195,7 +2339,7 @@ function restackStages(
     writeManifest(draft, artifact);
     validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
     withArtifactLock(workspace, artifact.manifest.implementationId, () => {
-      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates);
+      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, corrections);
     });
 
     return {
@@ -2204,7 +2348,7 @@ function restackStages(
       targetBranch: artifact.manifest.targetBranch,
       baseRevision: newBase,
       refreshedStages: plans.length,
-      rewrittenBranches: refUpdates.length,
+      rewrittenBranches: branchUpdates.length,
       stages: plans.map((plan) => ({
         id: plan.id,
         branch: plan.branch,
@@ -2764,7 +2908,7 @@ function readArchive(root: string, implementationId: string): { commit: string; 
 function assertDirectRefs(root: string, refs: readonly string[]): void {
   for (const ref of refs) {
     const target = gitOptional(["symbolic-ref", "--quiet", ref], { cwd: root });
-    if (target) fail(`${ref} is a symbolic ref to ${target}; archiving writes only direct refs. Replace it with a branch or remove it.`);
+    if (target) fail(`${ref} is a symbolic ref to ${target}; Semantic Flow writes only direct refs. Replace it with a branch or remove it.`);
   }
 }
 

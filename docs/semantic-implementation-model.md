@@ -3,7 +3,7 @@
 ## Semantic stage
 
 A semantic stage is the smallest independently reviewable intent. It may touch
-many files and contain several linear commits, but every change serves one
+many files, and once finalized it is one commit, but every change serves one
 purpose.
 
 Each stage records specification coverage, rationale, decisions, assumptions,
