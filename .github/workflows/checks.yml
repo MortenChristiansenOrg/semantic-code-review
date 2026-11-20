@@ -10,7 +10,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The minimum Node.js on every operating system; newer supported LTS
+        # lines on Linux. Keep in step with MINIMUM_NODE_MAJOR.
         os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [22]
+        include:
+          - os: ubuntu-latest
+            node: 24
+          - os: ubuntu-latest
+            node: 26
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +27,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: scripts/package-lock.json
       - run: git config --global core.autocrlf false

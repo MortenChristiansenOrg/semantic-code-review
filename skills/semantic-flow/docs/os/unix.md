@@ -21,7 +21,7 @@ git rev-parse --show-toplevel
 git status --short --branch
 ```
 
-Verify that Node.js is version 20 or later. In the shared procedure,
+Verify that Node.js is version 22 or later. In the shared procedure,
 substitute:
 
 ```text

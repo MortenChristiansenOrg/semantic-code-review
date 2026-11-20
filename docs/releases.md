@@ -39,7 +39,7 @@ version exists, so a late maintenance release cannot move users backward.
 
 ## Installing and updating
 
-Install Node.js 20 or newer and Git. No source checkout, npm dependencies, or
+Install Node.js 22 or newer and Git. No source checkout, npm dependencies, or
 build toolchain is needed to use the packaged skill. Windows, macOS, and Linux
 use the same archive. Reporting instructions, references, and the report template
 are bundled in the main skill and updated with it. Reporting itself needs neither
@@ -148,6 +148,9 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    it records landing (found, supplied with `--landed`, or unknown) and shares an
    archive as the tag `semantic-review/archive/<id>` on request. Archives already
    committed under `.semantic-review-history/` stay as they are.
+   The first release that requires Node.js 22 must say prominently under
+   Breaking changes and Updating that Node.js 20 is no longer supported and that
+   users must install Node.js 22 or newer before updating.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

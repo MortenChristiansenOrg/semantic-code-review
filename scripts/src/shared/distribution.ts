@@ -6,6 +6,10 @@ import { parseVersion, RELEASE_REPOSITORY } from "./release-version.js";
 import { parseJson } from "./json.js";
 import { isRecord, stringField, type JsonRecord } from "./narrow.js";
 
+/** The oldest Node.js major version the skill supports. Releases record it, and
+ * `engines` in package.json, CI and the documentation state the same version. */
+export const MINIMUM_NODE_MAJOR = 22;
+
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 128 * 1024 * 1024;
 export interface ReleaseMetadata {

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 // Bundles use the package's ESM build (see the alias in build-skill.ts). The
 // build and release tools run this file through tsx and load the CommonJS entry:
-// the package does not mark its ESM build as ESM, so Node.js 20 cannot load it.
+// the package does not mark its ESM build as ESM, and the build's own imports
+// omit file extensions, so Node.js cannot load it as a module.
 import * as jsonc from "jsonc-parser";
 import type { Node as JsonNode, ParseError } from "jsonc-parser";
 import { fail } from "./errors.js";
