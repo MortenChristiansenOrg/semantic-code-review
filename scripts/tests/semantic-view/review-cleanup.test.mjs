@@ -7,7 +7,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, registeredReviews, setReviewCompleted, recordViewer, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck, assertReviewContext } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
-import { writeReviewId } from '../../src/shared/review-store.ts';
+import { removeOrphanedReviews, writeReviewId } from '../../src/shared/review-store.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 function setup(t) {
@@ -37,6 +37,15 @@ function age(review, days = 31) {
   const record = JSON.parse(fs.readFileSync(file, 'utf8')); record.updatedAt = then.toISOString();
   fs.writeFileSync(file, JSON.stringify(record)); fs.utimesSync(file, then, then);
 }
+/** Makes cleanup believe it first found the review's Git directory missing days ago. */
+function missingFor(review, days) {
+  const file = path.join(reviewDirectory(review.id), 'review.json'), record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  record.missingSince = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(record));
+}
+const reviewsFolder = () => path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews');
+const pendingFolder = (review) => path.join(reviewsFolder(), '.deleting-' + review.id);
+const retiredMarker = (review) => path.join(reviewsFolder(), '.retired-' + review.id);
 const storedReviewId = (root, implementationId) => JSON.parse(readArtifact(root, implementationId).read('review.json')).reviewId;
 const retiredFolders = () => fs.readdirSync(path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews')).filter((name) => !/^[a-z0-9-]+--[a-z0-9-]+--[a-f0-9]{64}$/.test(name));
 const change = (key, value, before) => ({ path: [key], before: before === undefined ? { present: false } : { present: true, value: before }, after: { present: true, value } });
@@ -97,15 +106,20 @@ test('cleanup removes reviews whose repository has long been gone and keeps thos
   execFileSync('git', ['update-ref', '-d', 'refs/semantic-review/active/archived-id'], { cwd: path.join(root, 'archived') });
   assert.equal(readReview(review.id).gitCommonDir, fs.realpathSync(path.join(root, 'repo', '.git')));
   fs.rmSync(path.join(root, 'other'), { recursive: true });
-  fs.mkdirSync(path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews', '.deleted-00000000-0000-0000-0000-000000000000'));
-  // A missing repository may be on a drive that is not mounted: a review in recent use stays.
-  age(other, 29);
+  fs.mkdirSync(path.join(reviewsFolder(), '.deleted-00000000-0000-0000-0000-000000000000'));
+  // The first cleanup that finds the Git directory missing records when.
   let listed = registeredReviews();
   assert.deepEqual(listed.map((entry) => entry.id).sort(), [archived.id, other.id, review.id].sort());
   assert.equal(listed.find((entry) => entry.id === other.id).available, false);
-  // Folders a deletion left behind are removed at once.
+  assert.ok(Date.now() - Date.parse(readReview(other.id).missingSince) < 60_000);
+  assert.equal(readReview(review.id).missingSince, undefined);
+  // Folders of committed deletions are removed at once.
   assert.deepEqual(retiredFolders(), []);
-  age(other);
+  // A missing repository may be on a drive that is not mounted: the review stays for 30 days.
+  missingFor(other, 29);
+  listed = registeredReviews();
+  assert.deepEqual(listed.map((entry) => entry.id).sort(), [archived.id, other.id, review.id].sort());
+  missingFor(other, 31);
   listed = registeredReviews();
   assert.deepEqual(listed.map((entry) => entry.id).sort(), [archived.id, review.id].sort());
   assert.equal(listed.find((entry) => entry.id === archived.id).available, false);
@@ -113,10 +127,59 @@ test('cleanup removes reviews whose repository has long been gone and keeps thos
   assert.deepEqual(retiredFolders(), []);
   // Registering a review also cleans up.
   fs.rmSync(path.join(root, 'archived'), { recursive: true });
-  age(archived);
+  registerReview(path.join(root, 'repo'), 'same-id', 'Review');
+  assert.equal(typeof readReview(archived.id).missingSince, 'string');
+  missingFor(archived, 31);
   registerReview(path.join(root, 'repo'), 'same-id', 'Review');
   assert.equal(fs.existsSync(reviewDirectory(archived.id)), false);
   assert.equal(readReview(review.id).generation, review.generation);
+});
+
+test('a long unused review whose repository just went missing stays for the whole grace period', (t) => {
+  const { root, review } = setup(t), moved = path.join(root, 'moved');
+  // Unused for a year, then its repository is moved, or its drive unmounted.
+  age(review, 365);
+  fs.renameSync(path.join(root, 'repo'), moved);
+  registeredReviews();
+  assert.equal(readReview(review.id).generation, review.generation);
+  const since = readReview(review.id).missingSince;
+  assert.ok(Date.now() - Date.parse(since) < 60_000);
+  // Later cleanups keep the time it was first found missing.
+  registeredReviews();
+  assert.equal(readReview(review.id).missingSince, since);
+  // Found again, by cleanup or by a command run from the repository, the grace period ends.
+  fs.renameSync(moved, path.join(root, 'repo'));
+  registeredReviews();
+  assert.equal(readReview(review.id).missingSince, undefined);
+  missingFor(review, 31);
+  registerReview(path.join(root, 'repo'), 'same-id', 'Review');
+  assert.equal(readReview(review.id).missingSince, undefined);
+});
+
+test('cleanup leaves a review alone when its Git directory cannot be checked or its lock is busy', (t) => {
+  const { root, other } = setup(t), common = readReview(other.id).gitCommonDir;
+  fs.rmSync(path.join(root, 'other'), { recursive: true });
+  // Only a missing path counts as missing; a denied permission tells nothing.
+  const stat = fs.statSync;
+  const denied = t.mock.method(fs, 'statSync', (file, ...args) => {
+    if (String(file) === common) throw Object.assign(new Error('Permission denied'), { code: 'EACCES' });
+    return stat(file, ...args);
+  });
+  missingFor(other, 365); age(other, 365);
+  removeOrphanedReviews();
+  assert.equal(readReview(other.id).generation, other.generation);
+  denied.mock.restore();
+  // Cleanup never waits for a busy review.
+  const lock = path.join(process.env.SEMANTIC_FLOW_HOME, 'locks', other.id + '.lock');
+  fs.mkdirSync(lock, { recursive: true });
+  fs.writeFileSync(path.join(lock, 'owner-00000000-0000-0000-0000-000000000001.json'), JSON.stringify({ pid: process.pid }));
+  const started = Date.now();
+  removeOrphanedReviews();
+  assert.ok(Date.now() - started < 5000, 'cleanup waited for a busy review');
+  assert.equal(readReview(other.id).generation, other.generation);
+  fs.rmSync(lock, { recursive: true });
+  removeOrphanedReviews();
+  assert.equal(fs.existsSync(reviewDirectory(other.id)), false);
 });
 
 test('registering a repository that moved with its Git directory keeps its long unused review', (t) => {
@@ -195,6 +258,109 @@ test('a deletion whose new review ID cannot be stored moves the review back and 
   fs.rmSync(refLock);
   assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
   assert.notEqual(storedReviewId(repo, 'same-id'), review.id);
+});
+
+test('cleanup during a deletion that rolls back leaves the review intact', async (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo');
+  const file = oldAttachment(review, 'kept');
+  const bytes = fs.readFileSync(path.join(reviewDirectory(review.id), 'review.json'));
+  // Git waits for the implementation's ref lock, then fails, so the deletion rolls back.
+  execFileSync('git', ['config', 'core.filesRefLockTimeout', '2000'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, '.git', 'refs', 'semantic-review', 'active', 'same-id.lock'), '');
+  const moduleUrl = new URL('../../src/semantic-view.ts', import.meta.url).href;
+  const source = `import { deleteReviewData } from ${JSON.stringify(moduleUrl)};
+    try { deleteReviewData(...process.argv.slice(1)); console.log('deleted'); } catch (error) { console.log(error.message); }`;
+  const deletion = promisify(execFile)(process.execPath, [...sourceLoader, '--input-type=module', '-e', source, review.id, review.generation, preview(review).fingerprint]);
+  while (fs.existsSync(reviewDirectory(review.id))) await new Promise((resolve) => setTimeout(resolve, 10));
+  // Cleanup runs while the folder is moved aside and the deletion may still roll back.
+  registeredReviews();
+  const { stdout } = await deletion;
+  assert.match(stdout, /same-id/);
+  assert.deepEqual(fs.readFileSync(path.join(reviewDirectory(review.id), 'review.json')), bytes);
+  assert.ok(fs.existsSync(resolveAttachment(review.id, file.id).localPath));
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
+  assert.equal(storedReviewId(repo, 'same-id'), review.id);
+});
+
+test('a deletion interrupted before it gave the implementation a new review ID is rolled back', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo');
+  patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);
+  // A crash left the folder under its pending name; cleanup leaves it alone.
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  registeredReviews();
+  assert.ok(fs.existsSync(pendingFolder(review)));
+  // Registration moves it back before anything else.
+  const registered = registerReview(repo, 'same-id', 'Review');
+  assert.equal(registered.id, review.id);
+  assert.equal(registered.generation, review.generation);
+  assert.deepEqual(readReview(review.id).state.comments, [{ mode: 'personal', body: 'Keep me' }]);
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
+  // So does a deletion, which then completes.
+  const fingerprint = preview(review).fingerprint;
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
+  assert.notEqual(storedReviewId(repo, 'same-id'), review.id);
+});
+
+test('deletion gives a new review ID through the recorded Git directory when bare repositories must be explicit', (t) => {
+  const { root } = setup(t), bare = path.join(root, 'bare.git'), linked = path.join(root, 'bare-linked');
+  execFileSync('git', ['clone', '-q', '--bare', path.join(root, 'repo'), bare]);
+  execFileSync('git', ['worktree', 'add', '-q', '--detach', linked], { cwd: bare });
+  activate(linked, 'bare-id');
+  const review = registerReview(linked, 'bare-id', 'Bare');
+  fs.rmSync(linked, { recursive: true });
+  const saved = { ...process.env };
+  t.after(() => { for (const key of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; });
+  Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'safe.bareRepository', GIT_CONFIG_VALUE_0: 'explicit' });
+  // Git refuses to discover the bare repository from its directory.
+  assert.throws(() => execFileSync('git', ['rev-parse', '--git-dir'], { cwd: bare, stdio: 'pipe' }));
+  assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
+  delete process.env.GIT_CONFIG_COUNT;
+  assert.notEqual(storedReviewId(bare, 'bare-id'), review.id);
+});
+
+test('a review deleted while its repository is unreachable gets a new ID when the repository is used again', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo'), away = path.join(root, 'away');
+  fs.renameSync(repo, away);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, preview(review).fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
+  // The artifact still holds the old ID, which is marked retired; cleanup keeps the marker.
+  assert.equal(storedReviewId(away, 'same-id'), review.id);
+  assert.ok(fs.existsSync(retiredMarker(review)));
+  registeredReviews();
+  assert.ok(fs.existsSync(retiredMarker(review)));
+  assert.deepEqual(retiredFolders(), ['.retired-' + review.id]);
+  // Registration stores a fresh ID first, so the deleted review is never recreated.
+  fs.renameSync(away, repo);
+  const registered = registerReview(repo, 'same-id', 'Fresh');
+  assert.notEqual(registered.id, review.id);
+  assert.deepEqual(registered.state, {});
+  assert.equal(storedReviewId(repo, 'same-id'), registered.id);
+  assert.equal(fs.existsSync(retiredMarker(review)), false);
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
+  assert.deepEqual(retiredFolders(), []);
+});
+
+test('an open viewer keeps working when a deletion of its review rolls back', (t) => {
+  const { review } = setup(t), context = { reviewId: review.id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId };
+  const check = reviewRetirementCheck(context);
+  // While a deletion has moved the folder aside, it may still roll back.
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  assert.equal(reviewSessionUnavailable(context), false);
+  assert.equal(check(), false);
+  const late = reviewRetirementCheck(context);
+  fs.renameSync(pendingFolder(review), reviewDirectory(review.id));
+  assert.equal(reviewSessionUnavailable(context), false);
+  assert.equal(check(), false);
+  assert.equal(late(), false);
+  patchReviewState(review.id, review.generation, [change('after', true)]);
+  deleteReviewData(review.id, review.generation, preview(review).fingerprint);
+  assert.equal(reviewSessionUnavailable(context), true);
+  assert.equal(check(), true);
+  assert.equal(late(), true);
 });
 
 test('writers of a deleted review fail and do not recreate its folder', (t) => {

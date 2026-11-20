@@ -47,7 +47,7 @@ import {
   type ViewerIdentity,
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
-import { feedbackDirectory, listReviews, readReview, registerReview, reviewId } from "./shared/review-store.js";
+import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
 import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -911,7 +911,7 @@ const HEARTBEAT_MS = 5000;
 
 /** Pending feedback that no running round has claimed. Caller holds the review lock. */
 function unclaimedFeedbackWaiting(candidate: ArtifactCandidate, claimed: Set<string>): boolean {
-  const directory = feedbackDirectory(candidate.worktree, candidate.implementationId);
+  const directory = candidate.feedbackDirectory;
   const manifest = path.join(directory, "manifest.json");
   if (!fs.existsSync(manifest)) return false;
   return readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest).threads.some((id) =>
@@ -925,9 +925,16 @@ async function waitForFeedback(options: Options): Promise<void> {
   const seconds = timeout === undefined ? DEFAULT_WAIT_SECONDS : Number(timeout);
   if (!Number.isInteger(seconds) || seconds < 1 || seconds > 86_400) fail("--timeout must be a whole number of seconds from 1 to 86400.");
   const requested = option(options, "session");
-  const candidate = await activeCandidate(resolveSingle(options, "feedback"));
-  const review = reviewId(candidate.worktree, candidate.implementationId);
-  registerReview(candidate.worktree, candidate.implementationId, candidate.title);
+  let candidate = await activeCandidate(resolveSingle(options, "feedback"));
+  // Registration gives the implementation a new review ID when a deletion retired
+  // the stored one; everything below uses the review it returns.
+  const review = registerReview(candidate.worktree, candidate.implementationId, candidate.title).id;
+  const directory = path.join(reviewDirectory(review), "feedback");
+  if (directory !== candidate.feedbackDirectory) {
+    // The session belonged to the deleted review and ended with it.
+    if (requested) fail(`The review of the semantic implementation ${candidate.implementationId} was deleted, and session ${requested} with it. Wait again without --session to start a new session.`);
+    candidate = { ...candidate, feedbackDirectory: directory, feedbackExists: fs.existsSync(path.join(directory, "manifest.json")) };
+  }
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
   // Continuing a session first checks the round just completed. A round still waiting
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.

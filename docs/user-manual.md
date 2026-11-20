@@ -29,12 +29,15 @@ another worktree records the new location. Folder names use
 `my-project--order-cancellation--<64 hex characters>`. The readable parts are
 normalized and capped at 24 and 40 characters. Changing the display title does not
 rename the folder. Deleting a review gives the implementation a new review ID, so
-the next review starts empty. A review whose repository's Git directory is missing
-and that has not been used for 30 days is removed when saved reviews are listed or
-another review is started. A repository that is missing only for now, such as one
-on a drive that is not mounted, keeps its review through that period, and a
-repository moved together with its Git directory keeps its review whenever a
-command runs from the new location. An implementation started by an unreleased
+the next review starts empty; when the repository cannot be reached at that time,
+the new ID is stored when a command next runs from it. A review whose repository's
+Git directory has been missing for 30 days is removed when saved reviews are listed
+or another review is started. The period counts from when such a listing or start
+first found the directory missing, however long the review was unused before. A
+repository that is missing only for now, such as one on a drive that is not
+mounted, keeps its review through that period, and a repository moved together
+with its Git directory keeps its review whenever a command runs from the new
+location, which also starts the period over. An implementation started by an unreleased
 development build may have no review ID; commands then fail and ask to start it
 again. There is no migration
 from browser storage. Simultaneous independent edits merge; conflicting edits to
@@ -725,8 +728,8 @@ storage size, drafts, personal notes, approvals, feedback, attachments, and save
 snapshots. **Delete review data** confirms removal of that review's local data.
 Unsent drafts and unresolved feedback are highlighted before confirmation.
 Completion never deletes data automatically; unavailable reviews can be cleaned
-too. Only a review whose repository has been gone and that has not been used for
-30 days is removed without asking. Source files, branches, implementation
+too. Only a review whose repository's Git directory has been missing for 30 days
+is removed without asking. Source files, branches, implementation
 artifacts, publications, and archives are preserved.
 
 **Clean unused files** reclaims unreferenced uploads and snapshots separately.
@@ -739,10 +742,12 @@ changes the data after the preview, refresh the details before confirming.
 
 Deletion moves the review's folder aside, then gives the implementation a new
 review ID, then removes the folder. Once the folder is moved, stale tabs and CLI
-requests fail and cannot recreate the deleted review. Files that cannot be removed
-at once are removed by a later cleanup. If the folder cannot be moved, or the new
-review ID cannot be stored, deletion fails without changing anything and can be
-retried. The error
+requests fail and cannot recreate the deleted review; an open viewer of the review
+treats it as deleted only once the deletion has completed. Files that cannot be
+removed at once are removed by a later cleanup. If the folder cannot be moved, or
+the new review ID cannot be stored, deletion fails without changing anything and
+can be retried. If the repository cannot be reached, deletion succeeds and the new
+review ID is stored when a command next runs from the repository. The error
 identifies the failing file or folder and filesystem error code. When available, a bounded lookup also
 lists process names, PIDs, and files in use (`lsof` on Linux/macOS, Windows Restart
 Manager through PowerShell on Windows). Lookup may be unavailable, lack permission,

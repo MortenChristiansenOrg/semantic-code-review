@@ -147,6 +147,38 @@ test("review launched from another worktree of the repository reuses the running
   assert.equal(pids.size, 1);
 });
 
+test("review launched after the recorded worktree stopped reaching the review replaces its viewer", async (t) => {
+  const port = await reserveViewerPort();
+  const pids = new Set();
+  t.after(async () => { for (const pid of pids) await stopViewer(port, pid).catch(() => { try { process.kill(pid); } catch { /* Gone. */ } }); });
+  const repository = createRepository(t, "semantic-flow-relocated-viewer-");
+  initializeImplementation(repository, { implementationId: "relocated-viewer" });
+  const linked = path.join(fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "semantic-linked-")), "linked");
+  t.after(() => fs.rmSync(path.dirname(linked), { recursive: true, force: true }));
+  repository.git("worktree", "add", "-q", "--detach", linked);
+  rememberImplementation(linked, "relocated-viewer");
+  const launch = (cwd) => {
+    const result = spawnSync(process.execPath, [flowCli, "review"], {
+      cwd, encoding: "utf8", timeout: 15_000,
+      env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(port) },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const started = /running persistently in the background \(PID (\d+)\)/.exec(result.stdout);
+    assert.ok(started, result.stdout);
+    pids.add(Number(started[1]));
+    return Number(started[1]);
+  };
+  // The review records the linked worktree, which serves it until it is removed.
+  const first = launch(linked);
+  repository.git("worktree", "remove", "--force", linked);
+  const second = launch(repository.root);
+  assert.notEqual(second, first);
+  assert.throws(() => process.kill(first, 0), (error) => error.code === "ESRCH");
+  const identity = await fetch(`http://127.0.0.1:${port}/api/whoami`).then((response) => response.json());
+  assert.equal(identity.processId, second);
+  assert.equal(identity.repositoryRoot, repository.root);
+});
+
 test("review leaves a detached viewer running after the command exits", async (t) => {
   const port = await reserveViewerPort();
   let viewerPid;

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentIds, readReview, removeRetiredDirectory, restoreReviewDirectory, retireReviewDirectory, retireReviewId, reviewDirectory, withReviewLock } from "./review-store.js";
+import { attachmentIds, beginReviewDeletion, completeReviewDeletion, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
 import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage } from "./viewer-protocol.js";
@@ -73,7 +73,7 @@ function inspect(id: string, generation: string) {
   ];
   const bytes = entries.reduce((sum, item) => sum + item.size, 0), knownBytes = categories.reduce((sum, item) => sum + item.bytes, 0);
   if (bytes > knownBytes) categories.push({ label: "Other owned files", bytes: bytes - knownBytes, detail: "Temporary and auxiliary review files" });
-  const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, gitCommonDir: ignoredLocator, ...identity } = review;
+  const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, gitCommonDir: ignoredLocator, missingSince: ignoredMissing, ...identity } = review;
   return { review: identity, storageDirectory: directory, bytes, categories, drafts, unresolved, referenceError,
     fingerprint: digest(JSON.stringify([review, entries])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0) };
 }
@@ -87,28 +87,33 @@ function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T
 export function inspectReviewStorage(id: string, generation: string): ReviewStorage {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry cleanup.", () => inspect(id, generation));
 }
-/** Deleting a review first moves its folder aside, so its writers fail from then
- * on, then gives its implementation a fresh review ID, so nothing reaches the
- * deleted review again and the next review of the implementation starts empty.
- * When either step fails, nothing has changed. */
+/** Deleting a review first moves its folder to a pending name, so its writers fail
+ * from then on, then gives its implementation a fresh review ID, so nothing
+ * reaches the deleted review again and the next review of the implementation
+ * starts empty. Only then is the folder removed. When the repository cannot be
+ * reached, the old ID is marked retired instead, and the next registration that
+ * finds it in the artifact replaces it. When either step fails, the folder is
+ * moved back and nothing has changed. */
 export function deleteReviewData(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewDeleteResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
+    recoverInterruptedDeletion(id);
     if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return { deleted: true }; // Exact retry after completion.
     const preview = inspect(id, generation);
     if (typeof fingerprint !== "string" || fingerprint !== preview.fingerprint) throw new Error("Review data changed since the preview. Refresh the details before deleting.");
     const record = readReview(id);
-    const retired = retireReviewDirectory(id);
-    try { retireReviewId(record); }
-    catch (error) {
-      try { restoreReviewDirectory(id, retired); }
+    beginReviewDeletion(id);
+    try {
+      if (retireReviewId(record) === "unreachable") markReviewIdRetired(id);
+    } catch (error) {
+      try { rollBackReviewDeletion(id); }
       catch (restoreError) {
-        // The review stays deleted: a later cleanup removes the folder, and a new
-        // review of the implementation gets a new generation that stale tabs lack.
-        throw new Error(`The implementation could not be given a new review ID (${errorMessage(error)}), and the review's data could not be moved back (${errorMessage(restoreError)}). The review data is deleted.`);
+        // The folder keeps its pending name, which cleanup never removes; the next
+        // deletion or registration of the review moves it back first.
+        throw new Error(`The implementation could not be given a new review ID (${errorMessage(error)}), and the review's data could not be moved back (${errorMessage(restoreError)}). Nothing was deleted: opening the review from its repository again moves the data back.`);
       }
       throw error;
     }
-    removeRetiredDirectory(retired);
+    completeReviewDeletion(id);
     return { deleted: true };
   });
 }

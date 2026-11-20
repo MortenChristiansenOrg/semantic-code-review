@@ -544,6 +544,53 @@ export function commitArtifact(
   return commit;
 }
 
+/** Replaces one top-level file of the active artifact of an implementation in
+ * the repository whose Git directory is gitDirectory. Every Git command is
+ * given that directory, so none needs a worktree or repository discovery, which
+ * a setting such as safe.bareRepository=explicit refuses for a bare repository.
+ * replace receives the artifact's files and returns the file's new bytes, or
+ * undefined to leave the artifact unchanged. The ref moves only if it still
+ * points at the snapshot replace saw; when another writer moved it first,
+ * replace decides again on what that writer committed. Returns whether the
+ * file was replaced; false also when the implementation is not active. */
+export function replaceArtifactFileInGitDirectory(
+  gitDirectory: string,
+  implementationId: string,
+  file: string,
+  replace: (files: ArtifactFiles) => Buffer | undefined,
+): boolean {
+  if (checkedPath(file).includes("/")) throw new Error(`${file} is not a top-level artifact file.`);
+  const gitDir = `--git-dir=${gitDirectory}`;
+  const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
+  const ref = activeRef(implementationId);
+  const read = () => run(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)", ref]).toString("utf8")
+    .split(/\r?\n/).find((entry) => entry.split("\t")[1] === ref);
+  for (let attempt = 0; ; attempt++) {
+    const line = read();
+    if (!line) return false;
+    const [commit, , parents = ""] = line.split("\t");
+    const files = treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
+    const bytes = replace(files);
+    if (bytes === undefined) return false;
+    const blob = run(["hash-object", "-w", "--no-filters", "--stdin"], bytes).toString("utf8").trim();
+    // The other entries keep their blobs and modes; mktree orders the entries itself.
+    const entries = run(["ls-tree", "-z", commit]).toString("utf8").split("\0")
+      .filter((entry) => entry && entry.slice(entry.indexOf("\t") + 1) !== file);
+    entries.push(`100644 blob ${blob}\t${file}`);
+    const tree = run(["mktree", "-z"], Buffer.from(entries.map((entry) => `${entry}\0`).join(""), "utf8")).toString("utf8").trim();
+    // The superseded heads stay the snapshot's parents, as commitArtifact keeps them.
+    const next = gitRaw([gitDir, "commit-tree", tree, ...parents.split(" ").filter(Boolean).flatMap((parent) => ["-p", parent]),
+      "-m", `Semantic implementation ${implementationId}`], { env: SNAPSHOT_IDENTITY });
+    try {
+      run(["update-ref", "--create-reflog", "-m", "semantic-flow", ref, next, commit]);
+      return true;
+    } catch (error) {
+      // Only another writer moving the ref first is worth deciding again.
+      if (attempt >= 4 || read()?.split("\t")[0] === commit) throw error;
+    }
+  }
+}
+
 /** Removes the active artifact read as base, together with the other ref
  * updates, unless it changed since. */
 export function removeArtifact(root: string, base: ArtifactSnapshot, refUpdates: readonly RefUpdate[] = []): void {

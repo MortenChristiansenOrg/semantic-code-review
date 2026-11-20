@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { parseJson } from "./json.js";
-import { activeImplementationId, ArtifactDraft, commitArtifact, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
+import { jsonBytes, parseJson } from "./json.js";
+import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
 import { gitRaw } from "./git.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
@@ -36,9 +36,9 @@ const unavailable = (message: string) => Object.assign(new Error(message), { cod
 export function gitCommonDirectory(root: string) {
   return fs.realpathSync(path.resolve(root, gitRaw(["rev-parse", "--git-common-dir"], { cwd: root })));
 }
-/** The name of the repository of root: its main worktree's folder name. */
-function repositoryName(root: string) {
-  const common = gitCommonDirectory(root);
+/** The name of the repository whose Git common directory is common: its main
+ * worktree's folder name. */
+function repositoryName(common: string) {
   return path.basename(common) === ".git" ? path.basename(path.dirname(common)) : path.basename(common).replace(/\.git$/, "");
 }
 /** The file of an active artifact that names its review. It is private: published
@@ -54,25 +54,17 @@ export function artifactReviewId(files: ArtifactFiles): string | undefined {
 }
 /** Gives a new artifact of root its review ID. */
 export function writeReviewId(draft: ArtifactDraft, root: string, implementationId: string) {
-  draft.writeJson(REVIEW_ID_FILE, { reviewId: newReviewId(repositoryName(root), implementationId) });
+  draft.writeJson(REVIEW_ID_FILE, { reviewId: newReviewId(repositoryName(gitCommonDirectory(root)), implementationId) });
 }
 /** Commits a fresh review ID into the active artifact of implementationId in the
- * repository whose Git directory is given, unless its snapshot no longer holds
- * expected. Git runs in that directory, so no worktree of the repository is needed. */
-function replaceArtifactReviewId(gitDirectory: string, implementationId: string, expected: string): void {
-  for (let attempt = 0; ; attempt++) {
-    const snapshot = readArtifact(gitDirectory, implementationId);
-    if (!snapshot || artifactReviewId(snapshot) !== expected) return;
-    const draft = new ArtifactDraft(snapshot);
-    writeReviewId(draft, gitDirectory, implementationId);
-    try {
-      commitArtifact(gitDirectory, snapshot, draft);
-      return;
-    } catch (error) {
-      // Another writer moved the artifact first; decide again on what it wrote.
-      if (attempt >= 4) throw error;
-    }
-  }
+ * repository whose Git common directory is given, only while the artifact still
+ * holds expected: a compare-and-swap, so an ID another writer stored is kept.
+ * Git is given the directory explicitly, so no worktree of the repository is
+ * needed. Returns whether the ID was replaced. */
+function rotateArtifactReviewId(gitDirectory: string, implementationId: string, expected: string): boolean {
+  const name = repositoryName(gitDirectory);
+  return replaceArtifactFileInGitDirectory(gitDirectory, implementationId, REVIEW_ID_FILE, (files) =>
+    artifactReviewId(files) === expected ? jsonBytes({ reviewId: newReviewId(name, implementationId) }) : undefined);
 }
 export function reviewId(root: string, implementationId: string) {
   const canonicalRoot = fs.realpathSync(root);
@@ -130,6 +122,8 @@ function relocate(id: string, root: string): ReviewRecord {
     const common = gitCommonDirectory(record.repositoryRoot);
     if (record.gitCommonDir !== common) { record.gitCommonDir = common; changed = true; }
   }
+  // The repository is reachable again, so a later absence starts a new grace period.
+  if (record.missingSince !== undefined) { delete record.missingSince; changed = true; }
   if (changed) atomicJson(path.join(reviewDirectory(id), "review.json"), record);
   return record;
 }
@@ -141,20 +135,24 @@ export function relocateReview(id: string, root: string) {
   if (!fs.existsSync(file)) return;
   const record = readReview(id);
   // Most commands run where the review is recorded; they need no lock.
-  if (record.remote || (record.repositoryRoot === root && record.gitCommonDir !== undefined)) return;
+  if (record.remote || (record.repositoryRoot === root && record.gitCommonDir !== undefined && record.missingSince === undefined)) return;
   withReviewLock(id, () => { if (fs.existsSync(file)) relocate(id, root); });
 }
+/** What giving a deleted review's implementation a fresh review ID did: stored
+ * one, found nothing holding the old ID (a remote review, an implementation that
+ * is no longer active, or one already given another ID), or could not reach the
+ * repository at all. */
+export type ReviewIdRetirement = "rotated" | "absent" | "unreachable";
 /** Gives the implementation of a review being deleted a fresh review ID, so the
- * next review of it starts empty and nothing reaches the deleted one. Git runs in
+ * next review of it starts empty and nothing reaches the deleted one. Git is given
  * the recorded Git common directory, so this works when no worktree of the
- * repository is left, as in a bare repository. Does nothing when the repository
- * is gone or its active artifact no longer holds this review's ID. Fails when
- * the ID cannot be replaced. Caller holds the review's lock. */
-export function retireReviewId(record: ReviewRecord) {
-  if (record.remote) return;
+ * repository is left, as in a bare repository. Fails when the ID cannot be
+ * replaced. Caller holds the review's lock. */
+export function retireReviewId(record: ReviewRecord): ReviewIdRetirement {
+  if (record.remote) return "absent";
   const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot);
-  if (gitDirectory === undefined) return;
-  replaceArtifactReviewId(gitDirectory, record.implementationId, record.id);
+  if (gitDirectory === undefined) return "unreachable";
+  return rotateArtifactReviewId(gitDirectory, record.implementationId, record.id) ? "rotated" : "absent";
 }
 /** The Git common directory of a recorded worktree, if it is still a checkout. */
 function gitCommonDirectoryOf(root: string): string | undefined {
@@ -162,63 +160,117 @@ function gitCommonDirectoryOf(root: string): string | undefined {
   if (!fs.existsSync(path.join(root, ".git"))) return undefined;
   try { return gitCommonDirectory(root); } catch { return undefined; }
 }
-/** Folders under the reviews directory that a deletion renamed away. */
-const RETIRED_PREFIX = ".deleted-";
-/** Moves a review's folder out of the way in one step and returns its new path.
- * Afterwards nothing reaches the review: its writers fail. Caller holds the lock. */
-export function retireReviewDirectory(id: string) {
-  const retired = path.join(reviewHome(), "reviews", RETIRED_PREFIX + randomUUID());
-  fs.renameSync(reviewDirectory(id), retired);
-  return retired;
+const reviewsDirectory = () => path.join(reviewHome(), "reviews");
+/** Folders of committed deletions, which cleanup removes without a lock. */
+const DELETED_PREFIX = ".deleted-";
+/** The folder a deletion moves a review's folder to while it may still roll back.
+ * Cleanup never removes it. */
+export function pendingDeletionDirectory(id: string) {
+  return path.join(reviewsDirectory(), ".deleting-" + path.basename(reviewDirectory(id)));
 }
-/** Puts a folder that retireReviewDirectory moved back. Caller holds the lock. */
-export function restoreReviewDirectory(id: string, retired: string) {
-  fs.renameSync(retired, reviewDirectory(id));
+/** Marks a review ID that a deletion retired while it could not reach the
+ * repository, so the artifact still holds it. The registration that next finds
+ * the ID in the artifact gives the implementation a fresh one and removes the
+ * marker; nothing else removes it. */
+function retiredMarker(id: string) {
+  return path.join(reviewsDirectory(), ".retired-" + path.basename(reviewDirectory(id)));
 }
-/** Removes a retired folder. One that cannot be removed now is removed by a later cleanup. */
-export function removeRetiredDirectory(retired: string) {
-  try { fs.rmSync(retired, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
+/** Records that review ID id is retired although the artifact may still hold it. Caller holds the lock. */
+export function markReviewIdRetired(id: string) {
+  fs.writeFileSync(retiredMarker(id), "");
+}
+/** Moves a review's folder to its pending deletion folder in one step. Afterwards
+ * nothing reaches the review: its writers fail. Caller holds the lock. */
+export function beginReviewDeletion(id: string) {
+  fs.renameSync(reviewDirectory(id), pendingDeletionDirectory(id));
+}
+/** Puts a folder that beginReviewDeletion moved back. Caller holds the lock. */
+export function rollBackReviewDeletion(id: string) {
+  fs.renameSync(pendingDeletionDirectory(id), reviewDirectory(id));
+}
+/** Completes a deletion that can no longer roll back: its pending folder becomes
+ * a deleted one and is removed. One that cannot be removed now is removed by a
+ * later cleanup. Caller holds the lock. */
+export function completeReviewDeletion(id: string) {
+  const deleted = path.join(reviewsDirectory(), DELETED_PREFIX + randomUUID());
+  try { fs.renameSync(pendingDeletionDirectory(id), deleted); }
+  catch {
+    // Without a new name, remove the pending folder in place; what remains stays deleted.
+    try { fs.rmSync(pendingDeletionDirectory(id), { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* See above. */ }
+    return;
+  }
+  try { fs.rmSync(deleted, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
   catch { /* A later cleanup removes it. */ }
 }
-/** How long a local review whose repository is missing is kept unused before
- * cleanup removes it. A repository on an unmounted drive, or one moved together
- * with its Git directory, is missing too; the review stays until it is used again. */
+/** Settles a deletion of id that a crash interrupted, before anything else uses
+ * the ID: one that retired the ID is completed, any other is rolled back, since
+ * the artifact still holds the ID. Caller holds the lock. */
+export function recoverInterruptedDeletion(id: string) {
+  if (!fs.existsSync(pendingDeletionDirectory(id)) || fs.existsSync(reviewDirectory(id))) return;
+  if (fs.existsSync(retiredMarker(id))) completeReviewDeletion(id);
+  else rollBackReviewDeletion(id);
+}
+/** Whether review id is gone for good, rather than moved aside by a deletion that
+ * may still roll back. Waits for the review's lock, so a deletion in progress has
+ * finished first. False when that cannot be told now. */
+export function reviewDeletionConfirmed(id: string): boolean {
+  try { return withReviewLock(id, () => !fs.existsSync(path.join(reviewDirectory(id), "review.json")) && !fs.existsSync(pendingDeletionDirectory(id))); }
+  catch { return false; }
+}
+/** How long the Git directory of a local review must have been missing before
+ * cleanup removes the review. A repository on an unmounted drive, or one moved
+ * together with its Git directory, is missing too; the review stays until a
+ * command runs from it again. */
 export const ORPHAN_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
-/** Removes local reviews whose repository has been missing and that have not been
- * used for ORPHAN_GRACE_MS, and folders a deletion left behind. A review whose
- * repository exists stays, even when its implementation was archived or
- * discarded, so its feedback can still be read. The review named by keep is never
- * removed. */
+/** Removes local reviews whose repository's Git directory has been missing for
+ * ORPHAN_GRACE_MS, and folders of committed deletions. The first cleanup that
+ * finds a Git directory missing records when; one that finds it again clears
+ * that. A review whose repository exists stays, even when its implementation was
+ * archived or discarded, so its feedback can still be read. The review named by
+ * keep, and every review whose lock is busy, is left alone. */
 export function removeOrphanedReviews(keep?: string) {
   // Taking other reviews' locks while holding one could wait on a process that waits on this one.
   if (heldLocks.size) return;
-  const directory = path.join(reviewHome(), "reviews");
+  const directory = reviewsDirectory();
   let names: string[];
   try { names = fs.readdirSync(directory); } catch { return; }
   for (const name of names) {
     try {
-      if (name.startsWith(RETIRED_PREFIX)) { fs.rmSync(path.join(directory, name), { recursive: true, force: true }); continue; }
-      if (name === keep || !isReviewId(name) || !orphaned(name)) continue;
+      if (name.startsWith(DELETED_PREFIX)) { fs.rmSync(path.join(directory, name), { recursive: true, force: true }); continue; }
+      if (name === keep || !isReviewId(name)) continue;
+      const seen = readReview(name), presence = repositoryPresence(seen);
+      // Most reviews need no change, so no lock.
+      const changes = presence === "present" ? seen.missingSince !== undefined
+        : presence === "missing" && (seen.missingSince === undefined || missingLongEnough(seen));
+      if (!changes) continue;
+      // One review lock at a time, and never waiting for a busy one.
       withReviewLock(name, () => {
-        if (fs.existsSync(path.join(reviewDirectory(name), "review.json")) && orphaned(name)) removeRetiredDirectory(retireReviewDirectory(name));
-      });
+        if (!fs.existsSync(path.join(reviewDirectory(name), "review.json"))) return;
+        const record = readReview(name), current = repositoryPresence(record);
+        if (current === "present" && record.missingSince !== undefined) {
+          delete record.missingSince;
+          atomicJson(path.join(reviewDirectory(name), "review.json"), record);
+        } else if (current === "missing" && record.missingSince === undefined) {
+          record.missingSince = new Date().toISOString();
+          atomicJson(path.join(reviewDirectory(name), "review.json"), record);
+        } else if (current === "missing" && missingLongEnough(record)) {
+          beginReviewDeletion(name);
+          completeReviewDeletion(name);
+        }
+      }, { wait: false });
     } catch { /* Unreadable or busy reviews stay; a later cleanup tries again. */ }
   }
 }
-/** Only the repository is checked: when it is gone, so are its artifacts. A
- * repository that is missing only for now has a review in recent use. */
-function orphaned(id: string) {
-  const record = readReview(id);
-  if (record.remote || record.gitCommonDir === undefined || fs.existsSync(record.gitCommonDir)) return false;
-  return Date.now() - lastUse(id, record) >= ORPHAN_GRACE_MS;
+/** Whether a local review's Git directory exists. Only a missing path counts as
+ * missing; any other failure, such as a denied permission, tells nothing. */
+function repositoryPresence(record: ReviewRecord): "present" | "missing" | "unknown" {
+  if (record.remote || record.gitCommonDir === undefined) return "unknown";
+  try { fs.statSync(record.gitCommonDir); return "present"; }
+  catch (error) { return ["ENOENT", "ENOTDIR"].includes(errorCode(error) ?? "") ? "missing" : "unknown"; }
 }
-/** When the review's record was last written: its activity time, or any later
- * write, such as recording a viewer or a new location. */
-function lastUse(id: string, record: ReviewRecord) {
-  const updated = Date.parse(record.updatedAt);
-  let modified = 0;
-  try { modified = fs.statSync(path.join(reviewDirectory(id), "review.json")).mtimeMs; } catch { /* Counts as unused. */ }
-  return Math.max(Number.isFinite(updated) ? updated : 0, modified);
+function missingLongEnough(record: ReviewRecord) {
+  const since = Date.parse(record.missingSince ?? "");
+  return Number.isFinite(since) && Date.now() - since >= ORPHAN_GRACE_MS;
 }
 /** Where a remote review keeps the artifact it reconstructed for its managed checkout. */
 export function projectionDirectory(id: string) {
@@ -300,21 +352,22 @@ function retireLock(lock: string) {
   catch { /* A retired directory cannot block or interfere with subsequent writers. */ }
 }
 const heldLocks = new Set<string>();
-/** Reentrant within one process, so a locked operation can call another locked helper. */
-export function withReviewLock<T>(id: string, operation: () => T): T {
+/** Reentrant within one process, so a locked operation can call another locked
+ * helper. Without wait, fails at once when another process holds the lock. */
+export function withReviewLock<T>(id: string, operation: () => T, { wait = true }: { wait?: boolean } = {}): T {
   const key = path.join(reviewHome(), id);
   if (heldLocks.has(key)) return operation();
-  return acquireReviewLock(id, () => {
+  return acquireReviewLock(id, wait ? 10_000 : 0, () => {
     heldLocks.add(key);
     try { return operation(); }
     finally { heldLocks.delete(key); }
   });
 }
-function acquireReviewLock<T>(id: string, operation: () => T): T {
+function acquireReviewLock<T>(id: string, waitMs: number, operation: () => T): T {
   const locks = path.join(reviewHome(), "locks");
   fs.mkdirSync(locks, { recursive: true, mode: 0o700 });
   const lock = path.join(locks, path.basename(reviewDirectory(id)) + ".lock");
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + waitMs;
   // Publish a fully initialized, nonempty directory so a crash can never leave
   // a public lock whose owner is unknown. Private abandoned claims do not block.
   const claim = fs.mkdtempSync(lock + ".claim-");
@@ -376,6 +429,8 @@ export type ReviewRecord = {
   /** Locates the review's repository: a worktree that reaches it, and the
    * repository's Git common directory. Updated when the worktree moves. */
   repositoryRoot: string; gitCommonDir?: string; implementationId: string;
+  /** When cleanup first found the Git common directory missing; cleared once it is found again. */
+  missingSince?: string;
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
   /** The viewer's saved review state. The browser owns its shape; read it by narrowing. */
   state: StoredReviewState;
@@ -411,16 +466,18 @@ function parseViewer(value: unknown): ViewerRecord | undefined {
 export function parseReviewRecord(value: unknown, file: string): ReviewRecord {
   const invalid = () => new Error(`Review data at ${JSON.stringify(file)} is malformed. Reopen the review explicitly.`);
   if (!isRecord(value)) throw invalid();
-  const { id, generation, repositoryRoot, gitCommonDir, implementationId, createdAt, remote, viewer, lastSaveId } = value;
+  const { id, generation, repositoryRoot, gitCommonDir, missingSince, implementationId, createdAt, remote, viewer, lastSaveId } = value;
   // Older viewers could save a record without a title, lifecycle or state; those keep their defaults.
   const { title = "", updatedAt = createdAt, completedAt = null, state = {}, stateRevision = 0 } = value;
   if (typeof id !== "string" || typeof generation !== "string" || typeof repositoryRoot !== "string" || typeof implementationId !== "string" ||
     typeof title !== "string" || typeof createdAt !== "string" || typeof updatedAt !== "string" ||
     (completedAt !== null && typeof completedAt !== "string") || !isRecord(state) ||
     typeof stateRevision !== "number" || !Number.isSafeInteger(stateRevision) || stateRevision < 0 ||
-    (lastSaveId !== undefined && typeof lastSaveId !== "string") || (gitCommonDir !== undefined && typeof gitCommonDir !== "string")) throw invalid();
+    (lastSaveId !== undefined && typeof lastSaveId !== "string") || (gitCommonDir !== undefined && typeof gitCommonDir !== "string") ||
+    (missingSince !== undefined && typeof missingSince !== "string")) throw invalid();
   const record: ReviewRecord = { id, generation, repositoryRoot, implementationId, title, createdAt, updatedAt, completedAt, state, stateRevision };
   if (gitCommonDir !== undefined) record.gitCommonDir = gitCommonDir;
+  if (missingSince !== undefined) record.missingSince = missingSince;
   if (lastSaveId !== undefined) record.lastSaveId = lastSaveId;
   if (remote !== undefined) {
     const parsed = parseRemote(remote);
@@ -460,6 +517,14 @@ export function registerReview(root: string, implementationId: string, title: st
       // A deletion that held this lock gave the implementation a new review ID;
       // registering the old one would recreate the deleted review.
       if (reviewId(root, implementationId) !== id) return undefined;
+      recoverInterruptedDeletion(id);
+      if (fs.existsSync(retiredMarker(id))) {
+        // A deletion retired this ID while it could not reach the repository. The
+        // repository is reachable now: store a fresh ID, then register that one.
+        rotateArtifactReviewId(gitCommonDirectory(root), implementationId, id);
+        fs.rmSync(retiredMarker(id), { force: true });
+        return undefined;
+      }
       const directory = reviewDirectory(id);
       const file = path.join(directory, "review.json");
       if (fs.existsSync(file)) return relocate(id, root);

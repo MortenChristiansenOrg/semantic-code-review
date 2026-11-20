@@ -110,12 +110,20 @@ A review owns its feedback and files exclusively; identical attachments in
 separate reviews have separate stored copies. Explicit review deletion removes
 local feedback together with drafts, notes, approvals, attachments, and snapshots.
 The implementation artifact and archived or published provenance are unaffected.
-Deletion first moves the review's folder aside, so stale writes fail, then gives
-the implementation a new review ID and removes the folder; when the new ID cannot
-be stored, the folder is moved back and nothing changes. A folder left behind is
-removed by a later cleanup. A fresh review starts under the new ID. Local reviews
-whose repository's Git directory is missing are removed automatically only after
-30 days without use.
+Deletion first moves the review's folder to a pending name, so stale writes fail,
+then gives the implementation a new review ID, and only then removes the folder;
+when the new ID cannot be stored, the folder is moved back and nothing changes.
+Cleanup never removes a folder whose deletion may still roll back, and a deletion
+interrupted before it stored the new ID is rolled back by the next registration or
+deletion of the review. When the repository cannot be reached, deletion still
+succeeds and marks the old ID retired; the next registration that finds the old ID
+in the artifact stores a new one first. A folder left behind by a completed
+deletion is removed by a later cleanup. A fresh review starts under the new ID.
+Cleanup records when it first finds a local review's Git directory missing and
+removes the review once it has been missing for 30 days; finding the directory
+again, or running a command from the repository, starts that period over. Only a
+missing path counts; a directory that cannot be checked, for example for lack of
+permission, keeps its review.
 
 Unused-file cleanup keeps every persisted reference and protects fresh uploads
 and snapshots for one hour. Unreferenced files are retired inside the owning

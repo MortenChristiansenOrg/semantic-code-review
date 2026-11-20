@@ -123,6 +123,11 @@ function pathsFor(root: string, requester: FeedbackRequester | null = null): Fee
   const id = reviewId(root, implementationId);
   // A review found from a new location records it when the old one no longer works.
   relocateReview(id, root);
+  return reviewPaths(root, implementationId, id, requester);
+}
+
+/** The feedback paths of review id, which the implementation in root has. */
+function reviewPaths(root: string, implementationId: string, id: string, requester: FeedbackRequester | null): FeedbackPaths {
   const feedback = path.join(reviewDirectory(id), "feedback");
   return {
     root,
@@ -1233,13 +1238,15 @@ export function runFeedbackCommand(argv: string[]): void {
   }
   if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
   assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, command));
-  const paths = pathsFor(repositoryRoot());
+  let paths = pathsFor(repositoryRoot());
   if (command === "init" && fs.existsSync(path.join(reviewDirectory(paths.reviewId), "review.json")) && readReview(paths.reviewId).remote) {
     fail("Remote reviews support personal notes only.");
   }
   if (command === "init") {
     const { manifest } = semanticArtifact(paths);
-    registerReview(paths.root, manifest.implementationId, manifest.title);
+    // Registration gives the implementation a new review ID when a deletion retired
+    // the stored one; feedback is initialized for the review it returns.
+    paths = reviewPaths(paths.root, paths.implementationId, registerReview(paths.root, manifest.implementationId, manifest.title).id, paths.requester);
   }
   feedbackOperation(paths, () => dispatch(paths, positionals, options));
 }
