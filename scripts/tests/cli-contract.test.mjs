@@ -247,8 +247,8 @@ test("skill indexes command-specific workflows", () => {
     path.join(skillRoot, "docs", "runtime.md"),
     "utf8",
   );
-  const linux = fs.readFileSync(
-    path.join(skillRoot, "docs", "os", "linux.md"),
+  const unix = fs.readFileSync(
+    path.join(skillRoot, "docs", "os", "unix.md"),
     "utf8",
   );
   const windows = fs.readFileSync(
@@ -294,6 +294,15 @@ test("skill indexes command-specific workflows", () => {
   assert.doesNotMatch(skill, /node -p "process\.platform"/);
   assert.doesNotMatch(skill, /git worktree list --porcelain/);
   assert.match(runtime, /node -p "process\.platform"/);
+  // Every operating system CI tests has a guide, so the skill does not stop there.
+  const checks = fs.readFileSync(path.resolve(skillRoot, "..", "..", ".github", "workflows", "checks.yml"), "utf8");
+  const platforms = { ubuntu: "linux", macos: "darwin", windows: "win32" };
+  const tested = [...checks.matchAll(/\b(ubuntu|macos|windows)-latest\b/g)].map((match) => platforms[match[1]]);
+  assert.deepEqual([...new Set(tested)].sort(), ["darwin", "linux", "win32"]);
+  for (const platform of tested) {
+    const [, guide] = runtime.match(new RegExp(`^\\s*- [^\\n]*\`${platform}\`[^\\n]*: \`(os/[a-z]+\\.md)\``, "m")) ?? [];
+    assert.ok(guide && fs.existsSync(path.join(skillRoot, "docs", guide)), `runtime.md names no guide for ${platform}`);
+  }
   assert.match(runtime, /<semantic-flow> inspect --json/);
   assert.match(runtime, /otherwise the only\s+matching one/);
   assert.match(commandText.get("implement"), /<semantic-flow> implementation stage begin/);
@@ -373,7 +382,7 @@ test("skill indexes command-specific workflows", () => {
     fs.readFileSync(path.join(skillRoot, "VERSION"), "utf8").trim(),
     packageJson.version,
   );
-  assert.match(linux, /<semantic-flow>\s+=> node "\$semantic_flow"/);
+  assert.match(unix, /<semantic-flow>\s+=> node "\$semantic_flow"/);
   assert.match(windows, /<semantic-flow>\s+=> node \$semanticFlow/);
 
   // One executable and one placeholder; command groups follow it.
@@ -384,11 +393,11 @@ test("skill indexes command-specific workflows", () => {
     assert.doesNotMatch(text, /<(semantic-implementation|review-feedback|semantic-view)>/, file);
     assert.doesNotMatch(text, /(semantic-implementation|review-feedback|semantic-view)\.mjs/, file);
   }
-  assert.match(linux, /node "\$semantic_flow" implementation validate/);
-  assert.match(linux, /node "\$semantic_flow" feedback next --json/);
+  assert.match(unix, /node "\$semantic_flow" implementation validate/);
+  assert.match(unix, /node "\$semantic_flow" feedback next --json/);
   assert.match(windows, /node \$semanticFlow implementation validate/);
   assert.match(windows, /node \$semanticFlow feedback next --json/);
-  for (const platformGuide of [linux, windows]) {
+  for (const platformGuide of [unix, windows]) {
     assert.match(platformGuide, /semantic-flow\.mjs/);
     assert.doesNotMatch(platformGuide, /## [1-7]\./);
   }
@@ -415,7 +424,7 @@ test("finalized reorganization guidance supplies the complete CLI input", () => 
     /stage organize --finalized --stage <stage-id> --file <organization-json>/,
   );
   assert.match(guide, /\.\.\/references\/stage-organization\.schema\.json/);
-  assert.match(guide, /`os\/windows\.md`[\s\S]*`os\/linux\.md`/);
+  assert.match(guide, /`os\/windows\.md`[\s\S]*`os\/unix\.md`/);
   assert.match(guide, /complete stage diff, not just the latest correction commit/);
   assert.match(guide, /`nodes`: the complete replacement node list/);
   assert.match(guide, /`itemLinks`: one entry for every recorded insight and validation item/);
@@ -504,7 +513,7 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.doesNotMatch(sourceRepair, /\.\\scripts|<source-repository>\\skills/);
   assert.match(userManual, /<semantic-flow> implementation <command>/);
   assert.match(userManual, /<semantic-flow> feedback <command>/);
-  assert.match(userManual, /docs\/os\/linux\.md/);
+  assert.match(userManual, /docs\/os\/unix\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);
 });
 

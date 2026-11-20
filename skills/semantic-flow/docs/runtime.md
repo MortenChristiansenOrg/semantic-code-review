@@ -21,11 +21,11 @@ Before invoking a bundled executable:
    `scripts/api/*.d.ts` module. Read shared types only when their definitions
    matter. `API.full.d.ts` remains available for exceptional whole-contract inspection.
 3. Read exactly one operating-system guide completely:
-   - `linux`: `os/linux.md`
+   - `linux` or `darwin`: `os/unix.md`
    - `win32`: `os/windows.md`
 
 Treat WSL and Linux containers as Linux. Select the guide from Node.js, not
-from repository path syntax. Stop before mutation on unsupported platforms.
+from repository path syntax. Stop before mutation on any other platform.
 
 The platform guide defines the `<semantic-flow>` placeholder:
 
