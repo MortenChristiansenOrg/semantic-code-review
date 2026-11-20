@@ -161,7 +161,8 @@ async function request(input: string, init: RequestInit = {}): Promise<Response>
   let response: Response;
   try { response = await readFully(await window.fetch(url.href, { ...init, headers })); }
   catch (error) { noteUnreachable(current); throw error; }
-  outageSince = 0;
+  // A late answer under an older key says nothing about the current one.
+  if (current.key === currentAccess()?.key) outageSince = 0;
   if (await keyRefused(response)) loseAccess(current);
   return response;
 }

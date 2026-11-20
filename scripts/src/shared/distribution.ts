@@ -34,13 +34,6 @@ export function skillFiles(root: string, prefix = ""): string[] {
   });
 }
 
-/** Whether a page loads `boot.js` from its own directory, with its attributes
- * in any order and with any quoting. */
-export function loadsBootScript(page: string): boolean {
-  return [...page.matchAll(/<script\b([^>]*)>/gi)].some(([, attributes]) =>
-    /(?:^|\s)src\s*=\s*(?:"(?:\.\/)?boot\.js"|'(?:\.\/)?boot\.js'|(?:\.\/)?boot\.js(?=[\s/]|$))/i.test(attributes));
-}
-
 function requiredFiles(files: Map<string, Buffer>): void {
   const required = ["SKILL.md", "VERSION", "RELEASE.json", "THIRD-PARTY-NOTICES.txt",
     "scripts/API.d.ts", "scripts/API.full.d.ts",
@@ -51,8 +44,9 @@ function requiredFiles(files: Map<string, Buffer>): void {
     ...["common", "manifest", "thread"].map((name) => `references/feedback-schema/${name}.schema.json`),
     "references/work-stage.schema.json", "references/stage-organization.schema.json"];
   for (const match of (files.get("SKILL.md")?.toString() ?? "").matchAll(/`(commands\/[^`]+\.md)`/g)) required.push(match[1]);
-  // Releases before viewer access control have no start script; a page that loads one needs it.
-  if (loadsBootScript(files.get("viewer/index.html")?.toString() ?? "")) required.push("viewer/boot.js");
+  // Releases before viewer access control have no start script. A page that names
+  // one anywhere needs it: requiring it too often only refuses a broken archive.
+  if (/boot\.js/i.test(files.get("viewer/index.html")?.toString() ?? "")) required.push("viewer/boot.js");
   for (const name of required) if (!files.has(name)) throw new Error(`Release is missing ${name}.`);
 }
 

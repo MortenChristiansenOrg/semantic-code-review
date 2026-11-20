@@ -314,7 +314,7 @@ test('without session storage a fresh link from a restarted viewer keeps the rev
   await context.close();
 });
 
-test('a page whose start failed because the viewer restarted starts with a fresh link', async ({ browser }) => {
+test('a page whose start failed because the viewer restarted reloads and starts with a fresh link', async ({ browser }) => {
   const { context, page, errors } = await openPage(browser);
   await disableSessionStorage(context);
   // The viewer restarts after the page loaded the review data and before it
@@ -338,7 +338,9 @@ test('a page whose start failed because the viewer restarted starts with a fresh
   await expect(page.locator('.stage')).not.toHaveCount(0);
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
   await page.waitForResponse((response) => response.url().includes('/api/revision') && response.status() === 200);
-  expect(await page.evaluate(() => window.sameDocument)).toBe(true);
+  // A page that did not start reloads from the link, which keeps working without
+  // stored access because the reloaded page redeems the code itself.
+  expect(await page.evaluate(() => window.sameDocument)).toBeUndefined();
   expect(await violations(page)).toEqual([]);
   expect(errors).toEqual([]);
   await context.close();

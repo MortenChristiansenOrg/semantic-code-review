@@ -112,9 +112,7 @@ async function startApp(): Promise<boolean> {
   return true;
 }
 
-// Attempts run one after another, and none after one has started the page.
-let attempt = startApp();
-window.SEMANTIC_APP = {
-  started: () => attempt,
-  start: () => (attempt = attempt.then((started) => started || startApp())),
-};
+// Whether the page started. A fresh link reloads a page that did not.
+let started = false;
+void startApp().then((value) => { started = value; }, () => {});
+window.SEMANTIC_APP = { started: () => started };

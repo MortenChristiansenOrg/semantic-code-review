@@ -6,13 +6,10 @@ import * as api from "./api";
 
 declare global {
   interface Window {
-    /** Set by app.js when it runs: the start of the page, which a fresh link
-     * repeats when it failed, for example because the viewer restarted. */
+    /** Set by app.js when it runs. */
     SEMANTIC_APP?: {
-      /** Whether the page started, once the current attempt settled. */
-      started(): Promise<boolean>;
-      /** Starts the page unless it started already; whether it started. */
-      start(): Promise<boolean>;
+      /** Whether the page has started. */
+      started(): boolean;
     };
   }
 }
@@ -62,7 +59,7 @@ async function start(access: Access): Promise<void> {
   loadScript("app.js");
 }
 
-const booting = (async function boot() {
+void (async function boot() {
   // The code leaves the address bar before anything else happens.
   const code = takeLaunchCode();
   // A spent or expired link leaves the access this tab already has in place.
@@ -72,25 +69,23 @@ const booting = (async function boot() {
 })();
 
 // A launch link opened in a tab that already shows this viewer changes only the
-// fragment. Its code may belong to a restarted viewer on the same port.
+// fragment. Its code may belong to a restarted viewer on the same port, or to
+// another review's viewer that took the port.
 window.addEventListener("hashchange", () => {
+  // A page that has not started, whatever stopped it, starts again from the link:
+  // a reload keeps the fragment, and the new page redeems it as a first load does.
+  if (!window.SEMANTIC_APP?.started()) {
+    if (window.location.hash.startsWith("#launch=")) window.location.reload();
+    return;
+  }
   const code = takeLaunchCode();
   if (!code) return;
-  void booting.then(async () => {
+  void (async () => {
     const access = await redeem(code);
     // A spent or expired link leaves a working page as it is.
-    if (!access) { if (!currentAccess()) showFreshLinkNotice(); return; }
-    if (!appLoaded) { await start(access); return; }
-    // An app whose start failed starts with the new access. One that has not
-    // run yet uses the access when it does.
-    const app = window.SEMANTIC_APP;
-    if (!app || !await app.started()) {
-      useAccess(access);
-      if (app) await app.start();
-      return;
-    }
+    if (!access) return;
     // A reload loads the page the server now serves, when this tab keeps the
     // access across it; otherwise the running page continues with the new access.
     if (useAccess(access)) window.location.reload();
-  });
+  })();
 });

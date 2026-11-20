@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
-import { loadsBootScript, sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
+import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
 import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
@@ -140,12 +140,8 @@ test('archive validation rejects wrong versions, missing files, changed contents
   // The script is found whatever the order and quoting of its attributes.
   const reordered = '<div id="app"></div>\n<script defer src="boot.js"></script>\n';
   assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': reordered }), '0.2.0'), /missing viewer\/boot\.js/);
-  for (const page of ['<script src="boot.js"></script>', '<script defer src="boot.js">', "<SCRIPT type=\"module\" SRC='./boot.js'></SCRIPT>", '<script\n  async\n  src = boot.js></script>']) {
-    assert.equal(loadsBootScript(page), true, page);
-  }
-  for (const page of [olderPage, '<script data-src="boot.js"></script>', '<script src="reboot.js"></script>', '<script src="boot.json"></script>', '<link href="boot.js">']) {
-    assert.equal(loadsBootScript(page), false, page);
-  }
+  const quoted = '<script title="a > b" defer src="boot.js"></script>\n';
+  assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': quoted }), '0.2.0'), /missing viewer\/boot\.js/);
   for (const mutate of [
     (files) => files.delete('viewer/app.js'),
     (files) => files.set('scripts/semantic-flow.mjs', Buffer.from('tampered')),
