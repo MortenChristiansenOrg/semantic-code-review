@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { parseJson } from "./json.js";
 import { isRecord, isStringArray } from "./narrow.js";
 import { atomicJson, reviewDirectory, withReviewLock } from "./review-store.js";
+import type { AgentStatus } from "./viewer-protocol.js";
 
 /** A claim without agent activity for this long returns its threads to the queue. */
 export const CLAIM_LEASE_MS = 30 * 60_000;
@@ -337,7 +338,7 @@ export function takeResponses(state: AgentState, sessionId: string | null) {
 }
 
 /** Viewer-facing summary; contains no paths or process details. */
-export function agentStatus(state: AgentState, now: number) {
+export function agentStatus(state: AgentState, now: number): AgentStatus {
   const session = liveSession(state);
   const claims = state.claims.filter((claim) => claimActive(claim, now));
   const threads = claims.flatMap((claim) => claim.threads.map((thread) => ({ id: thread.id, answered: Boolean(thread.answeredAt) })));
@@ -358,4 +359,4 @@ export function agentStatus(state: AgentState, now: number) {
     serverTime: iso(now),
   };
 }
-export type AgentStatus = ReturnType<typeof agentStatus>;
+export type { AgentStatus };

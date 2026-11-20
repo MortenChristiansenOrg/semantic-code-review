@@ -848,6 +848,19 @@ for (const legacy of [false, true]) test(`file approvals survive unchanged resta
   await expect(row).toHaveClass(/is-stale/);
 });
 
+test('an approval saved under an unknown classification still matches', async ({ page }) => {
+  // The server sends a classification this viewer does not know only as recorded.
+  const data = fixture(), key = approvalKey('first', 'first-one');
+  const membership = data.stages[0].files[0].memberships[0];
+  delete membership.classification;
+  membership.recordedClassification = 'mystery';
+  await mount(page, data, { approvals: { [key]: { rev: JSON.stringify(['rev', 'mystery', [1], null]), at: 1, path: 'shared.js' } } });
+  await openFile(page);
+  const row = page.locator('details[data-node="first-one"] .frow');
+  await expect(row).toHaveClass(/is-approved/);
+  await expect(row).not.toHaveClass(/is-stale/);
+});
+
 test('ownership changes stale only that membership; file content changes stale every approval', async ({ page }) => {
   const data = fixture();
   await mount(page, data);
@@ -1782,6 +1795,22 @@ test('evidence linked to two nodes has one thread and reports a capture that fai
   const dialog = page.getByRole('dialog', { name: 'Evidence' });
   await expect(dialog.getByRole('region', { name: 'Before' })).toContainText('could not be loaded');
   await expect(dialog.locator('img')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('evidence of a kind the viewer does not know shows its output and takes a thread', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights.push({ ...evidenceInsight({ kind: 'other', attachments: [], inline: 'call transcript <ok>' }), meta: 'video-call' });
+  data.feedback = [thread('on-evidence', 'open', { kind: 'insight', stageId: 'first', collection: 'evidence', itemId: 'shot', label: 'Evidence' })];
+  const errors = await mount(page, data);
+  await openFile(page);
+  const node = page.locator('details[data-node="first-one"]'), pill = node.locator('.tag.type-evidence');
+  await pill.locator('.notes-toggle').click();
+  await expect(node.locator('.node-reasoning .thread')).toContainText('Feedback on-evidence');
+  await pill.getByRole('button', { name: 'View evidence' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Evidence' });
+  await expect(dialog.locator('.eyebrow')).toHaveText('video-call');
+  await expect(dialog.locator('.evidence-text')).toHaveText('call transcript <ok>');
   expect(errors).toEqual([]);
 });
 

@@ -729,7 +729,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   }
   function classificationFor(file, nodeId) {
     const m = file.memberships.find((x) => x.nodeId === nodeId) || file.memberships[0];
-    return m ? m.classification : "behavior";
+    // A classification this viewer does not know arrives absent and is shown neutrally.
+    return m ? m.classification || "unclassified" : "behavior";
   }
   // When a file is split across nodes, resolve which node owns each changed
   // line (keyed "old:<n>"/"new:<n>") from the membership hunk or line-range
@@ -968,7 +969,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const entry = approvalEntry(id);
     if (!entry?.file.revision) return null;
     const m = entry.membership;
-    return JSON.stringify([entry.file.revision, m.classification, m.hunks || null, m.lineRanges || null]);
+    // An unknown classification keys the approval as recorded, as it did before the server narrowed it.
+    return JSON.stringify([entry.file.revision, m.classification ?? m.recordedClassification, m.hunks || null, m.lineRanges || null]);
   }
   function approvalRevision(rec) {
     // Older approvals included the base commit, although the file revision
@@ -1430,7 +1432,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       failed: failed.has(index), zoomed: zoomed.has(index), text: texts.get(index) ?? null });
     const role = (value) => items.filter((item) => item.attachment.role === value).map(model);
     const paint = () => renderLit(evidenceView({
-      captured: new Date(evidence.capturedAt).toLocaleString(), kindLabel: EVIDENCE_KIND[evidence.kind] || evidence.kind, title: ins.title,
+      captured: new Date(evidence.capturedAt).toLocaleString(), kindLabel: (evidence.kind === "other" && ins.meta) || EVIDENCE_KIND[evidence.kind] || evidence.kind, title: ins.title,
       reproduction: evidence.reproduction || "", before: role("before"), after: role("after"),
       others: items.filter((item) => !item.attachment.role).map(model), inline: evidence.inline || "",
       criteria: evidence.specificationRefs.map((ref) => ({ ref, text: allAcceptance.find((item) => item.ref === ref)?.text || "" })),
@@ -1443,7 +1445,8 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     for (const item of items) if (item.type === "text") void loadEvidenceText(item.url).then((text) => { texts.set(item.index, text); paint(); });
     show();
   }
-  const EVIDENCE_KIND = { screenshot: "Screenshot", recording: "Recording", terminal: "Terminal output", http: "HTTP exchange", log: "Log excerpt", "output-file": "Output file", measurement: "Measurement", report: "Report" };
+  const EVIDENCE_KIND = { screenshot: "Screenshot", recording: "Recording", terminal: "Terminal output", http: "HTTP exchange", log: "Log excerpt", "output-file": "Output file", measurement: "Measurement", report: "Report", other: "Evidence" };
+  // Evidence of a kind this viewer does not know arrives as "other"; its insight's meta holds the recorded kind.
   function fileCodeInsights(stage, filePath) {
     return stage.insights.filter(ins => ins.codeTarget && (ins.codeTarget.path === filePath || ins.codeTarget.original.path === filePath));
   }
