@@ -711,13 +711,18 @@ export function replaceArtifactDirectory(
 ): void {
   const next = `${directory}.next`;
   const previous = `${directory}.previous`;
-  fs.rmSync(next, { recursive: true, force: true });
+  // Windows also refuses to remove a folder while a file in it is open.
+  const remove = (folder: string) => fs.rmSync(folder, { recursive: true, force: true, ...(process.platform === "win32" ? { maxRetries: 10, retryDelay: 20 } : {}) });
+  // A replacement whose rollback failed left the previous files only in their
+  // backup; they are put back before that backup can be replaced.
+  if (!fs.existsSync(directory) && fs.existsSync(previous)) replaceFile(previous, directory);
+  remove(next);
   try {
     // Each file is written before the next is produced, so large files are not all held at once.
     for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
     try {
       change();
-      fs.rmSync(previous, { recursive: true, force: true });
+      remove(previous);
       if (fs.existsSync(directory)) replaceFile(directory, previous);
       replaceFile(next, directory);
     } catch (error) {
@@ -737,10 +742,10 @@ export function replaceArtifactDirectory(
     }
   } finally {
     // The staged files are not needed once the replacement succeeded or failed.
-    try { fs.rmSync(next, { recursive: true, force: true }); } catch { /* The operation's own outcome says more. */ }
+    try { remove(next); } catch { /* The operation's own outcome says more. */ }
   }
   // The new files are in place; a copy left behind is removed by the next replacement.
-  try { fs.rmSync(previous, { recursive: true, force: true }); } catch { /* See above. */ }
+  try { remove(previous); } catch { /* See above. */ }
 }
 
 // --- Artifacts stored in Git trees ------------------------------------------

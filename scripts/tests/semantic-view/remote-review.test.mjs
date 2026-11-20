@@ -498,25 +498,62 @@ test('a projection that stays in use keeps its previous files and reverts the ch
   assert.equal(read(), 'previous\n');
 });
 
-test('a projection is replaced while another process reads one of its files', { skip: process.platform !== 'win32' }, async (t) => {
+test('a failed replacement puts the previous projection back once its readers are done', (t) => {
   const { parent, directory, read } = projection(t);
-  // The reader holds the file open for a moment after saying so, then closes it.
-  const reader = spawn(process.execPath, ['-e', `
-    const fs = require('node:fs');
-    const descriptor = fs.openSync(process.argv[1], 'r');
-    process.stdout.write('open\\n');
-    setTimeout(() => fs.closeSync(descriptor), 400);
-  `, path.join(directory, 'manifest.json')], { stdio: ['ignore', 'pipe', 'inherit'] });
-  const exited = new Promise((resolve) => reader.on('exit', resolve));
-  t.after(() => reader.kill());
-  await new Promise((resolve, reject) => {
-    reader.stdout.on('data', (chunk) => { if (String(chunk).includes('open')) resolve(); });
-    reader.on('exit', () => reject(new Error('The reader exited before opening the file.')));
-  });
-  // The open file is what the replacement must wait for.
-  assert.throws(() => fs.renameSync(directory, `${directory}.moved`), (error) => ['EPERM', 'EACCES', 'EBUSY'].includes(error.code));
+  let reverted = 0;
+  // The new files cannot be moved in; the previous ones are held by a reader for a moment.
+  const restoring = ['EPERM', 'EBUSY'];
+  const refuse = (from) => path.basename(from) === 'artifact.next' ? 'ENOSPC' : path.basename(from) === 'artifact.previous' ? restoring.shift() : undefined;
+  assert.throws(() => withRenames(t, 'win32', refuse, () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {}, () => { reverted++; })), /ENOSPC/);
+  assert.equal(reverted, 1);
+  assert.equal(read(), 'previous\n');
+  assert.deepEqual(fs.readdirSync(parent), ['artifact']);
+});
+
+test('previous files left only in their backup are put back before the next replacement', (t) => {
+  const { parent, directory, read } = projection(t);
+  // An earlier replacement moved the files aside, and neither it nor its rollback could move them back.
+  fs.renameSync(directory, `${directory}.previous`);
+  const refuse = (from) => path.basename(from) === 'artifact.next' ? 'ENOSPC' : undefined;
+  assert.throws(() => withRenames(t, 'linux', refuse, () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {})), /ENOSPC/);
+  assert.equal(read(), 'previous\n');
+  assert.deepEqual(fs.readdirSync(parent), ['artifact']);
   replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {});
   assert.equal(read(), 'next\n');
-  assert.equal(await exited, 0);
-  assert.deepEqual(fs.readdirSync(parent).filter((name) => name !== 'artifact.previous'), ['artifact']);
+});
+
+test('a projection is replaced while another process reads one of its files', { skip: process.platform !== 'win32' }, async (t) => {
+  const { parent, directory, read } = projection(t);
+  const go = path.join(parent, 'go');
+  // The reader holds the file open until it is told to let go, then closes it a moment later.
+  const reader = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    const [file, go] = process.argv.slice(1);
+    const descriptor = fs.openSync(file, 'r');
+    process.stdout.write('open\\n');
+    const deadline = Date.now() + 20000;
+    const poll = setInterval(() => {
+      if (!fs.existsSync(go) && Date.now() < deadline) return;
+      clearInterval(poll);
+      setTimeout(() => fs.closeSync(descriptor), 300);
+    }, 10);
+  `, path.join(directory, 'manifest.json'), go], { stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    const exited = new Promise((resolve, reject) => { reader.on('exit', resolve); reader.on('error', reject); });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('The reader did not open the file within 10 seconds.')), 10_000);
+      reader.stdout.on('data', (chunk) => { if (String(chunk).includes('open')) { clearTimeout(timer); resolve(); } });
+      reader.on('error', (error) => { clearTimeout(timer); reject(error); });
+      reader.on('exit', () => { clearTimeout(timer); reject(new Error('The reader exited before opening the file.')); });
+    });
+    // The open file is what the replacement must wait for.
+    assert.throws(() => fs.renameSync(directory, `${directory}.moved`), (error) => ['EPERM', 'EACCES', 'EBUSY'].includes(error.code));
+    fs.writeFileSync(go, '');
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {});
+    assert.equal(read(), 'next\n');
+    assert.equal(await exited, 0);
+    assert.deepEqual(fs.readdirSync(parent).filter((name) => !['artifact.previous', 'go'].includes(name)), ['artifact']);
+  } finally { reader.kill(); }
 });
