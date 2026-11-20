@@ -64,6 +64,7 @@ import {
   commitArtifact,
   exportArtifactFiles,
   hasFile,
+  interruptedArchiveNote,
   listJsonIds,
   readArtifact,
   activeRef,
@@ -2676,6 +2677,10 @@ function archiveImplementation(
   ) {
     fail("Archive destination must end in .semantic-review inside the repository.");
   }
+  const realDestination = resolvedPath(destination), realRoot = resolvedPath(workspace.root);
+  if (!realDestination.startsWith(`${realRoot}${path.sep}`)) {
+    fail("Archive destination must not lead outside the repository through a link.");
+  }
   const relativeDestination = formatPath(path.relative(workspace.root, destination));
   // A sparse checkout can hide a destination that the target branch tracks.
   if (fs.existsSync(destination) || gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}`], { cwd: workspace.root }) !== undefined) {
@@ -2688,18 +2693,21 @@ function archiveImplementation(
   const claim = archivingRef(implementationId);
   const version = workspace.snapshot.version;
   const startHead = git(["rev-parse", "HEAD"], { cwd: workspace.root });
-  // Only a new commit on top of the starting one that holds the archived
-  // manifest proves the archive exists; the destination was absent before.
+  const archiveFiles = fullFormFiles(artifact, workspace.snapshot);
+  const expectedFiles = archiveFiles.list().sort().join("\0");
+  // Only a new commit on top of the starting one that holds every archived
+  // file proves the archive exists; the destination was absent before.
   const archived = () =>
     gitOptional(["rev-parse", "HEAD^"], { cwd: workspace.root }) === startHead &&
-    gitOptional(["cat-file", "-e", `HEAD:${relativeDestination}/manifest.json`], { cwd: workspace.root }) !== undefined;
+    (gitOptional(["ls-tree", "-r", "-z", "--name-only", `HEAD:${relativeDestination}`], { cwd: workspace.root }) ?? "")
+      .split("\0").filter(Boolean).sort().join("\0") === expectedFiles;
   let removeWritten = () => {};
   // Moving the snapshot from the active ref to an archiving claim first makes a
   // concurrent writer fail instead of changing an artifact that is being
   // archived, and keeps the snapshot reachable if archiving is interrupted.
   removeArtifact(workspace.root, workspace.snapshot, [{ ref: claim, next: version, previous: ZERO_OID }]);
   try {
-    removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
+    removeWritten = exportArtifactFiles(archiveFiles, destination);
     git(["add", "-f", "--", relativeDestination], { cwd: workspace.root });
     const staged = git(["diff", "--cached", "--name-only"], {
       cwd: workspace.root,
@@ -2735,6 +2743,10 @@ function archiveImplementation(
     }
     // The archive was committed although Git reported a failure, such as a failing hook.
     console.error(`semantic-implementation: ${errorMessage(error)}`);
+  }
+  if (!archived()) {
+    // A hook can change what is committed; the claim keeps the snapshot until someone checks.
+    fail(`The archive commit does not hold the whole artifact at ${relativeDestination}, so ${implementationId} stays claimed.${interruptedArchiveNote(workspace.root)}`);
   }
   updateRefs(workspace.root, [{ ref: claim, next: ZERO_OID, previous: version }]);
   if (!quiet) console.log(

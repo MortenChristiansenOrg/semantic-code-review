@@ -196,9 +196,14 @@ export function interruptedArchiveNote(root: string): string {
   return (claims ?? "").split(/\r?\n/).filter(Boolean).map((line) => {
     const [snapshot, claim] = line.split(" ");
     const id = claim.slice(ARCHIVING_REF_PREFIX.length);
+    // Only an ID that can name an implementation is put into a shell command.
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id) || !/^[0-9a-f]{40,64}$/.test(snapshot)) {
+      return ` The archiving claim ${JSON.stringify(claim)} is left from an interrupted archive.`;
+    }
     // One transaction moves the snapshot back, and only while nothing else took the ID.
     const restore = `printf 'update ${activeRef(id)} ${snapshot} ${ZERO_OID}\\ndelete ${claim} ${snapshot}\\n' | git update-ref --stdin`;
-    return ` Archiving ${id} was interrupted. If its archive commit is missing, unstage and remove the archive files it left (git status lists them), then make it active again with \`${restore}\`.`;
+    const finish = `git update-ref -d ${claim} ${snapshot}`;
+    return ` Archiving ${id} was interrupted. If its archive commit exists and holds the whole artifact, finish with \`${finish}\`. Otherwise unstage and remove the archive files it left (git status lists them), then make it active again with \`${restore}\`.`;
   }).join("");
 }
 
@@ -317,7 +322,7 @@ export function assertNoLegacyArtifact(root: string): void {
   // A checkout of a metadata branch or an archive tracks its artifact files.
   const tracked = git(["ls-files", "--", `${LEGACY_DIRECTORY}/manifest.json`], { cwd: root, allowFailure: true });
   if (tracked) return;
-  fail(`${path.join(root, LEGACY_DIRECTORY)} holds a semantic implementation written by an earlier Semantic Flow version. Implementations are now stored in Git, and an earlier one cannot be continued across this change: finish it with the earlier version, or remove ${LEGACY_DIRECTORY}/ and start again.`);
+  fail(`${path.join(root, LEGACY_DIRECTORY)} holds a semantic implementation written by an earlier Semantic Flow version. Implementations are now stored in Git, and an earlier one cannot be continued across this change: finish it with the earlier version, or remove ${LEGACY_DIRECTORY}/ and start again.${interruptedArchiveNote(root)}`);
 }
 
 const snapshotTrees = new Map<string, TreeFiles>();

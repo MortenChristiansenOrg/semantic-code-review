@@ -173,6 +173,7 @@ test("an interrupted archive keeps its snapshot and says how to recover it", { s
 
   // The suggested recovery is one compare-and-swap transaction.
   const result = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
+  assert.match(result.stderr, new RegExp(`git update-ref -d refs/semantic-review/archiving/test-implementation ${snapshot}`));
   const command = /`(printf [^`]+)`/.exec(result.stderr)?.[1];
   assert.ok(command, result.stderr);
   const restored = spawnSync("sh", ["-c", command], { cwd: repo.root, encoding: "utf8" });
@@ -180,6 +181,13 @@ test("an interrupted archive keeps its snapshot and says how to recover it", { s
   assert.equal(repo.git("rev-parse", ACTIVE), snapshot);
   assert.equal(repo.git("for-each-ref", "refs/semantic-review/archiving/"), "");
   repo.semantic("validate");
+
+  // A claim whose name cannot be an implementation ID is never put into a command.
+  repo.git("update-ref", "refs/semantic-review/archiving/odd'name", snapshot);
+  repo.git("update-ref", "-d", ACTIVE);
+  const odd = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
+  assert.match(odd.stderr, /is left from an interrupted archive/);
+  assert.doesNotMatch(odd.stderr, /odd'name.*update-ref/);
 });
 
 test("a stage begins when only the post-checkout hook fails", (t) => {
