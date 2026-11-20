@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { jsonBytes, parseJson } from "./json.js";
+import { jsonBytes, parseJson, replaceFile } from "./json.js";
 import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readImplementationRefsInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
 import { gitRaw } from "./git.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
@@ -464,7 +464,7 @@ export function atomicJson(file: string, value: unknown) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
     fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-    fs.renameSync(temporary, file);
+    replaceFile(temporary, file);
   } finally { fs.rmSync(temporary, { force: true }); }
 }
 /** Release the public lock name before removing files. Windows may defer a directory

@@ -8,7 +8,8 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview as registerActiveReview, readReview, patchReviewState, reviewDirectory, reviewId as activeReviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
-import { newReviewId, writeReviewId } from '../../src/shared/review-store.ts';
+import { atomicJson, newReviewId, writeReviewId } from '../../src/shared/review-store.ts';
+import { REPLACE_WAIT_MS } from '../../src/shared/json.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 
@@ -380,4 +381,63 @@ test('damaged viewer metadata counts as absent and keeps the review listed', (t)
     fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { ...viewer, port } }));
     assert.equal(readReview(review.id).viewer, undefined, `port ${port}`);
   }
+});
+
+/** Runs operation as if on platform, with renameSync failing as refuse decides. */
+function withRenames(t, platform, refuse, operation) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  const rename = fs.renameSync;
+  let attempts = 0;
+  const mock = t.mock.method(fs, 'renameSync', (...args) => {
+    const code = refuse(++attempts);
+    if (code) throw Object.assign(new Error(`${code}: simulated, rename`), { code });
+    return rename(...args);
+  });
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try { operation(); }
+  finally { Object.defineProperty(process, 'platform', original); mock.mock.restore(); }
+  return attempts;
+}
+
+test('saving review data on Windows waits for readers that hold the file open', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-replace-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'review.json');
+  fs.writeFileSync(file, '{}\n');
+  // A reader's open handle refuses the replacement until the reader is done.
+  const attempts = withRenames(t, 'win32', (attempt) => attempt <= 3 ? ['EPERM', 'EACCES', 'EBUSY'][attempt - 1] : undefined, () => atomicJson(file, { saved: true }));
+  assert.equal(attempts, 4);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { saved: true });
+  assert.deepEqual(fs.readdirSync(directory), ['review.json']);
+});
+
+test('saving review data reports a replacement that stays refused or fails otherwise', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-replace-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'review.json');
+  fs.writeFileSync(file, '{}\n');
+  // The retry's own clock and waits, so the budget is checked without real time;
+  // the wall clock jumps forward to show the budget does not depend on it.
+  let now = 0, wall = 1e12;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.method(Date, 'now', () => (wall += 60_000));
+  t.mock.method(Atomics, 'wait', (array, index, value, ms) => { now += ms; return 'timed-out'; });
+  const refused = (platform, code) => {
+    let attempts = 0;
+    now = 0;
+    // Each refused rename takes 20 ms. A retry without a deadline would loop
+    // forever, so it is cut off with another error, which fails the check below.
+    const refuse = () => { now += 20; return ++attempts > 1000 ? 'ENOTSUP' : code; };
+    assert.throws(() => withRenames(t, platform, refuse, () => atomicJson(file, { saved: true })), new RegExp(code));
+    return { attempts, waited: now - 20 * attempts };
+  };
+  // Only Windows sharing violations are waited out, and only for two seconds in
+  // all, counting the time the refused renames took.
+  const stuck = refused('win32', 'EPERM');
+  assert.ok(stuck.attempts > 2 && stuck.waited + 20 * stuck.attempts >= 2000 && stuck.waited + 20 * stuck.attempts <= 2020, JSON.stringify(stuck));
+  assert.equal(REPLACE_WAIT_MS, 2000);
+  assert.deepEqual(refused('win32', 'ENOSPC'), { attempts: 1, waited: 0 });
+  assert.deepEqual(refused('linux', 'EPERM'), { attempts: 1, waited: 0 });
+  assert.equal(fs.readFileSync(file, 'utf8'), '{}\n');
+  assert.deepEqual(fs.readdirSync(directory), ['review.json']);
 });
