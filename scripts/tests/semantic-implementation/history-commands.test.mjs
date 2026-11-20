@@ -526,6 +526,39 @@ test("a stage the target fast-forwarded to is emptied, and preparing an all-empt
   assert.equal(repository.git("show", "semantic-flow/test-implementation/stages/policy:policy.txt"), "policy");
 });
 
+test("a correction to an emptied stage warns that its replaced commit no longer comes back", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  const head = finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", head);
+  repository.semantic("restack", "--base", "main");
+  repository.git("switch", "semantic-flow/test-implementation/stages/policy");
+  repository.commitFile("docs.txt", "docs\n", "Correct policy");
+  const corrected = repository.result(process.execPath, [...semanticCli, "restack", "--from", "policy"]);
+  assert.equal(corrected.status, 0, corrected.stderr);
+  assert.match(corrected.stderr, new RegExp(`stage policy was empty in place of ${head}; its correction now defines the stage`));
+});
+
+test("restack keeps non-ASCII names and messages under another log output encoding", (t) => {
+  const repository = createRepository(t);
+  repository.git("config", "user.name", "Zoë Lindqvist");
+  repository.git("config", "i18n.logOutputEncoding", "ISO-8859-1");
+  repository.git("config", "i18n.commitEncoding", "ISO-8859-1");
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository, { file: "menu.txt", contents: "crème\n" });
+  repository.git("switch", "main");
+  repository.commitFile("other.txt", "other\n", "Advance main");
+  repository.semantic("restack", "--base", "main");
+  const branch = "semantic-flow/test-implementation/stages/implementation";
+  const show = (format) => repository.git("-c", "i18n.logOutputEncoding=UTF-8", "show", "-s", `--format=${format}`, branch);
+  assert.equal(show("%an|%cn"), "Zoë Lindqvist|Zoë Lindqvist");
+  assert.equal(repository.git("rev-parse", `${branch}^`), repository.git("rev-parse", "main"));
+  assert.doesNotMatch(show("%B"), /\uFFFD/);
+});
+
 test("a stage resolved to nothing at a conflict stays empty in later restacks", (t) => {
   const { repository } = conflictingStack(t);
   const worktree = conflictWorktree(repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy"));

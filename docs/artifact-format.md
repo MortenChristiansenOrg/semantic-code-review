@@ -248,6 +248,9 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
    restack replays the named commit, so the stage's changes return if the
    target no longer contains them. A stage whose conflict was resolved to no
    change is marked `Semantic-Flow-Empty: resolved` and is not replayed again.
+   A correction to an empty stage replaces its commit, and with it the marker:
+   the named commit is no longer replayed, and the tooling warns when that
+   happens.
 4. Move affected branch refs as one transaction.
 5. Record each affected `headRevision` (and the manifest's `baseRevision` when
    the target advanced); the other `change` fields follow from them.

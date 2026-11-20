@@ -280,6 +280,8 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   const target = upstream.commitFile("shared.txt", "upstream\n", "Conflicting upstream");
   const before = snapshot(repository);
   const stage = repository.artifact.stage("behavior");
+  const selection = repository.git("rev-parse", "--path-format=absolute", "--git-path", "semantic-review-implementation");
+  fs.rmSync(selection, { force: true });
 
   const failure = expectSyncFailure(repository, /stopped at a conflict in shared\.txt/);
   assert.match(failure.stderr, /resolve it in the reported worktree and run semantic-flow\.mjs implementation restack --continue/);
@@ -291,6 +293,8 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   assert.equal(repository.git("branch", "--show-current"), "");
   assert.equal(repository.git("rev-parse", "HEAD"), before.head);
   assert.equal(repository.git("status", "--porcelain"), "");
+  // Detached, the worktree still names the implementation restack --continue completes.
+  assert.equal(fs.readFileSync(selection, "utf8").trim(), "test-implementation");
 
   const worktree = /Resolve the conflict in (.+?): edit the files/.exec(failure.stderr)?.[1];
   assert.ok(worktree, failure.stderr);

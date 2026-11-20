@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { assertNoLegacyArtifact, claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
+import { assertNoLegacyArtifact, claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, rememberImplementation, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -792,9 +792,11 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
       `Could not automatically restack onto advanced target branch ${candidate.targetBranch}.`,
     );
   } finally {
-    // A pending restack still has to move the branch, so the checkout stays detached until it completes.
-    if (detachedBranch !== null && !restackPending(candidate)) {
-      git(["switch", detachedBranch], { cwd: candidate.worktree });
+    // A pending restack still has to move the branch, so the checkout stays
+    // detached until it completes; the worktree remembers which implementation it continues.
+    if (detachedBranch !== null) {
+      if (restackPending(candidate)) rememberImplementation(candidate.worktree, candidate.implementationId);
+      else git(["switch", detachedBranch], { cwd: candidate.worktree });
     }
   }
 

@@ -312,7 +312,7 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
   // Only the trailer block counts: a Co-authored-by line in the body is text,
   // not attribution. A message cannot hold NUL, so NUL separates the values
   // and two of them start each commit.
-  const log = gitRaw(["log", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  const log = gitRaw(["log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\0\0").slice(1)) {
@@ -339,10 +339,10 @@ function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">
   if (count === 1 && keepOneCommit) return head;
   const author = currentIdentity(root);
   const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author));
-  const [authorDate, committerDate, existing] = gitRaw(["show", "-s", "--format=%aI%x00%cI%x00%B", head], { cwd: root }).split("\0");
+  const [authorDate, committerDate, existing] = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%aI%x00%cI%x00%B", head], { cwd: root }).split("\0");
   if (count === 1 && existing.trimEnd() === message.trimEnd()) return head;
   // The folded head's dates make the fold repeatable: folding the same commits again gives the same commit.
-  return gitRaw(["commit-tree", `${head}^{tree}`, "-p", base], {
+  return gitRaw([...UTF8_COMMITS, "commit-tree", `${head}^{tree}`, "-p", base], {
     cwd: root,
     input: message,
     env: { GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: committerDate },
@@ -1788,6 +1788,7 @@ function organizeStage(workspace: Workspace, options: Options): void {
     files = changedFiles(workspace.root, baseRevision, headRevision);
     finalizedStageMoved = headRevision !== change.headRevision;
     if (finalizedStageMoved) {
+      if (change.files.length === 0) warnCorrectedEmptyStage(workspace.root, stageId, change.headRevision);
       // A corrected stage is recorded as one commit again.
       headRevision = foldStage(workspace.root, updated, baseRevision, branchHead, `Stage ${stageId}`);
       retargetFoldedCode(workspace.root, updated, baseRevision, branchHead, headRevision);
@@ -2005,6 +2006,7 @@ function commitMetadata(root: string, commit: string): CommitMetadata {
     [
       "show",
       "-s",
+      "--encoding=UTF-8",
       // The message ends at the last NUL, so it is passed on exactly as written.
       "--format=%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B%x00",
       commit,
@@ -2026,7 +2028,7 @@ function commitMetadata(root: string, commit: string): CommitMetadata {
  * message of source, so replaying the same stage gives the same commit. */
 function replayedCommit(root: string, tree: string, parent: string, source: string, message?: string): string {
   const metadata = commitMetadata(root, source);
-  return gitRaw(["commit-tree", tree, "-p", parent], {
+  return gitRaw([...UTF8_COMMITS, "commit-tree", tree, "-p", parent], {
     cwd: root,
     input: message ?? metadata.message,
     env: {
@@ -2059,13 +2061,19 @@ const RESOLVED_EMPTY = "resolved";
  * and the marker trailer: the stage commit it replaced, or RESOLVED_EMPTY.
  * Undefined when head is not one. */
 function emptyStageMarker(root: string, head: string): string | undefined {
-  const [tree, parent, ...markers] = gitRaw(["show", "-s", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
+  const [tree, parent, ...markers] = gitRaw(["show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return undefined;
   if (tree !== git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return undefined;
   return markers.map((value) => value.trim()).find((value) => value === RESOLVED_EMPTY || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));
 }
 
 /** The stage commit a marked empty stage commit replaced, which a restack replays. */
+/** Warns that a correction to an emptied stage gives up the replay of the commit its marker names. */
+function warnCorrectedEmptyStage(root: string, id: string, recordedHead: string): void {
+  const source = emptyStageSource(root, recordedHead);
+  if (source) console.error(`semantic-implementation: stage ${id} was empty in place of ${source}; its correction now defines the stage, so the changes of ${source} no longer come back if the target drops them.`);
+}
+
 function emptyStageSource(root: string, head: string): string | undefined {
   const marker = emptyStageMarker(root, head);
   return marker === RESOLVED_EMPTY ? undefined : marker;
@@ -2079,7 +2087,7 @@ function isMarkedEmptyStage(root: string, head: string): boolean {
  * stage commit whose changes parent contains; when it is itself a marked empty
  * commit, its marker is kept. A stage resolved to nothing is marked as such. */
 function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string, resolved = false): string {
-  const coAuthors = gitRaw(["show", "-s", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
+  const coAuthors = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
     .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
   const original = resolved ? RESOLVED_EMPTY : emptyStageMarker(root, source) ?? source;
   return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, original));
@@ -2152,6 +2160,8 @@ function rebuiltStageBase(
 }
 
 /** Where a restack that stopped at a conflict is recorded in the active artifact. */
+/** Commits are written in UTF-8, the encoding every read asks Git for, whatever i18n.commitEncoding says. */
+const UTF8_COMMITS = ["-c", "i18n.commitEncoding=UTF-8"];
 const PENDING_RESTACK_FILE = ".work/restack.json";
 
 /** A restack that stopped at a conflict. It is completed with `restack
@@ -2435,6 +2445,7 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
     const actualHead = heads.get(branch) ?? fail(`Stage branch ${branch} is missing.`);
     // A stage whose branch moved was corrected; it is folded into one commit again.
     const unchanged = actualHead === stage.change.headRevision;
+    if (!unchanged && stage.change.files.length === 0) warnCorrectedEmptyStage(root, id, stage.change.headRevision);
     // An emptied stage replays the stage commit it replaced, in case the target
     // no longer contains it; one resolved to nothing stays empty. Either is
     // decided before folding, so commits of the target never fold into it.
@@ -2777,7 +2788,7 @@ function finishRestack(workspace: Workspace, artifact: Artifact, run: RestackRun
 function unchangedSinceRestackBegan(root: string, current: string, start: string): boolean {
   // Every file but the pending record itself must be as it was.
   const entries = (commit: string) => gitRaw(["ls-tree", "-r", "-z", commit], { cwd: root }).split("\0")
-    .filter((entry) => entry && !entry.endsWith(`\t${PENDING_RESTACK_FILE}`)).sort();
+    .filter((entry) => entry && entry.slice(entry.indexOf("\t") + 1) !== PENDING_RESTACK_FILE).sort();
   return JSON.stringify(entries(current)) === JSON.stringify(entries(start));
 }
 
@@ -2942,7 +2953,7 @@ function publishedTree(workspace: Workspace, artifact: Artifact, parent: string)
 
 function buildMetadataCommit(workspace: Workspace, artifact: Artifact, parent: string, message: string): { commit: string; tree: string } {
   const tree = publishedTree(workspace, artifact, parent);
-  const commit = gitRaw(["commit-tree", tree, "-p", parent], {
+  const commit = gitRaw([...UTF8_COMMITS, "commit-tree", tree, "-p", parent], {
     cwd: workspace.root,
     input: `${message}\n`,
   });
