@@ -11,7 +11,7 @@ import { beginStage, createRepository, finalizeStage, flowCli, initializeImpleme
 // A pre-receive hook also runs in a quarantine that forbids ref updates.
 const otherRepository = (other) => ({
   GIT_DIR: other.path(".git"), GIT_WORK_TREE: other.root, GIT_INDEX_FILE: other.path(".git/index"),
-  GIT_QUARANTINE_PATH: other.path(".git/objects/incoming"), GIT_LITERAL_PATHSPECS: "1",
+  GIT_QUARANTINE_PATH: other.path(".git/objects/incoming"), GIT_LITERAL_PATHSPECS: "1", GIT_GLOB_PATHSPECS: "1",
 });
 
 test("CLI commands act on their own repository whatever Git variables the caller set", (t) => {
