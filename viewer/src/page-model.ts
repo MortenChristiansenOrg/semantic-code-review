@@ -296,7 +296,8 @@ export function noteGroupKey(c: NoteTarget) {
   const ni = nodeId ? stage?.nodes.findIndex((n) => n.id === nodeId) ?? -1 : -1;
   // The stage's ID keys its group, so a reordered stage keeps its notes' elements.
   return { si, stageKey: stage ? `stage:${stage.id}` : "other", stageTitle: stage?.title || "Other targets", ni,
-    nodeKey: `${stage?.id || ""}::${nodeId || c.kind === "stage" && "overview" || "unknown"}`,
+    // Real node IDs have their own namespace, so a node named "overview" or "unknown" keeps its own group.
+    nodeKey: JSON.stringify([stage?.id || "", nodeId ? `node:${nodeId}` : c.kind === "stage" ? "overview" : "unknown"]),
     nodeTitle: ni >= 0 && stage ? stage.nodes[ni].title : c.kind === "stage" ? "Stage overview" : "Other targets / original step unknown" };
 }
 export function noteDayKey(c: { createdAt?: string | number }): { key: string; label: string } {

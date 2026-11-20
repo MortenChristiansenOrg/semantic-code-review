@@ -99,9 +99,10 @@ export function currentFileEntry(stageId: KeyPart, p: KeyPart): FileEntry | null
 export const oldLineOf = (row: DiffLine): number | undefined => row.t === "add" ? undefined : row.o;
 export const newLineOf = (row: DiffLine): number | undefined => row.t === "del" ? undefined : row.n;
 
+/** Whether the diff renders a row for `line` on `side`: a removed row for the
+ * old side, any other row for the new side, as diff rows take their line IDs. */
 export function fileHasLine(file: ViewerFile, side: DiffSide | undefined, line: number | undefined): boolean {
-  const lineOf = side === "old" ? oldLineOf : newLineOf;
-  return (file.lines || []).some((row) => lineOf(row) === line);
+  return (file.lines || []).some((row) => side === "old" ? row.t === "del" && row.o === line : newLineOf(row) === line);
 }
 
 export function nodeFileList(stage: ViewerStage, node: ChangeNode): ViewerFile[] {

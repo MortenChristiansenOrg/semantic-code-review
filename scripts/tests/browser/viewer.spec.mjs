@@ -5387,3 +5387,235 @@ test('file approval buttons and notes toggles are named for assistive technology
   await expect(page.locator('.stage[data-stage="first"]').getByRole('button', { name: '1 thread, 1 open' })).toHaveCount(1);
   expect(errors).toEqual([]);
 });
+
+// Resolves once the viewer's own unsaved-changes check is clear.
+async function settled(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  }), { message: 'the viewer has unsaved review state' }).toBe(false);
+}
+async function deleteReviewElsewhere(page, reviewId) {
+  await page.evaluate(async (id) => {
+    const input = { reviewId: id, generation: 'test' }, query = `?review=${id}&generation=test`;
+    const result = await fetch('/api/reviews/storage' + query, { method: 'POST', body: JSON.stringify(input) }).then((r) => r.json());
+    await fetch('/api/reviews/delete' + query, { method: 'POST', body: JSON.stringify({ ...input, fingerprint: result.storage.fingerprint }) });
+  }, reviewId);
+}
+
+test('a review deleted during an approval capture ends the approval and a pending switch', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  let release;
+  const captured = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/approval-snapshots*', async (route) => { await captured; return route.fallback(); });
+  await page.locator('details[data-node="first-one"] .mini-approve').click();
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await deleteReviewElsewhere(page, 'a');
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
+  release();
+  await expect(page.locator('#review-list')).toContainText('The review was deleted before its changes were saved.');
+  await expect(page).toHaveURL('http://localhost/');
+  // A page stuck retrying the save would not answer.
+  expect(await page.evaluate(() => 1 + 1)).toBe(2);
+});
+
+test('a failed save clears once no change is left to save', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
+  await mount(page, a, {}, [b]);
+  await openFile(page);
+  await settled(page);
+  await page.route('**/api/review-state*', (route) => route.request().method() === 'POST'
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Storage unavailable' } }) : route.fallback());
+  const wrap = page.getByRole('button', { name: 'Wrap lines', exact: true }).first();
+  await wrap.click();
+  await expect(page.locator('#save-status')).toContainText('Storage unavailable');
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
+  await expect(page).toHaveURL('http://localhost/b');
+});
+
+test('turning a failed since-approval comparison off and on loads it again', async ({ page }) => {
+  const data = fixture();
+  await mount(page, data);
+  await openFile(page);
+  await saveAction(page, () => page.locator('details[data-node="first-one"] .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]?.snapshotId);
+  const endpoint = { path: 'shared.js', headRevision: 'b'.repeat(40), mode: '100644', exists: true, size: 20, sha256: 'hash' };
+  let fail = true;
+  await page.route('**/api/approval-comparison*', (route) => fail
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Comparison unavailable' } })
+    : route.fulfill({ json: { ok: true, approved: endpoint, current: endpoint, baseChanged: false, ownershipChanged: false, lines: [{ t: 'add', n: 1, s: 'new content' }], offset: 0, nextOffset: null } }));
+  data.stages[0].files[0].revision = 'changed'; data.viewerRevision = 'after-approval';
+  await expect(page.locator('details[data-node="first-one"] .frow')).toHaveClass(/is-stale/);
+  await openFile(page);
+  const diff = page.locator('details[data-node="first-one"] .cinema-diff');
+  await expect(diff).toContainText('Comparison unavailable');
+  fail = false;
+  const toggle = page.getByRole('button', { name: 'Since approval', exact: true });
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await toggle.click();
+  await expect(diff).toContainText('new content');
+});
+
+test('a validation check without a passed status does not count as passed', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].insights = [
+    { id: 'unknown', collection: 'validation', type: 'validation', title: 'Unknown check', nodeRefs: ['first-one'] },
+    { id: 'passed', collection: 'validation', type: 'validation', title: 'Passed check', meta: 'passed', nodeRefs: ['first-one'] },
+  ];
+  await mount(page, data);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  await one.getByRole('button', { name: 'Checks not passed: 1', exact: true }).click();
+  await expect(one.locator('.tag-face[data-vstat="notrun"]')).toBeFocused();
+  await expect(one.locator('.tag-face[data-vstat="passed"]')).toHaveCount(1);
+});
+
+test('closing a file while its line jump loads cancels the jump', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('far', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 50, label: 'shared.js:50' })];
+  await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:50:shared.js', nodeId: 'first-one', exported: true, threadId: 'far', body: 'Feedback far' }] });
+  await openFile(page);
+  let release;
+  const loaded = new Promise((resolve) => { release = resolve; });
+  let diffRequested;
+  const requested = new Promise((resolve) => { diffRequested = resolve; });
+  await page.route('**/api/diff*', async (route) => { diffRequested(); await loaded; return route.fallback(); });
+  await showNotes(page);
+  await page.locator('.side.notes [data-thread-id="far"] [data-action="jump-to"]').click();
+  await requested;
+  await page.keyboard.press('Escape');
+  const node = page.locator('details[data-node="first-one"]');
+  await expect(node.locator('.cinema-diff')).toHaveCount(0);
+  await node.locator('summary').click();
+  await expect(node).not.toHaveAttribute('open', '');
+  const response = page.waitForResponse((r) => new URL(r.url()).pathname === '/api/diff');
+  release();
+  await response;
+  // Two frames carry the jump; a cancelled one opens nothing.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  await expect(node).not.toHaveAttribute('open', '');
+});
+
+test('stage notes and notes on a node named overview keep separate groups', async ({ page }) => {
+  const data = fixture();
+  data.stages[0].nodes.push({ id: 'overview', title: 'Overview step', description: 'Node description' });
+  await mount(page, data, { comments: [
+    { kind: 'stage', id: 'first', mode: 'personal', body: 'Stage note', createdAt: 1 },
+    { kind: 'node', id: 'overview', stageId: 'first', mode: 'personal', body: 'Node note', createdAt: 1 },
+  ] });
+  await showNotes(page);
+  const headings = page.locator('.side.notes .note-node-h');
+  await expect(headings).toHaveCount(2);
+  await expect(headings.filter({ hasText: 'Stage overview' })).toHaveCount(1);
+  await expect(headings.filter({ hasText: 'Overview step' })).toHaveCount(1);
+});
+
+test('a poll response requested before a local resolve does not reopen the thread', async ({ page }) => {
+  const data = fixture(); data.feedback = [thread('resolve-me')];
+  await mount(page, data, { openThreads: { first: true } });
+  let release, requested, fetched = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const seen = new Promise((resolve) => { requested = resolve; });
+  page.on('response', (response) => { if (new URL(response.url()).pathname === '/api/implementation') fetched++; });
+  await page.route('**/api/implementation*', async (route) => {
+    if (fetched || requested === null) return route.fallback();
+    const stale = structuredClone(data);
+    requested(); requested = null;
+    await gate;
+    return route.fulfill({ json: { ok: true, implementation: stale } });
+  });
+  data.viewerRevision = 'changed';
+  await seen;
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 0');
+  release();
+  // The stale response is discarded and the next poll fetches the resolved thread.
+  await expect.poll(() => fetched).toBeGreaterThanOrEqual(2);
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveText('Notes 0');
+});
+
+test('an older saved-review refresh does not replace a newer list', async ({ page }) => {
+  const a = { ...fixture(), reviewId: 'a', title: 'Review A' }, b = { ...fixture(), reviewId: 'b', title: 'Review B' };
+  await mount(page, a, {}, [b]);
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await expect(page.locator('[data-review="a"]')).toBeVisible();
+  const staleList = { ok: true, reviews: ['a', 'b'].map((id) => ({ id, generation: 'test', title: `Review ${id.toUpperCase()}`, implementationId: 'browser-review', repositoryRoot: `/repos/${id}`, updatedAt: '2026-09-11T10:00:00Z', completedAt: null, available: true })) };
+  let calls = 0, release, staleDone;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fulfilled = new Promise((resolve) => { staleDone = resolve; });
+  await page.route('**/api/reviews?*', async (route) => {
+    calls += 1;
+    if (calls !== 1) return route.fallback();
+    await gate;
+    await route.fulfill({ json: staleList });
+    staleDone();
+  });
+  await page.locator('[data-review="a"]').getByRole('button', { name: 'Delete data…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Review data', exact: true });
+  await dialog.getByRole('button', { name: 'Delete review data', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-review="a"]')).toHaveCount(0);
+  release();
+  await fulfilled;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  await expect(page.locator('[data-review="a"]')).toHaveCount(0);
+  await expect(page.locator('[data-review="b"]')).toBeVisible();
+});
+
+test('a stale anchor on an old line that is now unchanged jumps to its file', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), anchorStale: true }];
+  await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:old:2:shared.js', nodeId: 'first-one', exported: true, threadId: 'old-context', body: 'Feedback old-context' }] });
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="old-context"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'file');
+  await jump.click();
+  await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toBeVisible();
+});
+
+test('a saved composer with a negative edit index does not keep a saved note from sending', async ({ page }) => {
+  await mount(page, fixture(), {
+    comments: [{ kind: 'stage', id: 'first', mode: 'feedback', body: 'Send me', createdAt: 1 }],
+    editor: { compose: { kind: 'stage', id: 'first', editIndex: -1, mode: 'feedback', body: 'Composer text' } },
+  });
+  await showNotes(page);
+  const request = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/feedback/export');
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  expect((await request).postDataJSON().notes.map((note) => note.body)).toEqual(['Send me']);
+});
+
+test('an unread reply is not read while the page is hidden and is read once it shows again', async ({ page }) => {
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [{ id: 'one', status: 'open', target, comments: [comment('u1', 'user', 'First?')] }] };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data);
+  await baseline;
+  data.feedback[0].comments.push(comment('answer', 'agent', 'Short answer.', '2026-10-08T10:05:00Z'));
+  data.viewerRevision = 'replied';
+  await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+  await showNotes(page);
+  const reply = page.locator('.side.notes [data-reply-key=\'["one","answer"]\']');
+  await expect(reply).toBeInViewport();
+  // The dwell has started but not finished when the page hides.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  await expect(reply).toHaveClass(/is-unread/);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(reply).not.toHaveClass(/is-unread/, { timeout: 5000 });
+});

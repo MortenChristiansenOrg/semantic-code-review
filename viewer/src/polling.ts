@@ -15,7 +15,10 @@ import { flushReviewState, reviewDeleted, state } from "./state";
 import { errorMessage, failureOf } from "./narrow";
 import { threadOps, usableNotes } from "./threads";
 
+/** Counts completed local feedback writes; a poll response requested before one is out of date. */
+let feedbackWrites = 0;
 export function adoptViewerSnapshot(snapshot: Partial<ViewerSnapshot> | undefined): void {
+  feedbackWrites += 1;
   // A local feedback write changes what the page shows, so no server
   // revision is fully shown any more; the next poll fetches again, even if
   // another session has since returned the server to the revision loaded.
@@ -62,10 +65,13 @@ export async function pollViewerRevision(): Promise<void> {
     if (handled) { adoptAgentStatus(snapshot.agent); return; }
     // Let local feedback writes finish before adopting a server snapshot.
     if (approvalOps.size || exportWorking() || Object.values(threadOps).some((op) => op?.busy)) return;
+    const writesBefore = feedbackWrites;
     const nextResponse = await api.getImplementation();
     if (!nextResponse.ok) return;
     const payload = await nextResponse.json();
     if (!payload.ok || payload.implementation.implementationId !== data.implementationId) return;
+    // A feedback write that finished meanwhile may be missing from this response; the next poll fetches again.
+    if (feedbackWrites !== writesBefore) return;
     if (approvalOps.size || exportWorking() || Object.values(threadOps).some((op) => op?.busy)) return;
     // A code selection must not prevent an open conversation from refreshing.
     // Keep metadata aligned with the visible diff until the selection clears:

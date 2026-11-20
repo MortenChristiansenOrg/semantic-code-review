@@ -38,6 +38,13 @@ interface LazyJump {
   membership: FileMembership | null | undefined;
 }
 export let pendingLazyJump: LazyJump | null = null;
+/** The loaded jump whose scheduled frames may still open and scroll to its target. */
+let resumingJump: LazyJump | null = null;
+/** Cancels a line jump into `fileId`, or any line jump, when its diff closes. */
+function cancelLazyJump(fileId?: string | null): void {
+  if (fileId == null || pendingLazyJump?.fileId === fileId) pendingLazyJump = null;
+  if (fileId == null || resumingJump?.fileId === fileId) resumingJump = null;
+}
 export function resumePendingLazyJump(): void {
   if (!pendingLazyJump) return;
   const pending = pendingLazyJump;
@@ -49,6 +56,7 @@ export function resumePendingLazyJump(): void {
     !entry.file._diffError
   ) return;
   pendingLazyJump = null;
+  resumingJump = pending;
   const parsed = parseLineId(pending.id);
   const exact =
     entry &&
@@ -56,6 +64,7 @@ export function resumePendingLazyJump(): void {
     Array.isArray(entry.file.lines) &&
     fileHasLine(entry.file, parsed.side, parsed.line);
   requestAnimationFrame(() => {
+    if (resumingJump !== pending) return;
     if (pending.membership?.nodeId) {
       const node = entry && app.querySelector(
         `.stage[data-stage="${cssEsc(entry.stage.id)}"] details.node[data-node="${cssEsc(pending.membership.nodeId)}"]`,
@@ -63,6 +72,8 @@ export function resumePendingLazyJump(): void {
       openNode(node);
     }
     requestAnimationFrame(() => {
+      if (resumingJump !== pending) return;
+      resumingJump = null;
       const target = exact
         ? app.querySelector(`[data-line-id="${cssEsc(pending.id)}"]`)
         : fileRowElement(pending.fileId, pending.membership?.nodeId);
@@ -77,7 +88,7 @@ export function resumePendingLazyJump(): void {
 // panel, and scroll its conversation into view (targeting the comments so a
 // tall file body cannot push them off-screen).
 export function jumpToElement(kind: FeedbackTargetKind, id: string, stageId?: string | null, nodeId?: string | null): void {
-  pendingLazyJump = null;
+  cancelLazyJump();
   state.notesOpen = false;
   state.coverageOpen = false;
   if (kind === "line") state.openLineThreads[id] = true;
@@ -268,7 +279,8 @@ export function cinemaHolder(id: string, nodeId: string | null | undefined = act
 }
 export function closeCinema(id?: string | null): void {
   // No id → close every open file (used by the Escape shortcut).
-  if (id == null) { state.activeFiles = {}; persist(); render(); return; }
+  if (id == null) { cancelLazyJump(); state.activeFiles = {}; persist(); render(); return; }
+  cancelLazyJump(id);
   const nodeId = activeFileNodeId(id);
   const holder = cinemaHolder(id, nodeId);
   delete state.activeFiles[id]; persist();

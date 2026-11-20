@@ -32,21 +32,41 @@ export function markRepliesRead(keys: string[]): void {
 // A reply counts as read once most of it, or half the visible area for a long
 // reply, has been on screen for a moment.
 export const readTimers = new Map<Element, number>();
-export const observedReplies = new WeakSet<Element>();
+/** The rendered unread replies the observer watches. */
+const observedReplies = new Set<Element>();
+function cancelDwell(element: Element): void { clearTimeout(readTimers.get(element)); readTimers.delete(element); }
 export const replyObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
   for (const entry of entries) {
     const element = entry.target;
     const visibleHeight = entry.rootBounds?.height || window.innerHeight;
     const seen = entry.intersectionRatio >= 0.6 || entry.intersectionRect.height >= visibleHeight * 0.5;
     if (seen && !document.hidden && element.classList.contains("is-unread")) {
-      if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => { readTimers.delete(element); markRepliesRead([String(element.getAttribute("data-reply-key") ?? undefined)]); }, 1200));
-    } else { clearTimeout(readTimers.get(element)); readTimers.delete(element); }
+      if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => {
+        readTimers.delete(element);
+        const key = element.getAttribute("data-reply-key");
+        if (key !== null && !document.hidden) markRepliesRead([key]);
+      }, 1200));
+    } else cancelDwell(element);
   }
 }, { threshold: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1] }) : null;
+/** Watches the rendered unread replies and stops watching replies that were read or replaced. */
 export function observeUnreadReplies(): void {
   if (!replyObserver) return;
-  app.querySelectorAll(".tmsg.is-unread").forEach((element) => {
+  const unread = new Set(app.querySelectorAll(".tmsg.is-unread"));
+  for (const element of observedReplies) {
+    if (!unread.has(element)) { replyObserver.unobserve(element); observedReplies.delete(element); cancelDwell(element); }
+  }
+  for (const element of unread) {
     if (!observedReplies.has(element)) { observedReplies.add(element); replyObserver.observe(element); }
+  }
+}
+/** A hidden page reads nothing: hiding cancels each dwell, and showing the page starts a fresh one. */
+export function installUnreadReplies(): void {
+  document.addEventListener("visibilitychange", () => {
+    if (!replyObserver) return;
+    if (document.hidden) { for (const element of [...readTimers.keys()]) cancelDwell(element); return; }
+    // Observing a reply again reports its current visibility.
+    for (const element of observedReplies) { replyObserver.unobserve(element); replyObserver.observe(element); }
   });
 }
 // Prefers an active thread from the announced round; resolved threads may hold

@@ -155,16 +155,19 @@ export function updateReviewList(): void {
     focusable(dialog.querySelector("button:not(:disabled)"))?.focus({ preventScroll: true });
   }
 }
+/** Numbers list refreshes; only the latest may change the list, its error, or the busy state. */
+let reviewListRequest = 0;
 export async function refreshReviews(force = false): Promise<void> {
   if (reviewListBusy && !force) return;
+  const request = ++reviewListRequest;
   reviewListBusy = true; reviewListError = ""; updateReviewList();
   try {
     const response = await api.getReviews();
     const result = await response.json();
     if (!response.ok || !result.ok || !Array.isArray(result.reviews)) throw new Error(failureOf(result).error || "Could not load saved reviews.");
-    reviewList = result.reviews;
-  } catch (error) { reviewListError = errorMessage(error); }
-  finally { reviewListBusy = false; updateReviewList(); }
+    if (request === reviewListRequest) reviewList = result.reviews;
+  } catch (error) { if (request === reviewListRequest) reviewListError = errorMessage(error); }
+  finally { if (request === reviewListRequest) { reviewListBusy = false; updateReviewList(); } }
 }
 export async function changeReview(id: string | undefined, complete = false): Promise<void> {
   if (reviewListBusy) return;

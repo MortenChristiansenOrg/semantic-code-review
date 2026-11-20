@@ -103,7 +103,12 @@ export function installActions(): void {
     } else if (a === "approval-comparison") {
       const id = btn.dataset.id;
       if (id === undefined) return;
-      state.approvalComparisons[id] = !sinceApprovalEnabled(id);
+      const enable = !sinceApprovalEnabled(id);
+      state.approvalComparisons[id] = enable;
+      // Showing the comparison again retries a page that failed to load.
+      const entry = enable ? approvalEntry(id) : null;
+      const key = entry ? comparisonKey(id, entry) : null, cached = key ? approvalComparisons.get(key) : undefined;
+      if (key && cached && "error" in cached) approvalComparisons.delete(key);
       persist(); render();
     } else if (a === "approval-base-scope") {
       const id = btn.dataset.id;

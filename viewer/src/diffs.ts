@@ -161,14 +161,16 @@ export function scrollDiffPage(id: string, navigation: PageScroll): void {
 export async function loadApprovalComparison(id: string, entry: MembershipEntry, offset = 0, pageScroll: PageScroll | null = null): Promise<void> {
   const approval = retainedApproval(id);
   if (!approval?.snapshotId) return;
+  // The key and the request share one scope, even if the reviewer changes it during the flush.
   const key = comparisonKey(id, entry), mode = fileViewMode(entry.id) === "full" ? "full" : "changes";
+  const scope = approvalBaseIncluded.has(id) ? "all" : "stage";
   const current = approvalComparisons.get(key);
   if (current && "loading" in current) return;
   approvalComparisons.set(key, { loading: true, offset }); render();
   let pageLoaded = false;
   try {
     await flushReviewState();
-    const response = await api.compareApproval({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode, scope: approvalBaseIncluded.has(id) ? "all" : "stage" });
+    const response = await api.compareApproval({ ...approvalEndpoint(entry), snapshotId: approval.snapshotId, offset, mode, scope });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(failureOf(result).error || "Could not compare approved content.");
     approvalComparisons.set(key, result);

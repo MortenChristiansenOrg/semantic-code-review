@@ -7,7 +7,7 @@ import { data } from "./context";
 import { activeFileNodeId, approvalEntry, fileApprovalKey, fileBaseRevision, flatFiles, nodeFileList, stageById, stageFileApprovals, stageOf } from "./lookups";
 import { errorMessage, failureOf, isRecord } from "./narrow";
 import { render } from "./render";
-import { persist, persistedState, saveError, saveState, saveTimer, state } from "./state";
+import { persist, persistedState, reviewDeleted, saveError, saveState, saveTimer, state } from "./state";
 import type { MembershipEntry, ViewerFile, ViewerStage } from "./types";
 
 /** Approval changes in progress, by approval ID. */
@@ -77,6 +77,8 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
           clearTimeout(saveTimer);
           await saveState();
           if (saveError) throw new Error(saveError);
+          // A deleted review saves nothing more; leave the diff open.
+          if (reviewDeleted) return;
         } while (JSON.stringify(storedApproval(id)) !== JSON.stringify(state.approvals[id]));
         if (activeFileNodeId(entry.id) === entry.nodeId) {
           delete state.activeFiles[entry.id];

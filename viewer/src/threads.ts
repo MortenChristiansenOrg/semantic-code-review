@@ -34,7 +34,8 @@ export function usableNotes(): Note[] {
 }
 /** The saved note at `index`, unless there is none or the page cannot use it. */
 export function noteAt(index: number): Note | undefined {
-  const note = state.comments.at(index);
+  // A negative index names no saved note; `at` would count from the end.
+  const note = index >= 0 ? state.comments[index] : undefined;
   return note && isUsableNote(note) ? note : undefined;
 }
 

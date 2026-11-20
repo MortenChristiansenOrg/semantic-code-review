@@ -23,6 +23,7 @@ import { initSavedReviews, refreshReviews } from "./saved-reviews";
 import { installSelection } from "./selection";
 import { initState, installUnloadGuard, persist, reviewDeleted, state, type SavedReview } from "./state";
 import { installHeldThreadLists, usableNotes } from "./threads";
+import { installUnreadReplies } from "./unread-replies";
 import { cssEsc } from "./util";
 
 
@@ -61,6 +62,7 @@ import { cssEsc } from "./util";
   installForms();
   installKeyboard();
   installSelection();
+  installUnreadReplies();
 
   const drafts: Draft[] = compose ? [...usableNotes(), compose] : usableNotes();
   const legacyDrafts = drafts.filter(note => note.kind === "line" && !("exported" in note && note.exported) && note.snapshot && !note.snapshot.fileRevision);

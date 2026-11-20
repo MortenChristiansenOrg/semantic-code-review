@@ -94,7 +94,8 @@ export async function writeState(): Promise<void> {
   captureEditor();
   const next = storedState();
   const changes = stateChanges(persistedState, next);
-  if (!changes.length) return;
+  // With nothing left to save, an earlier failure no longer applies.
+  if (!changes.length) { if (saveError) { saveError = ""; showSaveStatus(); } return; }
   savingState = true; showSaveStatus();
   try {
     const response = await api.saveReviewState({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes });
@@ -119,6 +120,8 @@ export async function flushReviewState(): Promise<void> {
   captureEditor();
   while (uploadOps.size || approvalOps.size || stateChanges(persistedState, storedState()).length) {
     await Promise.all([...uploadOps, ...approvalOps.values()]);
+    // Another tab or session deleted the review while this flush waited.
+    if (reviewDeleted) throw new Error("The review was deleted before its changes were saved.");
     await saveState();
     if (saveError) throw new Error(saveError);
     captureEditor();

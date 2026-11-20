@@ -32,7 +32,9 @@ export function vstatus(ins: Insight): ValidationStatus | null {
   if (s === "failed") return { key: "failed", glyph: "✕", label: "Check failed" };
   if (s === "not-run" || s === "notrun" || s === "skipped")
     return { key: "notrun", glyph: "○", label: "Check not run" };
-  return { key: "passed", glyph: "✓", label: "Check passed" };
+  if (s === "passed") return { key: "passed", glyph: "✓", label: "Check passed" };
+  // A missing or unknown status is not a pass.
+  return { key: "notrun", glyph: "○", label: "Check status unknown" };
 }
 export function insightSort(list: Insight[]): Insight[] {
   return list.slice().sort((a, b) => INSIGHT_ORDER.indexOf(a.type) - INSIGHT_ORDER.indexOf(b.type));
