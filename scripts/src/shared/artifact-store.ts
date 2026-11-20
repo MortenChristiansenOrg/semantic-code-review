@@ -92,10 +92,18 @@ export function listJsonIds(files: ArtifactFiles, directory: string): string[] {
 
 class FolderFiles implements ArtifactSnapshot {
   readonly directory: string;
-  #version: string | undefined;
+  readonly #version: string;
 
   constructor(readonly root: string) {
     this.directory = path.join(root, ACTIVE_DIRECTORY);
+    // Taken when the snapshot is read, so a later comparison detects every
+    // write that happened after this read.
+    const hash = createHash("sha256");
+    for (const file of this.list()) {
+      const stat = fs.lstatSync(this.absolute(file), { bigint: true });
+      hash.update(`${file}\0${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ino}\0`);
+    }
+    this.#version = hash.digest("hex");
   }
 
   absolute(file: string): string {
@@ -141,21 +149,11 @@ class FolderFiles implements ArtifactSnapshot {
     return this.absolute(file);
   }
 
-  /** Hashes the documents, and the size and modification time of every other file. */
+  /** Identifies the files as this view was opened: the path, size, modification
+   * time and file identity of every entry. Writers replace files by renaming,
+   * which changes the identity, so any write changes the version. Only metadata
+   * is read, so an idle viewer can poll it cheaply. */
   get version(): string {
-    if (this.#version === undefined) {
-      const hash = createHash("sha256");
-      for (const file of this.list()) {
-        hash.update(file).update("\0");
-        if (file.endsWith(".json") && this.type(file) === "file") hash.update(this.read(file));
-        else {
-          const stat = fs.lstatSync(this.absolute(file), { bigint: true });
-          hash.update(`${stat.size}:${stat.mtimeNs}`);
-        }
-        hash.update("\0");
-      }
-      this.#version = hash.digest("hex");
-    }
     return this.#version;
   }
 }
@@ -318,27 +316,30 @@ export function commitArtifact(
 ): void {
   assertUnchanged(root, base);
   const folder = new FolderFiles(root);
-  const backups = new Map<string, Buffer | undefined>();
-  for (const file of draft.changes.keys()) {
-    backups.set(file, folder.type(file) === "file" ? folder.read(file) : undefined);
-  }
+  // Only what this write changes is restored on failure; a path it never
+  // reached, or an entry that is not a regular file, is left as it was.
+  const restores: Array<() => void> = [];
   updateRefs(root, refUpdates);
   try {
-    for (const [file, bytes] of draft.changes) {
+    // Entries that are not regular files cannot be restored, so they are
+    // removed last, once every other change succeeded.
+    const changes = [...draft.changes].sort(([left], [right]) => Number(folder.type(left) === "other") - Number(folder.type(right) === "other"));
+    for (const [file, bytes] of changes) {
       const absolute = folder.absolute(file);
+      const type = folder.type(file);
+      if (type === "other" && bytes) fail(`${absolute} is not a regular file.`);
+      const previous = type === "file" ? folder.read(file) : undefined;
       if (bytes) writeFileAtomically(absolute, bytes);
-      else {
+      else if (type !== undefined) {
         fs.rmSync(absolute, { force: true });
         removeEmptyDirectories(folder.directory, absolute);
-      }
+      } else continue;
+      if (type !== "other") restores.push(previous ? () => writeFileAtomically(absolute, previous) : () => fs.rmSync(absolute, { force: true }));
     }
   } catch (error) {
     try { updateRefs(root, reversed(refUpdates)); } catch { /* The write's own error says more. */ }
-    for (const [file, bytes] of backups) {
-      try {
-        if (bytes) writeFileAtomically(folder.absolute(file), bytes);
-        else fs.rmSync(folder.absolute(file), { force: true });
-      } catch { /* Restore what can be restored. */ }
+    for (const restore of restores.reverse()) {
+      try { restore(); } catch { /* Restore what can be restored. */ }
     }
     throw error;
   }
@@ -454,8 +455,10 @@ class TreeFiles implements ArtifactFiles {
     if (entry?.type !== "file") fail(`Cannot read ${this.describe(file)}: it is not a regular file.`);
     let bytes = this.#blobs.get(entry.oid);
     if (!bytes) {
-      const documents = file.endsWith(".json")
-        ? [...this.entries].filter(([name, other]) => other.type === "file" && name.endsWith(".json")).map(([, other]) => other.oid)
+      // Captured evidence can be large, even as JSON, so only documents are read together.
+      const isDocument = (name: string) => name.endsWith(".json") && !isBelow(name, "evidence");
+      const documents = isDocument(file)
+        ? [...this.entries].filter(([name, other]) => other.type === "file" && isDocument(name)).map(([, other]) => other.oid)
         : [entry.oid];
       for (const [oid, blob] of readBlobs(this.run, documents)) this.#blobs.set(oid, blob);
       bytes = this.#blobs.get(entry.oid);
@@ -506,7 +509,8 @@ function writeBlobs(root: string, files: ArtifactFiles, paths: readonly string[]
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-artifact-"));
   try {
     const sources = pending.map((file, index) => {
-      if (files instanceof FolderFiles) return files.absolute(file);
+      // Git reads one path per line, so a path with a line break is copied first.
+      if (files instanceof FolderFiles && !/[\r\n]/.test(files.absolute(file))) return files.absolute(file);
       const source = path.join(scratch, `${index}.blob`);
       fs.writeFileSync(source, files.read(file));
       return source;

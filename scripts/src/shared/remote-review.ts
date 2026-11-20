@@ -137,14 +137,13 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   }
   files.set("manifest.json", jsonBytes(projected.manifest));
   const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
-  replaceArtifactFiles(root, files, reviewDirectory(record.id), () => {
-    try {
-      git(root, ["checkout", "--force", "--detach", head]);
-    } catch (error) {
-      if (previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
-      throw error;
-    }
-  });
+  try {
+    replaceArtifactFiles(root, files, reviewDirectory(record.id), () => git(root, ["checkout", "--force", "--detach", head]));
+  } catch (error) {
+    // The checkout and the artifact stay on the same revision.
+    if (previousHead) optional(root, ["checkout", "--force", "--detach", previousHead]);
+    throw error;
+  }
   record.remote = { ...remote, headRevision: head, refreshedAt: new Date().toISOString() };
   record.title = projected.manifest.title;
   atomicJson(path.join(reviewDirectory(record.id), "review.json"), record);

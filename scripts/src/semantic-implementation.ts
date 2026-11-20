@@ -2050,7 +2050,8 @@ function discardStage(workspace: Workspace, options: Options): void {
   draft.remove(file);
   draft.remove(`evidence/${id}`);
   validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
-  if (removeBranch && currentBranch(workspace.root) === branch) {
+  const wasCurrent = removeBranch && currentBranch(workspace.root) === branch;
+  if (wasCurrent) {
     git(["switch", "--detach", creationParent], { cwd: workspace.root });
   }
   if (removeBranch) {
@@ -2061,6 +2062,7 @@ function discardStage(workspace: Workspace, options: Options): void {
     commitArtifact(workspace.root, workspace.snapshot, draft);
   } catch (error) {
     if (removeBranch) git(["branch", branch, creationParent], { cwd: workspace.root, allowFailure: true });
+    if (wasCurrent) git(["switch", branch], { cwd: workspace.root, allowFailure: true });
     throw error;
   }
   console.log(`Discarded working stage ${id}.${branchNote}`);
@@ -3044,6 +3046,11 @@ function dispatch(root: string, positionals: string[], options: Options): void {
   if (!command || command === "help" || flag(options, "help")) {
     console.log(HELP);
     return;
+  }
+  // Unknown options are reported before the artifact is read.
+  const known = [command, subcommand].filter(Boolean).join(" ");
+  if (semanticImplementationApi.commands.some((signature) => signature.command === known)) {
+    assertKnownOptions(options, commandOptionNames(semanticImplementationApi, known));
   }
 
   if (command === "init" && subcommand === undefined) {
