@@ -529,6 +529,17 @@ test('earlier files left only in their backup are kept until new files are in pl
   assert.deepEqual(fs.readdirSync(parent), ['artifact']);
 });
 
+test('previous files are not shown again when reverting the change fails', (t) => {
+  const { parent, directory } = projection(t);
+  const refuse = (from) => path.basename(from) === 'artifact.next' ? 'ENOSPC' : undefined;
+  assert.throws(() => withRenames(t, 'linux', refuse, () =>
+    replaceArtifactDirectory(directory, [['manifest.json', Buffer.from('next\n')]], () => {}, () => { throw new Error('checkout failed'); })),
+  (error) => error instanceof AggregateError && /ENOSPC/.test(error.message) && /checkout failed/.test(error.message));
+  // They may not match what stays checked out, so they are kept aside.
+  assert.deepEqual(fs.readdirSync(parent), ['artifact.previous']);
+  assert.equal(fs.readFileSync(path.join(`${directory}.previous`, 'manifest.json'), 'utf8'), 'previous\n');
+});
+
 test('removing a busy staging folder on Windows waits for its readers', (t) => {
   const { parent, directory, read } = projection(t);
   fs.mkdirSync(`${directory}.next`);
@@ -536,7 +547,7 @@ test('removing a busy staging folder on Windows waits for its readers', (t) => {
   const remove = fs.rmSync;
   let refusals = 2;
   t.mock.method(fs, 'rmSync', (folder, options) => {
-    if (path.basename(folder) === 'artifact.next' && refusals > 0) { refusals--; throw Object.assign(new Error('EBUSY: simulated, rmdir'), { code: 'EBUSY' }); }
+    if (path.basename(folder) === 'artifact.next' && refusals > 0) { const code = ['EBUSY', 'ENOTEMPTY'][--refusals]; throw Object.assign(new Error(`${code}: simulated, rmdir`), { code }); }
     return remove(folder, options);
   });
   Object.defineProperty(process, 'platform', { ...original, value: 'win32' });

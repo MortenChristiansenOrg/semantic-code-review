@@ -728,9 +728,11 @@ export function replaceArtifactDirectory(
     } catch (error) {
       // The change is reverted first; both rollback steps run before any failure is described.
       const failures: Array<[string, unknown]> = [];
-      try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
+      let undone = false;
+      try { undo(); undone = true; } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
-        if (movedAside && !fs.existsSync(directory)) replaceFile(previous, directory);
+        // The previous files are shown again only with the change they match reverted.
+        if (undone && movedAside && !fs.existsSync(directory)) replaceFile(previous, directory);
       } catch (failure) {
         failures.push([`Restoring the previous files from ${previous} also failed`, failure]);
       }
