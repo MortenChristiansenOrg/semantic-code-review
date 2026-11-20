@@ -212,12 +212,14 @@ function assertDirectActiveRef(ref: string, symref: string): void {
 }
 
 /** Every active implementation of the repository of root, read with one Git
- * process. A symbolic ref names no snapshot and is not one. */
+ * process. A symbolic ref at an active ref's name fails every read: skipping it
+ * would let selection fall back to another implementation. */
 export function listActiveImplementations(root: string): ActiveImplementation[] {
   const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ACTIVE_REF_PREFIX], { cwd: root });
   return output.split(/\r?\n/).filter(Boolean).flatMap((line) => {
     const [commit, ref, parents = "", symref = ""] = line.split("\t");
-    return symref ? [] : [{ implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) }];
+    assertDirectActiveRef(ref, symref);
+    return [{ implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) }];
   }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
 }
 

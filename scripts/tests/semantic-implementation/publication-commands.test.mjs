@@ -498,13 +498,13 @@ test("archive writes only direct refs and replaces a stale artifact folder under
   repository.expectSemanticFailure("refs/heads/main is a symbolic ref", "archive");
   repository.git("symbolic-ref", "--delete", "refs/heads/main");
   repository.git("branch", "main", target);
-  // A symbolic ref at the active ref's name is no artifact, and archiving leaves the branch it names.
+  // A symbolic ref at the active ref's name is refused, and the branch it names is left alone.
   const active = "refs/semantic-review/active/direct";
   const snapshot = repository.git("rev-parse", active);
   repository.git("branch", "decoy", snapshot);
   repository.git("update-ref", "-d", active);
   repository.git("symbolic-ref", active, "refs/heads/decoy");
-  repository.expectSemanticFailure("No active semantic implementation", "archive");
+  repository.expectSemanticFailure(`${active} is a symbolic ref to refs/heads/decoy, not an active artifact`, "archive");
   assert.equal(repository.git("rev-parse", "decoy"), snapshot);
   repository.git("symbolic-ref", "--delete", active);
   repository.git("update-ref", active, snapshot);
