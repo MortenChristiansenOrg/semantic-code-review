@@ -119,7 +119,7 @@ function lineAction(line: LineActionView, sign: string): TemplateResult {
   const label = has
     ? `${line.count} note${line.count === 1 ? "" : "s"} on this line — click to ${line.open ? "hide" : "show"}`
     : line.resolved ? `Resolved note on this line — click to ${line.open ? "hide" : "show"}` : "Add a note on this line";
-  return html`<button class="lact${has ? " has-note" : ""}${line.resolved ? " has-resolved" : ""}${line.open ? " is-open" : ""}" type="button" data-action="line-note" data-id=${line.id} title=${label} aria-label=${label}><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlusIcon}</span>${has
+  return html`<button class="lact${has ? " has-note" : ""}${line.resolved ? " has-resolved" : ""}${line.open ? " is-open" : ""}" type="button" data-action="line-note" data-id=${line.id} data-tooltip=${label} aria-label=${label}><span class="lact-sign" aria-hidden="true">${sign}</span><span class="lact-add" aria-hidden="true">${bubblePlusIcon}</span>${has
       ? html`<span class="lact-bub" aria-hidden="true">${bubbleIcon}${line.count > 1 ? html`<b>${line.count}</b>` : nothing}</span>`
       : line.resolved ? html`<span class="lact-bub lact-bub-resolved" aria-hidden="true">${bubbleIcon}</span>` : nothing}</button>`;
 }
@@ -144,7 +144,7 @@ function diffRow(row: DiffRowView): TemplateResult {
     case "code": return codeRow(row);
     case "banner": return html`<div class="drow d-${row.kind}"><span class="ln"></span><span class="ln"></span><i>${row.sign}</i><code>${row.text}</code></div>`;
     case "gap": return html`<div class="drow d-gap"><span class="ln"></span><span class="ln"></span><i></i><code>⋯ ${row.count} unchanged line${row.count === 1 ? "" : "s"} omitted ⋯</code></div>`;
-    case "owner": return html`<div class="ownership-notice">Edited in <button type="button" data-action="jump-to" data-kind="line" data-id=${row.lineId} data-node-id=${row.nodeId} title="Show change node">${row.title} ${arrowIcon}</button></div>`;
+    case "owner": return html`<div class="ownership-notice">Edited in <button type="button" data-action="jump-to" data-kind="line" data-id=${row.lineId} data-node-id=${row.nodeId} data-tooltip="Show change node">${row.title} ${arrowIcon}</button></div>`;
     // Keyed by insight, so removing one removes its button rather than
     // handing the button, and any focus on it, to the next insight on the line.
     case "insights": return html`<div class="line-code-insights">${repeat(row.insights, (view) => `${view.stageId}:${view.collection}:${view.itemId}`, inlineInsight)}</div>`;
@@ -188,7 +188,7 @@ function content(view: DiffContentView): TemplateResult {
 }
 
 function toggle(on: boolean, action: string, label: string, attrs: { id?: string; mode?: string; title?: string } = {}): TemplateResult {
-  return html`<button class="vt ${on ? "is-on" : ""}" type="button" data-action=${action} data-id=${attrs.id ?? nothing} data-mode=${attrs.mode ?? nothing} aria-pressed=${String(on)} title=${attrs.title ?? nothing}>${label}</button>`;
+  return html`<button class="vt ${on ? "is-on" : ""}" type="button" data-action=${action} data-id=${attrs.id ?? nothing} data-mode=${attrs.mode ?? nothing} aria-pressed=${String(on)} data-tooltip=${attrs.title || nothing}>${label}</button>`;
 }
 
 function controls(view: DiffControlsView, preview: boolean): TemplateResult {

@@ -4842,6 +4842,56 @@ test('Markdown preview validates link and image targets and keeps its content ac
   expect(errors).toEqual([]);
 });
 
+test('Markdown titles show in the viewer tooltip, and a link names the titles of the images it holds', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  const content = '[Titled](https://example.com/a "Link title") [Same](https://example.com/b "Same") [Script](javascript:alert(1))\n\n'
+    + '[![Logo](https://example.com/i.png "Image title")](https://example.com/c "Outer title")';
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.markdown-preview');
+  await expect(preview.getByText('Titled', { exact: true })).toBeVisible();
+  await expect(preview.locator('[title]')).toHaveCount(0);
+  const tooltip = page.locator('#review-tooltip');
+  // Every render closes the tooltip, so focus or hover again if a late one, such as a loaded diff, closed it.
+  const shows = (target, text, by = 'focus') => expect(async () => {
+    await page.mouse.move(0, 0); await target.blur(); await target[by]();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(text, { timeout: 1000 });
+    await expect(target).toHaveAttribute('aria-describedby', 'review-tooltip', { timeout: 1000 });
+  }).toPass();
+  await shows(preview.getByText('Titled', { exact: true }), 'Link title');
+  await shows(preview.getByRole('link').filter({ has: page.getByRole('img', { name: 'Logo' }) }), 'Outer title · Image title');
+  // A link without a usable target is no keyboard stop.
+  await shows(preview.getByText('Script', { exact: true }), 'Target unavailable in this preview', 'hover');
+  // A title that repeats the visible text adds nothing while the text shows in full.
+  await page.mouse.move(0, 0);
+  await preview.getByText('Same', { exact: true }).focus();
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  expect(errors).toEqual([]);
+});
+
+test('a cut-off specification reference is a keyboard stop naming it in full', async ({ page }) => {
+  const data = fixture();
+  const reference = 'A plain reference that runs on well past the width the specification gives it '.repeat(3).trim();
+  data.requirements = [
+    { id: 'long', title: 'Long', summary: 'Summary', source: { kind: 'text', reference }, acceptance: [] },
+    { id: 'short', title: 'Short', summary: 'Summary', source: { kind: 'text', reference: 'Ticket 7' }, acceptance: [] },
+  ];
+  const errors = await mount(page, data);
+  for (const spec of await page.locator('.specification summary').all()) await spec.click();
+  const ref = (id) => page.locator(`.specification[data-req-id="${id}"] .req-src-ref`);
+  expect(await ref('long').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  await ref('short').hover();
+  await expect(page.locator('#review-tooltip.is-shown')).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  await ref('long').focus();
+  await expect(page.locator('#review-tooltip')).toHaveText(reference);
+  await expect(page.locator('#app [title]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('dialogs and tooltips show hostile artifact text literally', async ({ page }) => {
   const data = fixture();
   const name = hostileName('file'), path = `src/${name}`;

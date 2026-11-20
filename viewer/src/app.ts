@@ -2410,7 +2410,7 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     const active = reviewsDialog.contains(document.activeElement) ? document.activeElement : null;
     const action = active?.dataset.action, reviewId = active?.dataset.reviewId;
     const top = reviewsDialog.scrollTop;
-    renderLit(reviewsPanelView(reviewsPanelModel()), reviewsDialog); enhanceTooltips(reviewsDialog);
+    renderLit(reviewsPanelView(reviewsPanelModel()), reviewsDialog);
     reviewsDialog.scrollTop = top;
     // Rendering keeps the focused button unless it became disabled.
     if (action && document.activeElement !== active) reviewsDialog.querySelector(`[data-action="${cssEsc(action)}"]${reviewId ? `[data-review-id="${cssEsc(reviewId)}"]` : ""}`)?.focus({ preventScroll: true });
@@ -2768,35 +2768,21 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
 
   /* ---- reasoning popover (portal, escapes clipped containers) ----------- */
   let popEl = null, popSticky = false, popOwner = null, popTimer = null;
-  const tooltipOwner = 'button, a, summary, [role="button"], [data-tooltip-focus]';
-  function enhanceTooltips(root = app) {
-    const owners = new Set(root.querySelectorAll("[data-tooltip-hints]"));
-    root.querySelectorAll("[title]").forEach((el) => {
-      const title = el.getAttribute("title");
-      el.removeAttribute("title");
-      delete el.dataset.tooltip;
-      delete el.dataset.tooltipTitle;
-      if (!title) return;
-      const normalized = (value) => value.replace(/\s+/g, " ").trim();
-      const labels = [el, ...el.querySelectorAll(".fp-name, .diff-path strong")];
-      if (labels.some((label) => normalized(title) === normalized(label.textContent) && label.scrollWidth <= label.clientWidth)) return;
-      el.dataset.tooltip = title;
-      el.dataset.tooltipTitle = title;
-      const owner = el.parentElement?.closest(tooltipOwner);
-      if (owner) { owner.dataset.tooltipHints = ""; owners.add(owner); }
-      else if (el.hasAttribute("data-tooltip-focus")) el.tabIndex = 0;
-    });
-    // Decorative hints share their existing control's keyboard stop. A kept
-    // control may have lost or changed a hint, so its tooltip is rebuilt from
-    // the hints it holds now.
-    owners.forEach((owner) => {
-      const hints = [...owner.querySelectorAll("[data-tooltip-title]")]
-        .filter((hint) => hint.parentElement?.closest(tooltipOwner) === owner)
-        .map((hint) => hint.dataset.tooltipTitle);
-      const tooltip = [...new Set([owner.dataset.tooltipTitle, ...hints].filter(Boolean))].join(" · ");
-      if (tooltip) owner.dataset.tooltip = tooltip;
-      else delete owner.dataset.tooltip;
-    });
+  // Templates render hints as data-tooltip, and as data-tooltip-clipped where
+  // the hint only names a label in full while the layout cuts it off.
+  const TOOLTIP_TARGET = ".tag-face[data-tagpop], [data-tooltip], [data-tooltip-clipped]";
+  /** The plain hint an element shows now; empty when it has none. */
+  function tooltipText(el) {
+    const { tooltip = "", tooltipClipped } = el.dataset;
+    if (!tooltipClipped) return tooltip;
+    const labels = [...(el.matches("[data-clippable]") ? [el] : []), ...el.querySelectorAll("[data-clippable]")];
+    return labels.some((label) => label.scrollWidth > label.clientWidth) ? tooltipClipped : tooltip;
+  }
+  /** The nearest element at `target` with a popover or a hint to show now. */
+  function tooltipTarget(target) {
+    for (let el = target.closest?.(TOOLTIP_TARGET); el; el = el.parentElement?.closest(TOOLTIP_TARGET))
+      if (el.matches(".tag-face[data-tagpop]") || tooltipText(el)) return el;
+    return null;
   }
   function clearPopDescription() {
     if (!popOwner) return;
@@ -2818,11 +2804,10 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   function fillPop(btn) {
     const d = btn.dataset;
     const el = ensurePop();
-    if (d.tooltip) {
+    const text = tooltipText(btn);
+    if (text) {
       el.className = "tag-pop-float is-tooltip";
-      // A label the layout cuts off is named in full by the owner's fuller hint.
-      const clipped = d.tooltipClipped && [...btn.querySelectorAll("[data-clippable]")].some((label) => label.scrollWidth > label.clientWidth);
-      renderLit(tooltipView(clipped ? d.tooltipClipped : d.tooltip), el);
+      renderLit(tooltipView(text), el);
       return;
     }
     const kindLine = `${d.glyph} ${d.label}${d.meta ? ` · ${d.meta}` : ""}${d.review ? ` · ${d.review}` : ""}`;
@@ -2876,21 +2861,21 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     popOwner = null;
   }
   document.addEventListener("pointerover", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (!b) return;
     if (popSticky && popOwner !== b) return;
     showPop(b);
   });
   document.addEventListener("pointerout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (b && !b.contains(e.relatedTarget) && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (b) showPop(b);
   });
   document.addEventListener("focusout", (e) => {
-    const b = e.target.closest(".tag-face[data-tagpop], [data-tooltip]");
+    const b = tooltipTarget(e.target);
     if (b && !popSticky) scheduleHide();
   });
   document.addEventListener("click", (e) => {
@@ -3920,7 +3905,6 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       if (replacement) { replacement.focus({ preventScroll: true }); if (caret && replacement.setSelectionRange) replacement.setSelectionRange(...caret); }
     }
     pendingDiffs.forEach((entry) => ensureFileDiff(entry));
-    enhanceTooltips();
     resumePendingLazyJump();
   };
 

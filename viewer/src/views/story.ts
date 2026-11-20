@@ -2,6 +2,7 @@
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
 import { stageView, type StageView } from "./stage";
+import { labelHint } from "../tooltips";
 
 export interface HeroView {
   title: string;
@@ -71,14 +72,16 @@ function hero(view: HeroView): TemplateResult {
 
 function specificationSource(source: SpecificationSourceView | null): TemplateResult | typeof nothing {
   if (!source) return nothing;
+  // A reference names its link target, and its text where the layout cuts it off.
+  const hint = labelHint(source.href || source.text, source.text);
   const reference = source.href
-    ? html`<a class="req-src-ref" href=${source.href} target="_blank" rel="noopener noreferrer" title=${source.href}>${source.text}</a>`
-    : html`<span class="req-src-ref" data-tooltip-focus title=${source.text}>${source.text}</span>`;
+    ? html`<a class="req-src-ref" href=${source.href} target="_blank" rel="noopener noreferrer" data-clippable data-tooltip=${hint.tooltip || nothing} data-tooltip-clipped=${hint.clipped || nothing}>${source.text}</a>`
+    : html`<span class="req-src-ref" tabindex=${hint.clipped ? "0" : nothing} data-clippable data-tooltip-clipped=${hint.clipped || nothing}>${source.text}</span>`;
   return html`<p class="req-source"><span class="req-src-kind">${source.label}</span>${reference}</p>`;
 }
 
 function criterion(item: CriterionView): TemplateResult {
-  return html`<li class="ac-item ac-${item.status}" data-ac=${item.ref}><span class="ac-id">${item.id}</span><span class="ac-text">${item.text}</span><span class="ac-status" data-tooltip-focus title=${item.stages}>${CRITERION_LABEL[item.status]}</span></li>`;
+  return html`<li class="ac-item ac-${item.status}" data-ac=${item.ref}><span class="ac-id">${item.id}</span><span class="ac-text">${item.text}</span><span class="ac-status" tabindex=${item.stages ? "0" : nothing} data-tooltip=${item.stages || nothing}>${CRITERION_LABEL[item.status]}</span></li>`;
 }
 
 // `open` is set only when the saved state changes, as the animated toggle

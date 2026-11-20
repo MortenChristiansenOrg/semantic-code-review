@@ -26,8 +26,8 @@ function coverageStage(stage: CoverageStageView): TemplateResult {
   return html`<div class="cov-stage ${stage.approved ? "is-approved" : ""}">
         <div class="cov-h"><span>${stage.approved ? "✓" : stage.number}</span><strong>${stage.title}</strong></div>
         <div class="cov-bars">
-          <span class="cov-bar" title="${stage.nodesApproved}/${stage.nodes} steps"><i ${barWidth(percentOf(stage.nodesApproved, stage.nodes))}></i></span>
-          <span class="cov-bar files" title="${stage.filesApproved}/${stage.files} file reviews"><i ${barWidth(percentOf(stage.filesApproved, stage.files))}></i></span>
+          <span class="cov-bar" data-tooltip="${stage.nodesApproved}/${stage.nodes} steps"><i ${barWidth(percentOf(stage.nodesApproved, stage.nodes))}></i></span>
+          <span class="cov-bar files" data-tooltip="${stage.filesApproved}/${stage.files} file reviews"><i ${barWidth(percentOf(stage.filesApproved, stage.files))}></i></span>
         </div>
         <small>${stage.approved ? "Stage approved" : "Stage approval pending"} · ${stage.nodesApproved}/${stage.nodes} steps · ${stage.filesApproved}/${stage.files} file reviews</small>
       </div>`;

@@ -25,7 +25,7 @@ const removeIcon = html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColo
 function attachment(file: AttachmentView, editable: boolean): TemplateResult {
   return html`<div class="attachment">
       ${file.preview ? html`<img src=${file.preview} alt=${file.filename} loading="lazy">` : html`<span class="attachment-icon">${fileIcon}</span>`}
-      <span class="attachment-name" title=${file.filename}>${file.filename}</span><small>${file.size} KiB</small>
+      <span class="attachment-name" data-clippable data-tooltip-clipped=${file.filename || nothing}>${file.filename}</span><small>${file.size} KiB</small>
       ${editable ? html`<button class="attachment-remove" type="button" data-action="remove-attachment" data-id=${file.id} aria-label="Remove ${file.filename}">${removeIcon}</button>` : nothing}</div>`;
 }
 
@@ -38,6 +38,6 @@ export function attachmentList(attachments: readonly AttachmentView[], editable 
 /** The attachments of a message being written, with a picker and upload status. */
 export function attachmentEditor(view: AttachmentEditorView): TemplateResult {
   return html`${attachmentList(view.attachments, true)}<div class="attachment-tools"><label class="attach-files">${paperclipIcon}<span>Attach files</span><input type="file" multiple data-attachment-input aria-label="Attach files"></label>
-      <span class="attachment-help" title="Up to 10 files per message, 20 MiB each">or drop into the text field / paste an image</span></div>
+      <span class="attachment-help" data-tooltip="Up to 10 files per message, 20 MiB each">or drop into the text field / paste an image</span></div>
       ${view.uploading ? html`<p role="status">Uploading files…</p>` : nothing}${view.error ? html`<p class="tthread-err" role="alert">${view.error}</p>` : nothing}`;
 }

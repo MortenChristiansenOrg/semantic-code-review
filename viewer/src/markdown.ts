@@ -1,5 +1,6 @@
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
+import { joinHints, labelHint } from './tooltips';
 
 /** Resolves a repository-relative link or image target to a viewer URL, or null when unavailable. */
 export type MarkdownResourceUrl = (target: string, image: boolean) => string | null;
@@ -40,5 +41,28 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
       if (!image) element.setAttribute('aria-disabled', 'true');
     }
   }
+  showTitlesAsTooltips(template.content);
   return template.innerHTML;
 };
+
+// The viewer shows titles in its own tooltip (see tooltips.ts). A link is the
+// keyboard stop for the hints of the parts it holds, such as an image.
+function showTitlesAsTooltips(root: DocumentFragment): void {
+  const hints = new Map<Element, string[]>();
+  for (const element of root.querySelectorAll('[title]')) {
+    const owner = element.parentElement?.closest('a');
+    const own = labelHint(element.getAttribute('title') || '', element.textContent || '').tooltip;
+    if (owner && own) hints.set(owner, [...(hints.get(owner) || []), own]);
+  }
+  for (const element of root.querySelectorAll('[title]')) {
+    const hint = labelHint(element.getAttribute('title') || '', element.textContent || '', hints.get(element));
+    element.removeAttribute('title');
+    if (hint.tooltip) element.setAttribute('data-tooltip', hint.tooltip);
+    if (hint.clipped) { element.setAttribute('data-tooltip-clipped', hint.clipped); element.setAttribute('data-clippable', ''); }
+  }
+  // A link without a title of its own shows only the hints of its parts.
+  for (const [owner, ownerHints] of hints) {
+    if (!owner.hasAttribute('data-tooltip') && !owner.hasAttribute('data-tooltip-clipped'))
+      owner.setAttribute('data-tooltip', joinHints(...ownerHints));
+  }
+}
