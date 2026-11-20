@@ -1,7 +1,10 @@
 /** Wire types shared by the review viewer page and its local server.
  *
  * Types only: no runtime code and no imports, so both the browser bundle and the
- * Node server can use this module. Every `/api/*` route except `/api/whoami` and
+ * Node server can use this module. The page's requests (`viewer/src/api.ts`), the
+ * server's request parsers (`viewer-requests.ts`) and its response bodies all use
+ * these types, and `tests/semantic-view/viewer-protocol.test.mjs` checks a running
+ * server's responses against them. Every `/api/*` route except `/api/whoami` and
  * `/api/shutdown` also requires the `ReviewQuery` search parameters, which the
  * page's request module (`viewer/src/api.ts`) appends to each request. POST routes require
  * `content-type: application/json` and a same-origin request. */
@@ -20,6 +23,9 @@ export interface ApiFailure {
 
 /** A success body carrying `T`, or a failure body. */
 export type ApiResult<T> = ({ ok: true } & T) | ApiFailure;
+
+/** The fields of a response's success body, without `ok`. */
+export type ApiSuccess<Response> = Omit<Extract<Response, { ok: true }>, "ok">;
 
 /** A body that only reports success. */
 export type OkResponse = ApiResult<{}>;
@@ -54,6 +60,10 @@ export interface Attachment {
   /** Always `attachments/<id>/content.bin`. */
   path: string;
 }
+
+/** An attachment in a request. The page sends whole `Attachment`s; the server reads
+ * their IDs and checks each against its stored file. */
+export type AttachmentRef = Pick<Attachment, "id">;
 
 export type DiffSide = "old" | "new";
 
@@ -463,10 +473,10 @@ export interface LegacyDraftNote extends Partial<Omit<DraftNote, "kind" | "id" |
   at?: number;
 }
 
-/** The persisted viewer state (`state` in the page). The server starts it as `{}`
- * and returns whatever the page wrote, including records saved by older viewers,
- * so every field may be absent or hold a legacy shape on the wire. The page
- * normalises the state on load; check values before relying on their current shape. */
+/** The persisted viewer state (`state` in the page), as the current page writes it.
+ * On the wire it is a `StoredReviewState`: the server starts it as `{}` and returns
+ * whatever the page wrote, including records saved by older viewers, so every field
+ * may be absent or hold a legacy shape. The page normalises the state on load. */
 export interface ReviewState {
   /** A boolean is a legacy approval without a revision; the page discards it. */
   approvals?: Record<string, ApprovalRecord | boolean>;
@@ -511,6 +521,11 @@ export interface ReviewState {
   /** Keys written by older viewers, such as `active`. */
   [legacyKey: string]: unknown;
 }
+
+/** The review state as the server stores and returns it. The server applies the
+ * page's changes without checking their values, so read it as a `ReviewState` only
+ * after checking each value. Every key, including `__proto__`, is an own key. */
+export type StoredReviewState = { [key: string]: unknown };
 
 /** One side of a state change: whether the key exists and its value. */
 export type ReviewStateValue = { present: true; value: unknown } | { present: false };
@@ -571,7 +586,7 @@ export interface ViewerSnapshot {
 export type ReviewStateResponse = ApiResult<{
   reviewId: string;
   generation: string;
-  state: ReviewState;
+  state: StoredReviewState;
 }>;
 
 /** POST `/api/review-state` request. */
@@ -711,7 +726,9 @@ export interface ApprovalContentInfo {
 /** POST `/api/approval-comparison` response: the current file compared with its
  * approved content. Pages hold at most 900 rows. */
 export type ApprovalComparisonResponse = ApiResult<{
-  approved: ApprovalFileEndpoint & ApprovalContentInfo & { at: string };
+  /** The endpoint recorded with the snapshot. Snapshots of older viewers may hold an
+   * ownership of another shape; the server only compares it with the current one. */
+  approved: Omit<ApprovalFileEndpoint, "ownership"> & { ownership: unknown } & ApprovalContentInfo & { at: string };
   current: ApprovalFileEndpoint & ApprovalContentInfo;
   baseChanged: boolean;
   ownershipChanged: boolean;
@@ -806,8 +823,8 @@ export interface ReviewCompletionRequest extends ReviewTarget {
   expectedCompletedAt: string | null;
 }
 
-/** POST `/api/reviews/open` request. */
-// Unverified: the page currently sends the full `ReviewCompletionRequest` body here; the server reads only the target.
+/** POST `/api/reviews/open` request. The page sends the same body as for
+ * `/api/reviews/completion`; the server reads only the target. */
 export type ReviewOpenRequest = ReviewTarget;
 
 /** POST `/api/reviews/open` response: the started review's viewer URL. */
@@ -847,7 +864,7 @@ export interface FeedbackNoteExport {
   id: string;
   stageId?: string;
   body: string;
-  attachments: Attachment[];
+  attachments: AttachmentRef[];
   /** Makes the thread ID stable across retries. */
   clientId?: string;
   snapshot?: DraftSnapshot;
@@ -859,7 +876,7 @@ export interface FeedbackReplyExport {
   ref: string;
   threadId: string;
   body: string;
-  attachments: Attachment[];
+  attachments: AttachmentRef[];
 }
 
 /** POST `/api/feedback/export` request. */
@@ -875,7 +892,7 @@ export interface FeedbackReplyResult {
   threadId: string;
   /** Absent when the thread could not be read back. */
   comment?: FeedbackComment;
-  // Unverified: status is absent only if the thread vanished between writing and reading back.
+  /** Absent when the thread could not be read back. */
   status?: ThreadStatus;
   resolvedAt: string | null;
 }
@@ -903,7 +920,7 @@ export interface ThreadActionRequest {
   implementationId: string;
   threadId: string;
   body?: string;
-  attachments?: Attachment[];
+  attachments?: AttachmentRef[];
   /** Makes the reply comment ID stable across retries. */
   clientId?: string;
 }

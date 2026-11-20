@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { atomicJson, attachmentIds, isReviewId, parseReviewRecord, readReview, reviewDeletionPath, reviewDirectory, reviewHome, withReviewLock, type ReviewRecord } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { errorCode, isRecord, stringField } from "./narrow.js";
+import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage, ReviewSummary } from "./viewer-protocol.js";
 
 const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -52,7 +53,7 @@ function rawTicket(id: string, generation: string): Ticket | null {
   const file = reviewDeletionPath(id, generation);
   return fs.existsSync(file) ? parseTicket(parseJson(fs.readFileSync(file, "utf8")), file) : null;
 }
-export function pendingReviewDeletions() {
+export function pendingReviewDeletions(): ReviewSummary[] {
   const directory = path.join(reviewHome(), "deletions");
   if (!fs.existsSync(directory)) return [];
   return fs.readdirSync(directory).filter((file) => {
@@ -152,11 +153,11 @@ function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T
     throw new Error(cleanupFailure(error, reviewDirectory(id), retry));
   }
 }
-export function inspectReviewStorage(id: string, generation: string) {
+export function inspectReviewStorage(id: string, generation: string): ReviewStorage {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry cleanup.", () => inspect(id, generation));
 }
 /** The durable ticket invalidates all old writers before file removal starts. */
-export function deleteReviewData(id: string, generation: string, fingerprint: string) {
+export function deleteReviewData(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewDeleteResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     const file = reviewDeletionPath(id, generation), live = reviewDirectory(id), trash = trashDirectory(id, generation);
     let ticket = rawTicket(id, generation);
@@ -186,7 +187,7 @@ export function deleteReviewData(id: string, generation: string, fingerprint: st
     }
   });
 }
-export function cleanUnusedReviewFiles(id: string, generation: string, fingerprint: string) {
+export function cleanUnusedReviewFiles(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewCleanResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry Clean unused files.", () => {
     const preview = inspect(id, generation);
     if (preview.deletionPending || preview.referenceError) throw new Error(preview.referenceError || "Finish deleting this review first.");

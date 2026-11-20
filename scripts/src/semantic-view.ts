@@ -49,13 +49,19 @@ export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.j
 import { refreshRemoteReview } from "./shared/remote-review.js";
 import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
-import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
+import { CLASSIFICATIONS, FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
-import type { StateChange } from "./shared/review-store.js";
+import type { ReviewRecord } from "./shared/review-store.js";
 import { assertKnownOptions, option, parseArguments } from "./shared/arguments.js";
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
+import type * as Wire from "./shared/viewer-protocol.js";
+import {
+  parseAgentResponse, parseApprovalComparison, parseApprovalEndpoint, parseAttachmentUpload, parseCompletion, parseDraftSnapshotNotes,
+  parseFeedbackExport, parseFeedbackNote, parseFeedbackReply, parseReviewTarget, parseStatePatch, parseStorageAction, parseThreadAction,
+  type ReceivedQuery, type Skipped,
+} from "./shared/viewer-requests.js";
 
 const pathExistsFacts = factCache<boolean>();
 const renameFacts = factCache<string>();
@@ -165,6 +171,7 @@ function renamedPathBetween(repoRoot: string, fromRevision: string, toRevision: 
 }
 
 const isList = (value: unknown): value is unknown[] => Array.isArray(value);
+const listOf = (value: unknown): unknown[] => isList(value) ? value : [];
 
 /** The fields of a JSON object, or an empty record for any other value. */
 const fieldsOf = (value: unknown): JsonRecord => isRecord(value) ? value : {};
@@ -174,39 +181,35 @@ const fieldsOf = (value: unknown): JsonRecord => isRecord(value) ? value : {};
 // Local artifacts are validated by the CLI, but remote reviews reconstructed
 // from Git history (shared/remote-review.ts) are not schema documents: they
 // have no $schema, base branch or insight collections. The viewer therefore
-// narrows artifact documents field by field. It fails only where it cannot
-// render at all and passes display-only values through to the browser.
+// narrows artifact documents field by field into the wire types it sends. It
+// fails only where it cannot render at all, such as a node change whose
+// ownership is malformed; a missing display value becomes empty.
 
 /** The implementation manifest fields the viewer reads. */
 interface ViewerManifest {
   implementationId: string;
-  title?: string;
-  summary?: string;
+  title: string;
+  summary: string;
   skillVersion?: string;
-  targetBranch?: string;
-  baseRevision?: string;
+  targetBranch: string;
+  baseRevision: string;
   requirements: string[];
   stages: string[];
 }
 
 interface ViewerSpecification {
-  id?: string;
-  title?: string;
-  summary?: string;
-  source?: { kind?: string; reference?: string; url?: string };
-  acceptanceCriteria: unknown[];
+  id: string;
+  title: string;
+  summary: string;
+  source: Wire.SpecificationSource;
+  acceptance: Wire.AcceptanceCriterion[];
 }
 
-interface ViewerNodeChange {
-  path?: string;
-  classification?: unknown;
-  hunks?: unknown;
-  lineRanges?: unknown;
-}
+type ViewerNodeChange = Wire.NodeChange;
 
 interface ViewerNode {
   id: string;
-  description?: unknown;
+  description: string;
   changes: ViewerNodeChange[];
 }
 
@@ -223,13 +226,13 @@ type InsightLists = Partial<Record<InsightCollection, unknown[]>>;
 
 interface StageDocument<File extends StageDocumentFile = StageDocumentFile> extends InsightLists {
   id: string;
-  title?: string;
-  summary?: string;
-  rationale?: string;
-  dependsOn: unknown[];
-  specificationRefs: unknown[];
+  title: string;
+  summary: string;
+  rationale: string;
+  dependsOn: string[];
+  specificationRefs: string[];
   nodes: ViewerNode[];
-  change: { branch?: string; baseRevision: string; headRevision: string; files: File[] };
+  change: { branch: string; baseRevision: string; headRevision: string; files: File[] };
 }
 
 /** A changed file compared with its last occurrence in the ordered review. */
@@ -247,25 +250,59 @@ function requiredString(value: JsonRecord, key: string, file: string): string {
   return field;
 }
 
+/** A display string, or empty when it is missing. */
+const displayString = (value: unknown, key: string): string => stringField(value, key) ?? "";
+
+/** The strings of a list of IDs, or none when it is not a list. */
+const stringsOf = (value: unknown): string[] => isList(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+const isClassification = (value: unknown): value is Wire.Classification => CLASSIFICATIONS.some((item) => item === value);
+
+const isLineSpan = (value: unknown): value is Wire.LineSpan =>
+  isRecord(value) && Number.isInteger(value.start) && Number.isInteger(value.end);
+
+function isLineRange(value: unknown): value is Wire.LineRange {
+  if (!isRecord(value) || (value.old === undefined && value.new === undefined)) return false;
+  return (value.old === undefined || isLineSpan(value.old)) && (value.new === undefined || isLineSpan(value.new));
+}
+
+/** A node's change of one file. Ownership decides which lines a node shows, so a
+ * malformed change fails the stage instead of showing the wrong lines. */
+function readNodeChange(value: unknown, file: string): ViewerNodeChange {
+  const entry = fieldsOf(value);
+  const { classification, hunks, lineRanges } = entry;
+  if (!isClassification(classification)) throw new Error(`${file}: invalid node change classification.`);
+  const isHunk = (hunk: unknown): hunk is number => Number.isInteger(hunk);
+  if (hunks !== undefined && !(isList(hunks) && hunks.every(isHunk))) throw new Error(`${file}: invalid node change hunks.`);
+  if (lineRanges !== undefined && !(isList(lineRanges) && lineRanges.every(isLineRange))) throw new Error(`${file}: invalid node change line ranges.`);
+  return {
+    path: requiredString(entry, "path", file), classification,
+    ...(hunks !== undefined ? { hunks } : {}),
+    ...(lineRanges !== undefined ? { lineRanges } : {}),
+  };
+}
+
 function readManifest(file: string): ViewerManifest {
   const value = fieldsOf(readJson(file));
   const { stages, requirements } = value;
   if (!isStringArray(stages)) throw new Error(`${file}: missing stage list.`);
   return {
     implementationId: requiredString(value, "implementationId", file),
-    title: stringField(value, "title"), summary: stringField(value, "summary"), skillVersion: stringField(value, "skillVersion"),
-    targetBranch: stringField(value, "targetBranch"), baseRevision: stringField(value, "baseRevision"),
+    title: displayString(value, "title"), summary: displayString(value, "summary"), skillVersion: stringField(value, "skillVersion"),
+    targetBranch: displayString(value, "targetBranch"), baseRevision: displayString(value, "baseRevision"),
     requirements: isStringArray(requirements) ? requirements : [],
     stages,
   };
 }
 
-function readSpecification(file: string): ViewerSpecification {
+/** A specification; one without an ID keeps the ID the manifest lists it by. */
+function readSpecification(file: string, specificationId: string): ViewerSpecification {
   const value = fieldsOf(readJson(file));
+  const url = stringField(value.source, "url");
   return {
-    id: stringField(value, "id"), title: stringField(value, "title"), summary: stringField(value, "summary"),
-    source: isRecord(value.source) ? { kind: stringField(value.source, "kind"), reference: stringField(value.source, "reference"), url: stringField(value.source, "url") } : undefined,
-    acceptanceCriteria: isList(value.acceptanceCriteria) ? value.acceptanceCriteria : [],
+    id: stringField(value, "id") ?? specificationId, title: displayString(value, "title"), summary: displayString(value, "summary"),
+    source: { kind: displayString(value.source, "kind"), reference: displayString(value.source, "reference"), ...(url !== undefined ? { url } : {}) },
+    acceptance: listOf(value.acceptanceCriteria).map((criterion) => ({ id: displayString(criterion, "id"), text: displayString(criterion, "text") })),
   };
 }
 
@@ -280,21 +317,18 @@ function readStageDocument(file: string): StageDocument {
   const nodes = (isList(value.nodes) ? value.nodes : []).map((item): ViewerNode => {
     const node = fieldsOf(item);
     return {
-      id: requiredString(node, "id", file), description: node.description,
-      changes: (isList(node.changes) ? node.changes : []).map((entry) => {
-        const { classification, hunks, lineRanges } = fieldsOf(entry);
-        return { path: stringField(entry, "path"), classification, hunks, lineRanges };
-      }),
+      id: requiredString(node, "id", file), description: displayString(node, "description"),
+      changes: listOf(node.changes).map((entry) => readNodeChange(entry, file)),
     };
   });
   const stage: StageDocument = {
     id: requiredString(value, "id", file),
-    title: stringField(value, "title"), summary: stringField(value, "summary"), rationale: stringField(value, "rationale"),
-    dependsOn: isList(value.dependsOn) ? value.dependsOn : [],
-    specificationRefs: isList(value.specificationRefs) ? value.specificationRefs : [],
+    title: displayString(value, "title"), summary: displayString(value, "summary"), rationale: displayString(value, "rationale"),
+    dependsOn: stringsOf(value.dependsOn),
+    specificationRefs: stringsOf(value.specificationRefs),
     nodes,
     change: {
-      branch: stringField(change, "branch"),
+      branch: displayString(change, "branch"),
       baseRevision: requiredString(change, "baseRevision", file),
       headRevision: requiredString(change, "headRevision", file),
       files,
@@ -572,10 +606,7 @@ function projectFor(projects: Project[], p: string): string {
 
 /** One diff row: an added (new line n), deleted (old line o) or context line,
  * with the 1-based hunk an added or deleted line belongs to. */
-type DiffLine =
-  | { t: "add"; n: number; s: string; h?: number }
-  | { t: "del"; o: number; s: string; h?: number }
-  | { t: "ctx"; o: number; n: number; s: string };
+type DiffLine = Wire.DiffLine;
 
 /** Git's view of one changed file in a diff range. */
 interface FileStats {
@@ -598,10 +629,10 @@ interface ParsedDiff {
   truncated: boolean;
 }
 
-type DiffMode = "changes" | "full";
+type DiffMode = Wire.DiffMode;
 
 /** One page of a file diff as served to the browser. */
-type DiffPage = ParsedDiff & { nextOffset: number | null; mode: DiffMode; offset?: number };
+type DiffPage = Wire.ApiSuccess<Wire.DiffResponse>;
 
 function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | undefined): ParsedDiff {
   if (!raw.trim()) {
@@ -1010,48 +1041,32 @@ async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFil
     truncated: false, nextOffset: more ? offset + lines.length : null, offset, mode };
 }
 
-const listOf = (value: unknown): unknown[] => isList(value) ? value : [];
-
 function isCodeTarget(value: unknown): value is CodeTarget {
   return isRecord(value) && typeof value.path === "string" && typeof value.revision === "string" && typeof value.blobId === "string" &&
     typeof value.startLine === "number" && typeof value.endLine === "number" && typeof value.contextStartLine === "number" &&
     isStringArray(value.context);
 }
 
-interface ViewerInsight {
-  type: string;
-  collection: InsightCollection;
-  id?: string;
-  title?: string;
-  body?: string;
-  meta?: string;
-  validationType?: string;
-  nodeRefs: unknown;
-  evidence?: {
-    kind?: string;
-    attachments: { mediaType?: string; sha256?: string; caption?: string; role?: string }[];
-    inline?: string;
-    reproduction?: string;
-    specificationRefs: unknown;
-    capturedAt?: string;
-  };
-  codeTarget?: ReturnType<typeof resolveCodeTarget>;
-}
+const EVIDENCE_KINDS: readonly Wire.EvidenceKind[] = ["screenshot", "recording", "terminal", "http", "log", "output-file", "measurement", "report"];
+const isEvidenceKind = (value: unknown): value is Wire.EvidenceKind => EVIDENCE_KINDS.some((kind) => kind === value);
+
+/** An insight before its code target is resolved. */
+type InsightFields = Omit<Wire.Insight, "id" | "title" | "body" | "nodeRefs"> & { id?: string; title?: string; body?: string; item: unknown };
 
 /** Insights are display-only, so each item is read leniently, including older
  * shapes (alternatives with summary/rationale, plain-text open questions). */
-function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): ViewerInsight[] {
-  const insights: ViewerInsight[] = [];
+function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): Wire.Insight[] {
+  const insights: InsightFields[] = [];
   const text = stringField;
   for (const d of listOf(stage.decisions)) {
     insights.push({
       type: "decision",
       collection: "decisions",
+      item: d,
       id: text(d, "id"),
       title: text(d, "summary"),
       body: text(d, "rationale"),
       meta: text(d, "category"),
-      nodeRefs: fieldsOf(d).nodeRefs || [],
     });
   }
   for (const a of listOf(stage.assumptions)) {
@@ -1059,30 +1074,30 @@ function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): Viewe
     insights.push({
       type: "assumption",
       collection: "assumptions",
+      item: a,
       id: text(a, "id"),
       title: text(a, "statement"),
       body: riskIfWrong ? `If wrong: ${riskIfWrong}` : "",
-      nodeRefs: fieldsOf(a).nodeRefs || [],
     });
   }
   for (const a of listOf(stage.alternatives)) {
     insights.push({
       type: "alternative",
       collection: "alternatives",
+      item: a,
       id: text(a, "id"),
       title: text(a, "approach") || text(a, "summary") || text(a, "id"),
       body: text(a, "reasonRejected") || text(a, "rationale") || "",
-      nodeRefs: fieldsOf(a).nodeRefs || [],
     });
   }
   for (const f of listOf(stage.failedAttempts)) {
     insights.push({
       type: "lesson",
       collection: "failedAttempts",
+      item: f,
       id: text(f, "id"),
       title: text(f, "approach"),
       body: `Outcome: ${text(f, "outcome")} — Lesson: ${text(f, "lesson")}`,
-      nodeRefs: fieldsOf(f).nodeRefs || [],
     });
   }
   for (const r of listOf(stage.risks)) {
@@ -1090,58 +1105,64 @@ function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): Viewe
     insights.push({
       type: "risk",
       collection: "risks",
+      item: r,
       id: text(r, "id"),
       title: text(r, "summary"),
       body: mitigation ? `Mitigation: ${mitigation}` : "",
-      nodeRefs: fieldsOf(r).nodeRefs || [],
     });
   }
   for (const v of listOf(stage.validation)) {
     insights.push({
       type: "validation",
       collection: "validation",
+      item: v,
       id: text(v, "id"),
       title: text(v, "summary"),
       body: text(v, "command") || "",
       meta: text(v, "status"),
       validationType: text(v, "type"),
-      nodeRefs: fieldsOf(v).nodeRefs || [],
     });
   }
   for (const e of listOf(stage.evidence)) {
-    const reproduction = text(e, "reproduction");
+    const reproduction = text(e, "reproduction"), kind = fieldsOf(e).kind;
     insights.push({
       type: "evidence",
       collection: "evidence",
+      item: e,
       id: text(e, "id"),
       title: text(e, "summary"),
       body: reproduction ? `Reproduce: ${reproduction}` : "",
       meta: text(e, "kind"),
-      nodeRefs: fieldsOf(e).nodeRefs || [],
-      evidence: {
-        kind: text(e, "kind"),
-        attachments: listOf(fieldsOf(e).attachments).map((attachment) => ({
-          mediaType: text(attachment, "mediaType"), sha256: text(attachment, "sha256"), caption: text(attachment, "caption"), role: text(attachment, "role"),
-        })),
+      // Evidence of an unknown kind is shown without its details.
+      ...(isEvidenceKind(kind) ? { evidence: {
+        kind,
+        attachments: listOf(fieldsOf(e).attachments).map((attachment): Wire.EvidenceAttachment => {
+          const caption = text(attachment, "caption"), role = text(attachment, "role");
+          return {
+            mediaType: displayString(attachment, "mediaType"), sha256: displayString(attachment, "sha256"),
+            ...(caption !== undefined ? { caption } : {}), ...(role === "before" || role === "after" ? { role } : {}),
+          };
+        }),
         inline: text(e, "inline"),
         reproduction,
-        specificationRefs: fieldsOf(e).specificationRefs || [],
-        capturedAt: text(e, "capturedAt"),
-      },
+        specificationRefs: stringsOf(fieldsOf(e).specificationRefs),
+        capturedAt: displayString(e, "capturedAt"),
+      } } : {}),
     });
   }
   for (const q of listOf(stage.openQuestions)) {
     insights.push({
       type: "question",
       collection: "openQuestions",
+      item: q,
       id: text(q, "id") || "q",
       title: text(q, "question") || text(q, "summary") || String(q),
       body: text(q, "context") || "",
-      nodeRefs: fieldsOf(q).nodeRefs || [],
     });
   }
-  return insights.map(insight => {
-    const item = listOf(stage[insight.collection]).find((candidate) => isRecord(candidate) && candidate.id === insight.id);
+  return insights.map(({ item: source, ...fields }): Wire.Insight => {
+    const insight: Wire.Insight = { ...fields, id: fields.id ?? "", title: fields.title ?? "", body: fields.body ?? "", nodeRefs: stringsOf(fieldsOf(source).nodeRefs) };
+    const item = listOf(stage[insight.collection]).find((candidate) => isRecord(candidate) && candidate.id === fields.id);
     const target = fieldsOf(item).codeTarget;
     return isCodeTarget(target) ? { ...insight, codeTarget: resolveCodeTarget(repoRoot, target, stage.change.headRevision) } : insight;
   });
@@ -1165,33 +1186,25 @@ function fileRevision(stage: DiffRange, file: { path: string; previousPath?: str
   return hash.digest("hex");
 }
 
-/** A node's claim on a file; the browser echoes it back when approving the file. */
-interface ViewerMembership {
-  nodeId: string;
-  classification?: unknown;
-  hunks?: unknown;
-  lineRanges?: unknown;
-}
-
 /** Copies a node change without absent keys, so a value echoed back through
  * JSON compares equal to the original. */
-function nodeChangeFields(change: ViewerNodeChange) {
+function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path"> {
   return {
-    ...(change.classification !== undefined ? { classification: change.classification } : {}),
+    classification: change.classification,
     ...(change.hunks ? { hunks: change.hunks } : {}),
     ...(change.lineRanges ? { lineRanges: change.lineRanges } : {}),
   };
 }
 
-function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture) {
+function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture): Wire.ImplementationData {
   const implementationRoot = path.join(repoRoot, ".semantic-review");
   const manifest = readManifest(path.join(implementationRoot, "manifest.json"));
-  const specificationDocs = manifest.requirements.map((specificationId) =>
-    readSpecification(path.join(implementationRoot, "requirements", `${specificationId}.json`)),
+  const requirements = manifest.requirements.map((specificationId): Wire.Requirement =>
+    readSpecification(path.join(implementationRoot, "requirements", `${specificationId}.json`), specificationId),
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
-  const stages = readViewerStages(repoRoot, manifest).map((s) => {
+  const stages = readViewerStages(repoRoot, manifest).map((s): Wire.Stage => {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const stats = statsForStage(s);
@@ -1207,7 +1220,7 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       changes: node.changes.map((c) => ({ path: c.path, ...nodeChangeFields(c) })),
     }));
 
-    const membershipByPath = new Map<string | undefined, ViewerMembership[]>();
+    const membershipByPath = new Map<string, Wire.FileMembership[]>();
     s.nodes.forEach((node) => {
       node.changes.forEach((c) => {
         let memberships = membershipByPath.get(c.path);
@@ -1216,7 +1229,7 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       });
     });
 
-    const files = s.change.files.map((file) => {
+    const files = s.change.files.map((file): Wire.StageFile => {
       const p = file.path;
       const fileStats = stats.get(p);
       const previousPath = previousPathByPath.get(p);
@@ -1252,17 +1265,6 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
     };
   });
 
-  const requirements = specificationDocs.map((specification) => ({
-    id: specification.id,
-    title: specification.title,
-    summary: specification.summary,
-    source: specification.source,
-    acceptance: specification.acceptanceCriteria.map((c) => ({
-      id: stringField(c, "id"),
-      text: stringField(c, "text"),
-    })),
-  }));
-
   const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
   return {
     implementationId: manifest.implementationId,
@@ -1282,7 +1284,7 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
   };
 }
 
-type ImplementationData = ReturnType<typeof buildImplementationData>;
+type ImplementationData = Wire.ImplementationData;
 
 /** Cached Git results for one stage's immutable diff range. */
 interface StageRecord {
@@ -1396,7 +1398,9 @@ export function createViewerDataSource(
       const bytes = execFileSync("git", ["cat-file", "blob", match[2]], { cwd: repoRoot, env: reviewEnvironment(), windowsHide: true, maxBuffer: limit });
       const mediaType = imageMediaType(bytes);
       if (!mediaType && bytes.includes(0)) throw new Error("Preview unavailable for binary files.");
-      return { revision, path: resourcePath, side: deleted ? "base" : "head", content: bytes.toString("base64"), mediaType: mediaType || "text/plain; charset=utf-8" };
+      // The content is base64 here; the JSON response decodes it to text.
+      const content: Wire.ApiSuccess<Wire.FileContentResponse> = { revision, path: resourcePath, side: deleted ? "base" : "head", content: bytes.toString("base64"), mediaType: mediaType || "text/plain; charset=utf-8" };
+      return content;
     },
     async fileDiff(stageId: string, filePath: string, baseRevision: string, headRevision: string, mode: string = "changes", offset = 0,
       targetSide: string | null = null, targetLine: number | null = null): Promise<DiffPage> {
@@ -1454,13 +1458,6 @@ const IMPLEMENTATION_SCRIPT_PREFIX = "window.SEMANTIC_IMPLEMENTATION = JSON.pars
  * Escaping "<" keeps the script inert even inside an HTML script element. */
 function implementationScript(data: unknown): string {
   return `${IMPLEMENTATION_SCRIPT_PREFIX}${JSON.stringify(JSON.stringify(data)).replaceAll("<", "\\u003c")});\n`;
-}
-
-/** The data an implementation script carries. */
-function implementationFromScript(script: string): unknown {
-  const text = script.startsWith(IMPLEMENTATION_SCRIPT_PREFIX) ? parseJson(script.slice(IMPLEMENTATION_SCRIPT_PREFIX.length).replace(/\);\n$/, "")) : undefined;
-  if (typeof text !== "string") throw new Error("The implementation data script is invalid.");
-  return parseJson(text);
 }
 
 export function createImplementationDataScript(repoRoot: string) {
@@ -1567,7 +1564,8 @@ async function readRequestFields(request: http.IncomingMessage, limit?: number):
   return payload;
 }
 
-function sendJson(response: http.ServerResponse, status: number, payload: unknown) {
+/** Sends a JSON body. Name its shared protocol type: without one, no payload is accepted. */
+function sendJson<Body extends object = never>(response: http.ServerResponse, status: number, payload: NoInfer<Body>) {
   const body = Buffer.from(JSON.stringify(payload), "utf8");
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -1609,8 +1607,8 @@ interface NoteTarget {
 // Map a browser-local note (kind: stage | node | file | line) onto
 // review-feedback target options. Line notes encode the diff side and line
 // number in their id.
-export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets): NoteTarget {
-  const noteId = stringField(note, "id") ?? "";
+export function mapNoteTarget(note: Pick<Wire.FeedbackNoteExport, "kind" | "id" | "stageId">, implementation: FeedbackTargets): NoteTarget {
+  const noteId = note.id;
   if (note.kind === "stage") {
     const stage = implementation.stages.find((s) => s.id === note.id);
     if (!stage) throw new Error(`unknown stage "${note.id}"`);
@@ -1670,7 +1668,8 @@ export function mapNoteTarget(note: JsonRecord, implementation: FeedbackTargets)
     if (!insight) throw new Error(`unknown insight "${note.id}"`);
     return { "target-kind": "insight", stage: stageId, collection, item, label: insight.title };
   }
-  throw new Error(`unsupported note kind "${note.kind}"`);
+  // Callers outside the viewer server may pass any kind.
+  throw new Error(`unsupported note kind "${String(note.kind)}"`);
 }
 
 export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
@@ -1722,9 +1721,8 @@ function cliErrorMessage(error: unknown): string {
 
 // Upgrade commit-only line snapshots without moving their original anchors.
 // Unavailable history stays unresolved and is conservatively rejected on export.
-export function resolveLineDraftSnapshots(repoRoot: string, notes: unknown): unknown {
-  if (!isList(notes)) return notes;
-  return notes.map(note => {
+export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[]): Note[] {
+  return notes.map((note): Note => {
     if (!isRecord(note) || note.kind !== "line") return note;
     const snapshot = note.snapshot;
     if (!isRecord(snapshot) || snapshot.fileRevision) return note;
@@ -1742,24 +1740,19 @@ export function resolveLineDraftSnapshots(repoRoot: string, notes: unknown): unk
   });
 }
 
-interface SkippedNote<Ref> {
-  ref: Ref;
-  reason: string;
-}
+type SkippedNote<Ref> = Skipped<Ref>;
 
 interface PlannedThread {
   ref: number;
   body: string;
   /** Attachment IDs as the browser sent them; review-feedback validates them. */
-  attachments: unknown[];
+  attachments: string[];
   target: NoteTarget;
   clientId?: string;
 }
 
-/** Attachment IDs of a note or reply, as the browser sent them. */
-function attachmentIdsOf(fields: JsonRecord): unknown[] {
-  return isList(fields.attachments) ? fields.attachments.map((item) => fieldsOf(item).id) : [];
-}
+/** Attachment IDs of a note or reply. */
+const attachmentIdsOf = (fields: { attachments: Wire.AttachmentRef[] }): string[] => fields.attachments.map((item) => item.id);
 
 // Validate every note and resolve its target into review-feedback options.
 // Pure over (notes, implementation): produces the ordered list of threads to create
@@ -1770,25 +1763,19 @@ export function planFeedbackThreads(notes: unknown, implementation: FeedbackTarg
   const skipped: SkippedNote<number>[] = [];
   const planned: PlannedThread[] = [];
   if (!isList(notes)) return { planned, skipped };
-  notes.forEach((note, index) => {
-    const noteRef = fieldsOf(note).ref;
-    const ref = typeof noteRef === "number" && Number.isInteger(noteRef) ? noteRef : index;
-    if (!note || typeof note !== "object") {
-      skipped.push({ ref, reason: "not an object" });
+  notes.forEach((value, index) => {
+    const note = parseFeedbackNote(value, index);
+    if ("reason" in note) {
+      skipped.push(note);
       return;
     }
-    const fields = fieldsOf(note);
-    const body = typeof fields.body === "string" ? fields.body.trim() : "";
-    const attachments = attachmentIdsOf(fields);
-    if (!body && !attachments.length) {
-      skipped.push({ ref, reason: "empty body" });
-      return;
-    }
+    const { ref, body } = note;
+    const attachments = attachmentIdsOf(note);
     let target: NoteTarget;
     try {
-      target = mapNoteTarget(fields, implementation);
-      if (fields.kind === "line" && fields.snapshot) {
-        const snapshot = fieldsOf(fields.snapshot);
+      target = mapNoteTarget(note, implementation);
+      if (note.kind === "line" && note.snapshot) {
+        const { snapshot } = note;
         const stage = implementation.stages.find((stage) => stage.id === target.stage);
         const file = stage?.files?.find(file => file.path === target.path);
         const unchanged = snapshot.fileRevision
@@ -1802,7 +1789,7 @@ export function planFeedbackThreads(notes: unknown, implementation: FeedbackTarg
       skipped.push({ ref, reason: errorMessage(error) });
       return;
     }
-    planned.push({ ref, body, attachments, target, ...(typeof fields.clientId === "string" ? { clientId: fields.clientId } : {}) });
+    planned.push({ ref, body, attachments, target, ...(note.clientId !== undefined ? { clientId: note.clientId } : {}) });
   });
   return { planned, skipped };
 }
@@ -1888,20 +1875,14 @@ export function exportFeedbackReplies({ repoRoot, context = null }: FeedbackComm
   }
   const skipped: SkippedNote<string>[] = [];
   const batch: { ref: string; threadId: string; commentId: string; input: JsonRecord }[] = [];
-  drafts.forEach((draft, index) => {
-    const fields = fieldsOf(draft);
-    const ref = typeof fields.ref === "string" ? fields.ref : String(index);
-    const threadId = typeof fields.threadId === "string" ? fields.threadId : "";
-    const body = typeof fields.body === "string" ? fields.body.trim() : "";
-    if (!threadId) {
-      skipped.push({ ref, reason: "thread no longer exists" });
+  drafts.forEach((value, index) => {
+    const draft = parseFeedbackReply(value, index);
+    if ("reason" in draft) {
+      skipped.push(draft);
       return;
     }
-    const attachments = attachmentIdsOf(fields);
-    if (!body && !attachments.length) {
-      skipped.push({ ref, reason: "empty body" });
-      return;
-    }
+    const { ref, threadId, body } = draft;
+    const attachments = attachmentIdsOf(draft);
     const commentId = `reply-${createHash("sha256").update(JSON.stringify([threadId, ref, body, attachments])).digest("hex").slice(0, 32)}`;
     batch.push({
       ref,
@@ -1938,8 +1919,11 @@ export function exportFeedbackReplies({ repoRoot, context = null }: FeedbackComm
 
 }
 
+/** The result of one send: what was written, or why nothing was. */
+type FeedbackSent = ({ ok: true } & Wire.FeedbackSendResult) | ({ ok: false; error: string } & Partial<Wire.FeedbackSendResult>);
+
 /** One viewer send. Listening agents wait until its notes and replies are both written. */
-export function sendFeedback({ repoRoot, implementation = null, context = null }: FeedbackCommandOptions & { implementation?: FeedbackTargets | null }, notes: unknown, replies: unknown) {
+export function sendFeedback({ repoRoot, implementation = null, context = null }: FeedbackCommandOptions & { implementation?: FeedbackTargets | null }, notes: unknown, replies: unknown): FeedbackSent {
   const hasNotes = isList(notes) && notes.length > 0;
   const hasReplies = isList(replies) && replies.length > 0;
   if (!hasNotes && !hasReplies) return { ok: false, error: "No feedback to send." };
@@ -1949,28 +1933,24 @@ export function sendFeedback({ repoRoot, implementation = null, context = null }
   try {
     const sent: ExportResult | null = hasNotes ? exportFeedback({ repoRoot, implementation: implementation || buildFeedbackTargetData(repoRoot), context: review }, notes) : null;
     const answered: ReplyResult | null = hasReplies ? exportFeedbackReplies({ repoRoot, context: review }, replies) : null;
-    const ok = Boolean(sent?.ok || answered?.ok);
-    return {
-      ok,
+    const result: Wire.FeedbackSendResult = {
       exported: sent?.exported || [], skipped: sent?.skipped || [],
       replied: answered?.replied || [], replySkipped: answered?.skipped || [],
-      ...(ok ? {} : { error: sent?.error || answered?.error || "Nothing could be sent." }),
     };
+    return sent?.ok || answered?.ok ? { ok: true, ...result } : { ok: false, ...result, error: sent?.error || answered?.error || "Nothing could be sent." };
   } finally {
     updateAgentState(review.reviewId, (state, now) => markSending(state, now, token, false));
   }
 }
 
 /** Reviewer controls for the listening agent. */
-export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: string, payload: unknown) {
+export function controlAgent(context: Pick<ReviewContext, "reviewId">, action: string, payload: unknown): Wire.AgentStatus {
   return updateAgentState(context.reviewId, (state, now) => {
     if (action === "stop") {
       const session = liveSession(state);
       if (session && !session.stopRequestedAt) session.stopRequestedAt = new Date(now).toISOString();
     } else {
-      const { body: text, requestId } = fieldsOf(payload);
-      const body = typeof text === "string" ? text.trim() : "";
-      if (typeof requestId !== "string" || !body || body.length > 4000) throw new Error("Write an answer of up to 4000 characters.");
+      const { requestId, body } = parseAgentResponse(fieldsOf(payload));
       respondToRequest(state, now, requestId, body);
     }
     return agentStatus(state, now);
@@ -2004,7 +1984,7 @@ interface FeedbackRequestContext {
 async function handleFeedbackExport(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext) {
   try {
     if (!isTrustedRequest(request, context.port)) {
-      sendJson(response, 403, {
+      sendJson<Wire.ApiFailure>(response, 403, {
         ok: false,
         error: "Feedback export requires a same-origin application/json request.",
       });
@@ -2015,28 +1995,28 @@ async function handleFeedbackExport(request: http.IncomingMessage, response: htt
     try {
       payload = parseJson(raw || "{}");
     } catch {
-      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
+      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
     if (!isRecord(payload)) {
-      sendJson(response, 400, { ok: false, error: "Request body must be a JSON object." });
+      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be a JSON object." });
       return;
     }
+    const { implementationId, notes, replies } = parseFeedbackExport(payload);
     const implementation = buildFeedbackTargetData(context.repoRoot);
-    if (payload.implementationId !== implementation.implementationId) {
-      sendJson(response, 409, {
+    if (implementationId !== implementation.implementationId) {
+      sendJson<Wire.ApiFailure>(response, 409, {
         ok: false,
         error: "This viewer is showing a different implementation than the one being exported.",
       });
       return;
     }
-    const result = workerRecord(await context.jobs.call("sendFeedback", [payload.implementationId, payload.notes, payload.replies]));
-    sendJson(response, result.ok ? 200 : 422, {
-      ...result,
-      ...workerRecord(await context.jobs.call("snapshot", [true])),
-    });
+    const result = await context.jobs.call("sendFeedback", implementationId, notes, replies);
+    const snapshot = await context.jobs.call("snapshot", true);
+    if (result.ok) sendJson<Wire.FeedbackExportResponse>(response, 200, { ...result, ...snapshot });
+    else sendJson<Wire.FeedbackExportResponse>(response, 422, { ...result, ...snapshot });
   } catch (error) {
-    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
+    sendJson<Wire.ApiFailure>(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
 }
 
@@ -2063,7 +2043,7 @@ export function readFeedbackThread(repoRoot: string, threadId: string): Thread |
 async function handleThreadAction(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext & { implementationId: string }, action: string) {
   try {
     if (!isTrustedRequest(request, context.port)) {
-      sendJson(response, 403, {
+      sendJson<Wire.ApiFailure>(response, 403, {
         ok: false,
         error: "Thread actions require a same-origin application/json request.",
       });
@@ -2074,63 +2054,65 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
     try {
       payload = parseJson(raw || "{}");
     } catch {
-      sendJson(response, 400, { ok: false, error: "Request body must be JSON." });
+      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
     const currentImplementationId = activeImplementationId(context.repoRoot);
-    if (
-      !isRecord(payload) ||
-      payload.implementationId !== context.implementationId ||
-      payload.implementationId !== currentImplementationId
-    ) {
-      sendJson(response, 409, {
+    let input: Wire.ThreadActionRequest | undefined;
+    try { input = isRecord(payload) ? parseThreadAction(payload) : undefined; }
+    catch (error) {
+      sendJson<Wire.ApiFailure>(response, 422, { ok: false, error: cliErrorMessage(error) });
+      return;
+    }
+    if (!input || input.implementationId !== context.implementationId || input.implementationId !== currentImplementationId) {
+      sendJson<Wire.ApiFailure>(response, 409, {
         ok: false,
         error: "This viewer is showing a different implementation than the one being edited.",
       });
       return;
     }
-    const threadId = payload.threadId;
-    if (typeof threadId !== "string" || !threadId) {
-      sendJson(response, 400, { ok: false, error: "A threadId is required." });
+    const { threadId } = input;
+    if (!threadId) {
+      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "A threadId is required." });
       return;
     }
     try {
       if (action === "reply") {
-        const result = workerRecord(await context.jobs.call("exportFeedbackReplies", [context.implementationId, [{
-          ref: payload.clientId || createHash("sha256").update(JSON.stringify([threadId, payload.body, payload.attachments])).digest("hex"),
-          threadId, body: payload.body, attachments: payload.attachments,
-        }]]));
-        if (!result.ok) throw new Error(stringField(result, "error") || stringField(listOf(result.skipped)[0], "reason") || "Reply could not be sent.");
+        const result = await context.jobs.call("exportFeedbackReplies", context.implementationId, [{
+          ref: input.clientId || createHash("sha256").update(JSON.stringify([threadId, input.body, input.attachments])).digest("hex"),
+          threadId, body: input.body ?? "", attachments: input.attachments ?? [],
+        }]);
+        if (!result.ok) throw new Error(result.error || result.skipped?.[0]?.reason || "Reply could not be sent.");
       } else if (action === "resolve") {
-        await context.jobs.call("setThreadStatus", [context.implementationId, threadId, "resolved"]);
+        await context.jobs.call("setThreadStatus", context.implementationId, threadId, "resolved");
       } else if (action === "reopen") {
-        await context.jobs.call("setThreadStatus", [context.implementationId, threadId, "open"]);
+        await context.jobs.call("setThreadStatus", context.implementationId, threadId, "open");
       }
     } catch (error) {
-      sendJson(response, 422, { ok: false, error: cliErrorMessage(error) });
+      sendJson<Wire.ApiFailure>(response, 422, { ok: false, error: cliErrorMessage(error) });
       return;
     }
     const thread = readFeedbackThread(context.repoRoot, threadId);
     if (!thread) {
-      sendJson(response, 200, { ok: true });
+      sendJson<Wire.ThreadActionResponse>(response, 200, { ok: true });
       return;
     }
     const last = thread.comments[thread.comments.length - 1];
-    sendJson(response, 200, {
+    sendJson<Wire.ThreadActionResponse>(response, 200, {
       ok: true,
       status: thread.status,
       resolvedAt: thread.resolvedAt || null,
       comment: action === "reply" ? last : undefined,
-      ...workerRecord(await context.jobs.call("snapshot", [true])),
+      ...await context.jobs.call("snapshot", true),
     });
   } catch (error) {
-    sendJson(response, 500, { ok: false, error: cliErrorMessage(error) });
+    sendJson<Wire.ApiFailure>(response, 500, { ok: false, error: cliErrorMessage(error) });
   }
 }
 
 /** The approved file as the browser last saw it; fails when it changed since. */
-function approvedFileEndpoint(input: unknown, data: ImplementationData): FileEndpoint {
-  const { stageId, path: filePath, nodeId, fileRevision, ownership: shownOwnership } = fieldsOf(input);
+function approvedFileEndpoint(input: Wire.ApprovalEndpoint, data: ImplementationData): FileEndpoint {
+  const { stageId, path: filePath, nodeId, fileRevision, ownership: shownOwnership } = input;
   const stage = data.stages.find((stage) => stage.id === stageId);
   const file = stage?.files.find((file) => file.path === filePath);
   const ownership = file?.memberships.find((membership) => membership.nodeId === nodeId);
@@ -2140,7 +2122,7 @@ function approvedFileEndpoint(input: unknown, data: ImplementationData): FileEnd
     baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
-export function registeredReviews() {
+export function registeredReviews(): Wire.ReviewSummary[] {
   return [...listReviews().map((record) => {
     let unavailableReason = "";
     try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
@@ -2218,52 +2200,53 @@ function serveViewer({
 }: ViewerServerOptions): Promise<http.Server> {
   const review = assertReviewContext(context);
   let server: http.Server | null = null;
-  let management: ViewerWorker | null = null;
-  const manage = (method: string, args: unknown[]) => {
-    if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
-    return management.call(method, args);
+  let management: ManagementWorker | null = null;
+  const manage = (): ManagementWorker => {
+    if (!management?.healthy) management = createViewerWorker<ManagementJobs>(repoRoot, context, true);
+    return management;
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     const url = new URL(request.url ?? "/", `http://${VIEWER_HOST}`);
     let pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+    const param = (key: string) => url.searchParams.get(key);
+    const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) =>
+      sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra });
 
     // Every review API request is explicitly scoped, even on a dedicated server.
     // Management/probing routes do not execute commands against the launch repo.
     if (pathname.startsWith("/api/") && !["/api/whoami", "/api/shutdown"].includes(pathname)) {
-      if ((url.searchParams.get("review") !== context.reviewId || url.searchParams.get("generation") !== context.generation)) {
-        sendJson(response, 409, { ok: false, error: "This request belongs to another review." }); return;
+      const scope: ReceivedQuery<Wire.ReviewQuery> = { review: param("review"), generation: param("generation") };
+      if (scope.review !== context.reviewId || scope.generation !== context.generation) {
+        sendJson<Wire.ApiFailure>(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
-      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+      catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); return; }
     }
 
     if (review.remote && (pathname.startsWith("/api/feedback/") || pathname.startsWith("/api/agent/"))) {
-      sendJson(response, 403, { ok: false, error: "Remote reviews support personal notes only." }); return;
+      sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: "Remote reviews support personal notes only." }); return;
     }
     if (pathname === "/api/remote/refresh" && request.method === "POST") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Refreshing requires a same-origin request.");
-        await dataSource.call("refreshRemote", [implementationId]);
-        sendJson(response, 200, { ok: true });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        await dataSource.call("refreshRemote", implementationId);
+        sendJson<Wire.RemoteRefreshResponse>(response, 200, { ok: true });
+      } catch (error) { failure(409, error); }
       return;
     }
 
     if (pathname === "/api/attachments" && request.method === "POST") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
-        const { data, filename, mediaType } = await readRequestFields(request, 29 * 1024 * 1024);
-        if (typeof data !== "string" || data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 || Buffer.from(data, "base64").toString("base64") !== data) throw new Error("Invalid attachment bytes or file larger than 20 MiB.");
-        // storeAttachment rejects a name that is not a string; a missing type means the default.
-        const type = typeof mediaType === "string" ? mediaType : mediaType ? undefined : "";
-        if (type === undefined) throw new Error("Invalid attachment media type.");
-        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, typeof filename === "string" ? filename : "", type, Buffer.from(data, "base64")));
-        sendJson(response, 200, { ok: true, attachment });
-      } catch (error) { sendJson(response, 400, { ok: false, error: cliErrorMessage(error) }); }
+        const { data, filename, mediaType } = parseAttachmentUpload(await readRequestFields(request, 29 * 1024 * 1024), MAX_ATTACHMENT_BYTES);
+        const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, filename, mediaType, Buffer.from(data, "base64")));
+        sendJson<Wire.AttachmentUploadResponse>(response, 200, { ok: true, attachment });
+      } catch (error) { failure(400, error); }
       return;
     }
     if (pathname.startsWith("/api/attachments/") && request.method === "GET") {
       try {
+        const query: ReceivedQuery<Wire.AttachmentQuery> = { preview: param("preview") };
         const { attachment, bytes } = withReviewLock(context.reviewId, () => {
           if (readReview(context.reviewId).generation !== context.generation) throw new Error("The review session was replaced or deleted.");
           const attachment = resolveAttachment(context.reviewId, pathname.slice("/api/attachments/".length));
@@ -2271,33 +2254,38 @@ function serveViewer({
           if (createHash("sha256").update(bytes).digest("hex") !== attachment.sha256) throw new Error("Attachment content is damaged.");
           return { attachment, bytes };
         });
-        const preview = url.searchParams.get("preview") === "1" && imageMediaType(bytes);
+        const preview = query.preview === "1" && imageMediaType(bytes);
         response.writeHead(200, { "content-type": preview || "application/octet-stream", "content-length": bytes.length,
           "content-disposition": `${preview ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
           "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox", "cache-control": "no-store" });
         response.end(bytes);
-      } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
+      } catch (error) { failure(404, error); }
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/draft-snapshots") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Draft snapshots require a same-origin request.");
-        const payload = await readRequestFields(request);
-        const notes = await dataSource.call("resolveLineDraftSnapshots", [implementationId, payload.notes]);
-        if (!isList(notes)) throw new Error("Draft snapshots require a list of notes.");
-        sendJson(response, 200, { ok: true, snapshots: notes.map(note => fieldsOf(note).snapshot || null) });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        const notes = parseDraftSnapshotNotes(await readRequestFields(request));
+        sendJson<Wire.DraftSnapshotsResponse>(response, 200, { ok: true, snapshots: await dataSource.call("resolveDraftSnapshots", implementationId, notes) });
+      } catch (error) { failure(409, error); }
       return;
     }
 
-    if (request.method === "POST" && ["/api/approval-snapshots", "/api/approval-comparison"].includes(pathname)) {
+    if (request.method === "POST" && pathname === "/api/approval-snapshots") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
-        const payload = await readRequestFields(request);
-        const method = pathname === "/api/approval-snapshots" ? "captureApproval" : "compareApproval";
-        sendJson(response, 200, { ok: true, ...workerRecord(await dataSource.call(method, [implementationId, payload])) });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        const endpoint = parseApprovalEndpoint(await readRequestFields(request));
+        sendJson<Wire.ApprovalSnapshotResponse>(response, 200, { ok: true, ...await dataSource.call("captureApproval", implementationId, endpoint) });
+      } catch (error) { failure(409, error); }
+      return;
+    }
+    if (request.method === "POST" && pathname === "/api/approval-comparison") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
+        const comparison = parseApprovalComparison(await readRequestFields(request));
+        sendJson<Wire.ApprovalComparisonResponse>(response, 200, { ok: true, ...await dataSource.call("compareApproval", implementationId, comparison) });
+      } catch (error) { failure(409, error); }
       return;
     }
 
@@ -2305,64 +2293,70 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Managing review data requires a same-origin request.");
         const payload = await readRequestFields(request);
-        if (pathname === "/api/reviews/storage") sendJson(response, 200, { ok: true, storage: await manage("inspectStorage", [payload.reviewId, payload.generation]) });
-        else if (pathname === "/api/reviews/delete") sendJson(response, 200, { ok: true, ...workerRecord(await manage("deleteStorage", [payload.reviewId, payload.generation, payload.fingerprint])) });
-        else sendJson(response, 200, { ok: true, ...workerRecord(await manage("cleanStorage", [payload.reviewId, payload.generation, payload.fingerprint])) });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        if (pathname === "/api/reviews/storage") sendJson<Wire.ReviewStorageResponse>(response, 200, { ok: true, storage: await manage().call("inspectStorage", parseReviewTarget(payload)) });
+        else if (pathname === "/api/reviews/delete") sendJson<Wire.ReviewDeleteResponse>(response, 200, { ok: true, ...await manage().call("deleteStorage", parseStorageAction(payload)) });
+        else sendJson<Wire.ReviewCleanResponse>(response, 200, { ok: true, ...await manage().call("cleanStorage", parseStorageAction(payload)) });
+      } catch (error) { failure(409, error); }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/reviews") {
-      try { sendJson(response, 200, { ok: true, reviews: await manage("listReviews", []) }); }
-      catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+      try { sendJson<Wire.ReviewsResponse>(response, 200, { ok: true, reviews: await manage().call("listReviews") }); }
+      catch (error) { failure(409, error); }
       return;
     }
     if (request.method === "POST" && pathname === "/api/reviews/completion") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Changing completion requires a same-origin request.");
-        const payload = await readRequestFields(request);
-        await manage("setCompleted", [payload.reviewId, payload.generation, payload.completed, payload.expectedCompletedAt]);
-        sendJson(response, 200, { ok: true });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        await manage().call("setCompleted", parseCompletion(await readRequestFields(request)));
+        sendJson<Wire.OkResponse>(response, 200, { ok: true });
+      } catch (error) { failure(409, error); }
       return;
     }
 
     if (request.method === "POST" && pathname === "/api/reviews/open") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Opening a review requires a same-origin request.");
-        const payload = await readRequestFields(request);
         // Identities of another type fail the registry's own identity checks.
-        sendJson(response, 200, { ok: true, url: await openRegisteredReview(stringField(payload, "reviewId") ?? "", stringField(payload, "generation") ?? "") });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        const target: Wire.ReviewOpenRequest = parseReviewTarget(await readRequestFields(request));
+        sendJson<Wire.ReviewOpenResponse>(response, 200, { ok: true, url: await openRegisteredReview(target.reviewId, target.generation) });
+      } catch (error) { failure(409, error); }
       return;
     }
 
     if (pathname === "/api/review-state") {
       try {
-        let result: unknown;
-        if (request.method === "GET") result = await dataSource.call("readReview", [implementationId, review.id]);
+        let result: Wire.ApiSuccess<Wire.ReviewStateResponse>;
+        if (request.method === "GET") result = await dataSource.call("readReview", review.id);
         else if (request.method === "POST" && isTrustedRequest(request, port)) {
-          const payload = await readRequestFields(request);
-          if (payload.reviewId !== review.id) throw new Error("This request belongs to another review.");
-          result = await dataSource.call("patchReviewState", [implementationId, review.id, payload.generation, payload.changes]);
-        } else { sendJson(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
-        const record = workerRecord(result);
-        sendJson(response, 200, { ok: true, reviewId: record.id, generation: record.generation, state: record.state });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error), reviewUnavailable: reviewSessionUnavailable(context) }); }
+          const patch = parseStatePatch(await readRequestFields(request));
+          if (patch.reviewId !== review.id) throw new Error("This request belongs to another review.");
+          result = await dataSource.call("patchReviewState", review.id, patch);
+        } else { sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
+        sendJson<Wire.ReviewStateResponse>(response, 200, { ok: true, ...result });
+      } catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
     }
 
-    if (request.method === "POST" && ["/api/agent/stop", "/api/agent/respond"].includes(pathname)) {
+    if (request.method === "POST" && pathname === "/api/agent/stop") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
-        const payload = await readRequestFields(request);
-        sendJson(response, 200, { ok: true, agent: await dataSource.call("controlAgent", [implementationId, pathname.slice("/api/agent/".length), payload]) });
-      } catch (error) { sendJson(response, 409, { ok: false, error: cliErrorMessage(error) }); }
+        await readRequestFields(request);
+        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await dataSource.call("controlAgent", implementationId, "stop") });
+      } catch (error) { failure(409, error); }
+      return;
+    }
+    if (request.method === "POST" && pathname === "/api/agent/respond") {
+      try {
+        if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
+        const answer = parseAgentResponse(await readRequestFields(request));
+        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await dataSource.call("controlAgent", implementationId, "respond", answer) });
+      } catch (error) { failure(409, error); }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/whoami") {
-      sendJson(response, 200, {
+      sendJson<Wire.WhoAmIResponse>(response, 200, {
         ok: true,
         app: VIEWER_APP_ID,
         implementationId,
@@ -2382,24 +2376,22 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/revision") {
       try {
-        sendJson(response, 200, {
+        sendJson<Wire.RevisionResponse>(response, 200, {
           ok: true,
-          ...workerRecord(await dataSource.call("snapshot", [])),
+          ...await dataSource.call("snapshot", false),
         });
       } catch (error) {
-        sendJson(response, 500, {
-          ok: false,
-          error: cliErrorMessage(error),
-        });
+        failure(500, error);
       }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/evidence") {
       try {
-        const result = workerRecord(await dataSource.call("evidenceFile", [url.searchParams.get("stage"), url.searchParams.get("item"), url.searchParams.get("index")]));
-        const bytes = Buffer.from(workerString(result, "content"), "base64");
-        const headers = { "content-type": workerString(result, "mediaType"), "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
+        const query: ReceivedQuery<Wire.EvidenceQuery> = { stage: param("stage"), item: param("item"), index: param("index") };
+        const result = await dataSource.call("evidenceFile", query);
+        const bytes = Buffer.from(result.content, "base64");
+        const headers = { "content-type": result.mediaType, "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
         // Safari refuses to play video from a server without range support.
         const range = evidenceRange(request.headers.range, bytes.length);
         if (!range) {
@@ -2415,47 +2407,43 @@ function serveViewer({
         const { start, end } = range;
         response.writeHead(206, { ...headers, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${bytes.length}` });
         response.end(bytes.subarray(start, end + 1));
-      } catch (error) { sendJson(response, 404, { ok: false, error: cliErrorMessage(error) }); }
+      } catch (error) { failure(404, error); }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/file-content") {
       try {
-        const result = workerRecord(await dataSource.call("fileContent", [url.searchParams.get("stage"), url.searchParams.get("path"), url.searchParams.get("base"), url.searchParams.get("head"), url.searchParams.get("target")]));
-        const mediaType = workerString(result, "mediaType"), content = Buffer.from(workerString(result, "content"), "base64");
-        if (url.searchParams.get("raw") === "1") {
-          if (url.searchParams.get("image") === "1" && !mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
-          response.writeHead(200, { "content-type": mediaType, "content-length": content.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
+        const query: ReceivedQuery<Wire.FileContentQuery> = { stage: param("stage"), path: param("path"), base: param("base"), head: param("head"), target: param("target"), raw: param("raw"), image: param("image") };
+        const result = await dataSource.call("fileContent", query);
+        const content = Buffer.from(result.content, "base64");
+        if (query.raw === "1") {
+          if (query.image === "1" && !result.mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
+          response.writeHead(200, { "content-type": result.mediaType, "content-length": content.length, "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" });
           response.end(content);
-        } else sendJson(response, 200, { ok: true, ...result, content: content.toString("utf8") });
-      } catch (error) { sendJson(response, 422, { ok: false, error: cliErrorMessage(error) }); }
+        } else sendJson<Wire.FileContentResponse>(response, 200, { ok: true, ...result, content: content.toString("utf8") });
+      } catch (error) { failure(422, error); }
       return;
     }
 
     if (request.method === "GET" && pathname === "/api/diff") {
-      const stageId = url.searchParams.get("stage");
-      const filePath = url.searchParams.get("path");
-      const baseRevision = url.searchParams.get("base");
-      const headRevision = url.searchParams.get("head");
-      if (!stageId || !filePath || !baseRevision || !headRevision) {
-        sendJson(response, 400, {
+      const query: ReceivedQuery<Wire.DiffQuery> = {
+        stage: param("stage"), path: param("path"), base: param("base"), head: param("head"),
+        mode: param("mode"), offset: param("offset"), side: param("side"), line: param("line"),
+      };
+      if (!query.stage || !query.path || !query.base || !query.head) {
+        sendJson<Wire.ApiFailure>(response, 400, {
           ok: false,
           error: "Diff requests require stage, path, base, and head query parameters.",
         });
         return;
       }
       try {
-        sendJson(response, 200, {
+        sendJson<Wire.DiffResponse>(response, 200, {
           ok: true,
-          ...workerRecord(await dataSource.call("fileDiff", [stageId, filePath, baseRevision, headRevision,
-            url.searchParams.get("mode") || "changes", Number(url.searchParams.get("offset") || 0),
-            url.searchParams.get("side"), url.searchParams.has("line") ? Number(url.searchParams.get("line")) : null])),
+          ...await dataSource.call("fileDiff", query),
         });
       } catch (error) {
-        sendJson(response, 422, {
-          ok: false,
-          error: cliErrorMessage(error),
-        });
+        failure(422, error);
       }
       return;
     }
@@ -2463,13 +2451,13 @@ function serveViewer({
     // Controlled lifecycle shutdown; launching another review never uses this.
     if (request.method === "POST" && pathname === "/api/shutdown") {
       if (!isTrustedRequest(request, port)) {
-        sendJson(response, 403, {
+        sendJson<Wire.ApiFailure>(response, 403, {
           ok: false,
           error: "Shutdown requires a same-origin application/json request.",
         });
         return;
       }
-      sendJson(response, 200, { ok: true });
+      sendJson<Wire.ShutdownResponse>(response, 200, { ok: true });
       setTimeout(() => {
         const done = () => process.exit(0);
         if (server) server.close(done);
@@ -2504,15 +2492,14 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/implementation") {
       try {
-        const script = workerText(await dataSource.call("implementationDataScript", []));
-        sendJson(response, 200, { ok: true, implementation: implementationFromScript(script) });
-      } catch (error) { sendJson(response, 500, { ok: false, error: cliErrorMessage(error) }); }
+        sendJson<Wire.ImplementationResponse>(response, 200, { ok: true, implementation: await dataSource.call("implementation") });
+      } catch (error) { failure(500, error); }
       return;
     }
 
     if (pathname === "/implementation-data.js") {
       let script: string;
-      try { script = workerText(await dataSource.call("implementationDataScript", [])); }
+      try { script = await dataSource.call("implementationDataScript"); }
       catch (error) {
         const code = errorCode(error);
         if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) {
@@ -2520,10 +2507,12 @@ function serveViewer({
           response.end(cliErrorMessage(error)); return;
         }
         // The saved-review manager remains usable after deletion or worktree removal.
-        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify({ implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
-          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" })};`;
+        const unavailable: Wire.UnavailableImplementationData = { implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
+          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" };
+        script = `window.SEMANTIC_IMPLEMENTATION = ${JSON.stringify(unavailable)};`;
       }
-      const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify({ reviewId: context.reviewId, generation: context.generation })};\n`, "utf8");
+      const reviewContext: Wire.ReviewContext = { reviewId: context.reviewId, generation: context.generation };
+      const body = Buffer.from(script + `\nwindow.SEMANTIC_REVIEW_CONTEXT = ${JSON.stringify(reviewContext)};\n`, "utf8");
       response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "content-length": body.length, "cache-control": "no-store" });
       response.end(body); return;
     }
@@ -2571,23 +2560,11 @@ function serveViewer({
   });
 }
 
-/** A worker result that must be an object. Results cross a structured-clone
- * boundary, so the main thread narrows what it reads from them. */
-function workerRecord(value: unknown): JsonRecord {
-  if (!isRecord(value)) throw new Error("The viewer worker returned an invalid result.");
-  return value;
-}
+/** A job table's methods, with the parameters and result of each. */
+type JobTable = Record<string, (...args: never[]) => unknown>;
 
-function workerText(value: unknown): string {
-  if (typeof value !== "string") throw new Error("The viewer worker returned an invalid result.");
-  return value;
-}
-
-function workerString(result: JsonRecord, key: string): string {
-  return workerText(result[key]);
-}
-
-function createViewerWorker(repoRoot: string, context: ReviewContext, management = false) {
+/** Runs jobs in a data worker. */
+function createViewerWorker<Jobs extends JobTable>(repoRoot: string, context: ReviewContext, management: boolean) {
   const worker = new Worker(new URL(import.meta.url), { workerData: { repoRoot, context, management } });
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
   const reads = new Map<string, Promise<unknown>>();
@@ -2607,61 +2584,40 @@ function createViewerWorker(repoRoot: string, context: ReviewContext, management
     pending.delete(id);
     if (error) request.reject(Object.assign(new Error(String(error)), { code })); else request.resolve(result);
   });
+  /** Runs one job. The overload gives each job's result its type: the worker runs this
+   * module's own job for `method` and sends back plain data, which keeps its shape
+   * across the structured clone between threads. */
+  function call<Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Jobs[Method]>): Promise<Awaited<ReturnType<Jobs[Method]>>>;
+  function call(method: string, ...args: unknown[]): Promise<unknown> {
+    if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
+    const key = ["snapshot", "fileDiff", "fileContent", "implementation", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
+    const shared = key ? reads.get(key) : undefined;
+    if (shared) return shared;
+    if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
+    const id = ++sequence;
+    const promise = new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, method, args });
+    });
+    if (key) {
+      reads.set(key, promise);
+      promise.finally(() => reads.delete(key)).catch(() => {});
+    }
+    return promise;
+  }
   return {
     get healthy() { return !stopped; },
-    call(method: string, args: unknown[]): Promise<unknown> {
-      if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
-      const key = ["snapshot", "fileDiff", "fileContent", "implementationDataScript"].includes(method) ? JSON.stringify([method, args]) : null;
-      const shared = key ? reads.get(key) : undefined;
-      if (shared) return shared;
-      if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
-      const id = ++sequence;
-      const promise = new Promise<unknown>((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        worker.postMessage({ id, method, args });
-      });
-      if (key) {
-        reads.set(key, promise);
-        promise.finally(() => reads.delete(key)).catch(() => {});
-      }
-      return promise;
-    },
+    call,
     close() { return worker.terminate(); },
   };
 }
 
-type ViewerWorker = ReturnType<typeof createViewerWorker>;
+type ViewerDataSource = ReturnType<typeof createViewerDataSource>;
+type ViewerWorker = ReturnType<typeof createViewerWorker<ViewerJobs>>;
+type ManagementWorker = ReturnType<typeof createViewerWorker<ManagementJobs>>;
 
-// --- Worker side. Jobs arrive from this module's own main thread, but every
-// argument is narrowed: most originate in HTTP request bodies or query strings.
-
-/** The string argument at index; any other value becomes "", which every job rejects as invalid. */
-function textArg(args: unknown[], index: number): string {
-  const value = args[index];
-  return typeof value === "string" ? value : "";
-}
-
-/** A query-string argument, which is absent (null) when not given. */
-function queryArg(args: unknown[], index: number): string | null {
-  const value = args[index];
-  return typeof value === "string" ? value : null;
-}
-
-function stateValue(value: unknown): StateChange["before"] {
-  if (!isRecord(value) || typeof value.present !== "boolean") throw new Error("Invalid state change value.");
-  return Object.hasOwn(value, "value") ? { present: value.present, value: value.value } : { present: value.present };
-}
-
-/** Review state changes from the browser. patchReviewState checks their limits;
- * this establishes their shape, with the same messages. */
-function parseStateChanges(value: unknown): StateChange[] {
-  if (!isList(value)) throw new Error("Invalid state changes.");
-  return value.map((item) => {
-    const { path: keys, before, after } = fieldsOf(item);
-    if (!isStringArray(keys)) throw new Error("Invalid state change path.");
-    return { path: keys, before: stateValue(before), after: stateValue(after) };
-  });
-}
+// --- Worker side. Jobs arrive from this module's own main thread, which parsed
+// their parameters from the HTTP request into the shared protocol types.
 
 function parseWorkerContext(value: unknown): ReviewContext {
   const reviewId = stringField(value, "reviewId"), generation = stringField(value, "generation");
@@ -2674,67 +2630,109 @@ function parseWorkerContext(value: unknown): ReviewContext {
 
 // Management survives retirement of the launching review. Every job uses
 // its explicitly selected target; no repository command is allowed here.
-function runManagementJob(method: unknown, args: unknown[]) {
-  if (method === "inspectStorage") return inspectReviewStorage(textArg(args, 0), textArg(args, 1));
-  if (method === "deleteStorage") return deleteReviewData(textArg(args, 0), textArg(args, 1), textArg(args, 2));
-  if (method === "cleanStorage") return cleanUnusedReviewFiles(textArg(args, 0), textArg(args, 1), textArg(args, 2));
-  if (method === "listReviews") return registeredReviews();
-  if (method === "setCompleted") {
-    const [, , completed, expectedCompletedAt] = args;
-    const expected = expectedCompletedAt === null ? null : typeof expectedCompletedAt === "string" ? expectedCompletedAt : undefined;
-    if (typeof completed !== "boolean" || expected === undefined) throw new Error("Invalid review lifecycle change.");
-    return setReviewCompleted(textArg(args, 0), textArg(args, 1), completed, expected);
-  }
-  throw new Error("Unknown review management operation.");
+const managementJobs = {
+  inspectStorage: ({ reviewId, generation }: Wire.ReviewTarget): Wire.ReviewStorage => inspectReviewStorage(reviewId, generation),
+  deleteStorage: ({ reviewId, generation, fingerprint }: Wire.ReviewStorageActionRequest) => deleteReviewData(reviewId, generation, fingerprint),
+  cleanStorage: ({ reviewId, generation, fingerprint }: Wire.ReviewStorageActionRequest) => cleanUnusedReviewFiles(reviewId, generation, fingerprint),
+  listReviews: (): Wire.ReviewSummary[] => registeredReviews(),
+  setCompleted: ({ reviewId, generation, completed, expectedCompletedAt }: Wire.ReviewCompletionRequest) => {
+    setReviewCompleted(reviewId, generation, completed, expectedCompletedAt);
+  },
+};
+
+/** The data worker's jobs for one review. Each checks that the review is still
+ * the one this viewer serves; repository jobs also check the active implementation. */
+function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSource) {
+  /** State jobs check the stored session, and return the record they checked. */
+  const session = (reviewId: string) => {
+    const record = readReview(context.reviewId);
+    if (reviewId !== context.reviewId || record.generation !== context.generation) throw new Error("The review session was replaced or deleted.");
+    return record;
+  };
+  const review = () => { assertReviewContext(context); }; // Includes queued repository reads and commands.
+  const implementation = (implementationId: string) => {
+    review();
+    if (activeImplementationId(root) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
+  };
+  const storedState = (record: ReviewRecord) => ({ reviewId: record.id, generation: record.generation, state: record.state });
+  return {
+    readReview: (reviewId: string): ReviewStateBody => storedState(session(reviewId)),
+    patchReviewState: (reviewId: string, { generation, changes }: Wire.ReviewStatePatchRequest): ReviewStateBody => {
+      session(reviewId);
+      return storedState(patchReviewState(context.reviewId, generation, changes));
+    },
+    snapshot: (refresh: boolean): Wire.ViewerSnapshot => {
+      review();
+      return { ...source.snapshot(refresh), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
+    },
+    fileDiff: (query: ReceivedQuery<Wire.DiffQuery>): Promise<DiffPage> => {
+      review();
+      return source.fileDiff(query.stage ?? "", query.path ?? "", query.base ?? "", query.head ?? "", query.mode || "changes",
+        Number(query.offset || 0), query.side, query.line === null ? null : Number(query.line));
+    },
+    fileContent: (query: ReceivedQuery<Wire.FileContentQuery>) => {
+      review();
+      return source.fileContent(query.stage, query.path, query.base, query.head, query.target);
+    },
+    implementation: (): Wire.ImplementationData => { review(); return source.implementationData(); },
+    implementationDataScript: () => { review(); return source.implementationDataScript(); },
+    evidenceFile: (query: ReceivedQuery<Wire.EvidenceQuery>) => { review(); return source.evidenceFile(query.stage, query.item, query.index); },
+    refreshRemote: (implementationId: string) => { implementation(implementationId); refreshRemoteReview(context.reviewId, context.generation); },
+    resolveDraftSnapshots: (implementationId: string, notes: (Wire.DraftSnapshotNote | null)[]): (Wire.DraftSnapshot | null)[] => {
+      implementation(implementationId);
+      const resolved = resolveLineDraftSnapshots(root, notes.filter((note) => note !== null));
+      let next = 0;
+      return notes.map((note) => note ? resolved[next++].snapshot ?? null : null);
+    },
+    captureApproval: (implementationId: string, endpoint: Wire.ApprovalEndpoint) => {
+      implementation(implementationId);
+      return captureApprovalSnapshot(context, approvedFileEndpoint(endpoint, source.implementationData()));
+    },
+    compareApproval: (implementationId: string, request: Wire.ApprovalComparisonRequest) => {
+      implementation(implementationId);
+      return compareApprovalSnapshot(context, request.snapshotId, approvedFileEndpoint(request, source.implementationData()),
+        request.offset ?? 0, request.mode ?? "changes", request.scope ?? "stage");
+    },
+    sendFeedback: (implementationId: string, notes: unknown[], replies: unknown[]) => {
+      implementation(implementationId);
+      return sendFeedback({ repoRoot: root, context }, notes, replies);
+    },
+    controlAgent: (implementationId: string, action: "stop" | "respond", answer?: Wire.AgentRespondRequest): Wire.AgentStatus => {
+      implementation(implementationId);
+      return controlAgent(context, action, answer);
+    },
+    exportFeedbackReplies: (implementationId: string, drafts: Wire.FeedbackReplyExport[]) => {
+      implementation(implementationId);
+      return exportFeedbackReplies({ repoRoot: root, context }, drafts);
+    },
+    setThreadStatus: (implementationId: string, threadId: string, status: Wire.ThreadStatus) => {
+      implementation(implementationId);
+      const feedback = feedbackFor(context);
+      if (status === "resolved") feedback.resolveThread(threadId);
+      else feedback.reopenThread(threadId);
+    },
+  };
 }
 
-async function runViewerJob(root: string, context: ReviewContext, source: ReturnType<typeof createViewerDataSource>, method: unknown, args: unknown[]): Promise<unknown> {
-  const localState = method === "readReview" || method === "patchReviewState";
-  // A state read returns the same record whose generation it checked.
-  const record = localState ? readReview(context.reviewId) : undefined;
-  if (record) {
-    if (args[1] !== context.reviewId || record.generation !== context.generation) throw new Error("The review session was replaced or deleted.");
-  } else assertReviewContext(context); // Includes queued repository reads and commands.
-  if (method === "readReview") return record;
-  if (method === "patchReviewState") return patchReviewState(context.reviewId, textArg(args, 2), parseStateChanges(args[3]));
-  if (method === "snapshot") return { ...source.snapshot(args[0] === true), agent: agentStatus(readAgentState(context.reviewId), Date.now()) };
-  if (method === "fileDiff") {
-    const [, , , , mode, offset, , line] = args;
-    return source.fileDiff(textArg(args, 0), textArg(args, 1), textArg(args, 2), textArg(args, 3), typeof mode === "string" ? mode : "",
-      typeof offset === "number" ? offset : NaN, queryArg(args, 6), typeof line === "number" ? line : null);
-  }
-  if (method === "fileContent") return source.fileContent(queryArg(args, 0), queryArg(args, 1), queryArg(args, 2), queryArg(args, 3), queryArg(args, 4));
-  if (method === "implementationDataScript") return source.implementationDataScript();
-  if (method === "evidenceFile") return source.evidenceFile(queryArg(args, 0), queryArg(args, 1), queryArg(args, 2));
-  if (activeImplementationId(root) !== args[0]) throw new Error("The active implementation changed; reopen the viewer.");
-  if (method === "refreshRemote") return refreshRemoteReview(context.reviewId, context.generation);
-  if (method === "resolveLineDraftSnapshots") return resolveLineDraftSnapshots(root, args[1]);
-  if (method === "captureApproval") return captureApprovalSnapshot(context, approvedFileEndpoint(args[1], source.implementationData()));
-  if (method === "compareApproval") {
-    const input = fieldsOf(args[1]);
-    const snapshotId = stringField(input, "snapshotId") ?? "", offset = input.offset || 0, mode = input.mode ?? "changes", scope = input.scope ?? "stage";
-    // Values of the wrong type fail compareApprovalSnapshot's own checks.
-    return compareApprovalSnapshot(context, snapshotId, approvedFileEndpoint(input, source.implementationData()),
-      typeof offset === "number" ? offset : NaN, typeof mode === "string" ? mode : "", typeof scope === "string" ? scope : "");
-  }
-  if (method === "sendFeedback") return sendFeedback({ repoRoot: root, context }, args[1], args[2]);
-  if (method === "controlAgent") return controlAgent(context, textArg(args, 1), args[2]);
-  if (method === "exportFeedbackReplies") return exportFeedbackReplies({ repoRoot: root, context }, args[1]);
-  if (method === "setThreadStatus") {
-    const feedback = feedbackFor(context), threadId = textArg(args, 1);
-    if (args[2] === "resolved") return feedback.resolveThread(threadId);
-    if (args[2] === "open") return feedback.reopenThread(threadId);
-    throw new Error("Invalid thread status.");
-  }
-  throw new Error("Unknown viewer operation.");
+type ReviewStateBody = Wire.ApiSuccess<Wire.ReviewStateResponse>;
+type ViewerJobs = ReturnType<typeof viewerJobs>;
+type ManagementJobs = typeof managementJobs;
+
+/** Runs one job a message names. Its parameters were typed by the main thread
+ * that sent them, so only the job's name is checked here. */
+function runJob(jobs: object, method: unknown, args: unknown, unknownJob: string): unknown {
+  const job: unknown = typeof method === "string" && Object.hasOwn(jobs, method) ? Reflect.get(jobs, method) : undefined;
+  if (typeof job !== "function" || !isList(args)) throw new Error(unknownJob);
+  return Reflect.apply(job, jobs, args);
 }
 
 function serveWorkerJobs(port: MessagePort, root: string, context: ReviewContext, management: boolean) {
-  const source = management ? null : createViewerDataSource(root);
+  const jobs = management ? managementJobs : viewerJobs(root, context, createViewerDataSource(root));
+  const unknownJob = management ? "Unknown review management operation." : "Unknown viewer operation.";
   port.on("message", async (message: unknown) => {
     const { id, method, args } = fieldsOf(message);
     try {
-      const result = source ? await runViewerJob(root, context, source, method, listOf(args)) : runManagementJob(method, listOf(args));
+      const result = await runJob(jobs, method, args, unknownJob);
       port.postMessage({ id, result });
     } catch (error) { port.postMessage({ id, error: cliErrorMessage(error), code: errorCode(error) }); }
   });
@@ -2770,7 +2768,8 @@ function implementationSummary(repoRoot: string) {
   }, 0);
   return {
     implementationId: manifest.implementationId,
-    title: manifest.title,
+    // The launcher shows the implementation ID for a manifest without a title.
+    ...(manifest.title ? { title: manifest.title } : {}),
     stageCount: manifest.stages.length,
     fileCount,
   };
@@ -2827,7 +2826,7 @@ async function serve(repoRoot: string, requested: RequestedReview | null) {
     : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");
   const context = captureReviewContext(registered.id);
   if (requested && (reviewId(repoRoot, implementation.implementationId) !== context.reviewId || requested.reviewId !== context.reviewId || requested.generation !== context.generation)) throw new Error("The requested review session changed before startup.");
-  const dataSource = createViewerWorker(repoRoot, context);
+  const dataSource = createViewerWorker<ViewerJobs>(repoRoot, context, false);
   startupWorker = dataSource;
   const fingerprint = createHash("sha256");
   fingerprint.update(viewerReleaseVersion);

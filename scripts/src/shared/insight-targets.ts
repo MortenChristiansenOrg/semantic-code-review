@@ -1,6 +1,7 @@
 import type { CodeTarget } from "./documents.js";
 import { git } from "./git.js";
 import { factCache } from "./validation-context.js";
+import type { ResolvedCodeTarget } from "./viewer-protocol.js";
 
 const treeFacts = factCache<string | null>();
 const blobLineFacts = factCache<string[] | null>();
@@ -61,9 +62,9 @@ export function validateCodeTarget(root: string, target: CodeTarget, checkGit: b
 }
 
 /** Conservative resolution: edits inside a span and ambiguous repeated text require review. */
-export function resolveCodeTarget(root: string, target: CodeTarget, head: string) {
+export function resolveCodeTarget(root: string, target: CodeTarget, head: string): ResolvedCodeTarget {
   const original = { ...target };
-  const stale = (reason: string, currentPath = target.path) => ({ status: "needs-review", reason, original, path: currentPath });
+  const stale = (reason: string, currentPath = target.path): ResolvedCodeTarget => ({ status: "needs-review", reason, original, path: currentPath });
   let currentPath = target.path;
   // Follow Git's rename identity even if another file now occupies the old path.
   if (head !== target.revision) {

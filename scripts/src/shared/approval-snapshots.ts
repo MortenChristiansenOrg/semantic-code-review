@@ -7,19 +7,19 @@ import { assertReviewContext, runReviewCommand, type ReviewContext } from "./rev
 import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { capturedOutput, exitStatus, isRecord, isStringArray, stringField, type JsonRecord } from "./narrow.js";
+import type { ApiSuccess, ApprovalComparisonResponse, ApprovalFileEndpoint, ApprovalSnapshotResponse, DiffLine, DiffMode } from "./viewer-protocol.js";
 
-export type FileEndpoint = {
-  stageId: string; nodeId: string; path: string; previousPath?: string; previousPaths?: string[];
-  baseRevision: string; headRevision: string; fileRevision: string;
-  /** The node membership the viewer showed; only compared for equality. */
-  ownership: unknown;
-};
+/** The current file endpoint, as the server resolves it. */
+export type FileEndpoint = ApprovalFileEndpoint;
+/** An endpoint recorded with a snapshot. Older viewers recorded ownerships of
+ * other shapes; it is only compared for equality. */
+type RecordedEndpoint = Omit<FileEndpoint, "ownership"> & { ownership: unknown };
 type Content = { exists: boolean; mode: string | null; objectId: string | null; binary: boolean; unsupported: string; bytes: string; size: number; sha256: string | null };
-type Snapshot = { id: string; endpoint: FileEndpoint; createdAt: string; baseIdentity?: string; content: Content };
+type Snapshot = { id: string; endpoint: RecordedEndpoint; createdAt: string; baseIdentity?: string; content: Content };
 const isOptional = (value: unknown, check: (item: unknown) => boolean) => value === undefined || check(value);
 const isString = (value: unknown) => typeof value === "string";
 const isNullableString = (value: unknown) => value === null || typeof value === "string";
-function isEndpoint(value: unknown): value is FileEndpoint {
+function isEndpoint(value: unknown): value is RecordedEndpoint {
   return isRecord(value) && ["stageId", "nodeId", "path", "baseRevision", "headRevision", "fileRevision"].every((key) => isString(value[key])) &&
     isOptional(value.previousPath, isString) && isOptional(value.previousPaths, isStringArray) && "ownership" in value;
 }
@@ -45,7 +45,7 @@ export function approvalSnapshotPath(reviewId: string, snapshotId: string) {
 function git(context: ReviewContext, args: string[]): Buffer {
   return runReviewCommand(context, "git", ["--literal-pathspecs", ...args], { encoding: null });
 }
-function readContent(context: ReviewContext, endpoint: FileEndpoint): Content {
+function readContent(context: ReviewContext, endpoint: RecordedEndpoint): Content {
   // ls-tree distinguishes an absent file from an unavailable commit/blob.
   const tree = git(context, ["ls-tree", "-z", endpoint.headRevision, "--", endpoint.path]).toString("utf8");
   const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === endpoint.path);
@@ -62,7 +62,7 @@ function readContent(context: ReviewContext, endpoint: FileEndpoint): Content {
   return { exists: Boolean(record), mode: mode || null, objectId: objectId || null, unsupported,
     binary: bytes.includes(0) || !Buffer.from(text, "utf8").equals(bytes), bytes: bytes.toString("base64"), size: bytes.length, sha256: digest(bytes) };
 }
-function baseIdentity(context: ReviewContext, endpoint: FileEndpoint): string {
+function baseIdentity(context: ReviewContext, endpoint: RecordedEndpoint): string {
   const filePath = endpoint.previousPath || endpoint.path;
   const tree = git(context, ["ls-tree", "-z", endpoint.baseRevision, "--", filePath]).toString("utf8");
   const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === filePath);
@@ -92,7 +92,7 @@ function approvedOnCurrentBase(context: ReviewContext, approved: Buffer, previou
   try { return git(context, ["merge-file", "-p", approvedFile, previousFile, currentFile]); }
   catch { return null; }
 }
-export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint) {
+export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint): ApiSuccess<ApprovalSnapshotResponse> {
   return withReviewLock(context.reviewId, () => {
     assertReviewContext(context);
     const snapshot: Snapshot = { id: randomUUID().replaceAll("-", ""), endpoint, createdAt: new Date().toISOString(), baseIdentity: baseIdentity(context, endpoint), content: readContent(context, endpoint) };
@@ -100,7 +100,7 @@ export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEn
     return { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
   });
 }
-export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode = "changes", scope = "stage") {
+export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode: DiffMode = "changes", scope: "stage" | "all" = "stage"): ApiSuccess<ApprovalComparisonResponse> {
   if (!["changes", "full"].includes(mode)) throw new Error("Invalid comparison view.");
   if (!["stage", "all"].includes(scope)) throw new Error("Invalid comparison scope.");
   if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid comparison page.");
@@ -131,6 +131,7 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       ownershipChanged: !isDeepStrictEqual(snapshot.endpoint.ownership, current.ownership),
     };
     const unsupported = before.unsupported || after.unsupported || (before.binary || after.binary ? "Binary file comparison: content hashes and sizes are shown; a line diff is unavailable." : "");
+    type BaseChanges = ApiSuccess<ApprovalComparisonResponse>["baseChanges"];
     if (unsupported) return { ...info, baseChanges: baseChanged ? "mixed" : "none", unsupported, lines: [], offset, nextOffset: null };
     const temporary = fs.mkdtempSync(path.join(reviewDirectory(context.reviewId), "snapshots", ".compare-"));
     try {
@@ -140,13 +141,13 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       const currentBase = previousBase && baseContent(context, currentIdentity);
       const separated = previousBase && currentBase ? approvedOnCurrentBase(context, approvedBytes, previousBase, currentBase, temporary) : null;
       // Comparing with the approved file moved onto the current base attributes base changes away from the stage.
-      const baseChanges = !baseChanged ? "none" : !separated ? "mixed" : scope === "all" ? "included" : "excluded";
+      const baseChanges: BaseChanges = !baseChanged ? "none" : !separated ? "mixed" : scope === "all" ? "included" : "excluded";
       const comparedBytes = baseChanges === "excluded" && separated ? separated : approvedBytes;
       if (mode === "full" && comparedBytes.equals(currentBytes)) {
         const text = currentBytes.toString("utf8");
         const content = text ? text.split("\n") : [];
         if (text.endsWith("\n")) content.pop();
-        const lines = content.slice(offset, offset + 900).map((s, i) => ({ t: "ctx", o: offset + i + 1, n: offset + i + 1, s }));
+        const lines = content.slice(offset, offset + 900).map((s, i): DiffLine => ({ t: "ctx", o: offset + i + 1, n: offset + i + 1, s }));
         return { ...info, baseChanges, unsupported: "", lines, offset, nextOffset: offset + lines.length < content.length ? offset + lines.length : null };
       }
       const oldFile = path.join(temporary, "approved"), newFile = path.join(temporary, "current");
@@ -158,13 +159,13 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
         if (exitStatus(error) !== 1 || !stdout) throw error;
         patch = stdout.toString("utf8");
       }
-      const lines: Array<{ t: string; o?: number; n?: number; s: string }> = [];
+      const lines: DiffLine[] = [];
       let oldNo = 0, newNo = 0, started = false, count = 0, more = false;
       for (const line of patch.split("\n")) {
         const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
         if (header) { oldNo = Number(header[1]); newNo = Number(header[2]); started = true; continue; }
         if (!started || !["+", "-", " "].includes(line[0])) continue;
-        const item = line[0] === "+" ? { t: "add", n: newNo++, s: line.slice(1) }
+        const item: DiffLine = line[0] === "+" ? { t: "add", n: newNo++, s: line.slice(1) }
           : line[0] === "-" ? { t: "del", o: oldNo++, s: line.slice(1) } : { t: "ctx", o: oldNo++, n: newNo++, s: line.slice(1) };
         if (count++ < offset) continue;
         if (lines.length === 900) { more = true; break; }

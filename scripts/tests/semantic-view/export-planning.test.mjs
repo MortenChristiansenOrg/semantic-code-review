@@ -1089,19 +1089,21 @@ test("stored __proto__ keys stay ordinary data on the viewer page", (t) => {
     .replace('"kind":"local"', '"kind":"local","__proto__":{"reference":{"toString":1}}'));
   const stagePath = ".semantic-review/stages/implementation.json";
   const stage = repository.readJson(stagePath);
-  repository.write(stagePath, JSON.stringify({ ...stage, nodes: stage.nodes.map((node, index) => index ? node : { ...node, description: "PLACEHOLDER" }) })
+  repository.write(stagePath, JSON.stringify({ ...stage, summary: "</script><script>", nodes: stage.nodes.map((node, index) => index ? node : { ...node, description: "PLACEHOLDER" }) })
     .replace('"PLACEHOLDER"', '{"__proto__":{"inherited":true},"text":"</script><script>"}'));
   const script = createViewerDataSource(repository.root).implementationDataScript();
   assert.doesNotMatch(script, /<\/script/i);
 
   const data = implementationFromScript(script);
+  // Display values are narrowed to the wire types; nothing is inherited from a stored __proto__ key.
   const [source] = data.requirements.map((requirement) => requirement.source);
-  assert.deepEqual(source, { kind: "local" });
+  assert.deepEqual(source, { kind: "local", reference: "" });
   assert.equal(Object.getPrototypeOf(source), Object.prototype);
+  assert.ok(Object.hasOwn(source, "reference"));
   const { description } = data.stages[0].nodes[0];
-  assert.equal(Object.getPrototypeOf(description), Object.prototype);
-  assert.deepEqual(Object.keys(description), ["__proto__", "text"]);
-  assert.equal(description.text, "</script><script>");
+  assert.equal(description, "");
+  assert.equal(data.stages[0].summary, "</script><script>");
+  assert.equal({}.inherited, undefined);
 });
 
 test("a thread removed while a snapshot reads it does not fail the poll", (t) => {

@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseJson } from "./json.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
+import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
 
 export function reviewHome() {
   const configured = process.env.SEMANTIC_FLOW_HOME;
@@ -151,7 +152,7 @@ export type ReviewRecord = {
   id: string; generation: string; repositoryRoot: string; implementationId: string;
   title: string; createdAt: string; updatedAt: string; completedAt: string | null;
   /** The viewer's saved review state. The browser owns its shape; read it by narrowing. */
-  state: JsonRecord;
+  state: StoredReviewState;
   remote?: RemoteReview;
   viewer?: ViewerRecord;
 };
@@ -239,8 +240,8 @@ export function registerReview(root: string, implementationId: string, title: st
     return record;
   });
 }
-type Value = { present: boolean; value?: unknown };
-export type StateChange = { path: string[]; before: Value; after: Value };
+type Value = ReviewStateValue;
+export type StateChange = ReviewStateChange;
 function validateValue(value: Value) {
   if (!value || typeof value.present !== "boolean" || (value.present && !Object.hasOwn(value, "value"))) throw new Error("Invalid state change value.");
 }
