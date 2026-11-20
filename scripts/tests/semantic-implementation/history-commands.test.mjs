@@ -333,6 +333,10 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
   fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
   repository.expectSemanticFailure("unstaged changes", "restack", "--continue");
   gitIn(worktree, "add", "shared.txt");
+  // So would an edit to another tracked file.
+  fs.writeFileSync(path.join(worktree, "policy.txt"), "policy=edited\n");
+  repository.expectSemanticFailure("policy.txt", "restack", "--continue");
+  gitIn(worktree, "checkout", "--", "policy.txt");
   // A new file that is not added would be lost too.
   fs.writeFileSync(path.join(worktree, "notes.txt"), "notes\n");
   repository.expectSemanticFailure("notes.txt", "restack", "--continue");
@@ -466,7 +470,8 @@ test("a stage the target already contains stays as a marked empty stage that pre
   repository.semantic("restack", "--base", "main");
   assert.match(repository.git("show", "-s", "--format=%B", policy), marker);
   repository.semantic("validate", "--publish");
-  // Once the target no longer contains them, the stage's changes come back.
+  // Once the target no longer contains them, the stage's changes come back, after garbage collection too.
+  repository.git("gc", "--quiet", "--prune=now");
   repository.git("rm", "--quiet", "policy.txt");
   repository.git("commit", "--quiet", "-m", "Revert the policy");
   const revived = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
@@ -487,6 +492,29 @@ test("a stage the target fast-forwarded to is emptied, and preparing an all-empt
   assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }]);
   repository.semantic("validate", "--publish");
   repository.expectSemanticFailure("already contains every stage", "prepare-branch", "--branch", "review/policy");
+  // A target that fast-forwarded to the stage and then reverted it gets the stage's changes back.
+  repository.git("revert", "--quiet", "--no-edit", head);
+  const reverted = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.deepEqual(reverted.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: false }]);
+  assert.equal(repository.git("show", "semantic-flow/test-implementation/stages/policy:policy.txt"), "policy");
+});
+
+test("a stage resolved to nothing at a conflict stays empty in later restacks", (t) => {
+  const { repository } = conflictingStack(t);
+  const worktree = conflictWorktree(repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy"));
+  // The resolution keeps the lower stages' version: the API stage's change is dropped.
+  gitIn(worktree, "checkout", "--ours", "--", "shared.txt");
+  gitIn(worktree, "add", "shared.txt");
+  const result = JSON.parse(repository.semantic("restack", "--continue", "--json"));
+  assert.equal(result.stages.find(({ id }) => id === "api").emptied, true);
+  const api = "semantic-flow/test-implementation/stages/api";
+  assert.match(repository.git("show", "-s", "--format=%B", api), /^Semantic-Flow-Empty: resolved$/m);
+  repository.semantic("validate", "--publish");
+  repository.git("switch", "main");
+  repository.commitFile("other.txt", "other\n", "Other work");
+  const again = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.equal(again.stages.find(({ id }) => id === "api").emptied, true);
+  assert.match(repository.git("show", "-s", "--format=%B", api), /^Semantic-Flow-Empty: resolved$/m);
 });
 
 test("restack applies the finalized net stage diff", (t) => {

@@ -246,7 +246,8 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
    naming the stage commit it replaced, which the artifact keeps reachable;
    its `files` is empty and its nodes keep describing the change. A later
    restack replays the named commit, so the stage's changes return if the
-   target no longer contains them.
+   target no longer contains them. A stage whose conflict was resolved to no
+   change is marked `Semantic-Flow-Empty: resolved` and is not replayed again.
 4. Move affected branch refs as one transaction.
 5. Record each affected `headRevision` (and the manifest's `baseRevision` when
    the target advanced); the other `change` fields follow from them.

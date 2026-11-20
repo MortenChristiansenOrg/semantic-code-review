@@ -2,7 +2,7 @@
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
 import { assertEvidenceDirectories, ensureEvidenceAttributes, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -2048,26 +2048,37 @@ function sameTree(root: string, left: string, right: string): boolean {
  * reachable, so a later restack can replay the stage again. */
 const EMPTY_STAGE_TRAILER = "Semantic-Flow-Empty";
 
-/** The stage commit a marked empty stage commit replaced, or undefined when
- * head is not one: a commit with its parent's tree and the marker trailer. */
-function emptyStageSource(root: string, head: string): string | undefined {
+/** The marker value of a stage resolved to nothing at a restack conflict: its
+ * changes are not replayed again, since the resolution dropped them. */
+const RESOLVED_EMPTY = "resolved";
+
+/** The marker of a marked empty stage commit, a commit with its parent's tree
+ * and the marker trailer: the stage commit it replaced, or RESOLVED_EMPTY.
+ * Undefined when head is not one. */
+function emptyStageMarker(root: string, head: string): string | undefined {
   const [tree, parent, ...markers] = gitRaw(["show", "-s", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return undefined;
   if (tree !== git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return undefined;
-  return markers.map((value) => value.trim()).find((value) => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));
+  return markers.map((value) => value.trim()).find((value) => value === RESOLVED_EMPTY || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));
+}
+
+/** The stage commit a marked empty stage commit replaced, which a restack replays. */
+function emptyStageSource(root: string, head: string): string | undefined {
+  const marker = emptyStageMarker(root, head);
+  return marker === RESOLVED_EMPTY ? undefined : marker;
 }
 
 function isMarkedEmptyStage(root: string, head: string): boolean {
-  return emptyStageSource(root, head) !== undefined;
+  return emptyStageMarker(root, head) !== undefined;
 }
 
 /** The marked empty commit an emptied stage becomes on parent. source is the
  * stage commit whose changes parent contains; when it is itself a marked empty
- * commit, the commit it replaced is named instead. */
-function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string): string {
+ * commit, its marker is kept. A stage resolved to nothing is marked as such. */
+function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string, resolved = false): string {
   const coAuthors = gitRaw(["show", "-s", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
     .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
-  const original = emptyStageSource(root, source) ?? source;
+  const original = resolved ? RESOLVED_EMPTY : emptyStageMarker(root, source) ?? source;
   return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, original));
 }
 
@@ -2240,6 +2251,14 @@ class ScratchWorktree {
 
   /** Removes the worktree at location and its registration, whatever state it is in. */
   static discard(root: string, location: string): void {
+    // A symbolic link put where the worktree was is removed itself, never followed.
+    let link = false;
+    try { link = fs.lstatSync(location).isSymbolicLink(); } catch { /* Nothing there. */ }
+    if (link) {
+      fs.unlinkSync(location);
+      git(["worktree", "prune"], { cwd: root, allowFailure: true });
+      return;
+    }
     git(["worktree", "remove", "--force", "--force", location], { cwd: root, allowFailure: true });
     // Windows can hold a file open briefly; the registration goes once the folder is gone.
     fs.rmSync(location, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -2287,7 +2306,9 @@ class ScratchWorktree {
 
   /** Paths with changes that are not staged, untracked files included. */
   unstaged(): string[] {
-    const entries = this.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"]).split("\0");
+    // Read untrimmed: a status entry starts with a space when only the worktree changed.
+    const entries = gitRaw([...this.config(), "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: this.path, encoding: "buffer" })
+      .toString("utf8").split("\0");
     const paths: string[] = [];
     for (let index = 0; index < entries.length; index++) {
       const entry = entries[index];
@@ -2334,23 +2355,32 @@ function withRestackLock<T>(workspace: Workspace, operation: () => T): T {
   const implementationId = activeImplementationId(workspace.root, workspace.snapshot);
   const lock = `${ScratchWorktree.location(workspace.root, implementationId)}.lock`;
   fs.mkdirSync(path.dirname(lock), { recursive: true });
-  // The lock appears with its owner already in it, so its owner is always known.
+  // The lock appears with its owner's unique marker already in it, so its owner
+  // is always known, and only that owner's marker is ever removed with it.
   const claim = fs.mkdtempSync(`${lock}.claim-`);
-  fs.writeFileSync(path.join(claim, "pid"), String(process.pid));
+  const marker = `owner-${randomUUID()}`;
+  fs.writeFileSync(path.join(claim, marker), String(process.pid));
   const busy = () => fail("Another restack of this implementation is running. Wait for it to finish, then run the command again.");
+  /** Removes the lock only while it still holds this marker: rmdir refuses a lock another owner has since taken. */
+  const remove = (owner: string) => {
+    try { fs.unlinkSync(path.join(lock, owner)); fs.rmdirSync(lock); } catch { /* Another owner holds it now. */ }
+  };
   try {
     for (let attempt = 0; ; attempt++) {
       try { fs.renameSync(claim, lock); break; }
       catch (error) {
         if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(errorCode(error) ?? "") || attempt > 0) busy();
-        let owner = Number.NaN;
-        try { owner = Number(fs.readFileSync(path.join(lock, "pid"), "utf8")); } catch { /* Released meanwhile. */ }
-        if (Number.isInteger(owner) && owner > 0) {
-          try { process.kill(owner, 0); busy(); }
+        let owners: string[] = [];
+        try { owners = fs.readdirSync(lock).filter((entry) => entry.startsWith("owner-")); } catch { /* Released meanwhile. */ }
+        if (owners.length !== 1) continue;
+        let pid = Number.NaN;
+        try { pid = Number(fs.readFileSync(path.join(lock, owners[0]), "utf8")); } catch { continue; }
+        if (Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 0); busy(); }
           catch (signalError) { if (errorCode(signalError) !== "ESRCH") busy(); }
         }
         // Its owner is gone: the lock is left over from a process that died.
-        fs.rmSync(lock, { recursive: true, force: true });
+        remove(owners[0]);
       }
     }
   } finally {
@@ -2361,7 +2391,7 @@ function withRestackLock<T>(workspace: Workspace, operation: () => T): T {
     if (current !== workspace.snapshot.version) fail("The semantic implementation changed while the command started. Run it again.");
     return operation();
   } finally {
-    fs.rmSync(lock, { recursive: true, force: true });
+    remove(marker);
   }
 }
 
@@ -2402,12 +2432,13 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
     const replaced = unchanged && stage.change.files.length === 0 ? emptyStageSource(root, actualHead) : undefined;
     const replayable = replaced !== undefined && gitOptional(["cat-file", "-e", `${replaced}^{commit}`], { cwd: root }) !== undefined;
     let nextHead: string;
-    if (isAncestor(root, actualHead, run.parentHead)) {
-      // The target, or the stage below, already holds this stage's commit, as after a fast-forward.
-      nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
-    } else if (isAncestor(root, run.parentHead, actualHead)) {
+    // A stage whose commit the new parent already holds, as after a fast-forward,
+    // is replayed too: the parent may have reverted its changes since.
+    const integrated = isAncestor(root, actualHead, run.parentHead);
+    if (!integrated && isAncestor(root, run.parentHead, actualHead)) {
       nextHead = foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged);
     } else if (replaced !== undefined && !replayable) {
+      console.error(`semantic-implementation: stage ${id} stays empty: the stage commit ${replaced} its marker names no longer exists, so its changes cannot be replayed.`);
       nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
     } else {
       const belowId = run.next > 0 ? artifact.manifest.stages[run.next - 1] : undefined;
@@ -2440,11 +2471,17 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
   }
 }
 
+/** The stage commit an emptied stage's marker names, which a later restack replays. */
+function replacedBy(root: string, plan: Pick<RestackPlan, "emptied" | "nextHead">): string[] {
+  const source = plan.emptied ? emptyStageSource(root, plan.nextHead) : undefined;
+  return source ? [source] : [];
+}
+
 /** The commit a replayed stage becomes: its tree on parent with the stage
  * commit's message and authors, or a marked empty commit when the target
  * already contains its changes. */
-function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string): string {
-  if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit);
+function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string, resolved = false): string {
+  if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit, resolved);
   return replayedCommit(root, tree, parent, stageCommit);
 }
 
@@ -2604,11 +2641,20 @@ function runRestack(
     };
     const draft = new ArtifactDraft(workspace.snapshot);
     draft.writeJson(PENDING_RESTACK_FILE, pending);
+    // The replayed stages and the stage commit being picked exist only in this record until --continue.
+    const retained = [error.conflict.stageCommit, ...run.plans.flatMap((plan) => [plan.nextHead, ...replacedBy(workspace.root, plan)])];
+    let recorded = false;
     try {
-      withArtifactLock(workspace, artifact.manifest.implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft));
+      withArtifactLock(workspace, artifact.manifest.implementationId, () => {
+        commitArtifact(workspace.root, workspace.snapshot, draft, [], retained);
+        recorded = true;
+      });
     } catch (recordError) {
-      keepOrDiscard();
-      throw recordError;
+      if (!recorded) {
+        keepOrDiscard();
+        throw recordError;
+      }
+      console.error(`semantic-implementation: the restack was recorded as pending, but ${errorMessage(recordError)}`);
     }
     fail([
       `Restacking stage ${error.conflict.id} onto ${error.conflict.parent} stopped at a conflict${error.files.length ? ` in ${error.files.join(", ")}` : ""}.`,
@@ -2680,9 +2726,18 @@ function finishRestack(workspace: Workspace, artifact: Artifact, run: RestackRun
   // Node coverage may no longer fit a replayed diff, as after a rename on the
   // target; validation reports it and the stage is organized again.
   validateArtifact(workspace, { quiet: true, schemaOnly: true, allowPendingRestack: true }, draft);
-  withArtifactLock(workspace, artifact.manifest.implementationId, () => {
-    commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, corrections);
-  });
+  // The commits an empty stage would replay stay reachable for later restacks.
+  const retained = [...corrections, ...run.plans.flatMap((plan) => replacedBy(workspace.root, plan))];
+  let committed = false;
+  try {
+    withArtifactLock(workspace, artifact.manifest.implementationId, () => {
+      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, retained);
+      committed = true;
+    });
+  } catch (error) {
+    if (!committed) throw error;
+    console.error(`semantic-implementation: the restack completed, but ${errorMessage(error)}`);
+  }
 
   return {
     mode: run.mode,
@@ -2740,7 +2795,8 @@ function continueRestack(workspace: Workspace): RestackSummary {
   const index = artifact.manifest.stages.indexOf(conflict.id);
   if (index < 0) changed("The stage stack");
   const stage = finalizedStage(artifact, conflict.id);
-  const nextHead = stageResult(workspace.root, stage, tree, conflict.parent, conflict.stageCommit);
+  // A resolution that drops the stage's changes stays empty in later restacks.
+  const nextHead = stageResult(workspace.root, stage, tree, conflict.parent, conflict.stageCommit, true);
   const plans = [...pending.plans, {
     id: conflict.id,
     branch: stage.change.branch,
