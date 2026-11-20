@@ -486,11 +486,12 @@ export interface EditorState {
   replyAttachments: Attachment[];
 }
 
-/** A draft note saved by an older viewer: `at` instead of `createdAt`, and no `mode`. */
+/** A draft note saved by an older viewer: `at` instead of `createdAt`, no `mode`,
+ * and a sent note possibly without its `body`. */
 export interface LegacyDraftNote extends Partial<Omit<DraftNote, "kind" | "id" | "body">> {
   kind: NoteKind;
   id: string;
-  body: string;
+  body?: string;
   /** Epoch milliseconds. */
   at?: number;
 }
@@ -864,9 +865,10 @@ export type AgentControlResponse = ApiResult<{ agent: AgentStatus }>;
 /** POST `/api/remote/refresh` (body `{}`) response. */
 export type RemoteRefreshResponse = OkResponse;
 
-/** A draft note whose snapshot `/api/draft-snapshots` should resolve. The page
- * sends whole `DraftNote`s; the server reads `kind`, `id` and `snapshot`. */
-export type DraftSnapshotNote = Pick<DraftNote, "kind" | "id" | "snapshot"> & Partial<DraftNote>;
+/** A draft whose snapshot `/api/draft-snapshots` should resolve. The page sends
+ * whole drafts, saved notes and the composer's draft alike, so other fields of
+ * theirs may be present; the server reads only `kind`, `id` and `snapshot`. */
+export type DraftSnapshotNote = Pick<DraftNote, "kind" | "id" | "snapshot">;
 
 /** POST `/api/draft-snapshots` request. */
 export interface DraftSnapshotsRequest {
