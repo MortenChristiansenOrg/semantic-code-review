@@ -7,7 +7,7 @@ import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { jsonBytes, parseJson } from "./json.js";
-import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
+import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readImplementationRefsInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
 import { gitRaw } from "./git.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
@@ -65,6 +65,27 @@ function rotateArtifactReviewId(gitDirectory: string, implementationId: string, 
   const name = repositoryName(gitDirectory);
   return replaceArtifactFileInGitDirectory(gitDirectory, implementationId, REVIEW_ID_FILE, (files) =>
     artifactReviewId(files) === expected ? jsonBytes({ reviewId: newReviewId(name, implementationId) }) : undefined);
+}
+/** Which snapshot of the implementation still holds review ID id: the active
+ * artifact, the claim of an archive in progress (or an interrupted one, which
+ * puts the snapshot back when it fails), or neither. */
+function reviewIdHolder(gitDirectory: string, implementationId: string, id: string): "active" | "archiving" | "none" {
+  const { active, archiving } = readImplementationRefsInGitDirectory(gitDirectory, implementationId);
+  if (active !== undefined && artifactReviewId(active) === id) return "active";
+  return archiving !== undefined && artifactReviewId(archiving) === id ? "archiving" : "none";
+}
+/** Gives the implementation a fresh review ID in place of id: stored one, found
+ * no snapshot holding id, or could not establish that id is replaced, because
+ * an archive's claim holds it and a failing archive would bring it back. */
+function replaceReviewId(gitDirectory: string, implementationId: string, id: string): "rotated" | "absent" | "unconfirmed" {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (rotateArtifactReviewId(gitDirectory, implementationId, id)) return "rotated";
+    const holder = reviewIdHolder(gitDirectory, implementationId, id);
+    if (holder === "none") return "absent";
+    if (holder === "archiving") return "unconfirmed";
+    // A failed archive put the snapshot back after the rotation looked: try again.
+  }
+  return "unconfirmed";
 }
 export function reviewId(root: string, implementationId: string) {
   const canonicalRoot = fs.realpathSync(root);
@@ -140,9 +161,10 @@ export function relocateReview(id: string, root: string) {
 }
 /** What giving a deleted review's implementation a fresh review ID did: stored
  * one, found nothing holding the old ID (a remote review, an implementation that
- * is no longer active, or one already given another ID), or could not reach the
- * repository at all. */
-export type ReviewIdRetirement = "rotated" | "absent" | "unreachable";
+ * is no longer active, or one already given another ID), could not establish
+ * that the old ID is replaced (an archive's claim holds it), or could not reach
+ * the repository at all. */
+export type ReviewIdRetirement = "rotated" | "absent" | "unconfirmed" | "unreachable";
 /** Gives the implementation of a review being deleted a fresh review ID, so the
  * next review of it starts empty and nothing reaches the deleted one. Git is given
  * the recorded Git common directory, so this works when no worktree of the
@@ -152,7 +174,7 @@ export function retireReviewId(record: ReviewRecord): ReviewIdRetirement {
   if (record.remote) return "absent";
   const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir : gitCommonDirectoryOf(record.repositoryRoot);
   if (gitDirectory === undefined) return "unreachable";
-  return rotateArtifactReviewId(gitDirectory, record.implementationId, record.id) ? "rotated" : "absent";
+  return replaceReviewId(gitDirectory, record.implementationId, record.id);
 }
 /** The Git common directory of a recorded worktree, if it is still a checkout. */
 function gitCommonDirectoryOf(root: string): string | undefined {
@@ -163,10 +185,11 @@ function gitCommonDirectoryOf(root: string): string | undefined {
 const reviewsDirectory = () => path.join(reviewHome(), "reviews");
 /** Folders of committed deletions, which cleanup removes without a lock. */
 const DELETED_PREFIX = ".deleted-";
+const DELETING_PREFIX = ".deleting-";
 /** The folder a deletion moves a review's folder to while it may still roll back.
- * Cleanup never removes it. */
+ * Nothing removes files from it; only once it is renamed to a deleted folder. */
 export function pendingDeletionDirectory(id: string) {
-  return path.join(reviewsDirectory(), ".deleting-" + path.basename(reviewDirectory(id)));
+  return path.join(reviewsDirectory(), DELETING_PREFIX + path.basename(reviewDirectory(id)));
 }
 /** Marks a review ID that a deletion retired while it could not reach the
  * repository, so the artifact still holds it. The registration that next finds
@@ -175,7 +198,8 @@ export function pendingDeletionDirectory(id: string) {
 function retiredMarker(id: string) {
   return path.join(reviewsDirectory(), ".retired-" + path.basename(reviewDirectory(id)));
 }
-/** Records that review ID id is retired although the artifact may still hold it. Caller holds the lock. */
+/** Records that review ID id is retired although the artifact may still hold it,
+ * or an archive's claim does. Caller holds the lock. */
 export function markReviewIdRetired(id: string) {
   fs.writeFileSync(retiredMarker(id), "");
 }
@@ -189,32 +213,62 @@ export function rollBackReviewDeletion(id: string) {
   fs.renameSync(pendingDeletionDirectory(id), reviewDirectory(id));
 }
 /** Completes a deletion that can no longer roll back: its pending folder becomes
- * a deleted one and is removed. One that cannot be removed now is removed by a
- * later cleanup. Caller holds the lock. */
+ * a deleted one and is removed. Files are removed only under the deleted name, so
+ * a folder that cannot be renamed now keeps its pending name, and cleanup
+ * completes the deletion later. Caller holds the lock. */
 export function completeReviewDeletion(id: string) {
   const deleted = path.join(reviewsDirectory(), DELETED_PREFIX + randomUUID());
   try { fs.renameSync(pendingDeletionDirectory(id), deleted); }
-  catch {
-    // Without a new name, remove the pending folder in place; what remains stays deleted.
-    try { fs.rmSync(pendingDeletionDirectory(id), { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); } catch { /* See above. */ }
-    return;
-  }
+  catch { return; }
   try { fs.rmSync(deleted, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); }
   catch { /* A later cleanup removes it. */ }
 }
+/** Whether the deletion of id that left its folder under the pending name
+ * committed: it marked the ID retired, the repository's implementation no longer
+ * holds the ID, or it was the removal of a review whose repository has long been
+ * missing. A deletion of a remote review commits once it starts, since nothing
+ * holds its ID. "unknown" while the repository cannot be reached, or an archive's
+ * claim holds the ID. A worktree that reaches the review, when given, locates
+ * the repository if the recorded locators no longer do. */
+function interruptedDeletionOutcome(id: string, reachingRoot?: string): "committed" | "uncommitted" | "unknown" {
+  if (fs.existsSync(retiredMarker(id))) return "committed";
+  let record: ReviewRecord;
+  try {
+    const file = path.join(pendingDeletionDirectory(id), "review.json");
+    record = parseReviewRecord(parseJson(fs.readFileSync(file, "utf8")), file);
+  } catch { return "unknown"; }
+  if (record.id !== id) return "unknown";
+  if (record.remote) return "committed";
+  if (repositoryPresence(record) === "missing" && missingLongEnough(record)) return "committed";
+  const gitDirectory = record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir) ? record.gitCommonDir
+    : gitCommonDirectoryOf(record.repositoryRoot) ?? (reachingRoot === undefined ? undefined : gitCommonDirectoryOf(reachingRoot));
+  if (gitDirectory === undefined) return "unknown";
+  try {
+    const holder = reviewIdHolder(gitDirectory, record.implementationId, id);
+    return holder === "active" ? "uncommitted" : holder === "archiving" ? "unknown" : "committed";
+  } catch { return "unknown"; }
+}
 /** Settles a deletion of id that a crash interrupted, before anything else uses
- * the ID: one that retired the ID is completed, any other is rolled back, since
- * the artifact still holds the ID. Caller holds the lock. */
-export function recoverInterruptedDeletion(id: string) {
+ * the ID, by what the repository records: one that committed is completed, one
+ * whose implementation still holds the ID is rolled back, and one that cannot be
+ * told yet keeps its pending folder. reachingRoot is a worktree known to reach
+ * the review. Caller holds the lock. */
+export function recoverInterruptedDeletion(id: string, reachingRoot?: string) {
   if (!fs.existsSync(pendingDeletionDirectory(id)) || fs.existsSync(reviewDirectory(id))) return;
-  if (fs.existsSync(retiredMarker(id))) completeReviewDeletion(id);
-  else rollBackReviewDeletion(id);
+  const outcome = interruptedDeletionOutcome(id, reachingRoot);
+  if (outcome === "committed") completeReviewDeletion(id);
+  else if (outcome === "uncommitted") rollBackReviewDeletion(id);
+}
+/** Whether an interrupted deletion of id still holds its folder under the pending name. */
+export function reviewDeletionPending(id: string) {
+  return fs.existsSync(pendingDeletionDirectory(id));
 }
 /** Whether review id is gone for good, rather than moved aside by a deletion that
- * may still roll back. Waits for the review's lock, so a deletion in progress has
- * finished first. False when that cannot be told now. */
+ * may still roll back. Never waits for the review's lock: a busy lock may be a
+ * deletion in progress, so it is not confirmed and the caller asks again later.
+ * False when that cannot be told now. */
 export function reviewDeletionConfirmed(id: string): boolean {
-  try { return withReviewLock(id, () => !fs.existsSync(path.join(reviewDirectory(id), "review.json")) && !fs.existsSync(pendingDeletionDirectory(id))); }
+  try { return withReviewLock(id, () => !fs.existsSync(path.join(reviewDirectory(id), "review.json")) && !fs.existsSync(pendingDeletionDirectory(id)), { wait: false }); }
   catch { return false; }
 }
 /** How long the Git directory of a local review must have been missing before
@@ -223,7 +277,8 @@ export function reviewDeletionConfirmed(id: string): boolean {
  * command runs from it again. */
 export const ORPHAN_GRACE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Removes local reviews whose repository's Git directory has been missing for
- * ORPHAN_GRACE_MS, and folders of committed deletions. The first cleanup that
+ * ORPHAN_GRACE_MS, and folders of committed deletions, and settles interrupted
+ * deletions. The first cleanup that
  * finds a Git directory missing records when; one that finds it again clears
  * that. A review whose repository exists stays, even when its implementation was
  * archived or discarded, so its feedback can still be read. The review named by
@@ -237,6 +292,12 @@ export function removeOrphanedReviews(keep?: string) {
   for (const name of names) {
     try {
       if (name.startsWith(DELETED_PREFIX)) { fs.rmSync(path.join(directory, name), { recursive: true, force: true }); continue; }
+      if (name.startsWith(DELETING_PREFIX)) {
+        // An interrupted deletion is settled by what the repository records.
+        const id = name.slice(DELETING_PREFIX.length);
+        if (isReviewId(id)) withReviewLock(id, () => recoverInterruptedDeletion(id), { wait: false });
+        continue;
+      }
       if (name === keep || !isReviewId(name)) continue;
       const seen = readReview(name), presence = repositoryPresence(seen);
       // Most reviews need no change, so no lock.
@@ -517,12 +578,17 @@ export function registerReview(root: string, implementationId: string, title: st
       // A deletion that held this lock gave the implementation a new review ID;
       // registering the old one would recreate the deleted review.
       if (reviewId(root, implementationId) !== id) return undefined;
-      recoverInterruptedDeletion(id);
+      recoverInterruptedDeletion(id, root);
+      // Its data would otherwise be shadowed by a new, empty review of the same ID.
+      if (reviewDeletionPending(id) && !fs.existsSync(path.join(reviewDirectory(id), "review.json"))) {
+        throw new Error(`An interrupted deletion of the review of ${implementationId} cannot be settled while an archive of the implementation is in progress or interrupted. Finish the archive, then retry the command.`);
+      }
       if (fs.existsSync(retiredMarker(id))) {
         // A deletion retired this ID while it could not reach the repository. The
         // repository is reachable now: store a fresh ID, then register that one.
-        rotateArtifactReviewId(gitCommonDirectory(root), implementationId, id);
-        fs.rmSync(retiredMarker(id), { force: true });
+        // The marker stays until no snapshot holds the ID any more, so an archive
+        // that fails and puts its snapshot back cannot revive the ID.
+        if (replaceReviewId(gitCommonDirectory(root), implementationId, id) !== "unconfirmed") fs.rmSync(retiredMarker(id), { force: true });
         return undefined;
       }
       const directory = reviewDirectory(id);

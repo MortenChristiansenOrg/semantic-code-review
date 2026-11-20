@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentIds, beginReviewDeletion, completeReviewDeletion, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
+import { attachmentIds, beginReviewDeletion, completeReviewDeletion, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
 import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage } from "./viewer-protocol.js";
@@ -91,19 +91,24 @@ export function inspectReviewStorage(id: string, generation: string): ReviewStor
  * from then on, then gives its implementation a fresh review ID, so nothing
  * reaches the deleted review again and the next review of the implementation
  * starts empty. Only then is the folder removed. When the repository cannot be
- * reached, the old ID is marked retired instead, and the next registration that
- * finds it in the artifact replaces it. When either step fails, the folder is
+ * reached, or an archive's claim holds the old ID, the old ID is marked retired
+ * instead, and the next registration that finds it in the artifact replaces it. When either step fails, the folder is
  * moved back and nothing has changed. */
 export function deleteReviewData(id: string, generation: string, fingerprint: string): ApiSuccess<ReviewDeleteResponse> {
   return withCleanupDiagnostics(id, "Use Refresh details, then retry deletion.", () => {
     recoverInterruptedDeletion(id);
-    if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) return { deleted: true }; // Exact retry after completion.
+    if (!fs.existsSync(path.join(reviewDirectory(id), "review.json"))) {
+      if (reviewDeletionPending(id)) throw new Error("An earlier deletion of this review was interrupted and cannot be settled until its repository can be reached and no archive of its implementation is in progress. Retry deletion then.");
+      return { deleted: true }; // Exact retry after completion.
+    }
     const preview = inspect(id, generation);
     if (typeof fingerprint !== "string" || fingerprint !== preview.fingerprint) throw new Error("Review data changed since the preview. Refresh the details before deleting.");
     const record = readReview(id);
     beginReviewDeletion(id);
     try {
-      if (retireReviewId(record) === "unreachable") markReviewIdRetired(id);
+      // The old ID may still be stored, or come back with a failed archive: the
+      // next registration that finds it replaces it first.
+      if (["unreachable", "unconfirmed"].includes(retireReviewId(record))) markReviewIdRetired(id);
     } catch (error) {
       try { rollBackReviewDeletion(id); }
       catch (restoreError) {

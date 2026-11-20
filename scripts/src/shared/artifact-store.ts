@@ -591,6 +591,30 @@ export function replaceArtifactFileInGitDirectory(
   }
 }
 
+/** The snapshots an implementation has in the repository whose Git directory is
+ * gitDirectory: its active artifact and the archiving claim an archive in
+ * progress, or an interrupted one, holds. Both refs are read in one Git command,
+ * and every Git command is given that directory, as in
+ * replaceArtifactFileInGitDirectory. */
+export function readImplementationRefsInGitDirectory(
+  gitDirectory: string,
+  implementationId: string,
+): { active?: ArtifactFiles; archiving?: ArtifactFiles } {
+  const gitDir = `--git-dir=${gitDirectory}`;
+  const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
+  const refs = [activeRef(implementationId), archivingRef(implementationId)];
+  const commits = new Map(run(["for-each-ref", "--format=%(objectname)%09%(refname)", ...refs]).toString("utf8")
+    .split(/\r?\n/).filter(Boolean).map((line) => {
+      const [commit, ref] = line.split("\t");
+      return [ref, commit] as const;
+    }));
+  const read = (ref: string) => {
+    const commit = commits.get(ref);
+    return commit === undefined ? undefined : treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
+  };
+  return { active: read(refs[0]), archiving: read(refs[1]) };
+}
+
 /** Removes the active artifact read as base, together with the other ref
  * updates, unless it changed since. */
 export function removeArtifact(root: string, base: ArtifactSnapshot, refUpdates: readonly RefUpdate[] = []): void {

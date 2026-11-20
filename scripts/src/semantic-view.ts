@@ -2198,6 +2198,16 @@ export function reviewSessionUnavailable(context: ReviewContext) {
     try { return replaced(); } catch { return false; }
   }
 }
+/** Whether a launch of the session may replace a running viewer of the same
+ * review: the review still records the worktree the launch serves. A launch that
+ * read the review before another launch recorded a different worktree is
+ * outdated, and the viewer of the recorded worktree is the one to keep. */
+export function viewerLaunchCurrent(context: ReviewContext) {
+  try {
+    const record = readReview(context.reviewId);
+    return record.generation === context.generation && record.repositoryRoot === context.repositoryRoot;
+  } catch { return false; }
+}
 /** Poll directory identity cheaply; retry transient failures before accepting a baseline. */
 export function reviewRetirementCheck(context: ReviewContext) {
   const directory = reviewDirectory(context.reviewId);
@@ -2929,6 +2939,11 @@ async function serve(launchRoot: string, requested: RequestedReview | null) {
       }
       if (process.env.SEMANTIC_VIEW_NO_REPLACE) throw new Error(`Port ${port} was occupied before the updated viewer could restart; refusing to replace it.`);
       if (matching(occupant)) {
+        // Read the review again right before stopping it: a viewer that a later
+        // launch started for the worktree the review now records must stay.
+        if (!viewerLaunchCurrent(context)) {
+          throw new Error(`The review changed while this viewer started, so the viewer running at http://${VIEWER_HOST}:${port}/ is kept. Launch the review again to open it.`);
+        }
         await stopViewerAndWait(occupant, port);
       } else {
         // A different review (or another application) keeps its port. Stable
