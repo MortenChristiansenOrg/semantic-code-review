@@ -8,7 +8,7 @@ unrelated user changes.
 ## Prepare the organization input
 
 Read `../references/stage-organization.schema.json`. Reuse the loaded platform
-guide, or read `os/windows.md` for Windows and `os/linux.md` for Linux, for
+guide, or read `os/windows.md` for Windows and `os/unix.md` for Linux and macOS, for
 temporary-file handling.
 
 Obtain the complete committed stage file inventory:

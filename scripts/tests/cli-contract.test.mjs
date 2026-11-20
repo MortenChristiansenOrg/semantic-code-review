@@ -16,6 +16,7 @@ import {
   SPECIFICATION_SCHEMA_ID,
   STAGE_SCHEMA_ID,
 } from "../src/shared/documents.ts";
+import { MINIMUM_NODE_MAJOR } from "../src/shared/distribution.ts";
 import { stageBranchName } from "../src/shared/implementation.ts";
 import { readDocument } from "../src/shared/schema-validation.ts";
 
@@ -247,8 +248,8 @@ test("skill indexes command-specific workflows", () => {
     path.join(skillRoot, "docs", "runtime.md"),
     "utf8",
   );
-  const linux = fs.readFileSync(
-    path.join(skillRoot, "docs", "os", "linux.md"),
+  const unix = fs.readFileSync(
+    path.join(skillRoot, "docs", "os", "unix.md"),
     "utf8",
   );
   const windows = fs.readFileSync(
@@ -294,6 +295,15 @@ test("skill indexes command-specific workflows", () => {
   assert.doesNotMatch(skill, /node -p "process\.platform"/);
   assert.doesNotMatch(skill, /git worktree list --porcelain/);
   assert.match(runtime, /node -p "process\.platform"/);
+  // Every operating system CI tests has a guide, so the skill does not stop there.
+  const checks = fs.readFileSync(path.resolve(skillRoot, "..", "..", ".github", "workflows", "checks.yml"), "utf8");
+  const platforms = { ubuntu: "linux", macos: "darwin", windows: "win32" };
+  const tested = [...checks.matchAll(/\b(ubuntu|macos|windows)-latest\b/g)].map((match) => platforms[match[1]]);
+  assert.deepEqual([...new Set(tested)].sort(), ["darwin", "linux", "win32"]);
+  for (const platform of tested) {
+    const [, guide] = runtime.match(new RegExp(`^\\s*- [^\\n]*\`${platform}\`[^\\n]*: \`(os/[a-z]+\\.md)\``, "m")) ?? [];
+    assert.ok(guide && fs.existsSync(path.join(skillRoot, "docs", guide)), `runtime.md names no guide for ${platform}`);
+  }
   assert.match(runtime, /<semantic-flow> inspect --json/);
   assert.match(runtime, /otherwise the only\s+matching one/);
   assert.match(commandText.get("implement"), /<semantic-flow> implementation stage begin/);
@@ -373,7 +383,7 @@ test("skill indexes command-specific workflows", () => {
     fs.readFileSync(path.join(skillRoot, "VERSION"), "utf8").trim(),
     packageJson.version,
   );
-  assert.match(linux, /<semantic-flow>\s+=> node "\$semantic_flow"/);
+  assert.match(unix, /<semantic-flow>\s+=> node "\$semantic_flow"/);
   assert.match(windows, /<semantic-flow>\s+=> node \$semanticFlow/);
 
   // One executable and one placeholder; command groups follow it.
@@ -384,11 +394,11 @@ test("skill indexes command-specific workflows", () => {
     assert.doesNotMatch(text, /<(semantic-implementation|review-feedback|semantic-view)>/, file);
     assert.doesNotMatch(text, /(semantic-implementation|review-feedback|semantic-view)\.mjs/, file);
   }
-  assert.match(linux, /node "\$semantic_flow" implementation validate/);
-  assert.match(linux, /node "\$semantic_flow" feedback next --json/);
+  assert.match(unix, /node "\$semantic_flow" implementation validate/);
+  assert.match(unix, /node "\$semantic_flow" feedback next --json/);
   assert.match(windows, /node \$semanticFlow implementation validate/);
   assert.match(windows, /node \$semanticFlow feedback next --json/);
-  for (const platformGuide of [linux, windows]) {
+  for (const platformGuide of [unix, windows]) {
     assert.match(platformGuide, /semantic-flow\.mjs/);
     assert.doesNotMatch(platformGuide, /## [1-7]\./);
   }
@@ -415,7 +425,7 @@ test("finalized reorganization guidance supplies the complete CLI input", () => 
     /stage organize --finalized --stage <stage-id> --file <organization-json>/,
   );
   assert.match(guide, /\.\.\/references\/stage-organization\.schema\.json/);
-  assert.match(guide, /`os\/windows\.md`[\s\S]*`os\/linux\.md`/);
+  assert.match(guide, /`os\/windows\.md`[\s\S]*`os\/unix\.md`/);
   assert.match(guide, /complete stage diff, not just the latest correction commit/);
   assert.match(guide, /`nodes`: the complete replacement node list/);
   assert.match(guide, /`itemLinks`: one entry for every recorded insight and validation item/);
@@ -499,12 +509,12 @@ test("repository metadata and maintainer guidance preserve portability", async (
   assert.match(viewerApp, /Approve every step before approving the stage/);
   assert.match(viewerApp, /if \(stage && !stageNodesApproved\(stage\)\) return;/);
   assert.match(ignore, /^\*:Zone\.Identifier$/m);
-  assert.equal(packageJson.engines.node, ">=20");
+  assert.equal(packageJson.engines.node, ">=22");
   assert.doesNotMatch(scriptsReadme, /\.\\scripts|skills\\semantic-flow/);
   assert.doesNotMatch(sourceRepair, /\.\\scripts|<source-repository>\\skills/);
   assert.match(userManual, /<semantic-flow> implementation <command>/);
   assert.match(userManual, /<semantic-flow> feedback <command>/);
-  assert.match(userManual, /docs\/os\/linux\.md/);
+  assert.match(userManual, /docs\/os\/unix\.md/);
   assert.match(userManual, /docs\/os\/windows\.md/);
 });
 
@@ -570,4 +580,29 @@ test("the typed boundary check finds JSON.parse however it is accessed", () => {
   assert.deepEqual(typedBoundaryViolations("shared/json.ts", 'JSON["parse"](text); const parse = globalThis.JSON.parse;'), []);
   assert.deepEqual(typedBoundaryViolations("example.ts",
     "parseJson(text); JSON.stringify(value); other.parse(text); const { stringify } = JSON; const { parse } = other; JSON.parsed;"), []);
+});
+
+test("the skill, package, build, CI, release and documentation state one Node.js minimum", () => {
+  const skillRoot = path.resolve(scriptsDirectory, "..");
+  const repositoryRoot = path.resolve(skillRoot, "..", "..");
+  const read = (...parts) => fs.readFileSync(path.join(repositoryRoot, ...parts), "utf8");
+  const minimum = MINIMUM_NODE_MAJOR;
+  assert.equal(JSON.parse(read("scripts", "package.json")).engines.node, `>=${minimum}`);
+  assert.match(read("scripts", "src", "build-skill.ts"), new RegExp(`target: "node${minimum}"`));
+  // The minimum on every operating system, newer lines on Linux.
+  const checks = read(".github", "workflows", "checks.yml");
+  assert.match(checks, new RegExp(`os: \\[ubuntu-latest, windows-latest, macos-latest\\]\\s+node: \\[${minimum}\\]`));
+  assert.match(checks, /node-version: \$\{\{ matrix\.node \}\}/);
+  // Newer LTS lines run on Linux; at least one newer line is always supported.
+  assert.doesNotMatch(checks, /exclude:/);
+  const included = checks.slice(checks.indexOf("include:"));
+  const newer = [...included.matchAll(/- os: ubuntu-latest\s+node: (\d+)$/gm)].map((match) => Number(match[1]));
+  assert.ok(newer.length > 0 && newer.every((node) => node > minimum && node % 2 === 0), String(newer));
+  assert.deepEqual([...new Set([...read(".github", "workflows", "release.yml").matchAll(/node-version: (\S+)/g)].map((match) => match[1]))], [String(minimum)]);
+  // The skill's preflight in every platform guide.
+  const guides = fs.readdirSync(path.join(skillRoot, "docs", "os"));
+  assert.ok(guides.length >= 2);
+  for (const guide of guides) assert.match(read("skills", "semantic-flow", "docs", "os", guide), new RegExp(`Node\\.js is version ${minimum} or later`));
+  assert.match(read("README.md"), new RegExp(`Node\\.js ${minimum} or newer is required`));
+  assert.match(read("docs", "releases.md"), new RegExp(`Install Node\\.js ${minimum} or newer`));
 });

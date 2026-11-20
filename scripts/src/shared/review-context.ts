@@ -7,30 +7,21 @@ import { readReview, readReviewArtifact, reviewId, reviewHome, type ReviewRecord
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { activeImplementationId } from "./artifact-store.js";
 import { errorCode } from "./narrow.js";
+import { gitEnvironment, isolateGitEnvironment } from "./git.js";
 
 export type ReviewContext = Readonly<{
   reviewId: string; generation: string; repositoryRoot: string; implementationId: string;
 }>;
 
-/** Git's repository-local environment must not override an explicit worktree. */
-const REPOSITORY_LOCAL_GIT_VARIABLE = /^GIT_(ALTERNATE_OBJECT_DIRECTORIES|CONFIG|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|OBJECT_DIRECTORY|DIR|WORK_TREE|IMPLICIT_WORK_TREE|GRAFT_FILE|INDEX_FILE|NO_REPLACE_OBJECTS|REPLACE_REF_BASE|PREFIX|SHALLOW_FILE|COMMON_DIR|NAMESPACE)$/i;
-
+/** The environment of commands the viewer runs: without Git's repository-local
+ * variables, so they act on their explicit worktree. */
 export function reviewEnvironment(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (REPOSITORY_LOCAL_GIT_VARIABLE.test(key)) delete env[key];
-  }
-  return env;
+  return gitEnvironment();
 }
 
 /** Removes Git's repository-local variables from this process, so commands that
- * run in-process target their explicit worktree. Only the viewer server, a
- * process of its own, does this. */
-export function isolateReviewEnvironment(): void {
-  for (const key of Object.keys(process.env)) {
-    if (REPOSITORY_LOCAL_GIT_VARIABLE.test(key)) delete process.env[key];
-  }
-}
+ * run in-process target their explicit worktree. */
+export const isolateReviewEnvironment = isolateGitEnvironment;
 export function captureReviewContext(id: string): ReviewContext {
   const review = readReview(id);
   const context = Object.freeze({ reviewId: id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId });

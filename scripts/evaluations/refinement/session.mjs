@@ -42,7 +42,7 @@ export async function prepare(configFile, directory) {
   directory = path.resolve(directory);
   if (fs.existsSync(directory)) throw new Error('Session destination already exists; use a new name');
   const plan = loadPlan(configFile);
-  if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node 20 or later is required');
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22 or later is required');
   const versions = { node: process.version, git: checked(['git', '--version'], source), platform: process.platform, arch: process.arch };
   for (const [role, agents] of [['implementer', plan.implementers], ['grader', [plan.grader]]]) for (const a of agents) versions[`${role}:${a.id}`] = checked(a.versionCommand, source);
   // Validate installations before creating any session files or launching models.

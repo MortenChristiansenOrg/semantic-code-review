@@ -27,10 +27,16 @@ async function session(t, mode) {
   const context = await setup(t), { root, env, fixture } = context;
   const running = launch([process.execPath, agent, skill, mode], { cwd: fixture.repo, env, prompt: 'Review interactively.',
     stdoutFile: path.join(root, 'agent.out'), stderrFile: path.join(root, 'agent.err'), timeoutMs: 300_000 });
-  const driver = await drive({ ...context, skill, signal: new AbortController().signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) });
+  const agentStderr = () => { try { return fs.readFileSync(path.join(root, 'agent.err'), 'utf8'); } catch { return ''; } };
+  let driver;
+  try { driver = await drive({ ...context, skill, signal: new AbortController().signal, agentExited: running.then(execution => ({ ...execution, at: new Date().toISOString() })) }); }
+  catch (error) {
+    const execution = await running;
+    throw new Error(`The scripted reviewer failed (agent exit code ${execution.exitCode}): ${error.message}\nAgent stderr:\n${agentStderr()}`, { cause: error });
+  }
   const execution = await running;
   const result = await verify({ ...context, skill, driver });
-  return { driver, execution, stderr: fs.readFileSync(path.join(root, 'agent.err'), 'utf8'), checks: Object.fromEntries(result.checks.map(check => [check.id, check])), result };
+  return { driver, execution, stderr: agentStderr(), checks: Object.fromEntries(result.checks.map(check => [check.id, check])), result };
 }
 
 test('prepare finishes three stages and keeps the reviewer script out of the agent request', async t => {
@@ -53,16 +59,16 @@ test('a known-good interactive agent passes every fixed check and its viewer is 
 });
 
 test('an agent that stops listening after the first round fails the listening checks', async t => {
-  const { execution, checks } = await session(t, 'early-exit');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, checks } = await session(t, 'early-exit');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.equal(checks.listened.passed, true);
   assert.equal(checks['round-one-changes'].passed, true);
   for (const id of ['follow-up-queued', 'asked-in-viewer', 'decision-applied', 'stopped-on-request']) assert.equal(checks[id].passed, false, id);
 });
 
 test('negated retry documentation and resolved reviewer threads fail their checks', async t => {
-  const { execution, checks } = await session(t, 'sloppy');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, checks } = await session(t, 'sloppy');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.equal(checks['round-one-changes'].passed, false);
   assert.equal(checks['threads-open'].passed, false);
   assert.equal(checks['decision-applied'].passed, true);
@@ -70,8 +76,8 @@ test('negated retry documentation and resolved reviewer threads fail their check
 });
 
 test('an agent that settles contradictory notes itself fails the viewer question check', async t => {
-  const { execution, driver, checks } = await session(t, 'decides');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, driver, checks } = await session(t, 'decides');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.ok(driver.events.some(event => event.type === 'decided-without-asking'));
   assert.equal(checks['asked-in-viewer'].passed, false);
   assert.equal(checks['decision-applied'].passed, false);

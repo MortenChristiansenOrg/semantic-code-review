@@ -2,11 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 // Bundles use the package's ESM build (see the alias in build-skill.ts). The
 // build and release tools run this file through tsx and load the CommonJS entry:
-// the package does not mark its ESM build as ESM, so Node.js 20 cannot load it.
+// the package does not mark its ESM build as ESM, and the build's own imports
+// omit file extensions, so Node.js cannot load it as a module.
 import * as jsonc from "jsonc-parser";
 import type { Node as JsonNode, ParseError } from "jsonc-parser";
 import { fail } from "./errors.js";
-import { errorMessage } from "./narrow.js";
+import { errorCode, errorMessage } from "./narrow.js";
 
 function findDuplicateKeys(
   node: JsonNode | undefined,
@@ -90,7 +91,26 @@ export function writeJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, jsonBytes(value));
-  fs.renameSync(temporary, file);
+  replaceFile(temporary, file);
+}
+
+/** How long a replacement waits for readers of the destination on Windows. */
+export const REPLACE_WAIT_MS = 2000;
+const SHARING_VIOLATIONS = ["EPERM", "EACCES", "EBUSY"];
+
+/** Moves source over destination, as `fs.renameSync` does. Windows refuses to
+ * replace a file while another process has it open, which readers of review data
+ * do briefly, so there the move is retried until the readers are done. */
+export function replaceFile(source: string, destination: string): void {
+  const deadline = performance.now() + REPLACE_WAIT_MS;
+  for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
+    try { fs.renameSync(source, destination); return; }
+    catch (error) {
+      const remaining = deadline - performance.now();
+      if (process.platform !== "win32" || !SHARING_VIOLATIONS.includes(errorCode(error) ?? "") || remaining <= 0) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(pause, remaining));
+    }
+  }
 }
 
 export function listJsonFiles(directory: string): string[] {

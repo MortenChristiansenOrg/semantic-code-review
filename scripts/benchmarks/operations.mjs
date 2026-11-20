@@ -103,11 +103,13 @@ try {
   }
   const skill = path.resolve(selected, '..');
   const bytes = (files) => files.reduce((total, file) => total + fs.statSync(path.join(skill, file)).size, 0);
-  const common = ['docs/runtime.md', 'scripts/API.d.ts', 'docs/os/linux.md'];
+  // The Linux guide is os/unix.md since it also covers macOS; an older baseline has os/linux.md.
+  const unixGuide = fs.existsSync(path.join(skill, 'docs/os/unix.md')) ? 'docs/os/unix.md' : 'docs/os/linux.md';
+  const common = ['docs/runtime.md', 'scripts/API.d.ts', unixGuide];
   const instructionBytes = {
     status: bytes(['commands/status.md', ...(baseline ? common : [])]),
     feedback: bytes(['commands/feedback.md']),
-    implementEntry: bytes(['commands/implement.md', 'docs/runtime.md', 'docs/artifact-quality.md', 'docs/os/linux.md', baseline ? 'scripts/API.d.ts' : 'scripts/api/stages.d.ts']),
+    implementEntry: bytes(['commands/implement.md', 'docs/runtime.md', 'docs/artifact-quality.md', unixGuide, baseline ? 'scripts/API.d.ts' : 'scripts/api/stages.d.ts']),
   };
   console.log(JSON.stringify({ node: process.version, platform: process.platform, baseline, instructionBytes, results }, null, 2));
 } finally {

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName } from '../src/shared/release-version.ts';
-import { sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
+import { MINIMUM_NODE_MAJOR, sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
 import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
 import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
@@ -35,7 +35,7 @@ function distribution(version = '0.2.0', extraFiles = {}) {
   for (const [name, content] of Object.entries(extraFiles)) content === null ? files.delete(name) : files.set(name, Buffer.from(content));
   files.set('VERSION', Buffer.from(`${version}\n`));
   files.delete('RELEASE.json');
-  const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: 20,
+  const metadata = { repository: RELEASE_REPOSITORY, sourceCommit: 'a'.repeat(40), version, minimumNodeMajor: MINIMUM_NODE_MAJOR,
     files: Object.fromEntries([...files].map(([name, bytes]) => [name, sha256(bytes)])) };
   files.set('RELEASE.json', Buffer.from(JSON.stringify(metadata)));
   return files;
@@ -142,6 +142,7 @@ test('archive validation rejects wrong versions, missing files, changed contents
   assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': reordered }), '0.2.0'), /missing viewer\/boot\.js/);
   const quoted = '<script title="a > b" defer src="boot.js"></script>\n';
   assert.throws(() => validateDistribution(distribution('0.2.0', { 'viewer/boot.js': null, 'viewer/index.html': quoted }), '0.2.0'), /missing viewer\/boot\.js/);
+  assert.throws(() => validateDistribution(original, '0.2.0', MINIMUM_NODE_MAJOR - 1), new RegExp(`requires Node\\.js ${MINIMUM_NODE_MAJOR} or newer`));
   for (const mutate of [
     (files) => files.delete('viewer/app.js'),
     (files) => files.set('scripts/semantic-flow.mjs', Buffer.from('tampered')),
@@ -208,6 +209,7 @@ globalThis.fetch = async (url, options) => {
   if (String(url).includes('/assets/2')) return new Response(${JSON.stringify(`${sha256(zip)}  semantic-flow-0.2.0.zip\n`)});
   return new Response(fs.readFileSync(${JSON.stringify(path.join(root, 'responses.json'))}));
 };
+${options.failBackupDeletion ? `const remove = fs.rmSync; fs.rmSync = (target, ...rest) => { if (String(target).includes('.semantic-flow-backup-')) { remove(target + '/VERSION'); throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' }); } return remove(target, ...rest); };` : ''}
 ${options.failReplacement ? `const rename = fs.renameSync; fs.renameSync = (from, to) => { if (String(from).includes('.semantic-flow-update-')) throw new Error('Injected replacement failure'); return rename(from, to); };` : ''}
 `);
   const cli = path.join(installed, 'scripts/semantic-flow.mjs');
@@ -263,6 +265,19 @@ for (const options of [{ corrupt: true }, { missing: true }, { failReplacement: 
     for (const [name, digest] of before) assert.equal(sha256(fs.readFileSync(path.join(fixture.installed, name))), digest);
   });
 }
+
+test('release update keeps the new installation when the old one cannot be deleted', async (t) => {
+  const fixture = await updateFixture(t, { failBackupDeletion: true });
+  const result = await fixture.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Updated semantic-flow 0.1.0 -> 0.2.0/);
+  assert.equal(fs.readFileSync(path.join(fixture.installed, 'VERSION'), 'utf8'), '0.2.0\n');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(fixture.installed, 'RELEASE.json'), 'utf8')).sourceCommit, 'a'.repeat(40));
+  // The partly deleted previous installation is left and reported.
+  const [leftover] = fs.readdirSync(path.dirname(fixture.installed)).filter((name) => name.startsWith('.semantic-flow-backup-'));
+  assert.ok(leftover);
+  assert.ok(result.stderr.includes(path.join(path.dirname(fixture.installed), leftover)), result.stderr);
+});
 
 test('release update restarts the matching viewer and preserves repository artifacts', async (t) => {
   let port;

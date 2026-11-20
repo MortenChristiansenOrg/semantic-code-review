@@ -4,6 +4,7 @@
 import process from "node:process";
 import { isMainThread } from "node:worker_threads";
 import { parseArguments } from "./shared/arguments.js";
+import { isolateGitEnvironment } from "./shared/git.js";
 import { errorMessage } from "./shared/narrow.js";
 
 /** The group a command line selects. `feedback` with only options, such as
@@ -29,6 +30,9 @@ async function main(argv: string[]): Promise<void> {
 }
 
 if (isMainThread) {
+  // Every command acts on the repository it selects, whatever Git variables a
+  // hook or `git rebase --exec` left in the caller's environment.
+  isolateGitEnvironment();
   try {
     await main(process.argv.slice(2));
   } catch (error) {

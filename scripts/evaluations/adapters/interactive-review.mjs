@@ -115,7 +115,7 @@ function awaitsAgent(thread) {
 }
 
 export async function preflight({ options = {}, workspace }) {
-  if (Number(process.versions.node.split('.')[0]) < 20) throw new Error('Node 20+ required');
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node 22+ required');
   const git = executable('git');
   const tools = { git: { path: git, sha256: hash(fs.readFileSync(git)), version: checked([git, '--version'], workspace) },
     node: { path: fs.realpathSync(process.execPath), sha256: hash(fs.readFileSync(process.execPath)), version: process.version } };
