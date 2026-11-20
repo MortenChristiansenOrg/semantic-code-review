@@ -9,6 +9,7 @@ import {
   beginStage,
   createRepository,
   finalizeStage,
+  flowCli,
   initializeImplementation,
   semanticCli,
 } from "../helpers/repository.mjs";
@@ -121,6 +122,32 @@ test("an artifact folder from an earlier version is reported, not continued", (t
   fs.writeFileSync(path.join(repo.root, ".semantic-review", "manifest.json"), "{}\n");
   repo.expectSemanticFailure(/written by an earlier Semantic Flow version/, "validate");
   assert.throws(() => initializeImplementation(repo), /written by an earlier Semantic Flow version/);
+  const inspected = spawnResult(process.execPath, [flowCli, "inspect"], repo.root);
+  assert.notEqual(inspected.status, 0);
+  assert.match(inspected.stderr, /written by an earlier Semantic Flow version/);
+});
+
+test("the longest branch prefix that matches the checked-out branch claims it", (t) => {
+  const repo = createRepository(t);
+  const init = (cwd, id, prefix) => spawnSyncChecked(process.execPath, [...semanticCli, "init", "--implementation-id", id,
+    "--title", id, "--summary", "Work.", "--target-branch", "main", "--branch-prefix", prefix,
+    "--specification-id", "story", "--specification-title", "Story", "--specification-summary", "Work.",
+    "--source-kind", "local", "--source-reference", id, "--criterion", "works=It works."], cwd);
+  const begin = (cwd) => spawnSyncChecked(process.execPath, [...semanticCli, "stage", "begin", "--id", "implementation",
+    "--title", "Implement", "--summary", "Work.", "--rationale", "Reviewable.", "--specification-ref", "story#works"], cwd);
+  init(repo.root, "alpha", "team");
+  begin(repo.root);
+  const second = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "semantic-second-")), "worktree");
+  t.after(() => fs.rmSync(path.dirname(second), { recursive: true, force: true }));
+  repo.git("worktree", "add", "--detach", second, "main");
+  init(second, "beta", "team/beta");
+  begin(second);
+  // Only the branch identifies the implementation once the worktree's own claim is gone.
+  fs.rmSync(spawnSyncChecked("git", ["rev-parse", "--path-format=absolute", "--git-path", "semantic-review-implementation"], second));
+
+  assert.equal(spawnSyncChecked("git", ["symbolic-ref", "--short", "HEAD"], second), "team/beta/stages/implementation");
+  assert.equal(JSON.parse(spawnSyncChecked(process.execPath, [...semanticCli, "export"], second)).manifest.implementationId, "beta");
+  assert.equal(JSON.parse(repo.semantic("export")).manifest.implementationId, "alpha");
 });
 
 test("several active implementations are told apart by their worktrees", (t) => {

@@ -247,16 +247,22 @@ export function claimedImplementation(root: string, actives: ActiveImplementatio
     try {
       manifests = readBlobs(defaultRunner(root), actives.map((active) => `${active.commit}:manifest.json`));
     } catch { /* A snapshot without a readable manifest owns no branch. */ }
-    const owner = actives.find((active) => {
+    // When several prefixes match the branch, the longest one owns it.
+    let owner: ActiveImplementation | undefined;
+    let ownerPrefix = "";
+    for (const active of actives) {
       let manifest: unknown;
       try {
         manifest = parseJsonDocument(manifests.get(`${active.commit}:manifest.json`)?.toString("utf8") ?? "", "manifest.json");
       } catch {
-        return false;
+        continue;
       }
       const prefix = isRecord(manifest) ? manifest.branchPrefix : undefined;
-      return typeof prefix === "string" && head.startsWith(`refs/heads/${prefix}/`);
-    });
+      if (typeof prefix === "string" && head.startsWith(`refs/heads/${prefix}/`) && prefix.length > ownerPrefix.length) {
+        owner = active;
+        ownerPrefix = prefix;
+      }
+    }
     if (owner) return owner;
   }
   const remembered = rememberedImplementation(root);
@@ -279,7 +285,8 @@ function chooseActive(root: string, actives: ActiveImplementation[], implementat
 }
 
 /** Fails when the worktree still holds an artifact written by an earlier version. */
-function assertNoLegacyArtifact(root: string): void {
+/** Fails when root holds an untracked artifact folder from an earlier version. */
+export function assertNoLegacyArtifact(root: string): void {
   const manifest = path.join(root, LEGACY_DIRECTORY, "manifest.json");
   if (!fs.existsSync(manifest)) return;
   // A checkout of a metadata branch or an archive tracks its artifact files.
@@ -449,27 +456,12 @@ function supersededHeads(base: RefSnapshot | undefined, draft: ArtifactDraft): s
 
 /** Writes the draft's files as one tree and returns it. Unchanged files keep
  * their blobs; new bytes are stored unchanged by any filter or line-ending setting. */
-function writeDraftTree(root: string, base: RefSnapshot | undefined, draft: ArtifactDraft): string {
+function writeDraftTree(root: string, draft: ArtifactDraft): string {
   const listed = draft.list();
   for (const file of listed) if (draft.type(file) !== "file") fail(`${draft.describe(file)} is not a regular file.`);
-  const oids = new Map<string, string>();
-  const pending: string[] = [];
-  for (const file of listed) {
-    const known = storedObjectId(draft, file);
-    if (known) oids.set(file, known);
-    else pending.push(file);
-  }
+  const oids = writeBlobs(root, draft, listed);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-artifact-"));
   try {
-    if (pending.length > 0) {
-      const sources = pending.map((file, index) => {
-        const source = path.join(scratch, `${index}.blob`);
-        fs.writeFileSync(source, draft.read(file));
-        return source;
-      });
-      const output = gitRaw(["hash-object", "-w", "--no-filters", "--stdin-paths"], { cwd: root, input: `${sources.join("\n")}\n` });
-      output.split(/\r?\n/).forEach((oid, index) => oids.set(pending[index], oid));
-    }
     const env = { GIT_INDEX_FILE: path.join(scratch, "index") };
     const entries = listed.map((file) => `100644 ${oids.get(file)}\t${file}\0`).join("");
     gitRaw(["update-index", "--add", "-z", "--index-info"], { cwd: root, env, input: entries });
@@ -502,22 +494,24 @@ export function commitArtifact(
   base: ArtifactSnapshot | undefined,
   draft: ArtifactDraft,
   refUpdates: readonly RefUpdate[] = [],
-): void {
+): string {
   if (base !== undefined && !(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be committed.");
   const implementationId = activeImplementationId(root, draft);
   if (base && base.implementationId !== implementationId) fail("A command may not change the implementation ID.");
-  const tree = writeDraftTree(root, base, draft);
+  const tree = writeDraftTree(root, draft);
   const parents = supersededHeads(base, draft).flatMap((head) => ["-p", head]);
   const commit = gitRaw(["commit-tree", tree, ...parents, "-m", `Semantic implementation ${implementationId}`], { cwd: root, env: SNAPSHOT_IDENTITY });
   const previous = base?.version ?? ZERO_OID;
-  moveArtifactRef(root, implementationId, previous, [{ ref: activeRef(implementationId), next: commit, previous }, ...refUpdates]);
+  // The artifact's ref goes last, so no other update can fail after it moved.
+  moveArtifactRef(root, implementationId, previous, [...refUpdates, { ref: activeRef(implementationId), next: commit, previous }]);
+  return commit;
 }
 
 /** Removes the active artifact read as base, together with the other ref
  * updates, unless it changed since. */
 export function removeArtifact(root: string, base: ArtifactSnapshot, refUpdates: readonly RefUpdate[] = []): void {
   if (!(base instanceof RefSnapshot)) throw new Error("Only an active artifact can be removed.");
-  moveArtifactRef(root, base.implementationId, base.version, [{ ref: base.active.ref, next: ZERO_OID, previous: base.version }, ...refUpdates]);
+  moveArtifactRef(root, base.implementationId, base.version, [...refUpdates, { ref: base.active.ref, next: ZERO_OID, previous: base.version }]);
 }
 
 /** Writes every file of an artifact below a directory, byte for byte, and
@@ -764,6 +758,13 @@ function writeBlobs(root: string, files: ArtifactFiles, paths: readonly string[]
   if (pending.length === 0) return oids;
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-artifact-"));
   try {
+    if (/[\r\n]/.test(scratch)) {
+      // Git reads one path per line, so without a usable scratch path each blob goes through stdin.
+      for (const file of pending) {
+        oids.set(file, gitRaw(["hash-object", "-w", "--no-filters", "--stdin"], { cwd: root, input: files.read(file) }));
+      }
+      return oids;
+    }
     const sources = pending.map((file, index) => {
       // Git reads one path per line, so a path with a line break is copied first.
       if (files instanceof FolderFiles && !/[\r\n]/.test(files.absolute(file))) return files.absolute(file);

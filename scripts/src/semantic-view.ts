@@ -2863,6 +2863,8 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
     const requested = reviewOption !== undefined && generation !== undefined ? { reviewId: reviewOption, generation } : null;
     // Feedback changes run in this process; Git must see only the reviewed worktree.
     isolateReviewEnvironment();
+    // The viewer, its workers and the commands it runs act on the reviewed implementation.
+    if (requested) selectImplementation(readReview(requested.reviewId).implementationId);
     await serve(resolveRepositoryRoot(paths), requested);
   } catch (error) {
     await startupWorker?.close();
@@ -2876,9 +2878,9 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
 
 async function serve(repoRoot: string, requested: RequestedReview | null) {
   const viewerDir = locateViewerDir();
-  // The viewer, its workers and the commands it runs act on the reviewed implementation.
-  if (requested) selectImplementation(readReview(requested.reviewId).implementationId);
   const implementation = implementationSummary(repoRoot);
+  // A direct start keeps acting on the implementation it found, whatever else becomes active later.
+  if (!requested) selectImplementation(implementation.implementationId);
   const registered = requested
     ? readReview(requested.reviewId)
     : registerReview(repoRoot, implementation.implementationId, implementation.title ?? "");

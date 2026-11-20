@@ -66,6 +66,7 @@ import {
   hasFile,
   listJsonIds,
   readArtifact,
+  activeRef,
   rememberImplementation,
   removeArtifact,
   requireArtifact,
@@ -996,9 +997,19 @@ function beginStage(workspace: Workspace, options: Options): void {
   writeStage(draft, stage);
   validateArtifact(workspace, { quiet: true }, draft);
   // The stage branch is created together with the artifact's new snapshot.
-  commitArtifact(workspace.root, workspace.snapshot, draft, [{ ref: `refs/heads/${branch}`, next: parent, previous: ZERO_OID }]);
+  const branchRef = `refs/heads/${branch}`;
+  const snapshot = commitArtifact(workspace.root, workspace.snapshot, draft, [{ ref: branchRef, next: parent, previous: ZERO_OID }]);
+  try {
+    git(["switch", branch], { cwd: workspace.root });
+  } catch (error) {
+    // Without the switch the stage was never begun: take back the branch and the snapshot.
+    updateRefs(workspace.root, [
+      { ref: branchRef, next: ZERO_OID, previous: parent },
+      { ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: snapshot },
+    ]);
+    throw error;
+  }
   rememberImplementation(workspace.root, artifact.manifest.implementationId);
-  git(["switch", branch], { cwd: workspace.root });
   if (flag(options, "json")) console.log(JSON.stringify({ worktree: workspace.root, stageId: id, branch, baseRevision: parent, headRevision: parent, next: "implement" }));
   else console.log(`Began working stage ${id} on ${branch}.`);
 }
@@ -2668,6 +2679,9 @@ function archiveImplementation(
     ?? `Archive ${artifact.manifest.implementationId} semantic implementation`;
   const currentHead = gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root });
   let removeWritten = () => {};
+  // Removing the active ref first claims the archive: a concurrent writer then
+  // fails instead of changing an artifact that is already being archived.
+  removeArtifact(workspace.root, workspace.snapshot);
   try {
     removeWritten = exportArtifactFiles(fullFormFiles(artifact, workspace.snapshot), destination);
     const relativeDestination = formatPath(
@@ -2692,7 +2706,6 @@ function archiveImplementation(
       ["commit", "-m", message],
       { cwd: workspace.root },
     );
-    removeArtifact(workspace.root, workspace.snapshot);
     if (!quiet) console.log(
       `Archived ${artifact.manifest.implementationId} at ${relativeDestination}.`,
     );
@@ -2704,6 +2717,7 @@ function archiveImplementation(
     if (currentHead === gitOptional(["rev-parse", "HEAD"], { cwd: workspace.root })) {
       // Only what the archive wrote is removed; a failed export already removed its own files.
       removeWritten();
+      updateRefs(workspace.root, [{ ref: activeRef(artifact.manifest.implementationId), next: workspace.snapshot.version, previous: ZERO_OID }]);
     }
     throw error;
   }

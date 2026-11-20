@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
+import { assertNoLegacyArtifact, claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -213,6 +213,7 @@ function inspect(options: Options): Inspection {
   // Every worktree sees every active implementation; each is reported from the
   // worktree that has claimed it, or else from the inspected one.
   const actives = listActiveImplementations(root);
+  if (actives.length === 0) assertNoLegacyArtifact(root);
   const worktrees = actives.length === 0 ? [] : worktreeRoots(root);
   const claimedIn = (worktree: string) => claimedImplementation(worktree, actives)?.implementationId;
   const claims = new Map(worktrees.map((worktree) => [worktree, claimedIn(worktree)]));
@@ -227,8 +228,11 @@ function inspect(options: Options): Inspection {
   const matching = implementationId
     ? candidates.filter((candidate) => candidate.implementationId === implementationId)
     : candidates;
+  // The inspected worktree selects only the implementation it has claimed;
+  // one reported from it merely because nothing claimed it is not preferred.
+  const rootClaim = claimedImplementation(root, actives)?.implementationId;
   const preferred = matching.find((candidate) =>
-    samePath(candidate.worktree, root),
+    samePath(candidate.worktree, root) && candidate.implementationId === rootClaim,
   );
   const selected = preferred ?? (matching.length === 1 ? matching[0] : null);
   return { repositoryRoot: root, candidates, selected };
