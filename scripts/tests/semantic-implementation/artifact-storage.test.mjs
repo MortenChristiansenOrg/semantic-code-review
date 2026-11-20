@@ -193,37 +193,6 @@ test("the longest branch prefix that matches the checked-out branch claims it", 
   assert.equal(JSON.parse(repo.semantic("export")).manifest.implementationId, "alpha");
 });
 
-test("an interrupted archive keeps its snapshot and says how to recover it", { skip: process.platform === "win32" && "The recovery command is for a POSIX shell." }, (t) => {
-  const repo = createRepository(t);
-  initializeImplementation(repo);
-  beginStage(repo);
-  const snapshot = repo.git("rev-parse", ACTIVE);
-  // Archiving moves the snapshot to its claim before it commits the archive.
-  repo.git("update-ref", "refs/semantic-review/archiving/test-implementation", snapshot);
-  repo.git("update-ref", "-d", ACTIVE);
-  repo.expectSemanticFailure(/Archiving test-implementation was interrupted/, "validate");
-  // The ID stays taken until the claim is resolved.
-  assert.throws(() => initializeImplementation(repo), /is being archived/);
-
-  // The suggested recovery is one compare-and-swap transaction.
-  const result = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
-  assert.match(result.stderr, new RegExp(`git update-ref --no-deref -d refs/semantic-review/archiving/test-implementation ${snapshot}`));
-  const command = /`(printf [^`]+)`/.exec(result.stderr)?.[1];
-  assert.ok(command, result.stderr);
-  const restored = spawnSync("sh", ["-c", command], { cwd: repo.root, encoding: "utf8" });
-  assert.equal(restored.status, 0, restored.stderr);
-  assert.equal(repo.git("rev-parse", ACTIVE), snapshot);
-  assert.equal(repo.git("for-each-ref", "refs/semantic-review/archiving/"), "");
-  repo.semantic("validate");
-
-  // A claim whose name cannot be an implementation ID is never put into a command.
-  repo.git("update-ref", "refs/semantic-review/archiving/odd'name", snapshot);
-  repo.git("update-ref", "-d", ACTIVE);
-  const odd = spawnResult(process.execPath, [...semanticCli, "validate"], repo.root);
-  assert.match(odd.stderr, /is left from an interrupted archive/);
-  assert.doesNotMatch(odd.stderr, /odd'name.*update-ref/);
-});
-
 test("a stage begins when only the post-checkout hook fails", (t) => {
   const repo = createRepository(t);
   initializeImplementation(repo);

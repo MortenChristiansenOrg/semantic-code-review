@@ -9,7 +9,7 @@ import {
   initializeImplementation,
 } from "../helpers/repository.mjs";
 
-test("publish, local preparation, and archive enforce boundaries", (t) => {
+test("publish and local preparation enforce boundaries", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository, { implementationId: "publish-implementation" });
   beginStage(repository);
@@ -72,46 +72,8 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
 
   repository.semantic("publish");
   assert.equal(repository.git("rev-parse", metadataBranch), published);
-  repository.expectSemanticFailure(
-    "Archive requires checked-out target branch main",
-    "archive",
-  );
-  repository.git("switch", "main");
-  repository.expectSemanticFailure(
-    "to contain final stage head",
-    "archive",
-  );
-
-  repository.semantic(
-    "stage",
-    "record",
-    "--stage",
-    "implementation",
-    "--finalized",
-    "--kind",
-    "decision",
-    "--item-id",
-    "archive-current-metadata",
-    "--category",
-    "engineering",
-    "--summary",
-    "Archive only current metadata.",
-    "--rationale",
-    "The archive is the durable copy of the implementation artifact.",
-    "--node-ref",
-    "implementation-change",
-  );
-  repository.git(
-    "merge",
-    "--ff-only",
-    "semantic-flow/publish-implementation/stages/implementation",
-  );
-  repository.expectSemanticFailure(
-    "does not publish the current semantic implementation",
-    "archive",
-  );
   repository.semantic("publish");
-  // Publication and archives store the full form, readable without the repository.
+  // Publication stores the full form, readable without the repository.
   const full = repository.artifact.implementation();
   const publishedJson = (file) => JSON.parse(repository.git("show", `${metadataBranch}:.semantic-review/${file}`));
   assert.deepEqual(publishedJson("manifest.json"), full.manifest);
@@ -120,49 +82,128 @@ test("publish, local preparation, and archive enforce boundaries", (t) => {
   assert.equal(full.stages.implementation.change.branch, "semantic-flow/publish-implementation/stages/implementation");
   assert.equal(full.stages.implementation.change.headRevision, stageTip);
   assert.deepEqual(full.stages.implementation.change.files, [{ path: "implementation.txt", kind: "added" }]);
-  repository.expectSemanticFailure(
-    "Archive destination must",
-    "archive",
-    "--destination",
-    "../outside/.semantic-review",
-  );
+});
 
-  // An archive whose commit fails leaves the implementation active and nothing behind.
-  const active = "refs/semantic-review/active/publish-implementation";
-  const snapshot = repository.git("rev-parse", active);
+test("archive pins the publication under a ref and records landing by ancestry", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "archived" });
+  beginStage(repository);
+  const stageTip = finalizeStage(repository);
+  const metadataBranch = "semantic-flow/archived/metadata";
+  const stageBranch = "semantic-flow/archived/stages/implementation";
+  repository.semantic("publish");
+  const published = repository.git("rev-parse", metadataBranch);
+  // A change after publication is published by the archive itself.
+  repository.semantic("stage", "record", "--stage", "implementation", "--finalized", "--kind", "decision",
+    "--item-id", "archive-current-metadata", "--category", "engineering", "--summary", "Archive only current metadata.",
+    "--rationale", "The archive is the durable copy of the implementation artifact.", "--node-ref", "implementation-change");
+  const full = repository.artifact.implementation();
+  repository.git("switch", "main");
+  repository.git("merge", "--ff-only", stageBranch);
+  const target = repository.git("rev-parse", "main");
+  // Nothing in the worktree takes part, so neither a dirty file nor a failing hook matters.
+  repository.write("untracked.txt", "left alone\n");
   const hook = path.join(repository.git("rev-parse", "--path-format=absolute", "--git-path", "hooks"), "pre-commit");
   fs.mkdirSync(path.dirname(hook), { recursive: true });
   fs.writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
-  repository.expectSemanticFailure(/./, "archive", "--destination", ".semantic-review-history/publish-implementation/.semantic-review");
-  fs.rmSync(hook);
-  assert.equal(repository.git("rev-parse", active), snapshot);
-  assert.equal(repository.git("for-each-ref", "refs/semantic-review/archiving/"), "");
-  assert.equal(fs.existsSync(path.join(repository.root, ".semantic-review-history")), false);
-  assert.equal(repository.git("status", "--porcelain"), "");
+  repository.semantic("archive", "--message", "Archive test implementation");
 
-  repository.semantic(
-    "archive",
-    "--destination",
-    ".semantic-review-history/publish-implementation/.semantic-review",
-    "--message",
-    "Archive test implementation",
-  );
-  assert.equal(repository.git("for-each-ref", "refs/semantic-review/active/", "refs/semantic-review/archiving/"), "");
-  // The archive holds exactly the published bytes.
-  assert.equal(
-    repository.git("rev-parse", "HEAD:.semantic-review-history/publish-implementation/.semantic-review"),
-    repository.git("rev-parse", `${metadataBranch}:.semantic-review`),
-  );
+  const archive = "refs/semantic-review/archive/archived";
+  assert.equal(repository.git("for-each-ref", "refs/semantic-review/active/"), "");
   assert.equal(repository.artifact.present(), false);
-  const archived = (file) => repository.readJson(`.semantic-review-history/publish-implementation/.semantic-review/${file}`);
-  assert.deepEqual(archived("manifest.json"), full.manifest);
-  assert.deepEqual(archived("stages/implementation.json"), full.stages.implementation);
-  assert.deepEqual(archived("requirements/story.json"), full.requirements.story);
-  assert.equal(repository.exists(".semantic-review-history/publish-implementation/.semantic-review/.work"), false);
-  assert.doesNotMatch(
-    repository.git("show", "-s", "--format=%B", "HEAD"),
-    /Co-authored-by: Copilot/,
-  );
+  // The target branch, the checkout and every branch are left as they were.
+  assert.equal(repository.git("rev-parse", "main"), target);
+  assert.equal(repository.git("rev-parse", "HEAD"), target);
+  assert.equal(repository.git("status", "--porcelain"), "?? untracked.txt");
+  assert.equal(repository.git("rev-parse", stageBranch), stageTip);
+  // The archive is one commit on top of the republished metadata commit; it adds only the landing record.
+  const republished = repository.git("rev-parse", metadataBranch);
+  assert.notEqual(republished, published);
+  assert.equal(repository.git("rev-parse", `${archive}^`), republished);
+  assert.equal(repository.git("rev-parse", `${republished}^`), stageTip);
+  assert.equal(repository.git("diff", "--name-only", republished, archive), ".semantic-review/landing.json");
+  assert.equal(repository.git("show", "-s", "--format=%s", archive), "Archive test implementation");
+  const archivedJson = (file) => JSON.parse(repository.git("show", `${archive}:.semantic-review/${file}`));
+  assert.deepEqual(archivedJson("manifest.json"), full.manifest);
+  assert.deepEqual(archivedJson("stages/implementation.json"), full.stages.implementation);
+  const landing = archivedJson("landing.json");
+  assert.equal(landing.outcome, "ancestry");
+  assert.equal(landing.targetRevision, target);
+  assert.equal(landing.finalHeadRevision, stageTip);
+  // An archived implementation's ID is not reused.
+  repository.remove("untracked.txt");
+  assert.throws(() => initializeImplementation(repository, { implementationId: "archived" }), /belongs to an archived implementation/);
+
+  // A found landing stays; sharing creates an annotated tag that never moves.
+  const archived = repository.git("rev-parse", archive);
+  repository.semantic("archive", "landing", "--id", "archived");
+  assert.equal(repository.git("rev-parse", archive), archived);
+  const shared = repository.semantic("archive", "share", "--id", "archived");
+  assert.match(shared, /git push <remote> refs\/tags\/semantic-review\/archive\/archived/);
+  const tag = "refs/tags/semantic-review/archive/archived";
+  assert.equal(repository.git("cat-file", "-t", tag), "tag");
+  assert.equal(repository.git("rev-parse", `${tag}^{commit}`), repository.git("rev-parse", archive));
+  repository.semantic("archive", "share", "--id", "archived");
+  repository.expectSemanticFailure("never moves", "archive", "landing", "--id", "archived", "--landed", target);
+  repository.expectSemanticFailure("No archive of missing", "archive", "share", "--id", "missing");
+});
+
+test("archive records an unknown landing, suggests a squash commit, and takes the reviewer's commit later", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "squashed" });
+  beginStage(repository);
+  const stageTip = finalizeStage(repository);
+  repository.semantic("publish");
+  // The remote squash-merged the stage and the target moved on.
+  repository.git("switch", "main");
+  repository.git("merge", "--squash", "semantic-flow/squashed/stages/implementation");
+  repository.git("commit", "--no-verify", "-m", "Squashed implementation");
+  const squash = repository.git("rev-parse", "HEAD");
+  repository.write("later.txt", "later\n");
+  repository.git("add", "later.txt");
+  repository.git("commit", "--no-verify", "-m", "Later work");
+  // A supplied commit must be on the target branch.
+  repository.expectSemanticFailure("is not on target branch main", "archive", "--landed", stageTip);
+  assert.equal(repository.artifact.present(), true);
+
+  const archived = repository.semantic("archive");
+  assert.match(archived, /landing unknown/);
+  assert.match(archived, new RegExp(`Target commit ${squash} matches the implementation's changes`));
+  const archive = "refs/semantic-review/archive/squashed";
+  const landing = () => JSON.parse(repository.git("show", `${archive}:.semantic-review/landing.json`));
+  assert.equal(landing().outcome, "unknown");
+  assert.equal("targetRevision" in landing(), false);
+  const before = repository.git("rev-parse", archive);
+  repository.semantic("archive", "landing", "--id", "squashed");
+  assert.equal(repository.git("rev-parse", archive), before);
+
+  repository.semantic("archive", "landing", "--id", "squashed", "--landed", squash.slice(0, 12));
+  assert.equal(landing().outcome, "supplied");
+  assert.equal(landing().landedCommits, squash);
+  assert.equal(repository.git("rev-parse", `${archive}^`), repository.git("rev-parse", `${before}^`));
+  repository.expectSemanticFailure("takes a commit or a range", "archive", "landing", "--id", "squashed", "--landed", `${squash}...main`);
+});
+
+test("archive suggests the range a rebase merge landed and archives an unpublished implementation", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository, { implementationId: "rebased" });
+  beginStage(repository, { id: "first" });
+  finalizeStage(repository, { id: "first" });
+  beginStage(repository, { id: "second", dependencies: ["first"] });
+  const secondTip = finalizeStage(repository, { id: "second" });
+  repository.git("switch", "main");
+  repository.write("unrelated.txt", "unrelated\n");
+  repository.git("add", "unrelated.txt");
+  repository.git("commit", "--no-verify", "-m", "Unrelated");
+  const parent = repository.git("rev-parse", "HEAD");
+  repository.git("cherry-pick", "main..semantic-flow/rebased/stages/second");
+  const last = repository.git("rev-parse", "HEAD");
+  const result = JSON.parse(repository.flow("archive", "--json"));
+  assert.equal(result.archive.landing.outcome, "unknown");
+  assert.equal(result.archive.suggestedLanding, `${parent}..${last}`);
+  // Never published before: archiving published it.
+  assert.equal(repository.git("rev-parse", "semantic-flow/rebased/metadata^"), secondTip);
+  assert.equal(repository.git("rev-parse", "refs/semantic-review/archive/rebased^"), repository.git("rev-parse", "semantic-flow/rebased/metadata"));
 });
 
 test("repeat preparation updates the bound PR branch and metadata atomically", (t) => {

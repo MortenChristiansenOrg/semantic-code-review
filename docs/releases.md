@@ -141,6 +141,13 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    update: archive finished ones and discard or finish the others with the old
    version first. The new version reports a leftover `.semantic-review/` folder
    instead of reading it; remove the folder once its work is done.
+   The first release that archives under `refs/semantic-review/archive/<id>`
+   must say under Breaking changes that `archive` no longer commits
+   `.semantic-review-history/` to the target branch, has no `--destination`,
+   and needs neither the target branch checked out nor the work to have landed:
+   it records landing (found, supplied with `--landed`, or unknown) and shares an
+   archive as the tag `semantic-review/archive/<id>` on request. Archives already
+   committed under `.semantic-review-history/` stay as they are.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

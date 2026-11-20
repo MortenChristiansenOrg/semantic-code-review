@@ -46,6 +46,8 @@ const commands = new Map([
       "validate-stack",
       "prepare-branch",
       "archive",
+      "archive landing",
+      "archive share",
       "validate",
     ],
   ],

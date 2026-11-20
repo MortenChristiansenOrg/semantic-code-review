@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-code-review.dev/schemas/v0.1/landing.schema.json",
+  "title": "Semantic Implementation Artifact Format landing record of an archive",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "implementationId",
+    "targetBranch",
+    "finalHeadRevision",
+    "outcome",
+    "recordedAt"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "https://semantic-code-review.dev/schemas/v0.1/landing.schema.json"
+    },
+    "implementationId": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+    },
+    "targetBranch": {
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/gitBranch"
+    },
+    "finalHeadRevision": {
+      "description": "Head of the final stage when the implementation was archived.",
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
+    },
+    "outcome": {
+      "description": "ancestry: the target branch contains the final stage head. supplied: the reviewer named the commit or range that landed the work. unknown: neither.",
+      "enum": ["ancestry", "supplied", "unknown"]
+    },
+    "targetRevision": {
+      "description": "The target branch head found to contain the final stage head.",
+      "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
+    },
+    "landedCommits": {
+      "description": "The commit, or the Git range <base>..<head>, that landed the work on the target branch.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}(?:\\.\\.[0-9a-f]{40})?$"
+    },
+    "recordedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "ancestry" } } },
+      "then": { "required": ["targetRevision"], "not": { "required": ["landedCommits"] } }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "supplied" } } },
+      "then": { "required": ["landedCommits"], "not": { "required": ["targetRevision"] } }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "unknown" } } },
+      "then": { "not": { "anyOf": [{ "required": ["targetRevision"] }, { "required": ["landedCommits"] }] } }
+    }
+  ]
+}

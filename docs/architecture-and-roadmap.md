@@ -89,4 +89,3 @@ host should treat them as one change or a stack, and merging are external.
 - How to surface restack conflicts in the PWA.
 - Whether metadata branches should be included in generic push manifests.
 - How host-specific adapters consume the neutral stack description.
-- How archived artifacts record the eventual landing outcome.

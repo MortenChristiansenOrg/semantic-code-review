@@ -51,6 +51,8 @@ cumulative branch at the final stage head.
 8. Approval publishes metadata on a sibling metadata branch.
 9. Tooling verifies the local stack and may create a named cumulative branch.
 10. Remote publication, review creation, and merge remain outside the flow.
+11. After landing, `archive` keeps the published metadata under an archive ref
+    with a record of where the work landed.
 
 The same restack operation handles edits made manually by a user on any lower
 branch.

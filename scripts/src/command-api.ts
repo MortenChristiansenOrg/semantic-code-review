@@ -204,8 +204,22 @@ export const semanticImplementationApi: CliSignature = {
     {
       command: "archive",
       options: [
-        option("destination", "<repository-path>"),
+        option("landed", "<revision|base..head>"),
         option("message", "<commit-message>"),
+      ],
+    },
+    {
+      command: "archive landing",
+      options: [
+        option("id", "<implementation-id>", { required: true }),
+        option("landed", "<revision|base..head>"),
+      ],
+    },
+    {
+      command: "archive share",
+      options: [
+        option("id", "<implementation-id>", { required: true }),
+        option("message", "<tag-message>"),
       ],
     },
     {
@@ -325,7 +339,7 @@ export const semanticFlowApi: CliSignature = {
     },
     {
       command: "archive",
-      options: [...projectSelectionOptions, option("json")],
+      options: [...projectSelectionOptions, option("landed", "<revision|base..head>"), option("json")],
     },
     {
       command: "status",

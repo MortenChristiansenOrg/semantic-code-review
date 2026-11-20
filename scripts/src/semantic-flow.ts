@@ -27,7 +27,7 @@ import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess
 import { parseJson, readJson } from "./shared/json.js";
 import { readDocument } from "./shared/schema-validation.js";
 import { listedStageIds, loadImplementation, type Artifact } from "./shared/implementation.js";
-import { assertNoLegacyArtifact, claimedImplementation, interruptedArchiveNote, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
+import { assertNoLegacyArtifact, claimedImplementation, listActiveImplementations, listJsonIds, readArtifact, readArtifactJson, requireArtifact, selectImplementation } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   THREAD_SCHEMA_ID,
@@ -248,7 +248,7 @@ function printInspection(inspection: Inspection, json: boolean): void {
   }
   if (inspection.candidates.length === 0) {
     console.log(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
     );
     return;
   }
@@ -285,11 +285,11 @@ function resolveSingle(
   const implementationId = option(selectionOptions, "implementation-id");
   if (inspection.candidates.length === 0) {
     fail(
-      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.${interruptedArchiveNote(inspection.repositoryRoot)}`,
+      `No active semantic implementation found in ${inspection.repositoryRoot} or its linked worktrees.`,
     );
   }
   if (implementationId) {
-    fail(`No active semantic implementation has implementation ID ${implementationId}.${interruptedArchiveNote(inspection.repositoryRoot)}`);
+    fail(`No active semantic implementation has implementation ID ${implementationId}.`);
   }
   const choices = inspection.candidates
     .map(

@@ -6,6 +6,7 @@ import artifactCommonSchema from "../../../standard/v0.1/schema/common.schema.js
 import manifestSchema from "../../../standard/v0.1/schema/manifest.schema.json";
 import specificationSchema from "../../../standard/v0.1/schema/specification.schema.json";
 import stageSchema from "../../../standard/v0.1/schema/stage.schema.json";
+import landingSchema from "../../../standard/v0.1/schema/landing.schema.json";
 import feedbackCommonSchema from "../../../standard/v0.1/feedback-schema/common.schema.json";
 import feedbackManifestSchema from "../../../standard/v0.1/feedback-schema/manifest.schema.json";
 import threadSchema from "../../../standard/v0.1/feedback-schema/thread.schema.json";
@@ -13,6 +14,7 @@ import workStageSchema from "../../schemas/work-stage.schema.json";
 import stageOrganizationSchema from "../../schemas/stage-organization.schema.json";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
+  LANDING_SCHEMA_ID,
   MANIFEST_SCHEMA_ID,
   SPECIFICATION_SCHEMA_ID,
   STAGE_ORGANIZATION_SCHEMA_ID,
@@ -21,6 +23,7 @@ import {
   WORK_STAGE_SCHEMA_ID,
   type FeedbackManifest,
   type ImplementationManifest,
+  type LandingRecord,
   type Specification,
   type Stage,
   type StageOrganization,
@@ -36,6 +39,7 @@ export interface DocumentTypes {
   [MANIFEST_SCHEMA_ID]: ImplementationManifest;
   [SPECIFICATION_SCHEMA_ID]: Specification;
   [STAGE_SCHEMA_ID]: Stage;
+  [LANDING_SCHEMA_ID]: LandingRecord;
   [WORK_STAGE_SCHEMA_ID]: WorkStage;
   [STAGE_ORGANIZATION_SCHEMA_ID]: StageOrganization;
   [FEEDBACK_MANIFEST_SCHEMA_ID]: FeedbackManifest;
@@ -50,7 +54,7 @@ function schemas(): Ajv2020 {
     ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, validateFormats: true });
     addFormats(ajv);
     for (const schema of [
-      artifactCommonSchema, manifestSchema, specificationSchema, stageSchema,
+      artifactCommonSchema, manifestSchema, specificationSchema, stageSchema, landingSchema,
       feedbackCommonSchema, feedbackManifestSchema, threadSchema,
       workStageSchema, stageOrganizationSchema,
     ]) ajv.addSchema(schema);

@@ -7,6 +7,7 @@
 export const MANIFEST_SCHEMA_ID = "https://semantic-code-review.dev/schemas/v0.1/manifest.schema.json";
 export const SPECIFICATION_SCHEMA_ID = "https://semantic-code-review.dev/schemas/v0.1/specification.schema.json";
 export const STAGE_SCHEMA_ID = "https://semantic-code-review.dev/schemas/v0.1/stage.schema.json";
+export const LANDING_SCHEMA_ID = "https://semantic-code-review.dev/schemas/v0.1/landing.schema.json";
 export const WORK_STAGE_SCHEMA_ID = "https://semantic-code-review.dev/skills/semantic-flow/v0.1/work-stage.schema.json";
 export const STAGE_ORGANIZATION_SCHEMA_ID = "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json";
 export const FEEDBACK_MANIFEST_SCHEMA_ID = "https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json";
@@ -34,6 +35,21 @@ export interface ImplementationManifest {
   branchPrefix: string;
   requirements: string[];
   stages: string[];
+}
+
+/** How an archive records where its implementation landed. */
+export interface LandingRecord {
+  $schema: typeof LANDING_SCHEMA_ID;
+  implementationId: string;
+  targetBranch: string;
+  finalHeadRevision: string;
+  /** ancestry: targetRevision contains the final stage head. supplied: the
+   * reviewer named landedCommits. unknown: neither. */
+  outcome: "ancestry" | "supplied" | "unknown";
+  targetRevision?: string;
+  /** A commit, or a Git range `<base>..<head>`. */
+  landedCommits?: string;
+  recordedAt: string;
 }
 
 export interface SpecificationSource {
