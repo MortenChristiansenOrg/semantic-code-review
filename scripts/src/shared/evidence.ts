@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 import type { EvidenceAttachment, Stage, WorkStage } from "./documents.js";
 import { fail } from "./errors.js";
 import { errorMessage } from "./narrow.js";
+import type { ArtifactDraft, ArtifactFiles } from "./artifact-store.js";
 
 export const MAX_EVIDENCE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const MAX_EVIDENCE_TOTAL_BYTES = 100 * 1024 * 1024;
@@ -26,23 +26,21 @@ export function evidenceAttachmentPath(stageId: string, sha256: string, extensio
   return `evidence/${stageId}/${sha256}.${extension}`;
 }
 
-/** Refuses symlinked storage directories, which would point reads, writes and pruning outside the artifact. */
-export function assertEvidenceDirectories(artifactRoot: string, stageId: string) {
-  for (const directory of [path.join(artifactRoot, "evidence"), path.join(artifactRoot, "evidence", stageId)]) {
-    const stat = fs.lstatSync(directory, { throwIfNoEntry: false });
-    if (stat && !stat.isDirectory()) throw new Error(`${path.relative(artifactRoot, directory)} must be a real directory.`);
+/** Refuses storage directories that are links or files, which would point reads, writes and pruning outside the artifact. */
+export function assertEvidenceDirectories(files: ArtifactFiles, stageId: string) {
+  for (const directory of ["evidence", `evidence/${stageId}`]) {
+    const type = files.type(directory);
+    if (type !== undefined && type !== "directory") throw new Error(`${directory} must be a real directory.`);
   }
 }
 
-/** Resolves an artifact-relative attachment, refusing anything but a regular file inside the artifact. */
-export function resolveEvidenceFile(artifactRoot: string, stageId: string, attachmentPath: string) {
+/** Checks an artifact-relative attachment path, refusing anything but a regular file inside the artifact. */
+export function resolveEvidenceFile(files: ArtifactFiles, stageId: string, attachmentPath: string) {
   const prefix = `evidence/${stageId}/`;
   if (!attachmentPath.startsWith(prefix) || !/^[a-f0-9]{64}\.[a-z0-9]+$/.test(attachmentPath.slice(prefix.length))) throw new Error(`Evidence attachment ${attachmentPath} is outside ${prefix}.`);
-  assertEvidenceDirectories(artifactRoot, stageId);
-  const file = path.join(artifactRoot, ...attachmentPath.split("/"));
-  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
-  if (!stat?.isFile()) throw new Error(`Evidence attachment ${attachmentPath} is missing.`);
-  return { file, size: stat.size };
+  assertEvidenceDirectories(files, stageId);
+  if (files.type(attachmentPath) !== "file") throw new Error(`Evidence attachment ${attachmentPath} is missing.`);
+  return { file: attachmentPath, size: files.size(attachmentPath) };
 }
 
 /** Reads a single-range request; anything else is served as the whole file. */
@@ -60,10 +58,8 @@ export const evidenceMediaTypeMatches = (attachment: { path: string; mediaType: 
  * Keeps Git from rewriting captures, so a published or archived file still matches its hash
  * under LFS filters or line-ending conversion. It travels with the artifact for that reason.
  */
-export function ensureEvidenceAttributes(artifactRoot: string) {
-  const file = path.join(artifactRoot, "evidence", ".gitattributes");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  if (!fs.existsSync(file)) fs.writeFileSync(file, "* -text -filter -diff -merge\n");
+export function ensureEvidenceAttributes(draft: ArtifactDraft) {
+  if (draft.type("evidence/.gitattributes") === undefined) draft.write("evidence/.gitattributes", "* -text -filter -diff -merge\n");
 }
 
 export const sha256Hex = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -72,20 +68,20 @@ export const sha256Hex = (bytes: Buffer) => createHash("sha256").update(bytes).d
  * Reports every way the stored attachments of one stage differ from its evidence entries.
  * Only full validation runs this: a lost or leaked capture must not block the edits that repair it.
  */
-export function evidenceAttachmentErrors(artifactRoot: string, stage: Pick<Stage | WorkStage, "id" | "evidence">) {
+export function evidenceAttachmentErrors(files: ArtifactFiles, stage: Pick<Stage | WorkStage, "id" | "evidence">) {
   const errors: string[] = [];
   let total = 0;
   for (const item of stage.evidence) {
     for (const attachment of item.attachments ?? []) {
       const label = `Stage ${stage.id} evidence ${item.id} attachment ${attachment.path}`;
       let resolved: { file: string; size: number };
-      try { resolved = resolveEvidenceFile(artifactRoot, stage.id, attachment.path); }
+      try { resolved = resolveEvidenceFile(files, stage.id, attachment.path); }
       catch (error) { errors.push(`${label}: ${errorMessage(error)}`); continue; }
       if (resolved.size > MAX_EVIDENCE_ATTACHMENT_BYTES) errors.push(`${label} is larger than 25 MiB.`);
       total += resolved.size;
       if (path.basename(attachment.path, path.extname(attachment.path)) !== attachment.sha256) errors.push(`${label} is not named after its hash.`);
       if (!evidenceMediaTypeMatches(attachment)) errors.push(`${label} does not match media type ${attachment.mediaType}.`);
-      if (sha256Hex(fs.readFileSync(resolved.file)) !== attachment.sha256) errors.push(`${label} does not match its recorded hash.`);
+      if (sha256Hex(files.read(resolved.file)) !== attachment.sha256) errors.push(`${label} does not match its recorded hash.`);
     }
   }
   if (total > MAX_EVIDENCE_TOTAL_BYTES) errors.push(`Stage ${stage.id} evidence attachments exceed 100 MiB.`);
@@ -93,20 +89,25 @@ export function evidenceAttachmentErrors(artifactRoot: string, stage: Pick<Stage
 }
 
 /** Everything under evidence/ gets published, so each entry must belong to a recorded attachment. */
-export function evidenceTreeErrors(artifactRoot: string, stages: Pick<Stage | WorkStage, "evidence">[]) {
-  const root = path.join(artifactRoot, "evidence");
-  const stat = fs.lstatSync(root, { throwIfNoEntry: false });
-  if (!stat) return [];
-  if (!stat.isDirectory()) return ["evidence must be a real directory."];
+export function evidenceTreeErrors(files: ArtifactFiles, stages: Pick<Stage | WorkStage, "evidence">[]) {
+  const type = files.type("evidence");
+  if (!type) return [];
+  if (type !== "directory") return ["evidence must be a real directory."];
   const referenced = new Set(stages.flatMap((stage) => stage.evidence.flatMap((item) => (item.attachments ?? []).map((attachment: EvidenceAttachment) => attachment.path))));
   const stray = (entry: string) => `Unreferenced evidence file ${entry}; remove it or record it.`;
   const errors: string[] = [];
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    if (entry.name === ".gitattributes" && entry.isFile()) continue;
-    if (!entry.isDirectory()) { errors.push(stray(`evidence/${entry.name}`)); continue; }
-    for (const name of fs.readdirSync(path.join(root, entry.name))) {
-      if (!referenced.has(`evidence/${entry.name}/${name}`)) errors.push(stray(`evidence/${entry.name}/${name}`));
+  const reported = new Set<string>();
+  for (const file of files.list("evidence")) {
+    const parts = file.split("/");
+    if (parts.length === 2) {
+      if (!(parts[1] === ".gitattributes" && files.type(file) === "file")) errors.push(stray(file));
+      continue;
     }
+    // Entries nested below a stage directory are reported once, as that directory's entry.
+    const entry = parts.slice(0, 3).join("/");
+    if (reported.has(entry)) continue;
+    reported.add(entry);
+    if (parts.length > 3 || !referenced.has(entry)) errors.push(stray(entry));
   }
   return errors;
 }

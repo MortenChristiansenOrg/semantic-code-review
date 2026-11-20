@@ -5,8 +5,8 @@ import path from "node:path";
 import { execFileSync, spawn, type SpawnOptions } from "node:child_process";
 import { readReview, reviewId, reviewHome, type ReviewRecord } from "./review-store.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
-import { parseJson } from "./json.js";
-import { errorCode, stringField } from "./narrow.js";
+import { activeImplementationId, readArtifact } from "./artifact-store.js";
+import { errorCode } from "./narrow.js";
 
 export type ReviewContext = Readonly<{
   reviewId: string; generation: string; repositoryRoot: string; implementationId: string;
@@ -42,8 +42,8 @@ export function assertReviewContext(context: ReviewContext): ReviewRecord {
   if (review.generation !== context.generation || review.repositoryRoot !== context.repositoryRoot || review.implementationId !== context.implementationId) throw new Error("This review session changed or was deleted. Reopen the review.");
   try {
     if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The review worktree moved."), { code: "REVIEW_TARGET_UNAVAILABLE" });
-    const manifest = path.join(context.repositoryRoot, ".semantic-review", "manifest.json");
-    if (stringField(parseJson(fs.readFileSync(manifest, "utf8")), "implementationId") !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+    if (!readArtifact(context.repositoryRoot)) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
+    if (activeImplementationId(context.repositoryRoot) !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
   } catch (error) {
     if (errorCode(error) === "ENOENT") throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     throw error;

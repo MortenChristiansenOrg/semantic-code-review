@@ -25,7 +25,8 @@ import { fail } from "./shared/errors.js";
 import { git } from "./shared/git.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./shared/subprocess.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { readDocument } from "./shared/schema-validation.js";
+import { parseDocument, readDocument, type DocumentTypes, type SchemaId } from "./shared/schema-validation.js";
+import { activeImplementationId, listJsonIds, readArtifact, readArtifactJson, requireArtifact, type ArtifactFiles } from "./shared/artifact-store.js";
 import {
   FEEDBACK_MANIFEST_SCHEMA_ID,
   MANIFEST_SCHEMA_ID,
@@ -158,38 +159,14 @@ function worktreeRoots(root: string): string[] {
     .map((line) => path.resolve(line.slice("worktree ".length)));
 }
 
-function workingStageIds(root: string): string[] {
-  const directory = path.join(
-    root,
-    ".semantic-review",
-    ".work",
-    "stages",
-  );
-  if (!fs.existsSync(directory)) {
-    return [];
-  }
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => path.basename(entry.name, ".json"))
-    .sort();
-}
-
 function artifactCandidate(root: string): ArtifactCandidate | null {
-  const manifestPath = path.join(
-    root,
-    ".semantic-review",
-    "manifest.json",
-  );
-  if (!fs.existsSync(manifestPath)) {
+  const snapshot = readArtifact(root);
+  if (!snapshot) {
     return null;
   }
   // Inspection reports on possibly invalid artifacts, so read only what is present.
-  const manifest = readJson(manifestPath);
-  const implementationId = stringField(manifest, "implementationId");
-  if (implementationId === undefined) {
-    throw new Error("The active .semantic-review manifest has no implementation ID.");
-  }
+  const manifest = readArtifactJson(snapshot, "manifest.json");
+  const implementationId = activeImplementationId(root, snapshot);
   return {
     worktree: root,
     implementationId,
@@ -202,12 +179,17 @@ function artifactCandidate(root: string): ArtifactCandidate | null {
         allowFailure: true,
       }) ?? null,
     finalizedStageIds: strings(isRecord(manifest) ? manifest.stages : undefined),
-    workingStageIds: workingStageIds(root),
+    workingStageIds: listJsonIds(snapshot, ".work/stages"),
     feedbackDirectory: feedbackDirectory(root, implementationId),
     feedbackExists: fs.existsSync(
       path.join(feedbackDirectory(root, implementationId), "manifest.json"),
     ),
   };
+}
+
+/** A schema-validated document of an artifact snapshot. */
+function artifactDocument<K extends SchemaId>(snapshot: ArtifactFiles, id: K, file: string): DocumentTypes[K] {
+  return parseDocument(id, readArtifactJson(snapshot, file), snapshot.describe(file));
 }
 
 /** Narrows a candidate for commands that act on the implementation. A manifest
@@ -389,17 +371,17 @@ function arrayField(value: unknown, key: string): unknown[] {
 
 async function status(options: Options): Promise<void> {
   const candidate = resolveSingle(options, "status");
-  const artifact = path.join(candidate.worktree, ".semantic-review");
+  const artifact = requireArtifact(candidate.worktree);
   // Status reports on possibly invalid artifacts; the validation below reports their errors.
-  const manifest = readJson(path.join(artifact, "manifest.json"));
+  const manifest = readArtifactJson(artifact, "manifest.json");
   const requirements = strings(arrayField(manifest, "requirements")).map((id) =>
-    readJson(path.join(artifact, "requirements", `${id}.json`)),
+    readArtifactJson(artifact, `requirements/${id}.json`),
   );
   const finalizedStages = strings(arrayField(manifest, "stages")).map((id) =>
-    readJson(path.join(artifact, "stages", `${id}.json`)),
+    readArtifactJson(artifact, `stages/${id}.json`),
   );
   const workingStages = candidate.workingStageIds.map((id) =>
-    readJson(path.join(artifact, ".work", "stages", `${id}.json`)),
+    readArtifactJson(artifact, `.work/stages/${id}.json`),
   );
   // Criteria without string IDs are left out here; validation reports them.
   const allCriteria = requirements.flatMap((specification) => {
@@ -685,17 +667,12 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     );
   }
 
-  const manifest = readDocument(
-    MANIFEST_SCHEMA_ID,
-    path.join(candidate.worktree, ".semantic-review", "manifest.json"),
-  );
+  const snapshot = requireArtifact(candidate.worktree);
+  const manifest = artifactDocument(snapshot, MANIFEST_SCHEMA_ID, "manifest.json");
   const stageBranches = new Set<string>();
   const stageHeads = new Map<string, string>();
   for (const id of manifest.stages) {
-    const stage = readDocument(
-      STAGE_SCHEMA_ID,
-      path.join(candidate.worktree, ".semantic-review", "stages", `${id}.json`),
-    );
+    const stage = artifactDocument(snapshot, STAGE_SCHEMA_ID, `stages/${id}.json`);
     stageBranches.add(stage.change.branch);
     stageHeads.set(id, stage.change.headRevision);
     const branchHead = git(
@@ -794,15 +771,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   }
 
   if (detachedStageId) {
-    const refreshedStage = readDocument(
-      STAGE_SCHEMA_ID,
-      path.join(
-        candidate.worktree,
-        ".semantic-review",
-        "stages",
-        `${detachedStageId}.json`,
-      ),
-    );
+    const refreshedStage = artifactDocument(requireArtifact(candidate.worktree), STAGE_SCHEMA_ID, `stages/${detachedStageId}.json`);
     git(["switch", "--detach", refreshedStage.change.headRevision], {
       cwd: candidate.worktree,
     });
@@ -1197,8 +1166,9 @@ async function sync(options: Options): Promise<void> {
     fail("Synchronization requires a nonempty implementation with every stage finalized. Finish the working stage before syncing.");
   }
   const stageHeads = new Map<string, string>();
+  const snapshot = requireArtifact(root);
   for (const id of candidate.finalizedStageIds) {
-    const stage = readDocument(STAGE_SCHEMA_ID, path.join(root, ".semantic-review", "stages", `${id}.json`));
+    const stage = artifactDocument(snapshot, STAGE_SCHEMA_ID, `stages/${id}.json`);
     if (revision(`refs/heads/${stage.change.branch}`) !== stage.change.headRevision) {
       fail(`Stage ${id} moved from its recorded head. Reconcile or restack the edited stages before synchronizing the target.`);
     }
@@ -1533,9 +1503,8 @@ async function viewerForUpdate(): Promise<Array<ViewerIdentity & { repositoryRoo
     if (viewer.skillDirectory !== undefined &&
         (typeof viewer.skillDirectory !== "string" ||
          !samePath(viewer.skillDirectory, skillDirectory))) continue;
-    const manifest = path.join(viewerRoot, ".semantic-review", "manifest.json");
-    if (!fs.existsSync(manifest) ||
-        stringField(readJson(manifest), "implementationId") !== viewer.implementationId) continue;
+    const snapshot = readArtifact(viewerRoot);
+    if (!snapshot || activeImplementationId(viewerRoot, snapshot) !== viewer.implementationId) continue;
     found.push({ ...viewer, repositoryRoot: viewerRoot });
   }
   return found;

@@ -50,7 +50,8 @@ import { refreshRemoteReview } from "./shared/remote-review.js";
 import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
-import { listJsonFiles, parseJson, readJson } from "./shared/json.js";
+import { parseJson, readJson } from "./shared/json.js";
+import { activeImplementationId, locateArtifactRoot, readArtifactJson, requireArtifact, type ArtifactFiles } from "./shared/artifact-store.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { ReviewRecord } from "./shared/review-store.js";
@@ -101,15 +102,8 @@ function resolveRepositoryRoot(positional: string[]) {
     fail(VIEWER_USAGE);
   }
   const start = path.resolve(process.cwd(), positional[0] ?? ".");
-  let dir = start;
-  while (true) {
-    if (fs.existsSync(path.join(dir, ".semantic-review", "manifest.json"))) {
-      return dir;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
+  const root = locateArtifactRoot(start);
+  if (root !== undefined) return root;
   fail(
     `no .semantic-review/manifest.json found in ${start} or any parent directory.`,
   );
@@ -280,8 +274,9 @@ function readNodeChange(value: unknown): ViewerNodeChange | undefined {
   };
 }
 
-function readManifest(file: string): ViewerManifest {
-  const value = fieldsOf(readJson(file));
+function readManifest(files: ArtifactFiles): ViewerManifest {
+  const file = files.describe("manifest.json");
+  const value = fieldsOf(readArtifactJson(files, "manifest.json"));
   const { stages, requirements } = value;
   if (!isStringArray(stages)) throw new Error(`${file}: missing stage list.`);
   return {
@@ -294,8 +289,8 @@ function readManifest(file: string): ViewerManifest {
 }
 
 /** A specification; one without an ID keeps the ID the manifest lists it by. */
-function readSpecification(file: string, specificationId: string): ViewerSpecification {
-  const value = fieldsOf(readJson(file));
+function readSpecification(files: ArtifactFiles, specificationId: string): ViewerSpecification {
+  const value = fieldsOf(readArtifactJson(files, `requirements/${specificationId}.json`));
   const url = stringField(value.source, "url");
   return {
     id: stringField(value, "id") ?? specificationId, title: displayString(value, "title"), summary: displayString(value, "summary"),
@@ -304,8 +299,9 @@ function readSpecification(file: string, specificationId: string): ViewerSpecifi
   };
 }
 
-function readStageDocument(file: string): StageDocument {
-  const value = fieldsOf(readJson(file));
+function readStageDocument(artifact: ArtifactFiles, stageId: string): StageDocument {
+  const file = artifact.describe(`stages/${stageId}.json`);
+  const value = fieldsOf(readArtifactJson(artifact, `stages/${stageId}.json`));
   const change = fieldsOf(value.change);
   if (!isList(change.files)) throw new Error(`${file}: missing change file list.`);
   const files = change.files.map((item): StageDocumentFile => {
@@ -337,21 +333,6 @@ function readStageDocument(file: string): StageDocument {
     if (isList(items)) stage[collection] = items;
   }
   return stage;
-}
-
-function manifestPath(repoRoot: string) {
-  return path.join(repoRoot, ".semantic-review", "manifest.json");
-}
-
-function stagePath(repoRoot: string, stageId: string) {
-  return path.join(repoRoot, ".semantic-review", "stages", `${stageId}.json`);
-}
-
-/** The implementation ID of the active manifest, failing when it has none. */
-function manifestImplementationId(value: unknown): string {
-  const implementationId = stringField(value, "implementationId");
-  if (implementationId === undefined) throw new Error("The active .semantic-review manifest has no implementation ID.");
-  return implementationId;
 }
 
 /** A file's bytes, or undefined when it does not exist. */
@@ -418,13 +399,9 @@ export function viewerSnapshot(repoRoot: string): ViewerRevision {
 }
 
 function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerRevision {
-  const semanticRoot = path.join(repoRoot, ".semantic-review");
+  const artifact = requireArtifact(repoRoot);
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
-  const files = [
-    path.join(semanticRoot, "manifest.json"),
-    ...listJsonFiles(path.join(semanticRoot, "requirements")),
-    ...listJsonFiles(path.join(semanticRoot, "stages")),
-  ];
+  const files: string[] = [];
   const feedbackManifestPath = path.join(feedbackRoot, "manifest.json");
   // Threads are hashed from the bytes they were counted from, so one removed meanwhile cannot fail the poll.
   const threadBytes = new Map<string, Buffer>();
@@ -442,6 +419,7 @@ function readViewerSnapshot(repoRoot: string, implementationId: string): ViewerR
     }
   }
   const hash = createHash("sha256");
+  hash.update(artifact.version).update("\0");
   for (const file of files.sort()) {
     hash.update(path.relative(repoRoot, file));
     hash.update("\0");
@@ -465,9 +443,11 @@ interface CachedDocument {
   value: unknown;
 }
 
-/** Stat-based invalidation plus a periodic content scan for missed/coarse timestamp changes. */
+/** The artifact's version plus stat-based invalidation of feedback documents
+ * and a periodic content scan for missed/coarse timestamp changes. */
 export function createSnapshotReader(repoRoot: string, { now = Date.now, readFile = (file: string) => fs.readFileSync(file, "utf8") }: SnapshotReaderOptions = {}) {
   let documents = new Map<string, CachedDocument>();
+  let artifactVersion = "";
   let previous: ViewerRevision | null = null;
   let lastScan = -Infinity;
   return (force = false): ViewerRevision => {
@@ -506,14 +486,14 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
       nextDocuments.set(file, document);
       return document.value;
     };
-    const semantic = path.join(repoRoot, ".semantic-review");
-    const implementationId = manifestImplementationId(read(path.join(semantic, "manifest.json")));
+    const implementationId = activeImplementationId(repoRoot);
     const feedback = feedbackDirectory(repoRoot, implementationId);
     let awaitingAgentReplies = 0;
+    let nextArtifactVersion = artifactVersion;
     // Artifact writers that change several documents hold this lock, so one snapshot is never mixed.
     withReviewLock(reviewId(repoRoot, implementationId), () => {
-      read(path.join(semantic, "manifest.json"));
-      for (const file of [...listJsonFiles(path.join(semantic, "requirements")), ...listJsonFiles(path.join(semantic, "stages"))]) read(file);
+      nextArtifactVersion = requireArtifact(repoRoot).version;
+      if (nextArtifactVersion !== artifactVersion) changed = true;
       if (fs.existsSync(path.join(feedback, "manifest.json"))) {
         for (const id of listedThreadIds(read(path.join(feedback, "manifest.json")))) {
           if (threadAwaitsAgent(read(path.join(feedback, "threads", `${id}.json`), true))) awaitingAgentReplies++;
@@ -523,10 +503,12 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
     for (const file of nextDocuments.keys()) if (!seen.has(file)) { nextDocuments.delete(file); changed = true; }
     if (changed || !previous) {
       const hash = createHash("sha256");
+      hash.update(nextArtifactVersion).update("\0");
       for (const file of [...seen].sort()) hash.update(path.relative(repoRoot, file)).update("\0").update(nextDocuments.get(file)?.text ?? "").update("\0");
       previous = { revision: hash.digest("hex"), awaitingAgentReplies };
     }
     documents = nextDocuments;
+    artifactVersion = nextArtifactVersion;
     if (scan) lastScan = now();
     return previous;
   };
@@ -534,10 +516,6 @@ export function createSnapshotReader(repoRoot: string, { now = Date.now, readFil
 
 function requireImplementation(repoRoot: string, implementationId: string) {
   if (activeImplementationId(repoRoot) !== implementationId) throw new Error("The active implementation changed; reopen the viewer.");
-}
-
-function activeImplementationId(repoRoot: string): string {
-  return manifestImplementationId(readJson(manifestPath(repoRoot)));
 }
 
 function humanizeId(id: string) {
@@ -749,10 +727,10 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
 
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
-function readViewerStages(repoRoot: string, manifest: ViewerManifest = readManifest(manifestPath(repoRoot))): ViewerStage[] {
+function readViewerStages(artifact: ArtifactFiles, manifest: ViewerManifest = readManifest(artifact)): ViewerStage[] {
   const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
   return manifest.stages.map((id) => {
-    const stage = readStageDocument(stagePath(repoRoot, id));
+    const stage = readStageDocument(artifact, id);
     const files = stage.change.files.map((file): ViewerFile => {
       const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
       const { previousPath: ignored, ...current } = file;
@@ -1194,14 +1172,14 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture): Wire.ImplementationData {
-  const implementationRoot = path.join(repoRoot, ".semantic-review");
-  const manifest = readManifest(path.join(implementationRoot, "manifest.json"));
+  const artifact = requireArtifact(repoRoot);
+  const manifest = readManifest(artifact);
   const requirements = manifest.requirements.map((specificationId): Wire.Requirement =>
-    readSpecification(path.join(implementationRoot, "requirements", `${specificationId}.json`), specificationId),
+    readSpecification(artifact, specificationId),
   );
   const projects = buildProjectIndex(repoRoot, captureGit);
 
-  const stages = readViewerStages(repoRoot, manifest).map((s): Wire.Stage => {
+  const stages = readViewerStages(artifact, manifest).map((s): Wire.Stage => {
     const base = s.change.baseRevision;
     const head = s.change.headRevision;
     const stats = statsForStage(s);
@@ -1329,11 +1307,11 @@ export function createViewerDataSource(
     return record;
   };
 
-  const readStage = (stageId: string | null): ViewerStage => {
-    const manifest = readManifest(manifestPath(repoRoot));
+  const readStage = (stageId: string | null, artifact: ArtifactFiles = requireArtifact(repoRoot)): ViewerStage => {
+    const manifest = readManifest(artifact);
     const stage = stageId === null || !manifest.stages.includes(stageId)
       ? undefined
-      : readViewerStages(repoRoot, manifest).find((candidate) => candidate.id === stageId);
+      : readViewerStages(artifact, manifest).find((candidate) => candidate.id === stageId);
     if (!stage) throw new Error(`unknown stage "${stageId}"`);
     return stage;
   };
@@ -1360,13 +1338,14 @@ export function createViewerDataSource(
 
   return {
     evidenceFile(stageId: string | null, itemId: string | null, index: string | null) {
-      const stage = readStage(stageId);
+      const artifact = requireArtifact(repoRoot);
+      const stage = readStage(stageId, artifact);
       const item = listOf(stage.evidence).find((candidate) => isRecord(candidate) && candidate.id === itemId);
       const attachment = listOf(fieldsOf(item).attachments)[Number(index)];
       const attachmentPath = stringField(attachment, "path"), mediaType = stringField(attachment, "mediaType"), sha256 = stringField(attachment, "sha256");
       if (attachmentPath === undefined || mediaType === undefined || !evidenceMediaTypeMatches({ path: attachmentPath, mediaType })) throw new Error("Evidence attachment does not exist.");
-      const { file } = resolveEvidenceFile(path.join(repoRoot, ".semantic-review"), stage.id, attachmentPath);
-      const bytes = fs.readFileSync(file);
+      const { file } = resolveEvidenceFile(artifact, stage.id, attachmentPath);
+      const bytes = artifact.read(file);
       if (sha256Hex(bytes) !== sha256) throw new Error("Evidence attachment is damaged.");
       return { mediaType, content: bytes.toString("base64") };
     },
@@ -1670,11 +1649,12 @@ export function mapNoteTarget(note: Pick<Wire.FeedbackNoteExport, "kind" | "id" 
 }
 
 export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
-  const manifest = readManifest(manifestPath(repoRoot));
+  const artifact = requireArtifact(repoRoot);
+  const manifest = readManifest(artifact);
   return {
     implementationId: manifest.implementationId,
     stages: manifest.stages.map((stageId) => {
-      const stage = readStageDocument(stagePath(repoRoot, stageId));
+      const stage = readStageDocument(artifact, stageId);
       const stats = stageFileStats(repoRoot, stage, gitCapture);
       return {
         id: stage.id,
@@ -2797,9 +2777,10 @@ function openBrowser(url: string) {
 }
 
 function implementationSummary(repoRoot: string) {
-  const manifest = readManifest(manifestPath(repoRoot));
+  const artifact = requireArtifact(repoRoot);
+  const manifest = readManifest(artifact);
   const fileCount = manifest.stages.reduce((total, stageId) => {
-    const stage = readStageDocument(stagePath(repoRoot, stageId));
+    const stage = readStageDocument(artifact, stageId);
     return total + stage.change.files.length;
   }, 0);
   return {
