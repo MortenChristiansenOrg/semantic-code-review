@@ -286,7 +286,9 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   assert.equal(repository.git("rev-parse", "main"), target);
   assert.equal(repository.artifact.read("manifest.json"), before.artifact);
   assert.deepEqual(snapshot(repository).stages, before.stages);
-  assert.equal(repository.git("branch", "--show-current"), before.branch);
+  // The stage branch stays detached, so restack --continue can move it.
+  assert.match(failure.stderr, new RegExp(`stays detached until then, so the restack can move ${before.branch}`));
+  assert.equal(repository.git("branch", "--show-current"), "");
   assert.equal(repository.git("rev-parse", "HEAD"), before.head);
   assert.equal(repository.git("status", "--porcelain"), "");
 
@@ -295,8 +297,6 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   fs.writeFileSync(path.join(worktree, "shared.txt"), "upstream and stage\n");
   assert.equal(spawnSync("git", ["add", "shared.txt"], { cwd: worktree }).status, 0);
   expectSyncFailure(repository, /restack stopped at a conflict in stage behavior/, "--local");
-  // A stage branch the restack moves may not stay checked out.
-  repository.git("switch", "--detach");
   repository.semantic("restack", "--continue");
   repository.git("switch", before.branch);
   const result = JSON.parse(repository.flow("sync", "--local", "--json"));

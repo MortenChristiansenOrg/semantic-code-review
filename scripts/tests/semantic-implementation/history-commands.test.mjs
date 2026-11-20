@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   beginStage,
   createRepository,
+  semanticCli,
   finalizeStage,
   initializeImplementation,
   implementationFromScript,
@@ -345,7 +346,7 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
   const other = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-other-"));
   t.after(() => fs.rmSync(other, { recursive: true, force: true }));
   repository.git("worktree", "add", path.join(other, "api"), "semantic-flow/test-implementation/stages/api");
-  repository.expectSemanticFailure("checked out in a worktree", "restack", "--continue");
+  assert.match(repository.expectSemanticFailure("checked out in a worktree", "restack", "--continue").stderr, /git switch --detach/);
   assert.equal(gitIn(worktree, "show", ":shared.txt"), "setting=resolved\npersistence=true\napi=true");
   repository.git("worktree", "remove", path.join(other, "api"));
   const result = JSON.parse(repository.semantic("restack", "--continue", "--json"));
@@ -388,6 +389,32 @@ test("restack --continue refuses once a ref moved, and restack --abort discards 
   repository.expectSemanticFailure("No restack is pending", "restack", "--abort");
   repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy");
   repository.semantic("restack", "--abort");
+});
+
+test("restack --continue notices any artifact change, and restack --abort removes an unreadable record", (t) => {
+  const { repository } = conflictingStack(t);
+  const worktree = conflictWorktree(repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy"));
+  fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
+  gitIn(worktree, "add", "shared.txt");
+  // Any artifact file written meanwhile counts, also one under .work.
+  repository.artifact.write(".work/extra.txt", "extra\n");
+  repository.expectSemanticFailure("semantic implementation changed since the restack began", "restack", "--continue");
+  repository.artifact.remove(".work/extra.txt");
+
+  // A damaged record cannot be continued, but it can be aborted; its fields are not trusted.
+  const decoy = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-decoy-"));
+  t.after(() => fs.rmSync(decoy, { recursive: true, force: true }));
+  repository.artifact.write(".work/restack.json", { worktree: decoy });
+  repository.expectSemanticFailure("does not describe a restack", "restack", "--continue");
+  const aborted = repository.result(process.execPath, [...semanticCli, "restack", "--abort"]);
+  assert.equal(aborted.status, 0, aborted.stderr);
+  assert.match(aborted.stderr, /does not describe a restack/);
+  assert.equal(repository.artifact.exists(".work/restack.json"), false);
+  assert.equal(fs.existsSync(decoy), true);
+  assert.equal(fs.existsSync(worktree), false);
+  // The corrections are still waiting for a restack, which now starts afresh.
+  repository.expectSemanticFailure("run restack --from policy", "validate");
+  repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy");
 });
 
 test("restack carries a stage's edit into a file the target renamed", (t) => {
@@ -491,7 +518,7 @@ test("a stage the target fast-forwarded to is emptied, and preparing an all-empt
   const result = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
   assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }]);
   repository.semantic("validate", "--publish");
-  repository.expectSemanticFailure("already contains every stage", "prepare-branch", "--branch", "review/policy");
+  repository.expectSemanticFailure("Every stage of test-implementation is empty", "prepare-branch", "--branch", "review/policy");
   // A target that fast-forwarded to the stage and then reverted it gets the stage's changes back.
   repository.git("revert", "--quiet", "--no-edit", head);
   const reverted = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));

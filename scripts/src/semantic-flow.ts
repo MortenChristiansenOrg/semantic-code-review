@@ -792,7 +792,8 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
       `Could not automatically restack onto advanced target branch ${candidate.targetBranch}.`,
     );
   } finally {
-    if (detachedBranch !== null) {
+    // A pending restack still has to move the branch, so the checkout stays detached until it completes.
+    if (detachedBranch !== null && !restackPending(candidate)) {
       git(["switch", detachedBranch], { cwd: candidate.worktree });
     }
   }
@@ -1302,8 +1303,18 @@ async function sync(options: Options): Promise<void> {
     }
   } catch (error) {
     console.error(`Synchronization stopped in ${root}. Target ${candidate.targetBranch} is at ${revision(targetRef)}; the target update is retained.`);
-    console.error(`For a reported restack conflict, resolve it in the reported worktree and run semantic-flow.mjs implementation restack --continue. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
+    const stageDetached = candidate.currentBranch !== null && stageHeads.has(candidate.currentBranch) && restackPending(candidate);
+    console.error(`For a reported restack conflict, resolve it in the reported worktree and run semantic-flow.mjs implementation restack --continue${stageDetached ? `; ${candidate.worktree} stays detached until then, so the restack can move ${candidate.currentBranch}` : ""}. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
     throw error;
+  }
+}
+
+/** Whether the implementation has a restack stopped at a conflict. */
+function restackPending(candidate: { worktree: string; implementationId: string }): boolean {
+  try {
+    return readArtifact(candidate.worktree, candidate.implementationId)?.type(".work/restack.json") !== undefined;
+  } catch {
+    return false;
   }
 }
 

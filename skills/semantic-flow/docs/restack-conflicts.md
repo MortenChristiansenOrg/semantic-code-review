@@ -18,8 +18,8 @@ without asking permission for their internal operations. Apply
    checks there when they need no setup. Stage the complete resolution with
    `git add` or `git rm`. Do not commit, switch, or reset in that worktree.
 3. A branch the restack moves may not stay checked out: if a stage branch is
-   checked out in the artifact worktree, run `git switch --detach` there first,
-   and restore the original checkout after the restack completes. Then run,
+   checked out in the artifact worktree, run `git switch --detach` there first
+   (`sync` already leaves it detached after a conflict), and restore the original checkout after the restack completes. Then run,
    from the artifact worktree:
 
    ```text

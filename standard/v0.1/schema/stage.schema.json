@@ -82,7 +82,7 @@
           "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
         },
         "files": {
-          "description": "Empty only for a stage whose changes the target already contains; its head commit is then marked empty.",
+          "description": "Empty only for a stage that changes nothing, because the target already contains its changes or a restack conflict was resolved without them; its head commit is then marked empty.",
           "type": "array",
           "items": {
             "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/fileChange"
