@@ -389,11 +389,15 @@ export function replaceArtifactFiles(
       fs.renameSync(next, active);
     } catch (error) {
       // The change is reverted first, so it cannot overwrite the restored artifact.
-      let undoError: unknown;
-      try { undo(); } catch (failure) { undoError = failure; }
-      fs.rmSync(active, { recursive: true, force: true });
-      if (fs.existsSync(backup)) fs.renameSync(backup, active);
-      if (undoError !== undefined) throw new Error(`${errorMessage(error)} Reverting the change also failed: ${errorMessage(undoError)}`, { cause: error });
+      const failures: string[] = [];
+      try { undo(); } catch (failure) { failures.push(`Reverting the change also failed: ${errorMessage(failure)}`); }
+      try {
+        fs.rmSync(active, { recursive: true, force: true });
+        if (fs.existsSync(backup)) fs.renameSync(backup, active);
+      } catch (failure) {
+        failures.push(`Restoring the previous artifact from ${backup} also failed: ${errorMessage(failure)}`);
+      }
+      if (failures.length > 0) throw new Error([errorMessage(error), ...failures].join(" "), { cause: error });
       throw error;
     }
   } finally {
