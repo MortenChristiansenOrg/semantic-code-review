@@ -38,13 +38,15 @@ function cancelDwell(element: Element): void { clearTimeout(readTimers.get(eleme
 export const replyObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
   for (const entry of entries) {
     const element = entry.target;
+    // A browser may deliver a queued report after the reply was removed and unobserved.
+    if (!element.isConnected || !observedReplies.has(element)) { cancelDwell(element); continue; }
     const visibleHeight = entry.rootBounds?.height || window.innerHeight;
     const seen = entry.intersectionRatio >= 0.6 || entry.intersectionRect.height >= visibleHeight * 0.5;
     if (seen && !document.hidden && element.classList.contains("is-unread")) {
       if (!readTimers.has(element)) readTimers.set(element, setTimeout(() => {
         readTimers.delete(element);
         const key = element.getAttribute("data-reply-key");
-        if (key !== null && !document.hidden) markRepliesRead([key]);
+        if (key !== null && element.isConnected && !document.hidden) markRepliesRead([key]);
       }, 1200));
     } else cancelDwell(element);
   }

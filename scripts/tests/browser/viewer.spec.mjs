@@ -5399,8 +5399,14 @@ async function settled(page) {
 async function deleteReviewElsewhere(page, reviewId) {
   await page.evaluate(async (id) => {
     const input = { reviewId: id, generation: 'test' }, query = `?review=${id}&generation=test`;
-    const result = await fetch('/api/reviews/storage' + query, { method: 'POST', body: JSON.stringify(input) }).then((r) => r.json());
-    await fetch('/api/reviews/delete' + query, { method: 'POST', body: JSON.stringify({ ...input, fingerprint: result.storage.fingerprint }) });
+    const post = async (path, body) => {
+      const response = await fetch(path + query, { method: 'POST', body: JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(`${path} failed with ${response.status}: ${payload.error}`);
+      return payload;
+    };
+    const result = await post('/api/reviews/storage', input);
+    await post('/api/reviews/delete', { ...input, fingerprint: result.storage.fingerprint });
   }, reviewId);
 }
 
@@ -5408,6 +5414,8 @@ test('a review deleted during an approval capture ends the approval and a pendin
   const a = { ...fixture(), reviewId: 'a' }, b = { ...fixture(), reviewId: 'b' };
   await mount(page, a, {}, [b]);
   await openFile(page);
+  // Opening the file saves; a save landing after the deletion's preview would make the deletion stale.
+  await settled(page);
   let release;
   const captured = new Promise((resolve) => { release = resolve; });
   await page.route('**/api/approval-snapshots*', async (route) => { await captured; return route.fallback(); });
@@ -5438,6 +5446,30 @@ test('a failed save clears once no change is left to save', async ({ page }) => 
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
   await expect(page).toHaveURL('http://localhost/b');
+});
+
+test('reverting a change after a save whose response was lost saves the reversal', async ({ page }) => {
+  await mount(page, fixture());
+  await openFile(page);
+  await settled(page);
+  let lose = true;
+  await page.route('**/api/review-state*', async (route) => {
+    if (route.request().method() !== 'POST' || !lose) return route.fallback();
+    lose = false;
+    // The server commits the save, but its response never arrives.
+    const { url, body } = { url: route.request().url(), body: route.request().postData() };
+    await page.evaluate(([input, payload]) => fetch(input, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }), [url, body]);
+    await route.abort('failed');
+  });
+  const wrap = page.getByRole('button', { name: 'Wrap lines', exact: true }).first();
+  await expect(wrap).toHaveAttribute('aria-pressed', 'false');
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeVisible();
+  await wrap.click();
+  await expect(page.locator('#save-status')).toBeHidden();
+  await reload(page);
+  await openFile(page);
+  await expect(page.getByRole('button', { name: 'Wrap lines', exact: true }).first()).toHaveAttribute('aria-pressed', 'false');
 });
 
 test('turning a failed since-approval comparison off and on loads it again', async ({ page }) => {
@@ -5618,4 +5650,36 @@ test('an unread reply is not read while the page is hidden and is read once it s
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect(reply).not.toHaveClass(/is-unread/, { timeout: 5000 });
+});
+
+test('a visibility report that arrives after an unread reply was removed does not read it', async ({ page }) => {
+  // The page's observer reports only what the test delivers, as a browser may
+  // deliver a queued report after the reply was removed and unobserved.
+  await page.addInitScript(() => {
+    const Native = window.IntersectionObserver;
+    window.IntersectionObserver = class extends Native {
+      constructor(callback, options) {
+        super(() => {}, options);
+        window.reportVisible = (target) => callback([{ target, intersectionRatio: 1, intersectionRect: { height: 100 }, rootBounds: { height: 800 } }], this);
+      }
+    };
+  });
+  const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
+  const target = { kind: 'stage', stageId: 'first', label: 'Stage first' };
+  const data = { ...fixture(), feedback: [{ id: 'one', status: 'open', target, comments: [comment('u1', 'user', 'First?')] }] };
+  const baseline = page.waitForResponse(async (response) => new URL(response.url()).pathname === '/api/review-state' &&
+    response.request().method() === 'POST' && (await response.json()).state?.repliesSeenThrough === '');
+  await mount(page, data, { openThreads: { first: true } });
+  await baseline;
+  data.feedback[0].comments.push(comment('answer', 'agent', 'Short answer.', '2026-10-08T10:05:00Z'));
+  data.viewerRevision = 'replied';
+  await expect.poll(() => page.title()).toMatch(/^\(1\)/);
+  const reply = page.locator('.stage [data-reply-key=\'["one","answer"]\']');
+  await expect(reply).toHaveClass(/is-unread/);
+  const removed = await reply.elementHandle();
+  await page.locator('.stage [data-action="toggle-thread"]').click();
+  await expect(reply).toHaveCount(0);
+  await removed.evaluate((element) => window.reportVisible(element));
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1500)));
+  expect(await page.title()).toMatch(/^\(1\)/);
 });

@@ -89,27 +89,53 @@ export function saveState(): Promise<void> {
   saveOperation = writeState().finally(() => { saveOperation = null; });
   return saveOperation;
 }
-export async function writeState(): Promise<void> {
-  if (reviewDeleted) return;
-  captureEditor();
-  const next = storedState();
-  const changes = stateChanges(persistedState, next);
-  // With nothing left to save, an earlier failure no longer applies.
-  if (!changes.length) { if (saveError) { saveError = ""; showSaveStatus(); } return; }
-  savingState = true; showSaveStatus();
+/** How a save ended: stored, refused by the server, or unknown when no answer arrived. */
+type SaveOutcome = "saved" | "rejected" | "unknown";
+/** A save whose outcome is unknown: the server may hold its changes or the state before them. */
+let unconfirmedSave: { changes: ReviewStateChange[]; after: StoredReviewState } | null = null;
+/** Sends one change set and records why it failed. A failure the server reports stored nothing. */
+async function sendChanges(changes: ReviewStateChange[]): Promise<SaveOutcome> {
   try {
     const response = await api.saveReviewState({ reviewId: savedReview.reviewId, generation: savedReview.generation, changes });
     const payload = await response.json();
-    if (!response.ok || !payload.ok) {
+    if (response.ok && payload.ok) return "saved";
+    if (payload.ok === false) {
       const failure = failureOf(payload);
       if (failure.reviewUnavailable) markReviewDeleted(true);
-      throw new Error(failure.error || "Save failed. Make another edit to retry.");
+      saveError = failure.error || "Save failed. Make another edit to retry.";
+      return "rejected";
     }
-    persistedState = next;
-    saveError = "";
+    saveError = "Save failed. Make another edit to retry.";
   } catch (error) { saveError = errorMessage(error); }
-  finally { savingState = false; showSaveStatus(); }
-  if (!saveError && stateChanges(persistedState, storedState()).length) scheduleSave();
+  return "unknown";
+}
+export async function writeState(): Promise<void> {
+  if (reviewDeleted) return;
+  captureEditor();
+  // With nothing left to save and every earlier save's outcome known, an earlier failure no longer applies.
+  if (!unconfirmedSave && !stateChanges(persistedState, storedState()).length) { if (saveError) { saveError = ""; showSaveStatus(); } return; }
+  savingState = true; showSaveStatus();
+  try {
+    // The store accepts an exact retry, so resending a save of unknown outcome
+    // leaves the server with its changes either way. Until then the state the
+    // server last confirmed may not be its state, and a change back to it would
+    // not be sent.
+    if (unconfirmedSave) {
+      if (await sendChanges(unconfirmedSave.changes) !== "saved") return;
+      persistedState = unconfirmedSave.after;
+      unconfirmedSave = null;
+    }
+    const next = storedState();
+    const changes = stateChanges(persistedState, next);
+    if (changes.length) {
+      const outcome = await sendChanges(changes);
+      if (outcome === "unknown") unconfirmedSave = { changes, after: next };
+      if (outcome !== "saved") return;
+      persistedState = next;
+    }
+    saveError = "";
+  } finally { savingState = false; showSaveStatus(); }
+  if (stateChanges(persistedState, storedState()).length) scheduleSave();
 }
 export async function flushReviewState(): Promise<void> {
   if (reviewDeleted) return;
