@@ -8,7 +8,8 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { registerReview as registerActiveReview, readReview, patchReviewState, reviewDirectory, reviewId as activeReviewId, feedbackDirectory, listReviews, setReviewCompleted, registeredReviews, storeAttachment, resolveAttachment } from '../../src/semantic-view.ts';
 import { ArtifactDraft, commitArtifact, readArtifact } from '../../src/shared/artifact-store.ts';
-import { newReviewId, writeReviewId } from '../../src/shared/review-store.ts';
+import { atomicJson, newReviewId, writeReviewId } from '../../src/shared/review-store.ts';
+import { REPLACE_WAIT_MS } from '../../src/shared/json.ts';
 // Child processes import the same TypeScript sources.
 const sourceLoader = ['--import', import.meta.resolve('tsx')];
 
@@ -380,4 +381,50 @@ test('damaged viewer metadata counts as absent and keeps the review listed', (t)
     fs.writeFileSync(file, JSON.stringify({ ...record, viewer: { ...viewer, port } }));
     assert.equal(readReview(review.id).viewer, undefined, `port ${port}`);
   }
+});
+
+/** Runs operation as if on platform, with renameSync failing as refuse decides. */
+function withRenames(t, platform, refuse, operation) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform');
+  const rename = fs.renameSync;
+  let attempts = 0;
+  const mock = t.mock.method(fs, 'renameSync', (...args) => {
+    const code = refuse(++attempts);
+    if (code) throw Object.assign(new Error(`${code}: simulated, rename`), { code });
+    return rename(...args);
+  });
+  Object.defineProperty(process, 'platform', { ...original, value: platform });
+  try { operation(); }
+  finally { Object.defineProperty(process, 'platform', original); mock.mock.restore(); }
+  return attempts;
+}
+
+test('saving review data on Windows waits for readers that hold the file open', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-replace-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'review.json');
+  fs.writeFileSync(file, '{}\n');
+  // A reader's open handle refuses the replacement until the reader is done.
+  const attempts = withRenames(t, 'win32', (attempt) => attempt <= 3 ? ['EPERM', 'EACCES', 'EBUSY'][attempt - 1] : undefined, () => atomicJson(file, { saved: true }));
+  assert.equal(attempts, 4);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { saved: true });
+  assert.deepEqual(fs.readdirSync(directory), ['review.json']);
+});
+
+test('saving review data reports a replacement that stays refused or fails otherwise', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-replace-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'review.json');
+  fs.writeFileSync(file, '{}\n');
+  const refused = (platform, code) => {
+    const started = Date.now();
+    assert.throws(() => withRenames(t, platform, () => code, () => atomicJson(file, { saved: true })), new RegExp(code));
+    return Date.now() - started;
+  };
+  // Only Windows sharing violations are waited out, and only for a bounded time.
+  assert.ok(refused('win32', 'EPERM') >= REPLACE_WAIT_MS);
+  assert.ok(refused('win32', 'ENOSPC') < REPLACE_WAIT_MS);
+  assert.ok(refused('linux', 'EPERM') < REPLACE_WAIT_MS);
+  assert.equal(fs.readFileSync(file, 'utf8'), '{}\n');
+  assert.deepEqual(fs.readdirSync(directory), ['review.json']);
 });

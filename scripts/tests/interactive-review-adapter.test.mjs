@@ -53,16 +53,16 @@ test('a known-good interactive agent passes every fixed check and its viewer is 
 });
 
 test('an agent that stops listening after the first round fails the listening checks', async t => {
-  const { execution, checks } = await session(t, 'early-exit');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, checks } = await session(t, 'early-exit');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.equal(checks.listened.passed, true);
   assert.equal(checks['round-one-changes'].passed, true);
   for (const id of ['follow-up-queued', 'asked-in-viewer', 'decision-applied', 'stopped-on-request']) assert.equal(checks[id].passed, false, id);
 });
 
 test('negated retry documentation and resolved reviewer threads fail their checks', async t => {
-  const { execution, checks } = await session(t, 'sloppy');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, checks } = await session(t, 'sloppy');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.equal(checks['round-one-changes'].passed, false);
   assert.equal(checks['threads-open'].passed, false);
   assert.equal(checks['decision-applied'].passed, true);
@@ -70,8 +70,8 @@ test('negated retry documentation and resolved reviewer threads fail their check
 });
 
 test('an agent that settles contradictory notes itself fails the viewer question check', async t => {
-  const { execution, driver, checks } = await session(t, 'decides');
-  assert.equal(execution.exitCode, 0);
+  const { execution, stderr, driver, checks } = await session(t, 'decides');
+  assert.equal(execution.exitCode, 0, stderr);
   assert.ok(driver.events.some(event => event.type === 'decided-without-asking'));
   assert.equal(checks['asked-in-viewer'].passed, false);
   assert.equal(checks['decision-applied'].passed, false);
