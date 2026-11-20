@@ -115,10 +115,15 @@ then gives the implementation a new review ID, and only then removes the folder;
 when the new ID cannot be stored, the folder is moved back and nothing changes.
 Files are removed only once the folder is renamed as deleted, never from a folder
 whose deletion may still roll back. Cleanup, registration and deletion settle an
-interrupted deletion by what the repository records: while the implementation
-still holds the old ID, the folder is moved back; once it holds another ID, or the
-implementation is gone, the deletion is completed; while the repository cannot be
-reached or an archive claims the implementation, the folder stays pending. When the
+interrupted deletion by what the repository records, checking the worktree a
+registration runs from before the recorded location: while the implementation
+still holds the old ID, the folder is moved back; once its active artifact holds
+another ID, or the deletion marked the old ID retired, the deletion is completed.
+A missing implementation or repository proves nothing, since the repository may
+have moved, so the folder stays pending, as it does while an archive claims the
+implementation, until it can be settled, for example by a command run from the
+repository, or the repository has been missing for 30 days. A registration that finds the old ID retired starts the
+fresh review even while the folder waits for cleanup. When the
 repository cannot be reached, or an archive in progress claims the old ID, deletion
 still succeeds and marks the old ID retired; the next registration that finds the
 old ID in the artifact stores a new one first, and the mark stays until no snapshot

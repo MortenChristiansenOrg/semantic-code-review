@@ -595,11 +595,15 @@ export function replaceArtifactFileInGitDirectory(
  * gitDirectory: its active artifact and the archiving claim an archive in
  * progress, or an interrupted one, holds. Both refs are read in one Git command,
  * and every Git command is given that directory, as in
- * replaceArtifactFileInGitDirectory. */
+ * replaceArtifactFileInGitDirectory. The read is not atomic: an archive rolling
+ * back may restore the active ref after it was read and remove the claim before
+ * it was read, so both look absent. confirmed() tells whether both refs still
+ * hold what was read, checked together in one ref transaction; false when either
+ * changed or is busy. */
 export function readImplementationRefsInGitDirectory(
   gitDirectory: string,
   implementationId: string,
-): { active?: ArtifactFiles; archiving?: ArtifactFiles } {
+): { active?: ArtifactFiles; archiving?: ArtifactFiles; confirmed: () => boolean } {
   const gitDir = `--git-dir=${gitDirectory}`;
   const run: GitRunner = (args, input) => gitRaw([gitDir, ...args], { input, encoding: "buffer" });
   const refs = [activeRef(implementationId), archivingRef(implementationId)];
@@ -612,7 +616,14 @@ export function readImplementationRefsInGitDirectory(
     const commit = commits.get(ref);
     return commit === undefined ? undefined : treeFiles(run, commit, "", ref) ?? fail(`Cannot read the snapshot ${commit} of ${ref}.`);
   };
-  return { active: read(refs[0]), archiving: read(refs[1]) };
+  const confirmed = () => {
+    // A transaction of verify commands locks every ref and compares it, so it
+    // fails when either ref moved since the read, or another writer holds it.
+    const commands = refs.map((ref) => `verify ${ref} ${commits.get(ref) ?? ZERO_OID}\n`).join("");
+    try { run(["update-ref", "--stdin"], Buffer.from(commands, "utf8")); return true; }
+    catch { return false; }
+  };
+  return { active: read(refs[0]), archiving: read(refs[1]), confirmed };
 }
 
 /** Removes the active artifact read as base, together with the other ref

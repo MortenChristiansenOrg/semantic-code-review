@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { execFile, execFileSync } from 'node:child_process';
+import childProcess, { execFile, execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, registeredReviews, setReviewCompleted, recordViewer, storeAttachment, resolveAttachment, inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles, reviewSessionUnavailable, reviewRetirementCheck, assertReviewContext, captureReviewContext, viewerLaunchCurrent } from '../../src/semantic-view.ts';
 import { activeRef, archivingRef, ArtifactDraft, commitArtifact, readArtifact, replaceArtifactFileInGitDirectory } from '../../src/shared/artifact-store.ts';
@@ -344,12 +345,18 @@ test('a deletion interrupted after it gave the implementation a new review ID is
   assert.deepEqual(third.state, {});
   assert.equal(fs.existsSync(pendingFolder(second)), false);
   assert.equal(fs.existsSync(reviewDirectory(second.id)), false);
-  // A deletion whose implementation is gone while its repository is reachable committed too.
+  // A missing implementation proves nothing, since the repository may have moved:
+  // the folder stays pending until the implementation is found again.
   fs.renameSync(reviewDirectory(third.id), pendingFolder(third));
+  const snapshot = git(repo, 'rev-parse', activeRef('same-id'));
   git(repo, 'update-ref', '-d', activeRef('same-id'));
   registeredReviews();
+  assert.ok(fs.existsSync(pendingFolder(third)));
+  assert.deepEqual(retiredFolders(), ['.deleting-' + third.id]);
+  git(repo, 'update-ref', activeRef('same-id'), snapshot, '0'.repeat(40));
+  registeredReviews();
   assert.equal(fs.existsSync(pendingFolder(third)), false);
-  assert.deepEqual(retiredFolders(), []);
+  assert.equal(readReview(third.id).generation, third.generation);
 });
 
 test('an interrupted deletion stays pending while its repository cannot be reached or an archive claims its ID', (t) => {
@@ -425,6 +432,105 @@ test('a retired ID keeps its marker while an archive claims it', (t) => {
   const registered = registerReview(repo, 'same-id', 'Fresh');
   assert.notEqual(registered.id, review.id);
   assert.equal(fs.existsSync(retiredMarker(review)), false);
+});
+
+test('an interrupted deletion is completed only when a reachable artifact holds another review ID', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo'), moved = path.join(root, 'moved');
+  patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'personal', body: 'Keep me' }])]);
+  // A crash left the folder under its pending name, and then the repository moved.
+  fs.renameSync(reviewDirectory(review.id), pendingFolder(review));
+  fs.renameSync(repo, moved);
+  // An unrelated repository at the recorded location has no such implementation:
+  // that proves nothing, so cleanup leaves the folder pending.
+  activate(repo, 'unrelated-id');
+  registeredReviews();
+  assert.ok(fs.existsSync(pendingFolder(review)));
+  // Neither does one holding an implementation of the same ID under its own review
+  // ID: registration from the moved repository, which it has just verified, decides.
+  activate(repo, 'same-id');
+  const registered = registerReview(moved, 'same-id', 'Review');
+  assert.equal(registered.id, review.id);
+  assert.equal(registered.generation, review.generation);
+  assert.equal(registered.repositoryRoot, fs.realpathSync(moved));
+  assert.deepEqual(registered.state.comments, [{ mode: 'personal', body: 'Keep me' }]);
+  assert.equal(fs.existsSync(pendingFolder(review)), false);
+});
+
+test('a deletion that reads the refs during an archive rollback does not take the review ID for gone', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo');
+  const fingerprint = preview(review).fingerprint;
+  const snapshot = claimForArchive(repo, 'same-id');
+  const spawn = childProcess.spawnSync;
+  let torn = false;
+  t.mock.method(childProcess, 'spawnSync', (command, args, options) => {
+    if (!torn && command === 'git' && args.includes('for-each-ref') && args.includes(archivingRef('same-id'))) {
+      // The archive fails while both refs are read: the active ref is read before
+      // the rollback puts it back, the claim after the rollback removed it.
+      torn = true;
+      failArchive(repo, 'same-id', snapshot);
+      const empty = Buffer.alloc(0);
+      return { pid: 0, output: [null, empty, empty], stdout: empty, stderr: empty, status: 0, signal: null };
+    }
+    return spawn(command, args, options);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
+  assert.ok(torn);
+  // The refs did not confirm the read, so the deletion looked again and replaced the ID.
+  assert.notEqual(storedReviewId(repo, 'same-id'), review.id);
+  const registered = registerReview(repo, 'same-id', 'Fresh');
+  assert.notEqual(registered.id, review.id);
+  assert.deepEqual(registered.state, {});
+});
+
+test('a committed deletion whose folder waits for cleanup does not block the fresh review of a retired ID', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo'), away = path.join(root, 'away');
+  const pending = pendingFolder(review), rename = fs.renameSync, fingerprint = preview(review).fingerprint;
+  const renaming = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from) === pending && path.basename(String(to)).startsWith('.deleted-')) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  // The repository cannot be reached, so the deletion marks the ID retired, and
+  // its folder keeps the pending name since it cannot be renamed as deleted.
+  fs.renameSync(repo, away);
+  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
+  assert.ok(fs.existsSync(retiredMarker(review)));
+  assert.ok(fs.existsSync(pending));
+  fs.renameSync(away, repo);
+  const registered = registerReview(repo, 'same-id', 'Fresh');
+  assert.notEqual(registered.id, review.id);
+  assert.deepEqual(registered.state, {});
+  assert.equal(storedReviewId(repo, 'same-id'), registered.id);
+  assert.equal(fs.existsSync(retiredMarker(review)), false);
+  // Cleanup completes the deletion once the folder can be renamed.
+  assert.ok(fs.existsSync(pending));
+  renaming.mock.restore();
+  registeredReviews();
+  assert.equal(fs.existsSync(pending), false);
+  assert.deepEqual(retiredFolders(), []);
+});
+
+test('a deletion that found no snapshot holding the ID records that it committed until its folder is gone', (t) => {
+  const { root, review } = setup(t), repo = path.join(root, 'repo');
+  const pending = pendingFolder(review), rename = fs.renameSync, fingerprint = preview(review).fingerprint;
+  git(repo, 'update-ref', '-d', activeRef('same-id'));
+  const renaming = t.mock.method(fs, 'renameSync', (from, to) => {
+    if (String(from) === pending && path.basename(String(to)).startsWith('.deleted-')) throw Object.assign(new Error('File is open'), { code: 'EBUSY' });
+    return rename(from, to);
+  });
+  assert.deepEqual(deleteReviewData(review.id, review.generation, fingerprint), { deleted: true });
+  // A missing implementation proves nothing, so the mark is what lets cleanup complete it.
+  assert.ok(fs.existsSync(retiredMarker(review)));
+  renaming.mock.restore();
+  registeredReviews();
+  assert.equal(fs.existsSync(pending), false);
+  // A deletion that removes its folder at once leaves no mark.
+  const second = registerReview(path.join(root, 'other'), 'same-id', 'Other');
+  git(path.join(root, 'other'), 'update-ref', '-d', activeRef('same-id'));
+  assert.deepEqual(deleteReviewData(second.id, second.generation, preview(second).fingerprint), { deleted: true });
+  assert.equal(fs.existsSync(retiredMarker(second)), false);
+  assert.equal(fs.existsSync(pendingFolder(second)), false);
 });
 
 test('a deletion check never waits for a busy review lock', (t) => {
