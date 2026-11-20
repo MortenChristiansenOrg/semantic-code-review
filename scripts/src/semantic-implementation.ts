@@ -2410,7 +2410,15 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
     } else if (replaced !== undefined && !replayable) {
       nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
     } else {
-      const stageCommit = replaced ?? foldStage(root, stage, stage.change.baseRevision, actualHead, `Stage ${id}`, unchanged);
+      const belowId = run.next > 0 ? artifact.manifest.stages[run.next - 1] : undefined;
+      const belowHead = belowId === undefined ? undefined : heads.get(finalizedStage(artifact, belowId).change.branch);
+      const stageBase = rebuiltStageBase(
+        root,
+        { id, recordedBase: stage.change.baseRevision, recordedHead: stage.change.headRevision, head: actualHead },
+        belowId === undefined || belowHead === undefined ? undefined : { id: belowId, head: belowHead },
+        run.newBase,
+      );
+      const stageCommit = replaced ?? foldStage(root, stage, stageBase, actualHead, `Stage ${id}`, unchanged);
       if (run.scratch) run.scratch.reset(run.parentHead);
       else run.scratch = ScratchWorktree.create(root, run.location, run.parentHead);
       if (!run.scratch.cherryPick(stageCommit)) {
