@@ -82,8 +82,8 @@ simulated these routes and decisions:
   push, or publication.
 - `help report`: explain the workflow without diagnosis, authentication, or writes.
 - Implementation reviewer comments: route to `feedback`.
-- Ordinary implementation restack conflict: retain authorized guarded recovery
-  without loading reporting instructions.
+- Ordinary implementation restack conflict: resolve it in the restack worktree
+  and continue the restack without loading reporting instructions.
 
 No missing resources or substantive contradictions were found. The evaluator
 noted that verified absence after an ambiguous submission is necessarily dependent

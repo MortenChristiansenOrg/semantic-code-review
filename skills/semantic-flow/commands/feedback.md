@@ -193,7 +193,7 @@ node coverage no longer matches their rewritten diff.
 
 If restack reports a conflict, read `../docs/restack-conflicts.md` completely
 and follow it. Do not ask for permission merely because Git reported a conflict. The entire
-prescribed recovery is part of applying feedback, including its guarded update.
+prescribed recovery is part of applying feedback, including `restack --continue`.
 Apply `../docs/user-decisions.md` to any remaining ambiguity or blocker; ask in
 the viewer about the desired code behavior, never whether to run recovery commands.
 

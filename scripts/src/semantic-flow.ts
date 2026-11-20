@@ -1302,7 +1302,7 @@ async function sync(options: Options): Promise<void> {
     }
   } catch (error) {
     console.error(`Synchronization stopped in ${root}. Target ${candidate.targetBranch} is at ${revision(targetRef)}; the target update is retained.`);
-    console.error(`For a reported patch conflict, follow docs/restack-conflicts.md and resume semantic-flow.mjs implementation restack --base ${candidate.targetBranch} directly. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
+    console.error(`For a reported restack conflict, resolve it in the reported worktree and run semantic-flow.mjs implementation restack --continue. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
     throw error;
   }
 }

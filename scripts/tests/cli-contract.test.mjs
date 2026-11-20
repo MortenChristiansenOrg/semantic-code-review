@@ -324,10 +324,10 @@ test("skill indexes command-specific workflows", () => {
     commandText.get("feedback"),
     /Do not ask for permission\s+merely because Git reported a conflict/,
   );
-  assert.match(
-    fs.readFileSync(path.join(skillRoot, "docs", "restack-conflicts.md"), "utf8"),
-    /git update-ref refs\/heads\/<stage-branch> <resolution-head> <reported-stage-head>/,
-  );
+  const restackConflicts = fs.readFileSync(path.join(skillRoot, "docs", "restack-conflicts.md"), "utf8");
+  assert.match(restackConflicts, /<semantic-flow> implementation restack --continue/);
+  assert.match(restackConflicts, /implementation restack --abort/);
+  assert.doesNotMatch(restackConflicts, /update-ref/);
   assert.doesNotMatch(commandText.get("feedback"), /Read `\.\.\/docs\/runtime\.md`/);
   assert.match(commandText.get("reconcile"), /temporary recovery branch/);
   assert.match(

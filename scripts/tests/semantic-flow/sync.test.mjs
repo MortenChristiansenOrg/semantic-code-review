@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   beginStage,
@@ -267,7 +268,7 @@ test("sync detects an implementation landed upstream before moving the local tar
   assert.deepEqual(snapshot(repository), before);
 });
 
-test("sync conflict recovery resumes the underlying restack before re-entering preflight", (t) => {
+test("sync conflict recovery continues the pending restack before re-entering preflight", (t) => {
   const repository = createRepository(t);
   repository.commitFile("shared.txt", "base\n", "Base shared file");
   initializeImplementation(repository);
@@ -280,8 +281,8 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   const before = snapshot(repository);
   const stage = repository.artifact.stage("behavior");
 
-  const failure = expectSyncFailure(repository, /Conflict context: stage base/);
-  assert.match(failure.stderr, /resume semantic-flow.mjs implementation restack --base main directly/);
+  const failure = expectSyncFailure(repository, /stopped at a conflict in shared\.txt/);
+  assert.match(failure.stderr, /resolve it in the reported worktree and run semantic-flow\.mjs implementation restack --continue/);
   assert.equal(repository.git("rev-parse", "main"), target);
   assert.equal(repository.artifact.read("manifest.json"), before.artifact);
   assert.deepEqual(snapshot(repository).stages, before.stages);
@@ -289,21 +290,21 @@ test("sync conflict recovery resumes the underlying restack before re-entering p
   assert.equal(repository.git("rev-parse", "HEAD"), before.head);
   assert.equal(repository.git("status", "--porcelain"), "");
 
-  repository.git("branch", "sync-recovery", stage.change.headRevision);
-  repository.git("switch", "-c", "sync-resolution", target);
-  const resolved = repository.commitFile("shared.txt", "upstream and stage\n", "Resolve stage intent");
-  repository.git("update-ref", `refs/heads/${stage.change.branch}`, resolved, stage.change.headRevision);
-  expectSyncFailure(repository, /moved from/, "--local");
+  const worktree = /Resolve the conflict in (.+?): edit the files/.exec(failure.stderr)?.[1];
+  assert.ok(worktree, failure.stderr);
+  fs.writeFileSync(path.join(worktree, "shared.txt"), "upstream and stage\n");
+  assert.equal(spawnSync("git", ["add", "shared.txt"], { cwd: worktree }).status, 0);
+  expectSyncFailure(repository, /restack stopped at a conflict in stage behavior/, "--local");
+  // A stage branch the restack moves may not stay checked out.
   repository.git("switch", "--detach");
-  repository.git("branch", "-D", "sync-resolution");
-  repository.semantic("restack", "--base", "main");
+  repository.semantic("restack", "--continue");
   repository.git("switch", before.branch);
   const result = JSON.parse(repository.flow("sync", "--local", "--json"));
   assert.equal(result.targetRevision, target);
   assert.equal(repository.read("shared.txt"), "upstream and stage\n");
   assert.equal(repository.read("later.txt"), "later\n");
   repository.semantic("validate", "--publish");
-  repository.git("branch", "-D", "sync-recovery");
+  assert.equal(stage.change.branch, "semantic-flow/test-implementation/stages/behavior");
 });
 
 test("refresh-target fast-forwards a target before new work and keeps local-only states", (t) => {

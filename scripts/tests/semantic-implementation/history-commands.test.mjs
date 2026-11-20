@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -274,137 +275,173 @@ test("restack accepts several edited stage heads in one pass", (t) => {
   repository.semantic("validate", "--publish");
 });
 
-test("restack reports enough context to resolve a conflicting stage", (t) => {
+/** The worktree a conflicting restack reports for its resolution. */
+function conflictWorktree(failure) {
+  const worktree = /Resolve the conflict in (.+?): edit the files/.exec(`${failure.stdout}\n${failure.stderr}`)?.[1];
+  assert.ok(worktree, failure.stderr);
+  return worktree;
+}
+
+const gitIn = (cwd, ...args) => {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+};
+
+/** A three-stage stack whose top stage conflicts with a correction of the stage below it. */
+function conflictingStack(t) {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository, { id: "policy" });
-  finalizeStage(repository, {
-    id: "policy",
-    file: "policy.txt",
-    contents: "policy=original\n",
-  });
-  beginStage(repository, {
-    id: "persistence",
-    dependencies: ["policy"],
-  });
-  finalizeStage(repository, {
-    id: "persistence",
-    file: "shared.txt",
-    contents: "setting=original\npersistence=true\n",
-  });
-  beginStage(repository, {
-    id: "api",
-    dependencies: ["persistence"],
-  });
-  const originalApi = finalizeStage(repository, {
-    id: "api",
-    file: "shared.txt",
-    contents: "setting=api\npersistence=true\napi=true\n",
-  });
-  const api = repository.artifact.stage("api");
-
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy=original\n" });
+  beginStage(repository, { id: "persistence", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "persistence", file: "shared.txt", contents: "setting=original\npersistence=true\n" });
+  beginStage(repository, { id: "api", dependencies: ["persistence"] });
+  const originalApi = finalizeStage(repository, { id: "api", file: "shared.txt", contents: "setting=api\npersistence=true\napi=true\n" });
   repository.git("switch", "semantic-flow/test-implementation/stages/policy");
-  repository.commitFile(
-    "policy.txt",
-    "policy=revised\n",
-    "Revise policy",
-  );
-  repository.git(
-    "switch",
-    "semantic-flow/test-implementation/stages/persistence",
-  );
-  repository.commitFile(
-    "shared.txt",
-    "setting=persistence\npersistence=true\n",
-    "Revise persistence",
-  );
+  repository.commitFile("policy.txt", "policy=revised\n", "Revise policy");
+  repository.git("switch", "semantic-flow/test-implementation/stages/persistence");
+  repository.commitFile("shared.txt", "setting=persistence\npersistence=true\n", "Revise persistence");
   repository.git("switch", "semantic-flow/test-implementation/stages/policy");
-  const failure = repository.expectSemanticFailure(
-    "Restacking stage api",
-    "restack",
-    "--from",
-    "policy",
-  );
-  const output = `${failure.stdout}\n${failure.stderr}`;
-  assert.match(output, /No stage refs or artifacts were changed\./);
-  const context = output.match(
-    /Conflict context: stage base ([0-9a-f]{40}), stage head ([0-9a-f]{40}), new parent ([0-9a-f]{40})\./,
-  );
-  assert.ok(context);
-  const [, stageBase, stageHead, newParent] = context;
-  assert.equal(stageBase, api.change.baseRevision);
-  assert.equal(stageHead, originalApi);
-  assert.notEqual(
-    newParent,
-    repository.git(
-      "rev-parse",
-      "semantic-flow/test-implementation/stages/persistence",
-    ),
-  );
-  assert.equal(
-    repository.git(
-      "rev-parse",
-      "semantic-flow/test-implementation/stages/api",
-    ),
-    originalApi,
-  );
-  assert.equal(
-    repository.artifact.stage("api").change.headRevision,
-    originalApi,
-  );
+  return { repository, originalApi };
+}
 
-  const recoveryBranch = "restack-recovery-api";
-  const resolutionBranch = "restack-resolution-api";
-  const patch = repository.path("..", `${path.basename(repository.root)}.patch`);
-  t.after(() => fs.rmSync(patch, { force: true }));
-  repository.git("branch", recoveryBranch, stageHead);
-  repository.git("switch", "-c", resolutionBranch, newParent);
-  repository.git(
-    "diff",
-    "--binary",
-    "--full-index",
-    "--find-renames=50%",
-    `--output=${patch}`,
-    stageBase,
-    stageHead,
-    "--",
-  );
-  const apply = repository.result("git", [
-    "apply",
-    "--3way",
-    "--index",
-    patch,
-  ]);
-  assert.notEqual(apply.status, 0);
-  assert.match(repository.git("ls-files", "-u"), /shared\.txt/);
+test("a restack conflict leaves Git conflict state in a scratch worktree until restack --continue", (t) => {
+  const { repository, originalApi } = conflictingStack(t);
+  const branches = () => repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/");
+  const before = branches();
+  const failure = repository.expectSemanticFailure("stopped at a conflict in shared.txt", "restack", "--from", "policy");
+  assert.match(failure.stderr, /No stage refs were changed\./);
+  const worktree = conflictWorktree(failure);
+  // The user's checkouts and every ref are untouched; the restack is recorded as pending.
+  assert.equal(branches(), before);
+  assert.equal(repository.git("status", "--porcelain"), "");
+  assert.equal(repository.artifact.stage("api").change.headRevision, originalApi);
+  assert.ok(repository.artifact.exists(".work/restack.json"));
+  assert.ok(!worktree.startsWith(repository.root));
+  assert.match(gitIn(worktree, "ls-files", "--unmerged"), /shared\.txt/);
+  assert.match(fs.readFileSync(path.join(worktree, "shared.txt"), "utf8"), /^<<<<<<< /m);
+  repository.expectSemanticFailure("restack stopped at a conflict in stage api", "validate");
+  repository.expectSemanticFailure("restack stopped at a conflict in stage api", "restack", "--from", "policy");
+  repository.expectSemanticFailure("Resolve and stage these files", "restack", "--continue");
 
-  repository.write(
-    "shared.txt",
-    "setting=resolved\npersistence=true\napi=true\n",
-  );
-  repository.git("add", "shared.txt");
-  repository.git("commit", "-m", "Resolve API restack");
-  const resolutionHead = repository.git("rev-parse", "HEAD");
-  repository.git(
-    "update-ref",
-    "refs/heads/semantic-flow/test-implementation/stages/api",
-    resolutionHead,
-    stageHead,
-  );
-  repository.git("switch", "semantic-flow/test-implementation/stages/policy");
-  repository.git("branch", "-D", resolutionBranch);
-  fs.rmSync(patch, { force: true });
+  fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=draft\n");
+  gitIn(worktree, "add", "shared.txt");
+  fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
+  repository.expectSemanticFailure("unstaged changes", "restack", "--continue");
+  gitIn(worktree, "add", "shared.txt");
+  const result = JSON.parse(repository.semantic("restack", "--continue", "--json"));
+  assert.deepEqual(result.stages.map(({ id, rewritten }) => ({ id, rewritten })),
+    [{ id: "policy", rewritten: true }, { id: "persistence", rewritten: true }, { id: "api", rewritten: true }]);
+  const api = "semantic-flow/test-implementation/stages/api";
+  assert.equal(repository.git("show", `${api}:shared.txt`), "setting=resolved\npersistence=true\napi=true");
+  assert.equal(repository.git("show", `${api}:policy.txt`), "policy=revised");
+  // The replayed stage keeps its generated message and author.
+  assert.equal(repository.git("show", "-s", "--format=%B", api), repository.git("show", "-s", "--format=%B", originalApi));
+  assert.equal(repository.git("rev-list", "--count", `${api}^..${api}`), "1");
+  assert.equal(fs.existsSync(worktree), false);
+  assert.doesNotMatch(repository.git("worktree", "list"), new RegExp(path.basename(worktree)));
+  assert.equal(repository.artifact.exists(".work/restack.json"), false);
+  repository.semantic("validate", "--publish");
+});
 
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1100);
-  repository.semantic("restack", "--from", "policy");
-  assert.equal(
-    repository.git(
-      "show",
-      "semantic-flow/test-implementation/stages/api:shared.txt",
-    ),
-    "setting=resolved\npersistence=true\napi=true",
-  );
-  repository.git("branch", "-D", recoveryBranch);
+test("restack --continue refuses once a ref moved, and restack --abort discards the restack", (t) => {
+  const { repository } = conflictingStack(t);
+  const worktree = conflictWorktree(repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy"));
+  fs.writeFileSync(path.join(worktree, "shared.txt"), "setting=resolved\npersistence=true\napi=true\n");
+  gitIn(worktree, "add", "shared.txt");
+  const api = "refs/heads/semantic-flow/test-implementation/stages/api";
+  const apiHead = repository.git("rev-parse", api);
+  repository.git("update-ref", api, repository.git("rev-parse", `${apiHead}^`), apiHead);
+  repository.expectSemanticFailure(`${api} changed since the restack began`, "restack", "--continue");
+  repository.git("update-ref", api, apiHead);
+  // A write to the artifact meanwhile is a change too.
+  const policy = repository.artifact.readJson("stages/policy.json");
+  repository.artifact.write("stages/policy.json", { ...policy, rationale: "Changed meanwhile." });
+  repository.expectSemanticFailure("semantic implementation changed since the restack began", "restack", "--continue");
+
+  repository.semantic("restack", "--abort");
+  assert.equal(fs.existsSync(worktree), false);
+  assert.equal(repository.artifact.exists(".work/restack.json"), false);
+  assert.equal(repository.git("rev-parse", api), apiHead);
+  repository.expectSemanticFailure("No restack is pending", "restack", "--abort");
+  repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "policy");
+  repository.semantic("restack", "--abort");
+});
+
+test("restack carries a stage's edit into a file the target renamed", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("settings.txt", "one\ntwo\nthree\n", "Add settings");
+  initializeImplementation(repository);
+  beginStage(repository);
+  const stageHead = finalizeStage(repository, { file: "settings.txt", contents: "one\ntwo\nthree\nfour\n" });
+  repository.git("switch", "main");
+  repository.git("mv", "settings.txt", "config.txt");
+  repository.git("commit", "-m", "Rename settings");
+  // No hook runs in the scratch worktree.
+  const hooks = path.join(repository.git("rev-parse", "--path-format=absolute", "--git-path", "hooks"));
+  fs.mkdirSync(hooks, { recursive: true });
+  const marker = path.join(repository.root, "..", `${path.basename(repository.root)}-hook-ran`);
+  t.after(() => fs.rmSync(marker, { force: true }));
+  for (const hook of ["post-checkout", "pre-commit", "post-commit"]) {
+    fs.writeFileSync(path.join(hooks, hook), `#!/bin/sh\necho ${hook} >> "${marker.replaceAll("\\", "/")}"\n`, { mode: 0o755 });
+  }
+
+  repository.semantic("restack", "--base", "main");
+  const branch = "semantic-flow/test-implementation/stages/implementation";
+  assert.equal(repository.git("show", `${branch}:config.txt`), "one\ntwo\nthree\nfour");
+  assert.notEqual(repository.result("git", ["cat-file", "-e", `${branch}:settings.txt`]).status, 0);
+  assert.equal(repository.git("rev-parse", `${branch}^`), repository.git("rev-parse", "main"));
+  assert.equal(repository.git("show", "-s", "--format=%B", branch), repository.git("show", "-s", "--format=%B", stageHead));
+  assert.equal(fs.existsSync(marker), false);
+});
+
+test("restack reports a stage file the target's directory rename moves as a conflict", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("docs/index.txt", "index\n", "Add docs");
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository, { file: "docs/guide.txt", contents: "guide\n" });
+  repository.git("switch", "main");
+  repository.git("mv", "docs", "manual");
+  repository.git("commit", "-m", "Rename docs");
+
+  const failure = repository.expectSemanticFailure("stopped at a conflict in manual/guide.txt", "restack", "--base", "main");
+  const worktree = conflictWorktree(failure);
+  gitIn(worktree, "add", "manual/guide.txt");
+  repository.semantic("restack", "--continue");
+  const branch = "semantic-flow/test-implementation/stages/implementation";
+  assert.equal(repository.git("show", `${branch}:manual/guide.txt`), "guide");
+  assert.notEqual(repository.result("git", ["cat-file", "-e", `${branch}:docs/guide.txt`]).status, 0);
+  // The stage's nodes still name the old path until the stage is organized again.
+  repository.expectSemanticFailure("manual/guide.txt", "validate");
+});
+
+test("a stage the target already contains stays as a marked empty stage that preparation skips", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  beginStage(repository, { id: "api", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "api", file: "api.txt", contents: "api\n" });
+  repository.git("switch", "main");
+  repository.commitFile("policy.txt", "policy\n", "Land the policy elsewhere");
+
+  const result = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }, { id: "api", emptied: false }]);
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  assert.equal(repository.git("rev-parse", `${policy}^`), repository.git("rev-parse", "main"));
+  assert.equal(repository.git("rev-parse", `${policy}^{tree}`), repository.git("rev-parse", "main^{tree}"));
+  assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: true$/m);
+  assert.deepEqual(repository.artifact.stage("policy").change.files, []);
+  repository.semantic("validate", "--publish");
+  const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
+  assert.deepEqual(stack.emptyStages, ["policy"]);
+  assert.deepEqual(stack.stages.map(({ stageId, baseBranch, position }) => ({ stageId, baseBranch, position })), [{ stageId: "api", baseBranch: "main", position: 1 }]);
+  // Restacking again keeps it empty.
+  repository.commitFile("other.txt", "other\n", "Other work");
+  repository.semantic("restack", "--base", "main");
+  assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: true$/m);
   repository.semantic("validate", "--publish");
 });
 

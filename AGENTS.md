@@ -114,9 +114,12 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   stage's diff range; they make mutable branches and feedback anchors
   verifiable.
 - **Restacking**: Recomputing affected stage branches after the target branch
-  or a lower stage changes by replaying commits bottom-up onto the new lower
-  heads, then moving the affected refs as one transaction and refreshing the
-  recorded snapshots.
+  or a lower stage changes by cherry-picking each stage commit bottom-up onto
+  the new lower heads in a scratch worktree, then moving the affected refs as
+  one transaction and refreshing the recorded snapshots. A conflict leaves the
+  restack pending, with Git conflict state in that worktree, until `restack
+  --continue` or `--abort`. A stage the target already contains stays as a
+  marked empty stage.
 - **Metadata branch**: The sibling branch (`<branch-prefix>/metadata`) that
   carries published implementation metadata, kept out of implementation diffs.
 - **Publication**: Publishing the artifact to the metadata branch.

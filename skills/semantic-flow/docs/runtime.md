@@ -124,9 +124,8 @@ there.
 - Treat stage branches (`<branchPrefix>/stages/<stage-id>`) as CLI-owned
   stage refs. Never create, rename, copy, reset, force-move, or delete them
   with raw Git ref-management commands. `stage begin` creates stage refs and
-  `restack` rewrites them. The guarded update explicitly prescribed in
-  `restack-conflicts.md` is the sole raw-ref recovery exception; follow that
-  complete procedure without a separate approval. Ordinary implementation and feedback commits may
+  `restack` rewrites them, including after a conflict (`restack --continue`).
+  Ordinary implementation and feedback commits may
   advance only the recorded branch while it is checked out.
 - Treat refs below `refs/semantic-review/` as CLI-owned: `active/` holds
   active artifacts, and `prepared/` holds local preparation state. `prepare-branch` uses them to guard updates to a stable

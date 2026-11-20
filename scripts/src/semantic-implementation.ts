@@ -2,8 +2,8 @@
 import { captureCodeTarget, validateCodeTarget } from "./shared/insight-targets.js";
 import { assertEvidenceDirectories, ensureEvidenceAttributes, evidenceAttachmentErrors, evidenceAttachmentPath, evidenceMediaType, evidenceTreeErrors, evidenceWarnings, MAX_EVIDENCE_ATTACHMENT_BYTES, sha256Hex } from "./shared/evidence.js";
 
+import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -62,6 +62,7 @@ import {
 } from "./shared/implementation.js";
 import {
   ArtifactDraft,
+  activeImplementationId,
   archiveRef,
   archiveTag,
   buildArtifactTree,
@@ -82,9 +83,9 @@ import {
   type ArtifactSnapshot,
   type RefUpdate,
 } from "./shared/artifact-store.js";
-import { errorMessage, isStringArray, type JsonRecord } from "./shared/narrow.js";
+import { errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
-import { reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
+import { gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
@@ -299,8 +300,8 @@ const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?
 
 /** The message of a stage commit: the stage's title and summary, then a
  * Co-authored-by trailer for each co-author. */
-function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coAuthors: readonly string[]): string {
-  const trailers = coAuthors.map((identity) => `Co-authored-by: ${identity}`);
+function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coAuthors: readonly string[], empty = false): string {
+  const trailers = [...(empty ? [EMPTY_STAGE_TRAILER] : []), ...coAuthors.map((identity) => `Co-authored-by: ${identity}`)];
   return [stage.title.trim(), stage.summary.trim(), ...(trailers.length ? [trailers.join("\n")] : [])].join("\n\n") + "\n";
 }
 
@@ -717,7 +718,8 @@ function validateSemantic(
     for (const duplicate of duplicateValues(changedPaths)) {
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
-    errors.push(...stageNodeErrors(stage, stage.change.files));
+    // An emptied stage keeps the nodes of the change the target now contains.
+    if (stage.change.files.length > 0) errors.push(...stageNodeErrors(stage, stage.change.files));
     errors.push(...evidenceItemErrors(stage));
     if (heads.has(stage.change.headRevision)) {
       errors.push(`Stage ${id} repeats head ${stage.change.headRevision}.`);
@@ -835,6 +837,10 @@ function validateSemantic(
     if (commits !== 1) {
       fail(`Stage ${id} has ${commits} commits between ${baseRevision} and ${head}; a finalized stage is one commit.`);
     }
+    if (files.length === 0) {
+      if (!isMarkedEmptyStage(workspace.root, head)) fail(`Stage ${id} changes nothing, and its commit is not marked as a stage the target already contains.`);
+      continue;
+    }
     const nodeErrors = stageNodeErrors(stage, files, {
       root: workspace.root,
       baseRevision,
@@ -848,6 +854,8 @@ function validateSemantic(
 
 interface ArtifactValidationOptions extends SemanticValidationOptions {
   schemaOnly?: boolean;
+  /** Only the commands that complete or discard a pending restack read past it. */
+  allowPendingRestack?: boolean;
   publish?: boolean;
   quiet?: boolean;
 }
@@ -863,10 +871,15 @@ function validateArtifact(
     allowLandedTarget = false,
     allowTargetDrift = false,
     movingBranches,
+    allowPendingRestack = false,
   }: ArtifactValidationOptions = {},
   files: ArtifactFiles | undefined = workspace.snapshot,
 ): Artifact {
   if (!files) throw new Error("Validation requires the artifact's files.");
+  if (!allowPendingRestack) {
+    const pending = readPendingRestack(files);
+    if (pending) fail(pendingRestackNote(pending));
+  }
   const artifact = loadImplementation(workspace.root, files);
 
   for (const stage of [...artifact.stages.values(), ...artifact.workStages.values()]) {
@@ -2005,64 +2018,13 @@ function commitMetadata(root: string, commit: string): CommitMetadata {
   };
 }
 
-class PatchConflictError extends Error {}
-
-interface CommitPatch {
-  root: string;
-  indexFile: string;
-  baseTree: string;
-  patchParent: string;
-  patchCommit: string;
-  metadataCommit: string;
-  newParent: string;
-}
-
-function applyCommitPatch({
-  root,
-  indexFile,
-  baseTree,
-  patchParent,
-  patchCommit,
-  metadataCommit,
-  newParent,
-}: CommitPatch): string {
-  fs.rmSync(indexFile, { force: true });
-  const env = { GIT_INDEX_FILE: indexFile };
-  gitRaw(["read-tree", baseTree], { cwd: root, env });
-  const patch = gitRawBuffer(
-    [
-      "diff",
-      "--binary",
-      "--full-index",
-      "--find-renames=50%",
-      patchParent,
-      patchCommit,
-      "--",
-    ],
-    { cwd: root },
-  );
-  if (patch.length === 0) {
-    fail(`Commit ${patchCommit} has no patch to apply.`);
-  }
-  try {
-    gitRaw(["apply", "--cached", "--3way", "--whitespace=nowarn", "-"], {
-      cwd: root,
-      env,
-      input: patch,
-      encoding: "buffer",
-    });
-  } catch (error) {
-    const unmerged = gitRaw(["ls-files", "-u"], { cwd: root, env });
-    if (unmerged) {
-      throw new PatchConflictError(errorMessage(error));
-    }
-    throw error;
-  }
-  const tree = gitRaw(["write-tree"], { cwd: root, env });
-  const metadata = commitMetadata(root, metadataCommit);
-  return gitRaw(["commit-tree", tree, "-p", newParent], {
+/** A commit of tree on parent that keeps the author, committer, dates and
+ * message of source, so replaying the same stage gives the same commit. */
+function replayedCommit(root: string, tree: string, parent: string, source: string, message?: string): string {
+  const metadata = commitMetadata(root, source);
+  return gitRaw(["commit-tree", tree, "-p", parent], {
     cwd: root,
-    input: metadata.message,
+    input: message ?? metadata.message,
     env: {
       GIT_AUTHOR_NAME: metadata.authorName,
       GIT_AUTHOR_EMAIL: metadata.authorEmail,
@@ -2072,6 +2034,30 @@ function applyCommitPatch({
       GIT_COMMITTER_DATE: metadata.committerDate,
     },
   });
+}
+
+/** Whether two commits have the same tree. */
+function sameTree(root: string, left: string, right: string): boolean {
+  const [leftTree, rightTree] = git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: root }).split(/\r?\n/);
+  return leftTree === rightTree;
+}
+
+/** The trailer that marks a stage commit whose changes the target already contains. */
+const EMPTY_STAGE_TRAILER = "Semantic-Flow-Empty: true";
+
+/** The marked empty commit an emptied stage becomes on parent. */
+function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string): string {
+  const coAuthors = gitRaw(["show", "-s", "--format=%(trailers:key=Co-authored-by,valueonly,separator=%x02)", source], { cwd: root })
+    .split("\x02").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
+  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, true));
+}
+
+/** Whether a stage head is a marked empty stage commit. */
+function isMarkedEmptyStage(root: string, head: string): boolean {
+  const [tree, parent, marker = ""] = gitRaw(["show", "-s", "--format=%T%x00%P%x00%(trailers:key=Semantic-Flow-Empty,valueonly,separator=%x02)", head], { cwd: root }).split("\0");
+  if (!parent || parent.includes(" ")) return false;
+  return tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root }) &&
+    marker.split("\x02").some((value) => value.trim() === "true");
 }
 
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
@@ -2086,12 +2072,12 @@ function withArtifactLock<T>(workspace: Workspace, implementationId: string, wri
 
 interface RestackPlan {
   id: string;
-  stage: Stage;
   branch: string;
   previousHead: string;
   nextHead: string;
   baseBranch: string;
   baseRevision: string;
+  emptied: boolean;
 }
 
 /** What a restack changed, as `implementation restack --json` prints it. */
@@ -2110,6 +2096,8 @@ export interface RestackSummary {
     baseBranch: string;
     baseRevision: string;
     rewritten: boolean;
+    /** The target already contains the stage's changes; it stays as a marked empty commit. */
+    emptied: boolean;
   }>;
 }
 
@@ -2138,24 +2126,237 @@ function rebuiltStageBase(
   return shared && shared !== recordedBase && isAncestor(root, recordedBase, shared) ? shared : recordedBase;
 }
 
+/** Where a restack that stopped at a conflict is recorded in the active artifact. */
+const PENDING_RESTACK_FILE = ".work/restack.json";
+
+/** A restack that stopped at a conflict. It is completed with `restack
+ * --continue` or discarded with `restack --abort`. */
+interface PendingRestack {
+  mode: "base" | "stage";
+  fromStage: string | null;
+  newBase: string;
+  /** The artifact snapshot the restack read; nothing else in it may change until it completes. */
+  startSnapshot: string;
+  /** Every ref the restack moves or depends on, as it read them. */
+  refs: Record<string, string>;
+  /** Stages already replayed, bottom-up. */
+  plans: RestackPlan[];
+  /** The stage that conflicted: its commit, cherry-picked onto parent in worktree. */
+  conflict: { id: string; previousHead: string; stageCommit: string; parent: string };
+  worktree: string;
+}
+
+function readPendingRestack(files: ArtifactFiles): PendingRestack | undefined {
+  if (files.type(PENDING_RESTACK_FILE) === undefined) return undefined;
+  const invalid = (): never => fail(`${files.describe(PENDING_RESTACK_FILE)} does not describe a restack; run restack --abort.`);
+  const value: unknown = parseJson(files.read(PENDING_RESTACK_FILE).toString("utf8"));
+  const record = isRecord(value) ? value : invalid();
+  const text = (from: JsonRecord, key: string): string => { const field = from[key]; return typeof field === "string" ? field : invalid(); };
+  const sha = (from: JsonRecord, key: string): string => { const field = text(from, key); return /^[0-9a-f]{40,64}$/.test(field) ? field : invalid(); };
+  const mode = record.mode === "base" || record.mode === "stage" ? record.mode : invalid();
+  const conflict = isRecord(record.conflict) ? record.conflict : invalid();
+  const refRecord = isRecord(record.refs) ? record.refs : invalid();
+  const refs: Record<string, string> = {};
+  for (const ref of Object.keys(refRecord)) refs[ref] = sha(refRecord, ref);
+  const plans = (Array.isArray(record.plans) ? record.plans : invalid()).map((entry: unknown): RestackPlan => {
+    const plan = isRecord(entry) ? entry : invalid();
+    return {
+      id: text(plan, "id"),
+      branch: text(plan, "branch"),
+      previousHead: sha(plan, "previousHead"),
+      nextHead: sha(plan, "nextHead"),
+      baseBranch: text(plan, "baseBranch"),
+      baseRevision: sha(plan, "baseRevision"),
+      emptied: typeof plan.emptied === "boolean" ? plan.emptied : invalid(),
+    };
+  });
+  return {
+    mode,
+    fromStage: record.fromStage === null ? null : text(record, "fromStage"),
+    newBase: sha(record, "newBase"),
+    startSnapshot: sha(record, "startSnapshot"),
+    refs,
+    plans,
+    conflict: { id: text(conflict, "id"), previousHead: sha(conflict, "previousHead"), stageCommit: sha(conflict, "stageCommit"), parent: sha(conflict, "parent") },
+    worktree: text(record, "worktree"),
+  };
+}
+
+function pendingRestackNote(pending: PendingRestack): string {
+  return `A restack stopped at a conflict in stage ${pending.conflict.id}. Resolve it in ${pending.worktree} and run implementation restack --continue, or discard it with implementation restack --abort.`;
+}
+
+/** The scratch worktree restacks replay stages in. It lives in the user data
+ * root, outside every checkout of the repository, and no hook runs in it. */
+class ScratchWorktree {
+  private constructor(readonly root: string, readonly path: string) {}
+
+  /** Where the restacks of an implementation replay stages. */
+  static location(root: string, implementationId: string): string {
+    const repository = gitCommonDirectory(root);
+    const key = createHash("sha256").update(`${repository}\0${implementationId}`).digest("hex").slice(0, 16);
+    return path.join(reviewHome(), "restacks", key);
+  }
+
+  /** Creates the worktree, detached at commit, replacing what an interrupted restack left there. */
+  static create(root: string, location: string, commit: string): ScratchWorktree {
+    ScratchWorktree.discard(root, location);
+    fs.mkdirSync(path.dirname(location), { recursive: true });
+    const scratch = new ScratchWorktree(root, location);
+    gitRaw([...scratch.config(), "worktree", "add", "--detach", "--force", location, commit], { cwd: root });
+    return scratch;
+  }
+
+  /** The worktree a pending restack left, if it still exists. */
+  static open(root: string, location: string): ScratchWorktree | undefined {
+    const listed = git(["worktree", "list", "--porcelain"], { cwd: root }).split(/\r?\n/)
+      .filter((line) => line.startsWith("worktree ")).map((line) => path.resolve(line.slice("worktree ".length)));
+    const wanted = path.resolve(location);
+    const same = (other: string) => process.platform === "win32" ? other.toLowerCase() === wanted.toLowerCase() : other === wanted;
+    return fs.existsSync(location) && listed.some(same) ? new ScratchWorktree(root, location) : undefined;
+  }
+
+  /** Removes the worktree at location and its registration, whatever state it is in. */
+  static discard(root: string, location: string): void {
+    git(["worktree", "remove", "--force", "--force", location], { cwd: root, allowFailure: true });
+    // Windows can hold a file open briefly; the registration goes once the folder is gone.
+    fs.rmSync(location, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    git(["worktree", "prune"], { cwd: root, allowFailure: true });
+  }
+
+  /** Options that keep the user's hooks and signing out of the scratch worktree. */
+  private config(): string[] {
+    return ["-c", `core.hooksPath=${path.join(path.dirname(this.path), ".no-hooks")}`, "-c", "commit.gpgSign=false"];
+  }
+
+  run(args: string[], allowFailure = false): string {
+    if (allowFailure) return git([...this.config(), ...args], { cwd: this.path, allowFailure: true }) ?? "";
+    return gitRaw([...this.config(), ...args], { cwd: this.path });
+  }
+
+  /** Detaches at commit with a clean index and worktree; untracked files the agent left are removed, ignored ones kept. */
+  reset(commit: string): void {
+    this.run(["reset", "--quiet", "--hard", commit]);
+    this.run(["clean", "--quiet", "-d", "--force"]);
+  }
+
+  /** Applies commit to the checkout with a real merge; false when it conflicts. */
+  cherryPick(commit: string): boolean {
+    if (gitRaw([...this.config(), "cherry-pick", "--no-commit", commit], { cwd: this.path, allowFailure: true }) !== null) return true;
+    if (this.unmerged().length > 0) return false;
+    fail(`Replaying ${commit} in ${this.path} failed without a conflict to resolve.`);
+  }
+
+  unmerged(): string[] {
+    return [...new Set(this.run(["ls-files", "--unmerged", "-z"]).split("\0").filter(Boolean).map((entry) => entry.slice(entry.indexOf("\t") + 1)))];
+  }
+
+  /** The tree of the staged result. */
+  writeTree(): string {
+    return this.run(["write-tree"]);
+  }
+
+  head(): string {
+    return this.run(["rev-parse", "HEAD"]);
+  }
+}
+
+class RestackConflict extends Error {
+  constructor(readonly conflict: PendingRestack["conflict"], readonly files: string[]) {
+    super(`Stage ${conflict.id} conflicts.`);
+  }
+}
+
+/** A restack in progress: the stages replayed so far and where the next one goes. */
+interface RestackRun {
+  mode: "base" | "stage";
+  fromStage: string | null;
+  newBase: string;
+  plans: RestackPlan[];
+  next: number;
+  parentBranch: string;
+  parentHead: string;
+  scratch: ScratchWorktree | undefined;
+  location: string;
+}
+
+/** Replays the stages from run.next up, bottom-up. A stage whose branch builds
+ * on the new parent is accepted and folded; any other is cherry-picked onto it in
+ * the scratch worktree. Throws RestackConflict and keeps the worktree when a
+ * stage conflicts. */
+function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: ReadonlyMap<string, string>): void {
+  for (; run.next < artifact.manifest.stages.length; run.next++) {
+    const id = artifact.manifest.stages[run.next];
+    const stage = finalizedStage(artifact, id);
+    const branch = stage.change.branch;
+    const actualHead = heads.get(branch) ?? fail(`Stage branch ${branch} is missing.`);
+    // A stage whose branch moved was corrected; it is folded into one commit again.
+    const unchanged = actualHead === stage.change.headRevision;
+    const emptied = unchanged && stage.change.files.length === 0;
+    let nextHead: string;
+    if (isAncestor(root, run.parentHead, actualHead)) {
+      nextHead = foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged);
+    } else if (emptied) {
+      nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
+    } else {
+      const stageCommit = foldStage(root, stage, stage.change.baseRevision, actualHead, `Stage ${id}`, unchanged);
+      if (run.scratch) run.scratch.reset(run.parentHead);
+      else run.scratch = ScratchWorktree.create(root, run.location, run.parentHead);
+      if (!run.scratch.cherryPick(stageCommit)) {
+        throw new RestackConflict({ id, previousHead: actualHead, stageCommit, parent: run.parentHead }, run.scratch.unmerged());
+      }
+      nextHead = stageResult(root, stage, run.scratch.writeTree(), run.parentHead, stageCommit);
+    }
+    run.plans.push({
+      id,
+      branch,
+      previousHead: actualHead,
+      nextHead,
+      baseBranch: run.parentBranch,
+      baseRevision: run.parentHead,
+      emptied: sameTree(root, nextHead, run.parentHead),
+    });
+    run.parentBranch = branch;
+    run.parentHead = nextHead;
+  }
+}
+
+/** The commit a replayed stage becomes: its tree on parent with the stage
+ * commit's message and authors, or a marked empty commit when the target
+ * already contains its changes. */
+function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string): string {
+  if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit);
+  return replayedCommit(root, tree, parent, stageCommit);
+}
+
 function restack(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
   const fromId = option(options, "from");
   const baseOption = option(options, "base");
+  const proceed = flag(options, "continue");
+  const abort = flag(options, "abort");
   // Reject a malformed --json before the restack rewrites any refs.
   const json = flag(options, "json");
-  const summary = restackStages(workspace, { fromId, baseOption });
+  if ([fromId !== undefined || baseOption !== undefined, proceed, abort].filter(Boolean).length > 1) {
+    fail("restack takes --from or --base to start, or --continue or --abort for a pending restack.");
+  }
+  if (abort) {
+    abortRestack(workspace);
+    return;
+  }
+  const summary = proceed ? continueRestack(workspace) : restackStages(workspace, { fromId, baseOption });
   if (json) {
     console.log(JSON.stringify(summary));
   } else {
+    const emptied = summary.stages.filter((stage) => stage.emptied).map((stage) => stage.id);
     console.log(
       `Restacked ${summary.refreshedStages} stage(s) ${
-        baseOption
+        summary.mode === "base"
           ? `onto ${summary.targetBranch}`
-          : `from ${fromId}`
+          : `from ${summary.fromStage}`
       }; rewrote ${summary.rewrittenBranches} ${
         summary.rewrittenBranches === 1 ? "branch" : "branches"
-      }.`,
+      }.${emptied.length ? ` The target already contains stage(s) ${emptied.join(", ")}; they stay as marked empty stages.` : ""}`,
     );
   }
 }
@@ -2170,6 +2371,8 @@ function restackStages(
   { fromId, baseOption }: { fromId?: string; baseOption?: string },
 ): RestackSummary {
   assertCleanWorkingTree(workspace.root, "Restacking");
+  const pending = readPendingRestack(workspace.snapshot);
+  if (pending) fail(pendingRestackNote(pending));
   const artifact = validateArtifact(workspace, {
     schemaOnly: true,
     quiet: true,
@@ -2206,162 +2409,239 @@ function restackStages(
   const newBase = baseOption
     ? commitObject(workspace.root, baseOption)
     : artifact.manifest.baseRevision;
-  if (baseOption) {
-    const targetHead = branchCommit(workspace.root, artifact.manifest.targetBranch);
-    if (newBase !== targetHead) {
-      fail(
-        `New base ${newBase} must equal target branch ${artifact.manifest.targetBranch} head ${targetHead}.`,
-      );
-    }
+  const targetRef = `refs/heads/${artifact.manifest.targetBranch}`;
+  const targetHead = branchCommit(workspace.root, artifact.manifest.targetBranch);
+  if (baseOption && newBase !== targetHead) {
+    fail(
+      `New base ${newBase} must equal target branch ${artifact.manifest.targetBranch} head ${targetHead}.`,
+    );
   }
 
-  const indexFile = path.join(
-    os.tmpdir(),
-    `semantic-implementation-restack-${process.pid}-${Date.now()}.index`,
-  );
-  const plans: RestackPlan[] = [];
-  // Refs the restack relies on but leaves in place, verified when it commits.
-  const kept: RefUpdate[] = baseOption
-    ? [{ ref: `refs/heads/${artifact.manifest.targetBranch}`, next: newBase, previous: newBase }]
-    : [];
-  let parentBranch = artifact.manifest.targetBranch;
-  let parentHead = newBase;
-  // The head the stage below had before this restack, which a corrected stage above may already build on.
-  let belowHead: string | undefined;
-
-  try {
-    for (const [index, id] of artifact.manifest.stages.entries()) {
-      const stage = finalizedStage(artifact, id);
-      const actualHead = branchCommit(workspace.root, stage.change.branch);
-      const observedBelow = belowHead;
-      belowHead = actualHead;
-      if (index < startIndex) {
-        if (actualHead !== stage.change.headRevision) {
-          fail(
-            `Stage ${id} moved before the requested restack range; start from ${id}.`,
-          );
-        }
-        kept.push({ ref: `refs/heads/${stage.change.branch}`, next: actualHead, previous: actualHead });
-        parentBranch = stage.change.branch;
-        parentHead = actualHead;
-        continue;
-      }
-
-      let nextHead: string;
-      // A stage whose branch moved was corrected; it is folded into one commit again.
-      const unchanged = actualHead === stage.change.headRevision;
-      const stageBase = rebuiltStageBase(
-        workspace.root,
-        { id, recordedBase: stage.change.baseRevision, recordedHead: stage.change.headRevision, head: actualHead },
-        observedBelow === undefined ? undefined : { id: artifact.manifest.stages[index - 1], head: observedBelow },
-        newBase,
-      );
-      if (isAncestor(workspace.root, parentHead, actualHead)) {
-        nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);
-      } else {
-        const stageCommit = foldStage(workspace.root, stage, stageBase, actualHead, `Stage ${id}`, unchanged);
-        try {
-          nextHead = applyCommitPatch({
-            root: workspace.root,
-            indexFile,
-            baseTree: parentHead,
-            patchParent: stageBase,
-            patchCommit: stageCommit,
-            metadataCommit: stageCommit,
-            newParent: parentHead,
-          });
-        } catch (error) {
-          if (!(error instanceof PatchConflictError)) throw error;
-          const detail = error.message;
-          fail(
-            [
-              `Restacking stage ${id} onto ${parentHead} failed.`,
-              "No stage refs or artifacts were changed.",
-              `Conflict context: stage base ${stageBase}, stage head ${actualHead}, new parent ${parentHead}.`,
-              detail,
-            ].join("\n"),
-          );
-        }
-      }
-      plans.push({
-        id,
-        stage,
-        branch: stage.change.branch,
-        previousHead: actualHead,
-        nextHead,
-        baseBranch: parentBranch,
-        baseRevision: parentHead,
-      });
-      parentBranch = stage.change.branch;
-      parentHead = nextHead;
+  // Every ref the restack depends on, read once: the result is computed from these.
+  const refs = new Map<string, string>([[targetRef, targetHead]]);
+  const heads = new Map<string, string>();
+  for (const id of artifact.manifest.stages) {
+    const branch = finalizedStage(artifact, id).change.branch;
+    const head = branchCommit(workspace.root, branch);
+    refs.set(`refs/heads/${branch}`, head);
+    heads.set(branch, head);
+  }
+  const run: RestackRun = {
+    mode: baseOption ? "base" : "stage",
+    fromStage: fromId ?? null,
+    newBase,
+    plans: [],
+    next: startIndex,
+    parentBranch: artifact.manifest.targetBranch,
+    parentHead: newBase,
+    scratch: undefined,
+    location: ScratchWorktree.location(workspace.root, artifact.manifest.implementationId),
+  };
+  for (const id of artifact.manifest.stages.slice(0, startIndex)) {
+    const stage = finalizedStage(artifact, id);
+    if (heads.get(stage.change.branch) !== stage.change.headRevision) {
+      fail(`Stage ${id} moved before the requested restack range; start from ${id}.`);
     }
+    run.parentBranch = stage.change.branch;
+    run.parentHead = stage.change.headRevision;
+  }
+  return runRestack(workspace, artifact, run, refs, heads, workspace.snapshot.version);
+}
 
-    const branchUpdates = plans.filter(({ previousHead, nextHead }) => previousHead !== nextHead);
-    // Unchanged stage branches are verified rather than moved.
-    const refUpdates = [...kept, ...plans.map(({ branch, previousHead, nextHead }): RefUpdate => ({
+/** Replays the remaining stages and moves every ref at once, or records the
+ * restack as pending when a stage conflicts. */
+function runRestack(
+  workspace: Workspace,
+  artifact: Artifact,
+  run: RestackRun,
+  refs: ReadonlyMap<string, string>,
+  heads: ReadonlyMap<string, string>,
+  startSnapshot: string,
+): RestackSummary {
+  try {
+    replayStages(workspace.root, artifact, run, heads);
+  } catch (error) {
+    if (!(error instanceof RestackConflict)) {
+      if (run.scratch) ScratchWorktree.discard(workspace.root, run.scratch.path);
+      throw error;
+    }
+    const pending: PendingRestack = {
+      mode: run.mode,
+      fromStage: run.fromStage,
+      newBase: run.newBase,
+      startSnapshot,
+      refs: Object.fromEntries(refs),
+      plans: run.plans,
+      conflict: error.conflict,
+      worktree: run.location,
+    };
+    const draft = new ArtifactDraft(workspace.snapshot);
+    draft.writeJson(PENDING_RESTACK_FILE, pending);
+    try {
+      withArtifactLock(workspace, artifact.manifest.implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft));
+    } catch (recordError) {
+      ScratchWorktree.discard(workspace.root, run.location);
+      throw recordError;
+    }
+    fail([
+      `Restacking stage ${error.conflict.id} onto ${error.conflict.parent} stopped at a conflict${error.files.length ? ` in ${error.files.join(", ")}` : ""}.`,
+      "No stage refs were changed.",
+      `Resolve the conflict in ${run.location}: edit the files and stage the resolution with git add or git rm, without committing.`,
+      "Then run implementation restack --continue, or implementation restack --abort to discard the restack.",
+    ].join("\n"));
+  }
+  try {
+    return finishRestack(workspace, artifact, run, refs);
+  } finally {
+    if (run.scratch) ScratchWorktree.discard(workspace.root, run.scratch.path);
+  }
+}
+
+/** Moves the restacked branches and records their heads in one transaction,
+ * only while every ref the restack read is unchanged. */
+function finishRestack(workspace: Workspace, artifact: Artifact, run: RestackRun, refs: ReadonlyMap<string, string>): RestackSummary {
+  // Checked again for --continue, which reads the refs a restack began with.
+  assertDirectRefs(workspace.root, [...refs.keys()]);
+  const branchUpdates = run.plans.filter(({ previousHead, nextHead }) => previousHead !== nextHead);
+  const moved = new Set(branchUpdates.map(({ branch }) => `refs/heads/${branch}`));
+  const refUpdates: RefUpdate[] = [
+    // Every other ref the restack read is verified, so none moved meanwhile.
+    ...[...refs].filter(([ref]) => !moved.has(ref)).map(([ref, head]): RefUpdate => ({ ref, next: head, previous: head })),
+    ...branchUpdates.map(({ branch, previousHead, nextHead }): RefUpdate => ({
       ref: `refs/heads/${branch}`,
       previous: previousHead,
       next: nextHead,
-    }))];
-    // Corrections folded away stay reachable for code targets captured on them.
-    const corrections = plans.filter(({ stage, previousHead }) => previousHead !== stage.change.headRevision).map(({ previousHead }) => previousHead);
-    const checkedOut = checkedOutBranches(workspace.root);
-    // A checked-out branch may only move to a commit with the same tree, as a fold does.
-    const sameTree = (left: string, right: string) => git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: workspace.root }).split(/\r?\n/).every((tree, _, trees) => tree === trees[0]);
-    const checkedOutUpdates = branchUpdates
-      .filter(({ branch, previousHead, nextHead }) => checkedOut.has(branch) && !sameTree(previousHead, nextHead))
-      .map(({ branch }) => branch);
-    if (checkedOutUpdates.length > 0) {
-      fail(
-        `Cannot move branch(es) checked out in a worktree: ${checkedOutUpdates.join(", ")}.`,
-      );
-    }
-    if (
-      baseOption &&
-      branchCommit(workspace.root, artifact.manifest.targetBranch) !== newBase
-    ) {
-      fail(
-        `Target branch ${artifact.manifest.targetBranch} moved during restacking; retry from its new head.`,
-      );
-    }
-    // Diff and validate outside the lock; readers take it, so the viewer never sees a partly restacked stack.
-    artifact.manifest.baseRevision = newBase;
-    const draft = new ArtifactDraft(workspace.snapshot);
-    for (const plan of plans) {
-      plan.stage.change = {
-        branch: plan.branch,
-        baseBranch: plan.baseBranch,
-        baseRevision: plan.baseRevision,
-        headRevision: plan.nextHead,
-        files: changedFiles(workspace.root, plan.baseRevision, plan.nextHead),
-      };
-    }
-    writeManifest(draft, artifact);
-    validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
-    withArtifactLock(workspace, artifact.manifest.implementationId, () => {
-      commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, corrections);
-    });
-
-    return {
-      mode: baseOption ? "base" : "stage",
-      fromStage: fromId ?? null,
-      targetBranch: artifact.manifest.targetBranch,
-      baseRevision: newBase,
-      refreshedStages: plans.length,
-      rewrittenBranches: branchUpdates.length,
-      stages: plans.map((plan) => ({
-        id: plan.id,
-        branch: plan.branch,
-        previousHead: plan.previousHead,
-        nextHead: plan.nextHead,
-        baseBranch: plan.baseBranch,
-        baseRevision: plan.baseRevision,
-        rewritten: plan.previousHead !== plan.nextHead,
-      })),
-    };
-  } finally {
-    fs.rmSync(indexFile, { force: true });
+    })),
+  ];
+  const checkedOut = checkedOutBranches(workspace.root);
+  // A checked-out branch may only move to a commit with the same tree, as a fold does.
+  const checkedOutUpdates = branchUpdates
+    .filter(({ branch, previousHead, nextHead }) => checkedOut.has(branch) && !sameTree(workspace.root, previousHead, nextHead))
+    .map(({ branch }) => branch);
+  if (checkedOutUpdates.length > 0) {
+    fail(
+      `Cannot move branch(es) checked out in a worktree: ${checkedOutUpdates.join(", ")}.`,
+    );
   }
+  // Diff and validate outside the lock; readers take it, so the viewer never sees a partly restacked stack.
+  artifact.manifest.baseRevision = run.newBase;
+  const draft = new ArtifactDraft(workspace.snapshot);
+  draft.remove(PENDING_RESTACK_FILE);
+  // Corrections folded away stay reachable for code targets captured on them.
+  const corrections = run.plans
+    .filter(({ id, previousHead }) => previousHead !== finalizedStage(artifact, id).change.headRevision)
+    .map(({ previousHead }) => previousHead);
+  for (const plan of run.plans) {
+    const stage = finalizedStage(artifact, plan.id);
+    stage.change = {
+      branch: plan.branch,
+      baseBranch: plan.baseBranch,
+      baseRevision: plan.baseRevision,
+      headRevision: plan.nextHead,
+      files: plan.emptied ? [] : changedFiles(workspace.root, plan.baseRevision, plan.nextHead),
+    };
+  }
+  writeManifest(draft, artifact);
+  // Node coverage may no longer fit a replayed diff, as after a rename on the
+  // target; validation reports it and the stage is organized again.
+  validateArtifact(workspace, { quiet: true, schemaOnly: true, allowPendingRestack: true }, draft);
+  withArtifactLock(workspace, artifact.manifest.implementationId, () => {
+    commitArtifact(workspace.root, workspace.snapshot, draft, refUpdates, corrections);
+  });
+
+  return {
+    mode: run.mode,
+    fromStage: run.fromStage,
+    targetBranch: artifact.manifest.targetBranch,
+    baseRevision: run.newBase,
+    refreshedStages: run.plans.length,
+    rewrittenBranches: branchUpdates.length,
+    stages: run.plans.map((plan) => ({
+      id: plan.id,
+      branch: plan.branch,
+      previousHead: plan.previousHead,
+      nextHead: plan.nextHead,
+      baseBranch: plan.baseBranch,
+      baseRevision: plan.baseRevision,
+      rewritten: plan.previousHead !== plan.nextHead,
+      emptied: plan.emptied,
+    })),
+  };
+}
+
+/** Whether the artifact holds nothing but the pending restack record that was not in the snapshot the restack started from. */
+function unchangedSinceRestackBegan(root: string, current: string, start: string): boolean {
+  const entries = (commit: string) => gitRaw(["ls-tree", "-z", commit], { cwd: root }).split("\0").filter((entry) => entry && !entry.endsWith("\t.work")).sort();
+  return JSON.stringify(entries(current)) === JSON.stringify(entries(start)) &&
+    git(["rev-parse", "--verify", "--quiet", `${start}:.work`], { cwd: root, allowFailure: true }) === null;
+}
+
+/** Completes a pending restack with the resolution staged in its worktree. */
+function continueRestack(workspace: Workspace): RestackSummary {
+  const pending = readPendingRestack(workspace.snapshot) ?? fail("No restack is pending.");
+  const artifact = validateArtifact(workspace, { schemaOnly: true, quiet: true, allowPendingRestack: true });
+  const changed = (what: string) => fail(`${what} changed since the restack began, so it cannot be completed. Run implementation restack --abort, then restack again.`);
+  if (!unchangedSinceRestackBegan(workspace.root, workspace.snapshot.version, pending.startSnapshot)) changed("The semantic implementation");
+  const currentRefs = new Map(git(["for-each-ref", "--format=%(refname) %(objectname)", ...Object.keys(pending.refs)], { cwd: workspace.root })
+    .split(/\r?\n/).filter(Boolean).map((line): [string, string] => [line.slice(0, line.indexOf(" ")), line.slice(line.indexOf(" ") + 1)]));
+  for (const [ref, head] of Object.entries(pending.refs)) if (currentRefs.get(ref) !== head) changed(ref);
+  const expectedStages = artifact.manifest.stages.map((id) => `refs/heads/${finalizedStage(artifact, id).change.branch}`);
+  if (!expectedStages.every((ref) => ref in pending.refs)) changed("The stage stack");
+
+  const scratch = ScratchWorktree.open(workspace.root, pending.worktree)
+    ?? fail(`The restack worktree ${pending.worktree} is gone. Run implementation restack --abort, then restack again.`);
+  const unmerged = scratch.unmerged();
+  if (unmerged.length > 0) fail(`Resolve and stage these files in ${pending.worktree} first: ${unmerged.join(", ")}.`);
+  // Resolved edits that are not staged would be lost.
+  const unstaged = scratch.run(["diff", "--name-only"]);
+  if (unstaged) fail(`Stage the resolution in ${pending.worktree} with git add or git rm; these files have unstaged changes:\n${unstaged}`);
+  const { conflict } = pending;
+  const head = scratch.head();
+  let tree: string;
+  if (head === conflict.parent) tree = scratch.writeTree();
+  else if (isAncestor(workspace.root, conflict.parent, head) && !scratch.run(["diff", "--cached", "--name-only", "HEAD"])) {
+    // The resolution was committed in the worktree: its tree is the resolution.
+    tree = git(["rev-parse", `${head}^{tree}`], { cwd: workspace.root });
+  } else {
+    fail(`The restack worktree ${pending.worktree} is no longer at ${conflict.parent}; run implementation restack --abort, then restack again.`);
+  }
+  const index = artifact.manifest.stages.indexOf(conflict.id);
+  if (index < 0) changed("The stage stack");
+  const stage = finalizedStage(artifact, conflict.id);
+  const nextHead = stageResult(workspace.root, stage, tree, conflict.parent, conflict.stageCommit);
+  const plans = [...pending.plans, {
+    id: conflict.id,
+    branch: stage.change.branch,
+    previousHead: conflict.previousHead,
+    nextHead,
+    baseBranch: pending.plans.at(-1)?.branch ?? (index === 0 ? artifact.manifest.targetBranch : finalizedStage(artifact, artifact.manifest.stages[index - 1]).change.branch),
+    baseRevision: conflict.parent,
+    emptied: sameTree(workspace.root, nextHead, conflict.parent),
+  }];
+  const heads = new Map(Object.entries(pending.refs).map(([ref, sha]) => [ref.slice("refs/heads/".length), sha]));
+  const run: RestackRun = {
+    mode: pending.mode,
+    fromStage: pending.fromStage,
+    newBase: pending.newBase,
+    plans,
+    next: index + 1,
+    parentBranch: stage.change.branch,
+    parentHead: nextHead,
+    scratch,
+    location: pending.worktree,
+  };
+  return runRestack(workspace, artifact, run, new Map(Object.entries(pending.refs)), heads, pending.startSnapshot);
+}
+
+/** Discards a pending restack and its worktree; no stage ref has moved. */
+function abortRestack(workspace: Workspace): void {
+  const pending = readPendingRestack(workspace.snapshot) ?? fail("No restack is pending.");
+  const implementationId = activeImplementationId(workspace.root, workspace.snapshot);
+  ScratchWorktree.discard(workspace.root, pending.worktree);
+  const draft = new ArtifactDraft(workspace.snapshot);
+  draft.remove(PENDING_RESTACK_FILE);
+  withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft));
+  console.log(`Discarded the restack that stopped at stage ${pending.conflict.id}; no stage refs were changed.`);
 }
 
 function changedPathNames(root: string, from: string, to: string): string[] {
@@ -2565,6 +2845,8 @@ export interface StackEntry {
 }
 
 export interface StackSummary {
+  /** Stages the target already contains; they stay in the artifact but not in the stack to prepare. */
+  emptyStages: string[];
   targetBranch: string;
   branchPrefix: string;
   metadataBranch: string;
@@ -2576,17 +2858,27 @@ export interface StackSummary {
 
 function stackSummary(artifact: Artifact, root: string): StackSummary {
   const binding = preparedBranchBinding(root, artifact);
-  const entries = artifact.manifest.stages.map((id, index): StackEntry => {
+  // Preparation skips emptied stages: the stage above builds on the last one with changes.
+  const emptyStages: string[] = [];
+  const entries: StackEntry[] = [];
+  let baseBranch = artifact.manifest.targetBranch;
+  for (const id of artifact.manifest.stages) {
     const stage = finalizedStage(artifact, id);
-    return {
-      position: index + 1,
+    if (stage.change.files.length === 0) {
+      emptyStages.push(id);
+      continue;
+    }
+    entries.push({
+      position: entries.length + 1,
       stageId: id,
       branch: stage.change.branch,
-      baseBranch: stage.change.baseBranch,
+      baseBranch,
       headRevision: stage.change.headRevision,
-    };
-  });
+    });
+    baseBranch = stage.change.branch;
+  }
   return {
+    emptyStages,
     targetBranch: artifact.manifest.targetBranch,
     branchPrefix: artifact.manifest.branchPrefix,
     metadataBranch: metadataBranch(artifact),
@@ -2615,6 +2907,7 @@ function validateStack(workspace: Workspace, options: Options): void {
       `  ${entry.position}. ${entry.branch} -> ${entry.baseBranch} (${entry.headRevision})`,
     );
   }
+  if (result.emptyStages.length) console.log(`Skipped empty stage(s) the target already contains: ${result.emptyStages.join(", ")}`);
   console.log(`Final cumulative head: ${result.finalHeadRevision}`);
   if (result.cumulativeBranch) {
     console.log(

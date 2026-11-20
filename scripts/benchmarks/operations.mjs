@@ -70,6 +70,16 @@ try {
   for (let i = 1; i <= 3; i++) finish.commitFile(`part-${i}.txt`, `part ${i}\n`, `Part ${i}`);
   organizeStage(finish);
   measure(finish, 'finish a stage of three commits', [['semantic-implementation', 'stage', 'finish']]);
+  // Restack replays every stage; a larger checkout shows what the scratch worktree costs.
+  for (const files of [0, 2000]) {
+    const restacked = fixture();
+    for (let i = 0; i < files; i++) restacked.write(`tree/${i % 40}/file-${i}.txt`, `file ${i}\n`);
+    if (files) { restacked.git('add', 'tree'); restacked.git('commit', '-m', 'Large tree'); }
+    initializeImplementation(restacked);
+    for (let i = 1; i <= 10; i++) { beginStage(restacked, { id: `stage-${i}` }); finalizeStage(restacked, { id: `stage-${i}` }); }
+    restacked.git('switch', 'main'); restacked.commitFile('advanced.txt', 'advanced\n', 'Advance target');
+    measure(restacked, `restack ten stages onto advanced target, ${files ? '2,000-file' : 'small'} checkout`, [['semantic-implementation', 'restack', '--base', 'main']]);
+  }
   const feedback = fixture(); initializeImplementation(feedback); beginStage(feedback);
   finalizeStage(feedback, { contents: 'x'.repeat(90) + '\n' + 'unchanged context\n'.repeat(20000) }); feedback.feedback('init');
   for (const [start, count] of [[0, 100], [100, 200]]) {
