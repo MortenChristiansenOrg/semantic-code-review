@@ -1146,3 +1146,36 @@ test("a thread removed while a snapshot reads it does not fail the poll", (t) =>
   assert.deepEqual(polled, healthyPoll);
   assert.notEqual(viewerSnapshot(repository.root).revision, healthyPoll.revision);
 });
+
+test("mapNoteTarget keeps carriage returns and line feeds in file and line paths", () => {
+  const filePath = "src/a\r\nb\n.js";
+  assert.deepEqual(mapNoteTarget({ kind: "file", id: `f:implementation:${filePath}` }, implementation),
+    { "target-kind": "file", stage: "implementation", path: filePath, label: filePath });
+  assert.deepEqual(mapNoteTarget({ kind: "line", id: `l:implementation:old:3:${filePath}` }, implementation),
+    { "target-kind": "line", stage: "implementation", path: filePath, side: "old", line: 3, label: `${filePath}:3` });
+  assert.deepEqual(mapNoteTarget({ kind: "file", id: "f:implementation:\r\n" }, implementation),
+    { "target-kind": "file", stage: "implementation", path: "\r\n", label: '"\\r\\n"' });
+});
+
+// Windows forbids line breaks in file names.
+test("file and line feedback on paths with line breaks is sent and its line snapshot resolves", { skip: process.platform === "win32" }, (t) => {
+  const repository = createRepository(t);
+  const name = "line\nbreak\r.txt";
+  repository.commitFile(name, "one\ntwo\n", "Original");
+  initializeImplementation(repository); beginStage(repository);
+  repository.write(name, "one\nchanged\n");
+  repository.git("add", "."); repository.git("commit", "-m", "Stage change");
+  organizeStage(repository, { nodes: [{ id: "implementation-change", description: "Change the file.", changes: [{ path: name, classification: "behavior" }] }] });
+  repository.semantic("stage", "finish");
+  const targets = buildFeedbackTargetData(repository.root);
+  const stage = targets.stages[0];
+  assert.equal(stage.files[0].path, name);
+  const legacy = { kind: "line", id: `l:implementation:new:2:${name}`, body: "Check this line", snapshot: { base: stage.baseRevision, head: stage.headRevision } };
+  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy])[0].snapshot.fileRevision, stage.files[0].revision);
+  const file = { kind: "file", id: `f:implementation:${name}`, body: "Check this file" };
+  const result = exportFeedback({ repoRoot: repository.root, implementation: targets }, [legacy, file]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const [line, whole] = result.exported.map((item) => readFeedbackThread(repository.root, item.threadId).target);
+  assert.deepEqual([line.kind, line.path, line.side, line.line], ["line", name, "new", 2]);
+  assert.deepEqual([whole.kind, whole.path], ["file", name]);
+});

@@ -841,16 +841,17 @@ import { renderPage } from "./views/page";
       replyDrafts: []
     };
   }
+  // Artifact IDs name the keys of these maps. Without a prototype, keys such as
+  // "__proto__", "constructor" and "prototype" are ordinary entries to assign and read.
   function load() {
-    return { ...defaults(), ...savedReview.state };
+    const loaded = { ...defaults(), ...savedReview.state };
+    const map = (value) => value && typeof value === "object" && !Array.isArray(value);
+    for (const [key, value] of Object.entries(defaults())) if (map(value) && map(loaded[key])) loaded[key] = Object.assign(Object.create(null), loaded[key]);
+    return loaded;
   }
-  // Artifact IDs name state keys, and the review store refuses these as
-  // paths (one refused change fails the whole save), so they stay unsaved.
-  const unsavedKeys = new Set(["__proto__", "constructor", "prototype"]);
   function stateChanges(before, after, prefix = []) {
     const changes = [];
     for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-      if (unsavedKeys.has(key)) continue;
       const had = Object.hasOwn(before, key), has = Object.hasOwn(after, key);
       const a = had ? before[key] : undefined, b = has ? after[key] : undefined;
       if (JSON.stringify(a) === JSON.stringify(b)) continue;
@@ -2835,9 +2836,9 @@ import { renderPage } from "./views/page";
   }
   /** Records whether a specification is open; returns whether that changed. */
   function setSpecificationOpen(id, open) {
-    if (typeof id !== "string" || id === "__proto__") return false;
+    if (typeof id !== "string") return false;
     if (specificationIsOpen(id) === open) return false;
-    if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = {};
+    if (!state.specificationOpen || typeof state.specificationOpen !== "object") state.specificationOpen = Object.create(null);
     state.specificationOpen[id] = open;
     return true;
   }

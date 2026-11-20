@@ -66,10 +66,15 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
       if (!stores.has(currentId)) stores.set(currentId, structuredClone(saved));
       const state = stores.get(currentId);
       if (route.request().method() === 'POST') {
+        // Like the review store, every key is an own property, including "__proto__".
+        const own = (target, key, value) => Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
         for (const change of route.request().postDataJSON().changes) {
           let target = state;
-          for (const key of change.path.slice(0, -1)) target = target[key] ||= {};
-          if (change.after.present) target[change.path.at(-1)] = change.after.value;
+          for (const key of change.path.slice(0, -1)) {
+            if (!Object.hasOwn(target, key)) own(target, key, {});
+            target = target[key];
+          }
+          if (change.after.present) own(target, change.path.at(-1), change.after.value);
           else delete target[change.path.at(-1)];
         }
       }
@@ -109,7 +114,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: `<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script>window.SEMANTIC_REVIEW_CONTEXT=${JSON.stringify({ reviewId: currentId, generation: "test" })};window.SEMANTIC_IMPLEMENTATION=${JSON.stringify(currentData)}</script><script src="/markdown.js"></script><script src="/app.js"></script>` });
   });
   await page.goto('http://localhost/');
-  await expect(page.locator('.stage')).toHaveCount(2);
+  await expect(page.locator('.stage')).toHaveCount(data.stages.length);
   expect(errors).toEqual([]);
   return errors;
 }
@@ -3354,14 +3359,50 @@ for (const name of ['constructor', 'toString']) {
     await expect(spec).toHaveJSProperty('open', true);
     const one = page.locator('details[data-node="first-one"]');
     await one.locator('summary').click();
-    await saveAction(page, () => one.locator('.frow .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'shared.js')]);
-    // Nothing is sent as a path the store refuses, and a key is never claimed to exist before it was saved.
-    expect(changes.flatMap((change) => change.path).filter((key) => ['__proto__', 'constructor', 'prototype'].includes(key))).toEqual([]);
+    await saveAction(page, () => one.locator('.frow .mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one', 'shared.js')] &&
+      Object.hasOwn(state.specificationOpen, name) && state.specificationOpen[name] === true);
+    // The open state is saved under the specification's own key, which is never claimed to exist before it was saved.
     const specChanges = changes.filter((change) => change.path[0] === 'specificationOpen' && change.path[1] === name);
-    if (specChanges.length) expect(specChanges[0].before).toEqual({ present: false });
+    expect(specChanges.length).toBeGreaterThan(0);
+    expect(specChanges[0].before).toEqual({ present: false });
+    await reload(page);
+    await expect(spec).toHaveJSProperty('open', true);
     expect(errors).toEqual([]);
   });
 }
+
+test('approvals and open states of stages and specifications named __proto__, constructor and prototype survive a reload', async ({ page }) => {
+  const names = ['__proto__', 'constructor', 'prototype'];
+  const data = fixture();
+  const [template] = data.stages;
+  data.stages = names.map((id) => ({ ...structuredClone(template), id, title: `Stage ${id}`,
+    nodes: ['one', 'two'].map((n) => ({ id: `${id}-${n}`, title: `Step ${n}`, description: 'Node description' })),
+    files: [{ ...structuredClone(template.files[0]), memberships: [{ nodeId: `${id}-one`, classification: 'behavior', hunks: [1] }, { nodeId: `${id}-two`, classification: 'behavior', hunks: [2] }] }] }));
+  data.requirements = names.map((id) => ({ id, title: `Spec ${id}`, summary: 'Spec summary', acceptance: [{ id: 'ac-1', text: 'Criterion' }] }));
+  const errors = await mount(page, data);
+  const saved = (map, key) => Boolean(map) && Object.hasOwn(map, key) ? map[key] : undefined;
+  for (const name of names) {
+    const stage = page.locator(`.stage[data-stage="${name}"]`);
+    await saveAction(page, () => page.locator(`.stage-title[data-id="${name}"]`).click(), (state) => saved(state.openStages, name) === true);
+    for (const node of [`${name}-one`, `${name}-two`]) {
+      const details = page.locator(`details[data-node="${node}"]`);
+      await details.locator('summary').click();
+      await saveAction(page, () => details.locator('.mini-approve').click(), (state) => !!saved(state.approvals, approvalKey(name, node)));
+    }
+    await saveAction(page, () => stage.locator('.stage-approve .approve').click(), (state) => !!saved(state.approvals, name));
+    const spec = page.locator(`details.specification[data-req-id="${name}"]`);
+    await saveAction(page, () => spec.locator('summary h2').click(), (state) => saved(state.specificationOpen, name) === true);
+  }
+  await reload(page);
+  for (const name of names) {
+    const stage = page.locator(`.stage[data-stage="${name}"]`);
+    await expect(stage).toHaveClass(/is-open/);
+    await expect(stage.locator('.stage-approve .approve')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator(`details.specification[data-req-id="${name}"]`)).toHaveJSProperty('open', true);
+  }
+  expect(await page.evaluate(() => [{}.rev, {}.at, Object.prototype.polluted])).toEqual([undefined, undefined, undefined]);
+  expect(errors).toEqual([]);
+});
 
 test('a kept file row drops the tooltip of a hint that is no longer rendered', async ({ page }) => {
   const data = fixture();
