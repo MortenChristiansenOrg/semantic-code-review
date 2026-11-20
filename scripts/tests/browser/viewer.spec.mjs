@@ -181,13 +181,43 @@ for (const skillVersion of ['0.2.0', undefined]) {
   });
 }
 
+/** Pauses the page clock before the page starts, so only the test advances it, and
+ * counts the revision polls the page made. `failed` answers only once every poll
+ * has its answer or failure: the page handles the rest of a poll before its next
+ * task, so the clock's next tick finds the poll finished. */
+async function controlRevisionPolls(page) {
+  const start = Date.parse('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: start });
+  // No page timer exists yet, so the jump fires none.
+  await page.clock.pauseAt(start + 60_000);
+  await page.addInitScript(() => {
+    const fetch = window.fetch;
+    const polls = window.revisionPolls = { issued: 0, settled: 0, failed: 0 };
+    window.fetch = (input, init) => {
+      if (!String(input).includes('/api/revision')) return fetch(input, init);
+      polls.issued += 1;
+      // The body is read here, so the page reads a copy without waiting for the network.
+      return fetch(input, init).then(async (response) => {
+        const body = await response.arrayBuffer();
+        polls.settled += 1;
+        return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      }, (error) => { polls.settled += 1; polls.failed += 1; throw error; });
+    };
+  });
+  return {
+    issued: () => page.evaluate(() => window.revisionPolls.issued),
+    failed: () => page.evaluate(() => { const polls = window.revisionPolls; return polls.issued === polls.settled ? polls.failed : -1; }),
+  };
+}
+
 test('the page asks for a fresh link only after the server stays unreachable', async ({ page }) => {
-  await page.clock.install();
+  const polls = await controlRevisionPolls(page);
   await mount(page);
-  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
-  let failures = 0;
-  await page.route('http://localhost/api/revision**', (route) => { failures += 1; return route.abort('connectionrefused'); });
-  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(() => failures).toBe(count); };
+  // The poll the page makes as it starts succeeds.
+  await expect.poll(polls.issued).toBe(1);
+  await expect.poll(polls.failed).toBe(0);
+  await page.route('http://localhost/api/revision**', (route) => route.abort('connectionrefused'));
+  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(polls.failed).toBe(count); };
   await poll(1);
   // A background tab stops polling: a failure long after the last one starts a new outage.
   await page.evaluate(() => {
@@ -195,9 +225,9 @@ test('the page asks for a fresh link only after the server stays unreachable', a
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => window.testHidden });
   });
   await page.clock.runFor(10_000);
-  expect(failures).toBe(1);
+  expect(await polls.failed()).toBe(1);
   await page.evaluate(() => { window.testHidden = false; document.dispatchEvent(new Event('visibilitychange')); });
-  await expect.poll(() => failures).toBe(2);
+  await expect.poll(polls.failed).toBe(2);
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
   for (let count = 3; count <= 6; count++) await poll(count);
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
@@ -219,12 +249,13 @@ test('a fresh link starts a new count of failures for its key', async ({ page })
   await page.addInitScript(() => {
     Object.defineProperty(window, 'sessionStorage', { get() { throw new DOMException('Storage is disabled.', 'SecurityError'); } });
   });
-  await page.clock.install();
+  const polls = await controlRevisionPolls(page);
   await mount(page);
-  await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+  await expect.poll(polls.issued).toBe(1);
+  await expect.poll(polls.failed).toBe(0);
   const keys = [];
   await page.route('http://localhost/api/revision**', (route) => { keys.push(route.request().headers()['x-semantic-flow-key']); return route.abort('connectionrefused'); });
-  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(() => keys.length).toBe(count); };
+  const poll = async (count) => { await page.clock.runFor(1000); await expect.poll(polls.failed).toBe(count); expect(keys).toHaveLength(count); };
   // Four seconds of failures with the first key.
   for (let count = 1; count <= 5; count++) await poll(count);
   await page.route('http://localhost/api/session', (route) => route.fulfill({ json: { ok: true, key: 'second-key', read: 'second-read' } }));
