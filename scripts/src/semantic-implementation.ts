@@ -2113,6 +2113,16 @@ export interface RestackSummary {
   }>;
 }
 
+/** Where a stage's own changes start. A stage rebuilt on a correction of the
+ * stage below, the latest or an earlier one, starts at the newest commit it
+ * shares with that stage, so the correction is not replayed as its own change.
+ * Otherwise it starts at its recorded base. */
+function rebuiltStageBase(root: string, recordedBase: string, below: string | undefined, head: string): string {
+  if (below === undefined || below === recordedBase) return recordedBase;
+  const shared = gitOptional(["merge-base", below, head], { cwd: root });
+  return shared && shared !== recordedBase && isAncestor(root, recordedBase, shared) ? shared : recordedBase;
+}
+
 function restack(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "restack"));
   const fromId = option(options, "from");
@@ -2225,9 +2235,7 @@ function restackStages(
       let nextHead: string;
       // A stage whose branch moved was corrected; it is folded into one commit again.
       const unchanged = actualHead === stage.change.headRevision;
-      // A stage rebuilt on the correction below starts there, so the correction is not replayed as its own change.
-      const stageBase = observedBelow !== undefined && observedBelow !== stage.change.baseRevision &&
-        isAncestor(workspace.root, observedBelow, actualHead) ? observedBelow : stage.change.baseRevision;
+      const stageBase = rebuiltStageBase(workspace.root, stage.change.baseRevision, observedBelow, actualHead);
       if (isAncestor(workspace.root, parentHead, actualHead)) {
         nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);
       } else {
