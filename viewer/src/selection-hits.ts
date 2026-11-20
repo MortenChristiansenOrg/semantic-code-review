@@ -21,17 +21,20 @@ export function clearSelectionHits(): void {
 // banners and gaps between rows.
 const CODE = ".drow:not(.d-gap, .d-newfile, .d-oldfile, .drow-thread) > code";
 
-function overlaps(selected: Range | null, node: Text, start: number, end: number): boolean {
+// Whether a match overlaps the reviewer's selection, which is not highlighted.
+function overlaps(selected: Range | null, match: StaticRange): boolean {
   if (!selected) return false;
-  const match = document.createRange();
-  match.setStart(node, start); match.setEnd(node, end);
-  return match.compareBoundaryPoints(Range.END_TO_START, selected) < 0 && match.compareBoundaryPoints(Range.START_TO_END, selected) > 0;
+  const range = document.createRange();
+  range.setStart(match.startContainer, match.startOffset); range.setEnd(match.endContainer, match.endOffset);
+  return range.compareBoundaryPoints(Range.END_TO_START, selected) < 0 && range.compareBoundaryPoints(Range.START_TO_END, selected) > 0;
 }
 
 // Lowercasing can change a string's length (`İ` becomes `i̇`), so offsets in
 // lowercased text are not offsets in the original. Fold each code point on its
 // own and keep, for every unit of the folded text, the original offset of the
-// code point it came from, and whether it starts that code point.
+// code point it came from, and whether it starts that code point. Lowercasing
+// a whole string picks the final form of sigma (`ς`) by context, which a single
+// code point cannot, so both sigmas fold to `σ`; both are one unit long.
 interface Folded { text: string; offsets: number[]; starts: boolean[] }
 const ASCII = /^[\x00-\x7f]*$/;
 function fold(text: string): Folded {
@@ -40,7 +43,7 @@ function fold(text: string): Folded {
   const offsets: number[] = [], starts: boolean[] = [];
   for (let index = 0; index < text.length;) {
     const point = String.fromCodePoint(text.codePointAt(index)!);
-    const lower = point.toLowerCase();
+    const lower = point.toLowerCase().replaceAll("ς", "σ");
     for (let unit = 0; unit < lower.length; unit++) { offsets.push(index); starts.push(unit === 0); }
     folded += lower;
     index += point.length;
@@ -56,6 +59,20 @@ function originalRange(folded: Folded, start: number, end: number): [number, num
   return [folded.offsets[start], folded.offsets[end]];
 }
 
+// A code row's text is split across the spans of its syntax highlighting, so
+// matches are found in the row's combined text and mapped back to the text
+// nodes where they start and end; a highlight range may span several nodes.
+interface Piece { node: Text; start: number }
+function point(pieces: Piece[], offset: number, end: boolean): [Text, number] {
+  // A match ends in the node it ends inside, not at the start of the next one.
+  let piece = pieces[0];
+  for (const candidate of pieces) {
+    if (end ? candidate.start >= offset : candidate.start > offset) break;
+    piece = candidate;
+  }
+  return [piece.node, offset - piece.start];
+}
+
 /** Highlights each case-insensitive occurrence of `term` in the code of `grid`, except the selected one. */
 export function highlightSelectionHits(grid: Element, term: string, selected: Range | null): void {
   clearSelectionHits();
@@ -63,15 +80,23 @@ export function highlightSelectionHits(grid: Element, term: string, selected: Ra
   const needle = fold(term).text;
   const highlight = new Highlight();
   for (const code of grid.querySelectorAll(CODE)) {
+    const pieces: Piece[] = [];
+    let text = "";
     const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode() as Text | null; node; node = walker.nextNode() as Text | null) {
-      const folded = fold(node.data);
-      for (let index = folded.text.indexOf(needle); index !== -1; index = folded.text.indexOf(needle, index + needle.length)) {
-        const bounds = originalRange(folded, index, index + needle.length);
-        if (!bounds || bounds[1] <= bounds[0] || bounds[1] > node.length) continue;
-        if (overlaps(selected, node, bounds[0], bounds[1])) continue;
-        highlight.add(new StaticRange({ startContainer: node, startOffset: bounds[0], endContainer: node, endOffset: bounds[1] }));
-      }
+      if (!node.length) continue;
+      pieces.push({ node, start: text.length });
+      text += node.data;
+    }
+    if (!pieces.length) continue;
+    const folded = fold(text);
+    for (let index = folded.text.indexOf(needle); index !== -1; index = folded.text.indexOf(needle, index + needle.length)) {
+      const bounds = originalRange(folded, index, index + needle.length);
+      if (!bounds || bounds[1] <= bounds[0] || bounds[1] > text.length) continue;
+      const [startContainer, startOffset] = point(pieces, bounds[0], false);
+      const [endContainer, endOffset] = point(pieces, bounds[1], true);
+      const match = new StaticRange({ startContainer, startOffset, endContainer, endOffset });
+      if (!overlaps(selected, match)) highlight.add(match);
     }
   }
   if (highlight.size) CSS.highlights.set(HIGHLIGHT, highlight);

@@ -462,15 +462,11 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
   // in each node. Rebuild only when the implementation snapshot changes.
   let fileSearchEntries = [];
   let fileOccurrenceCounts = new Map();
-  let refreshFileSearch = null, redrawFileSearch = null;
+  let refreshFileSearch = null, fileSearchFileChanged = null;
   // Counts picker openings, so a closed picker's late close event leaves a
   // newer picker alone.
   let fileSearchSession = 0;
-  // Counts changes to file metadata that search results show (line counts and
-  // the binary flag), so cached result groups know when they are stale.
-  let fileSearchDataRevision = 0;
   function rebuildFileSearchIndex() {
-    fileSearchDataRevision++;
     fileSearchEntries = [];
     fileOccurrenceCounts = new Map();
     for (const stage of data.stages) {
@@ -512,11 +508,11 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       return query && index >= 0 && atEnd && !composing && document.activeElement === input
         ? name.slice(index + input.value.length) : "";
     }
-    // The grouped results, rebuilt only when the matches or their files' data change.
-    let grouped = [], groupedMatches = null, groupedRevision = -1;
+    // The grouped results, rebuilt only when the matches or the data they show change.
+    let grouped = [], groupedMatches = null;
     function groups() {
-      if (groupedMatches === matches && groupedRevision === fileSearchDataRevision) return grouped;
-      groupedMatches = matches; groupedRevision = fileSearchDataRevision;
+      if (groupedMatches === matches) return grouped;
+      groupedMatches = matches;
       const stages = grouped = [];
       let stage = null, node = null;
       matches.forEach(({ stage: s, node: n, file }, index) => {
@@ -591,10 +587,16 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     dialog.addEventListener("close", () => {
       dialog.remove();
       if (session !== fileSearchSession) return;
-      refreshFileSearch = redrawFileSearch = null;
+      refreshFileSearch = fileSearchFileChanged = null;
       if (!navigating) (opener?.isConnected ? opener : app.querySelector('[data-action="file-search"]'))?.focus({ preventScroll: true });
     });
-    refreshFileSearch = paint; redrawFileSearch = draw;
+    // A loaded diff page can change a file's line counts or binary flag, which
+    // the results show; redraw only when a listed file changed.
+    fileSearchFileChanged = (file) => {
+      if (!matches.some((match) => match.file === file)) return;
+      groupedMatches = null; draw();
+    };
+    refreshFileSearch = paint;
     document.body.append(dialog); draw();
     input.value = splitPath(path).name;
     paint(); dialog.showModal(); input.focus(); input.select();
@@ -624,6 +626,15 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
       mode, offset: String(offset),
       ...(target ? { side: target.side, line: String(target.line) } : {}),
     };
+    const revision = entry.file.revision;
+    // A live update replaces the file objects while a page loads. The response
+    // belongs to the file that now holds the path, if that is still the
+    // requested base, head and file revision; otherwise it is stale.
+    const currentFile = () => {
+      const current = fileById.get(entry.id);
+      return current && fileBaseRevision(current) === query.base && current.stage.headRevision === query.head &&
+        current.file.revision === revision ? current.file : null;
+    };
     let pageLoaded = false;
     const request = api.getDiff(query)
       .then(async (response) => {
@@ -634,30 +645,36 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
         if (!Array.isArray(payload.lines)) {
           throw new Error("Diff response did not include lines.");
         }
-        if ((fileViewMode(entry.id) === "full" ? "full" : "changes") !== mode) return;
-        entry.file.lines = payload.lines;
-        entry.file._diffMode = mode;
-        entry.file._pageOffset = payload.offset ?? offset;
-        entry.file.nextOffset = payload.nextOffset;
-        entry.file.additions = Number(payload.additions) || 0;
-        entry.file.deletions = Number(payload.deletions) || 0;
-        entry.file.binary = Boolean(payload.binary);
-        entry.file.truncated = Boolean(payload.truncated);
-        delete entry.file._ownership;
-        fileSearchDataRevision++;
+        const file = currentFile();
+        if (!file || (fileViewMode(entry.id) === "full" ? "full" : "changes") !== mode) return;
+        const additions = Number(payload.additions) || 0, deletions = Number(payload.deletions) || 0, binary = Boolean(payload.binary);
+        const shownChanged = file.additions !== additions || file.deletions !== deletions || Boolean(file.binary) !== binary;
+        file.lines = payload.lines;
+        file._diffMode = mode;
+        file._pageOffset = payload.offset ?? offset;
+        file.nextOffset = payload.nextOffset;
+        file.additions = additions;
+        file.deletions = deletions;
+        file.binary = binary;
+        file.truncated = Boolean(payload.truncated);
+        delete file._ownership;
+        if (shownChanged) fileSearchFileChanged?.(file);
         pageLoaded = true;
       })
       .catch((error) => {
-        entry.file._diffError = error.message || "Diff could not be loaded.";
+        const file = currentFile();
+        if (file) file._diffError = error.message || "Diff could not be loaded.";
       })
       .finally(() => {
+        const file = fileById.get(entry.id)?.file;
         entry.file._diffLoading = false;
+        if (file) file._diffLoading = false;
         diffRequests.delete(entry.id);
-        const queued = entry.file._queuedDiff;
+        const queued = file?._queuedDiff || entry.file._queuedDiff;
         delete entry.file._queuedDiff;
+        if (file) delete file._queuedDiff;
         if (queued) ensureFileDiff(fileById.get(entry.id), queued.offset, queued.force, queued.target, queued.pageScroll);
         render();
-        if (pageLoaded) redrawFileSearch?.();
         if (pageLoaded && pageScroll && !queued) scrollDiffPage(entry.id, pageScroll);
       });
     diffRequests.set(entry.id, request);
@@ -2012,7 +2029,9 @@ import { tagPopoverView, tooltipView } from "./views/tooltip";
     if (linked) out.push({ type: "insights", key: `insights:${lineId}`, insights: linked });
     out.push({ type: "code", key: lineId, ...row, line: { id: lineId, count, resolved, open: Boolean(state.openLineThreads[lineId]),
       ownership, insightTarget: insightTargetsLine(ctx, side, lineNo) } });
-    const thread = noted || compose?.id === lineId ? lineThreadModel(lineId) : null;
+    // A selection holds the list it touches, so a thread a live update removed
+    // stays until the selection clears.
+    const thread = noted || compose?.id === lineId || (selectedThreadLists.size && selectedThreadLists.has(lineListKey(lineId))) ? lineThreadModel(lineId) : null;
     if (thread) out.push({ type: "thread", key: `thread:${lineId}`, thread });
   }
   // What a diff's rows look up per line, gathered once per diff: the lines that

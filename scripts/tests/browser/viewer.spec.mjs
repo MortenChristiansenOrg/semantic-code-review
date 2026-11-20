@@ -2576,6 +2576,100 @@ test('file search shows line counts a diff response updates while it is open', a
   expect(errors).toEqual([]);
 });
 
+// Holds every diff request until the test answers it.
+async function holdDiffRequests(page) {
+  const pending = [];
+  await page.route('http://localhost/api/diff**', (route) => { pending.push(route); });
+  return pending;
+}
+// Counts the times the open file search draws its results from now on: each
+// draw looks up the completion under the input.
+const countSearchDraws = (page) => page.evaluate(() => {
+  const original = window.originalQuerySelector ||= Element.prototype.querySelector;
+  window.searchDraws = 0;
+  Element.prototype.querySelector = function (selector) {
+    if (selector === '.file-search-completion-text') window.searchDraws++;
+    return original.call(this, selector);
+  };
+});
+const searchDraws = (page) => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+  Element.prototype.querySelector = window.originalQuerySelector; resolve(window.searchDraws);
+}))));
+
+test('file search redraws its results only when a diff response changes what a listed file shows', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) stage.files = Array.from({ length: 20 }, (_, i) => ({ path: `dir/file${i}.js`, kind: 'modified', revision: 'rev', additions: 1, deletions: 0,
+    memberships: [{ nodeId: `${stage.id}-one`, classification: 'behavior' }, { nodeId: `${stage.id}-two`, classification: 'behavior' }] }));
+  const lines = [{ t: 'add', n: 1, s: 'const first = 1;' }, { t: 'add', n: 2, s: 'const second = 2;' }];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const pending = await holdDiffRequests(page);
+  await page.locator('details[data-node="first-one"] summary').click();
+  await page.locator('details[data-node="first-one"] .frow-open[data-id="f:first:dir/file0.js"]').click();
+  await expect.poll(() => pending.length).toBe(1);
+  const panel = page.locator('details[data-node="first-one"] .cinema-diff');
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const options = dialog.getByRole('option');
+  // A page whose line counts and binary flag are unchanged renders no option.
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  await expect(options).toHaveCount(80);
+  await countSearchDraws(page);
+  await pending[0].fulfill({ json: { ok: true, lines: lines.slice(0, 1), offset: 0, nextOffset: 1, additions: 1, deletions: 0 } });
+  await expect(panel.locator('[data-line-id="l:first:new:1:dir/file0.js"]')).toHaveCount(1);
+  expect(await searchDraws(page)).toBe(0);
+  await dialog.getByRole('combobox').press('Escape');
+  // Neither does a page that changes the counts of a file the results do not list.
+  await panel.getByRole('button', { name: 'Next page', exact: true }).click();
+  await expect.poll(() => pending.length).toBe(2);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  await dialog.getByRole('combobox').fill('file1');
+  await expect(options).toHaveCount(44);
+  await countSearchDraws(page);
+  await pending[1].fulfill({ json: { ok: true, lines: lines.slice(1), offset: 1, nextOffset: null, additions: 9, deletions: 0 } });
+  await expect(panel.locator('[data-line-id="l:first:new:2:dir/file0.js"]')).toHaveCount(1);
+  expect(await searchDraws(page)).toBe(0);
+  // The changed counts show once the file is listed.
+  await dialog.getByRole('combobox').fill('file0.js');
+  await expect(options.first()).toContainText('+9');
+  expect(errors).toEqual([]);
+});
+
+test('a diff response after a live snapshot updates the open file search, or is dropped when stale', async ({ page }) => {
+  const data = fixture(), { lines } = data.stages[0].files[0];
+  // Without lines, opening the file requests its diff.
+  delete data.stages[0].files[0].lines;
+  const errors = await mount(page, data);
+  const pending = await holdDiffRequests(page);
+  await openFile(page);
+  await expect.poll(() => pending.length).toBe(1);
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Find a file' });
+  const options = dialog.getByRole('option');
+  await expect(options).toHaveCount(4);
+  await expect(options.first()).toContainText('+2');
+  // A snapshot replaces the file objects while the page loads.
+  data.stages[1].files[0].additions = 5;
+  data.viewerRevision = 'during-diff';
+  await expect(options.nth(2)).toContainText('+5', { timeout: 15000 });
+  await pending[0].fulfill({ json: { ok: true, lines, additions: 9, deletions: 4 } });
+  await expect(options.first()).toContainText('+9');
+  await expect(options.first()).toContainText('−4');
+  // A response for a file revision a snapshot has replaced is dropped, and the
+  // new revision is requested.
+  await dialog.getByRole('combobox').press('Escape');
+  await page.locator('details[data-node="first-one"] [data-action="set-view"][data-mode="full"]').click();
+  await expect.poll(() => pending.length).toBe(2);
+  data.stages[0].files[0].revision = 'rev2';
+  data.stages[0].files[0].additions = 3;
+  data.viewerRevision = 'new-file-revision';
+  await page.getByRole('button', { name: 'Find file', exact: true }).click();
+  await expect(options.first()).toContainText('+3', { timeout: 15000 });
+  await pending[1].fulfill({ json: { ok: true, lines, additions: 9, deletions: 4 } });
+  await expect.poll(() => pending.length).toBe(3);
+  await expect(options.first()).toContainText('+3');
+  await expect(options.first()).toContainText('−0');
+  expect(errors).toEqual([]);
+});
+
 test('file search requires a contiguous current filename substring and completes inline', async ({ page }) => {
   const data = fixture();
   const file = (path, kind = 'added', previousPath) => ({ path, kind, previousPath, additions: 3, deletions: 1, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
@@ -3789,7 +3883,7 @@ test('reply and note drafts keep their text, caret, selection and focus across a
 
 // The ranges the viewer highlights as other occurrences of the selected code.
 const selectionHits = (page) => page.evaluate(() => [...(CSS.highlights.get('sel-hit') || [])].map((range) => ({
-  text: range.startContainer.data.slice(range.startOffset, range.endOffset),
+  text: (() => { const live = document.createRange(); live.setStart(range.startContainer, range.startOffset); live.setEnd(range.endContainer, range.endOffset); return String(live); })(),
   line: range.startContainer.parentElement.closest('[data-line-id]')?.dataset.lineId ?? null,
   code: Boolean(range.startContainer.parentElement.closest('.drow > code')),
   connected: range.startContainer.isConnected,
@@ -4133,6 +4227,30 @@ test('a line thread held by a code selection applies the reviewer\'s collapse an
   await expect(page.locator('.side.notes .notes-col-resolved [data-thread-id="line"]')).toHaveCount(1);
   await expect(page.locator('.side.notes .notes-col-active [data-thread-id="line"]')).toHaveCount(0);
   expect(requests).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('a line thread a live update removes stays while a code selection holds it', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.feedback = [thread('line', 'open', lineTarget)];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  await showNotes(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"]`);
+  await expect(lineThread.locator('.tthread')).toContainText('Feedback line');
+  await lineThread.evaluate((el) => { el.dataset.marker = 'kept'; });
+  const selected = await selectAcrossLineThread(page);
+  // The line's only thread is removed; another thread shows the update arrived.
+  data.feedback = [thread('other')];
+  data.viewerRevision = 'line-thread-removed';
+  await expect(page.locator('.side.notes [data-thread-id="other"]')).toContainText('Feedback other');
+  await expect(lineThread).toHaveAttribute('data-marker', 'kept');
+  await expect(lineThread.locator('.tthread')).toContainText('Feedback line');
+  expect(await page.evaluate(() => String(window.getSelection()))).toBe(selected);
+  // Once the selection clears, the removed thread goes.
+  await page.evaluate(() => window.getSelection().removeAllRanges());
+  await expect(lineThread).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -4739,8 +4857,42 @@ test('a cancelled selection drag refreshes the matches for the changed selection
   // a mouseup.
   await page.locator('[data-line-id="l:first:new:3:shared.js"] code').dispatchEvent('mousedown', { button: 0 });
   await selectInLine(page, 'l:first:new:3:shared.js', 'const');
+  // During the drag the matches stay those of the original selection.
+  await page.evaluate(() => new Promise((resolve) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(resolve)))));
+  expect(await selectionHits(page)).toEqual(hits('l:first:new:3:shared.js'));
   await page.evaluate(() => document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true })));
   await expect.poll(() => selectionHits(page)).toEqual(hits('l:first:new:1:shared.js'));
+  expect(errors).toEqual([]);
+});
+
+test('selection matches treat a final sigma as a sigma', async ({ page }) => {
+  const data = fixture(), lines = data.stages[0].files[0].lines;
+  lines[0].s = 'const ΟΣ = 1;'; lines[1].s = '// ος context'; lines[2].s = 'const σ = 2;';
+  const errors = await mount(page, data); await openFile(page);
+  await selectInLine(page, 'l:first:new:1:shared.js', 'ΟΣ');
+  await expect.poll(() => selectionHits(page)).toEqual([{ text: 'ος', line: 'l:first:new:2:shared.js', code: true, connected: true }]);
+  await selectInLine(page, 'l:first:new:2:shared.js', 'ος');
+  await expect.poll(() => selectionHits(page)).toEqual([{ text: 'ΟΣ', line: 'l:first:new:1:shared.js', code: true, connected: true }]);
+  expect(errors).toEqual([]);
+});
+
+test('selection matches span the syntax highlighting of a line', async ({ page }) => {
+  const data = fixture(), lines = data.stages[0].files[0].lines;
+  lines[2].s = 'const first = 2;';
+  const errors = await mount(page, data); await openFile(page);
+  // Select `const first`: the keyword is highlighted apart from the name.
+  const nodes = await page.locator('[data-line-id="l:first:new:1:shared.js"] code').evaluate((code) => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT), texts = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) texts.push(node);
+    const start = texts.find((node) => node.data.includes('const')), end = texts.find((node) => node.data.includes('first'));
+    const range = document.createRange();
+    range.setStart(start, start.data.indexOf('const')); range.setEnd(end, end.data.indexOf('first') + 'first'.length);
+    window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+    return texts.indexOf(end) - texts.indexOf(start);
+  });
+  expect(nodes).toBeGreaterThan(0);
+  await expect.poll(() => selectionHits(page)).toEqual([{ text: 'const first', line: 'l:first:new:3:shared.js', code: true, connected: true }]);
+  expect(await page.evaluate(() => { const [range] = CSS.highlights.get('sel-hit'); return range.startContainer !== range.endContainer; })).toBe(true);
   expect(errors).toEqual([]);
 });
 
