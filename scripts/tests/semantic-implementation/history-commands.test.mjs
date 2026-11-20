@@ -109,6 +109,51 @@ test("restack keeps the changes of a stage rebuilt on an earlier correction belo
   assert.equal(repository.git("show", `${prefix}/api:shared.txt`), lines(0, "y").trimEnd());
 });
 
+test("restack replays a stage rebuilt on an amended stage below from that stage", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const lines = (first, last) => `${first}\na\nb\nc\nd\n${last}\n`;
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, { id: "policy", file: "shared.txt", contents: lines(0, "x") });
+  beginStage(repository, { id: "api", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "api", file: "shared.txt", contents: lines("u", "x") });
+  const prefix = "semantic-flow/test-implementation/stages";
+  repository.git("switch", `${prefix}/policy`);
+  // The stage's commit is amended, then corrected again.
+  repository.write("shared.txt", lines(1, "x"));
+  repository.git("commit", "--quiet", "--amend", "--all", "--no-edit");
+  repository.commitFile("shared.txt", lines(1, "y"), "Correct the policy again");
+  const below = repository.git("rev-parse", "HEAD");
+  repository.git("switch", `${prefix}/api`);
+  repository.git("reset", "--quiet", "--hard", below);
+  repository.commitFile("shared.txt", lines("u", "y"), "Rebuild the API on the policy");
+  repository.git("switch", `${prefix}/policy`);
+  repository.semantic("restack", "--from", "policy");
+  assert.equal(repository.git("show", `${prefix}/api:shared.txt`), lines("u", "y").trimEnd());
+});
+
+test("restack replays a stage whose commit the stage below took in and partly reverted", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const lines = (first, middle, last) => `${first}\na\n${middle}\nc\nd\n${last}\n`;
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, { id: "policy", file: "shared.txt", contents: lines(0, "m", "x") });
+  beginStage(repository, { id: "api", dependencies: ["policy"] });
+  const api = finalizeStage(repository, { id: "api", file: "shared.txt", contents: lines("u", "m", "x") });
+  const prefix = "semantic-flow/test-implementation/stages";
+  // The stage below takes in the API's commit, reverts its edit and corrects its own line.
+  repository.git("switch", `${prefix}/policy`);
+  repository.git("merge", "--quiet", "--ff-only", api);
+  repository.commitFile("shared.txt", lines(0, "m", "x"), "Take the API edit back out");
+  repository.commitFile("shared.txt", lines(0, "m", "y"), "Correct the policy");
+  // The API stage adds a second edit.
+  repository.git("switch", `${prefix}/api`);
+  repository.commitFile("shared.txt", lines("u", "n", "x"), "Extend the API");
+  repository.git("switch", `${prefix}/policy`);
+  repository.semantic("restack", "--from", "policy");
+  assert.equal(repository.git("show", `${prefix}/api:shared.txt`), lines("u", "n", "y").trimEnd());
+});
+
 test("restack accepts several edited stage heads in one pass", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
