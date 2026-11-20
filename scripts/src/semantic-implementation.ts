@@ -2201,11 +2201,15 @@ function restackStages(
     : [];
   let parentBranch = artifact.manifest.targetBranch;
   let parentHead = newBase;
+  // The head the stage below had before this restack, which a corrected stage above may already build on.
+  let belowHead: string | undefined;
 
   try {
     for (const [index, id] of artifact.manifest.stages.entries()) {
       const stage = finalizedStage(artifact, id);
       const actualHead = branchCommit(workspace.root, stage.change.branch);
+      const observedBelow = belowHead;
+      belowHead = actualHead;
       if (index < startIndex) {
         if (actualHead !== stage.change.headRevision) {
           fail(
@@ -2221,16 +2225,19 @@ function restackStages(
       let nextHead: string;
       // A stage whose branch moved was corrected; it is folded into one commit again.
       const unchanged = actualHead === stage.change.headRevision;
+      // A stage rebuilt on the correction below starts there, so the correction is not replayed as its own change.
+      const stageBase = observedBelow !== undefined && observedBelow !== stage.change.baseRevision &&
+        isAncestor(workspace.root, observedBelow, actualHead) ? observedBelow : stage.change.baseRevision;
       if (isAncestor(workspace.root, parentHead, actualHead)) {
         nextHead = foldStage(workspace.root, stage, parentHead, actualHead, `Stage ${id}`, unchanged);
       } else {
-        const stageCommit = foldStage(workspace.root, stage, stage.change.baseRevision, actualHead, `Stage ${id}`, unchanged);
+        const stageCommit = foldStage(workspace.root, stage, stageBase, actualHead, `Stage ${id}`, unchanged);
         try {
           nextHead = applyCommitPatch({
             root: workspace.root,
             indexFile,
             baseTree: parentHead,
-            patchParent: stage.change.baseRevision,
+            patchParent: stageBase,
             patchCommit: stageCommit,
             metadataCommit: stageCommit,
             newParent: parentHead,
@@ -2242,7 +2249,7 @@ function restackStages(
             [
               `Restacking stage ${id} onto ${parentHead} failed.`,
               "No stage refs or artifacts were changed.",
-              `Conflict context: stage base ${stage.change.baseRevision}, stage head ${actualHead}, new parent ${parentHead}.`,
+              `Conflict context: stage base ${stageBase}, stage head ${actualHead}, new parent ${parentHead}.`,
               detail,
             ].join("\n"),
           );
