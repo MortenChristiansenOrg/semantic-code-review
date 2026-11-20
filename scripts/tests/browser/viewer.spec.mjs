@@ -601,17 +601,16 @@ test('a long stage rationale tooltip stays within the viewport and scrolls', asy
   await expect(tooltip).toBeVisible();
 });
 
-test('a tooltip taller than the window scrolls to its end with the keyboard from its trigger', async ({ page }) => {
+for (const reducedMotion of ['no-preference', 'reduce']) test(`a tooltip taller than the window scrolls to its end with the keyboard from its trigger (${reducedMotion} motion)`, async ({ page }) => {
+  await page.emulateMedia({ reducedMotion });
   const data = fixture();
   const long = (last) => `${'This stage exists because of a long chain of reasons. '.repeat(50)}${last}`;
   data.stages[0].rationale = long('The final reason.');
   data.stages[1].rationale = long('Another final reason.');
   await page.setViewportSize({ width: 390, height: 600 });
   await mount(page, data);
-  // Page scrolling is instant here, so its position can be compared at once.
-  await page.addStyleTag({ content: 'html { scroll-behavior: auto !important; }' });
   await page.mouse.move(0, 0);
-  // Record whether the page's own handling of each key was taken over.
+  // Record whether the page's own handling of each key, such as scrolling, was taken over.
   await page.evaluate(() => {
     window.keyTaken = [];
     window.addEventListener('keydown', (e) => window.keyTaken.push(e.defaultPrevented));
@@ -630,16 +629,15 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   expect(await keyTaken()).toEqual([false]);
 
   const label = page.locator('.stage[data-stage="first"] .rationale-label');
-  // Until the opening frame shows it, the hidden tooltip has no key hint to describe.
-  expect(await label.evaluate((el) => {
+  // The key hint never belongs to a hidden tooltip: not before the opening
+  // frame shows it, nor in that frame while its fade begins.
+  expect(await label.evaluate((el) => new Promise((done) => {
+    const pop = document.querySelector('#review-tooltip'), hint = pop.querySelector('.pop-scroll-hint');
     el.focus();
-    return document.querySelector('#review-tooltip .pop-scroll-hint').textContent;
-  })).toBe('');
-  // Nor once the opening frame shows it, before its fade has finished.
-  expect(await label.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => {
-    const pop = document.querySelector('#review-tooltip');
-    done(pop.querySelector('.pop-scroll-hint').textContent === '' || getComputedStyle(pop).visibility === 'visible');
-  }))))).toBe(true);
+    const before = hint.textContent;
+    // Runs right after the opening frame's own callback, which focus queued first.
+    requestAnimationFrame(() => done({ before, opening: hint.textContent === '' || getComputedStyle(pop).visibility === 'visible' }));
+  }))).toEqual({ before: '', opening: true });
   await expect(tooltip).toBeVisible();
   await expect(tooltip.locator('strong')).toHaveText(data.stages[0].rationale);
   // Screen readers still get the full text, without the visible key hint.
@@ -654,8 +652,6 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   })).toBe(true);
   await expect(tooltip).toHaveAttribute('tabindex', '-1');
   await expect.poll(() => tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
-  expect(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight)).toBe(true);
-  const pageScroll = await page.evaluate(() => scrollY);
   const atEnd = () => tooltip.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
   await page.keyboard.press('ArrowDown');
   await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
@@ -673,7 +669,6 @@ test('a tooltip taller than the window scrolls to its end with the keyboard from
   expect(await lastLineShown()).toBe(true);
   await expect(label).toBeFocused();
   await expect(tooltip).toBeVisible();
-  expect(await page.evaluate(() => scrollY)).toBe(pageScroll);
   await page.keyboard.press('Home');
   await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBe(0);
   await page.keyboard.press('End');

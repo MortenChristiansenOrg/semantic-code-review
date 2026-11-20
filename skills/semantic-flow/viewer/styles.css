@@ -656,8 +656,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .tag-pop-float.is-above { transform-origin: bottom left; transform: translateY(6px) scale(.985); }
 .tag-pop-float.is-shown {
   opacity: 1; visibility: visible; transform: none; pointer-events: auto;
-  /* Visible at once when shown, so what it describes never reads as hidden. */
-  transition: opacity .16s var(--ease), transform .16s var(--ease), visibility 0s;
+  /* Visible at once when shown, even with reduced motion, so what it
+     describes never reads as hidden. Hiding still fades out first. */
+  transition: opacity .16s var(--ease), transform .16s var(--ease);
 }
 .tag-pop-float .tag-pop-kind { display: block; margin-bottom: 6px; }
 .tag-pop-float strong {
