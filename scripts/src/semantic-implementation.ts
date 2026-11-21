@@ -991,6 +991,7 @@ function initialize(root: string, options: Options): void {
   git(["check-ref-format", "--branch", stageBranchName(branchPrefix, "probe")], {
     cwd: root,
   });
+  assertBranchOutsideOwnNames(`${branchPrefix}/`, "Branch prefix", branchPrefix);
   const versionFile = path.join(skillDirectory, "VERSION");
   const skillVersion = fs.existsSync(versionFile) ? fs.readFileSync(versionFile, "utf8").trim() : "";
   const manifestInput: ImplementationManifest = {
@@ -3185,6 +3186,7 @@ function prepareBranch(
     fail(`Cumulative branch ${branch} is already bound; omit --rebind.`);
   }
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
+  assertBranchOutsideOwnNames(branch, "Cumulative branch", branch);
   if (artifact.manifest.stages.every((id) => finalizedStage(artifact, id).change.files.length === 0)) {
     fail(`Every stage of ${artifact.manifest.implementationId} is empty; there is nothing to prepare.`);
   }
@@ -3436,6 +3438,16 @@ function assertDirectRefs(root: string, refs: readonly string[]): void {
     const target = gitOptional(["symbolic-ref", "--quiet", ref], { cwd: root });
     if (target) fail(`${ref} is a symbolic ref to ${target}; Semantic Flow writes only direct refs. Replace it with a branch or remove it.`);
   }
+}
+
+/** Short-name prefixes Semantic Flow keeps for its own refs: everything under
+ * `refs/semantic-review/` and the shared archive tags. A branch inside them
+ * would make Git's short names ambiguous. */
+const OWN_SHORT_NAME_PREFIXES = ["semantic-review/", "semantic-review-archive/"];
+
+function assertBranchOutsideOwnNames(name: string, label: string, shown: string): void {
+  const reserved = OWN_SHORT_NAME_PREFIXES.find((prefix) => name.startsWith(prefix));
+  if (reserved) fail(`${label} ${shown} is inside ${reserved}, which Semantic Flow keeps for its own refs; choose another name.`);
 }
 
 /** The archive's shared tag and the commit it names, if it was shared. Any

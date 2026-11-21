@@ -137,7 +137,7 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   unknown), so its provenance remains available if stage branches are later
   deleted, and removing its active ref. Archiving adds nothing to the target
   branch and does not delete branches. An archive is shared as the annotated
-  tag `semantic-review/archive/<implementation-id>`, which is never moved.
+  tag `semantic-review-archive/<implementation-id>`, which is never moved.
 - **Artifact worktree**: The repository worktree from which artifact and
   feedback commands operate on an active implementation: the one with one of
   its stage branches or its metadata branch checked out, or else the one where

@@ -370,12 +370,18 @@ metadata commit.
 An archive is shared as the annotated tag:
 
 ```text
-refs/tags/semantic-review/archive/<implementation-id>
+refs/tags/semantic-review-archive/<implementation-id>
 ```
 
 The tag MUST NOT be moved once it was pushed; the reference tooling never moves
 it, so landing is recorded before sharing. Pushing it sends the artifact, its
 evidence and the stage commits, but nothing reaches the target branch.
+
+Its short name, `semantic-review-archive/<implementation-id>`, differs from the
+short name of every ref under `refs/semantic-review/`, so Git resolves it to the
+tag alone. Stage, metadata and cumulative branches MUST NOT start with
+`semantic-review/` or `semantic-review-archive/`; the reference tooling refuses
+such a branch prefix or cumulative branch name.
 
 ## Deliberate exclusions
 

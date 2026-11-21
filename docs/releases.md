@@ -149,7 +149,7 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    `.semantic-review-history/` to the target branch, has no `--destination`,
    and needs neither the target branch checked out nor the work to have landed:
    it records landing (found, supplied with `--landed`, or unknown) and shares an
-   archive as the tag `semantic-review/archive/<id>` on request. Archives already
+   archive as the tag `semantic-review-archive/<id>` on request. Archives already
    committed under `.semantic-review-history/` stay as they are.
    The first release that requires Node.js 22 must say prominently under
    Breaking changes and Updating that Node.js 20 is no longer supported and that
