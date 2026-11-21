@@ -317,25 +317,31 @@ for (const layout of ['gitfile', 'reftable']) {
 
 test('reading a remote review while a refresh replaces its projection always finds a complete projection', async (t) => {
   const { source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const done = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'semantic-refresh-writer-')), 'done');
+  t.after(() => fs.rmSync(path.dirname(done), { recursive: true, force: true }));
   const module = (file) => JSON.stringify(new URL(`../../src/shared/${file}`, import.meta.url).href);
   // Each cycle moves the projection aside and back under the review's lock, as a
-  // refresh replaces it. Both sides count from the writer's start.
+  // refresh replaces it.
   const writer = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import { withReviewLock, projectionDirectory } from ${module('review-store.ts')};
     import { replaceFile } from ${module('json.ts')};
-    const [id] = process.argv.slice(1);
+    import fs from 'node:fs';
+    const [id, done] = process.argv.slice(1);
     const directory = projectionDirectory(id), aside = directory + '.previous';
     const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     process.stdout.write('ready\\n');
-    const until = Date.now() + 1500;
+    // Replace for at least 1.5 s and at least five times, as slow file systems
+    // give the lock to the writer less often, but stop after 30 s.
+    const start = Date.now();
     let cycles = 0;
-    while (Date.now() < until) {
+    while ((Date.now() < start + 1500 || cycles < 5) && Date.now() < start + 30_000) {
       withReviewLock(id, () => { replaceFile(directory, aside); sleep(2); replaceFile(aside, directory); });
       cycles++;
       sleep(3);
     }
-    process.stdout.write('cycles ' + cycles + '\\n');
-  `, review.id], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
+    // The count goes in the marker: the process can exit before its last output is read.
+    fs.writeFileSync(done, String(cycles));
+  `, review.id, done], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => writer.kill());
   const exited = new Promise((resolve) => writer.on('exit', resolve));
   let output = '';
@@ -343,18 +349,23 @@ test('reading a remote review while a refresh replaces its projection always fin
     writer.stdout.on('data', (chunk) => { output += chunk; if (output.includes('ready')) resolve(); });
     writer.on('exit', () => reject(new Error('The writer exited before starting.')));
   });
-  const until = Date.now() + 1500;
+  // Read until the writer is done; pausing between reads lets its lock attempts,
+  // which retry every 20 ms, find the lock free.
+  const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const limit = Date.now() + 40_000;
   let reads = 0;
-  while (Date.now() < until) {
+  while (!fs.existsSync(done) && Date.now() < limit) {
     for (const rebuild of [true, false]) {
       const found = readReviewArtifact(review.repositoryRoot, undefined, { rebuild });
       assert.ok(found?.projection, `Read ${reads} found no projection.`);
       reads++;
     }
+    pause(5);
   }
   assert.equal(await exited, 0);
   assert.ok(reads > 0, 'No read ran while the writer replaced the projection.');
-  assert.ok(Number(/cycles (\d+)/.exec(output)?.[1]) > 0, `The writer replaced no projection: ${output}`);
+  const cycles = fs.readFileSync(done, 'utf8');
+  assert.ok(Number(cycles) > 0, `The writer replaced no projection: ${cycles}`);
   assert.equal(dataFor(review).stages.length, 1);
 });
 
