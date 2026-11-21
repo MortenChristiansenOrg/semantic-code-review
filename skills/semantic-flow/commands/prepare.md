@@ -19,6 +19,34 @@ Publication readiness only considers criteria referenced by the finalized
 stages. Criteria in the requirement documents but outside those stage
 references are outside the review and must not block preparation.
 
+## Empty stages
+
+A cumulative branch would land each empty stage as an empty commit. Before
+preparing, run status with the same `--project` as the helper below:
+
+```text
+<semantic-flow> status --json [--project <artifact-worktree-path>]
+```
+
+From the returned `artifact.worktree`, remove every stage listed in
+`emptyStageThreads` without open threads, naming the returned
+`artifact.implementationId`:
+
+```text
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
+```
+
+When `emptyStageThreads` is null, the empty stages or their threads are
+unknown. Run status once more; if it is still null, do not prepare: report that
+empty stages cannot be removed and the validation problems status reports.
+
+Report each removal. The command refuses the only remaining stage: when every
+stage is empty, keep the last one, report that the implementation no longer
+changes anything, and suggest archiving it instead of preparing. The stages above get new heads with unchanged content; the
+helper below publishes metadata for them. A hosted review based on a removed
+stage branch needs its base changed to the branch the removal reports as the new
+base.
+
 ## Outputs
 
 If stack or cumulative-branch output is not specified and cannot be inferred,

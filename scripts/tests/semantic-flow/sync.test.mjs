@@ -88,6 +88,28 @@ test("sync fetches the target upstream, restacks all stages, and refreshes feedb
   assert.deepEqual(snapshot(repository), after);
 });
 
+test("sync refuses to restack onto a target that moved after it was verified", (t) => {
+  const { repository } = createImplementationWithStages(t, ["foundation", "behavior"]);
+  const upstream = addUpstream(t, repository);
+  const target = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const stageBranch = repository.git("branch", "--show-current");
+  const stageHead = repository.git("rev-parse", "HEAD");
+  // Detaching the checked-out stage branch runs post-checkout after sync
+  // verified the target; the hook moves the target once and removes itself.
+  const hook = fixtureHook(repository, "post-checkout",
+    `#!/bin/sh\nrm -f "$0"\nmoved=$(git commit-tree "refs/heads/main^{tree}" -p refs/heads/main -m Moved) && git update-ref refs/heads/main "$moved"\n`);
+
+  expectSyncFailure(repository, /must equal target branch main head/);
+  assert.equal(fs.existsSync(hook), false);
+  const moved = repository.git("rev-parse", "main");
+  assert.equal(repository.git("rev-parse", "main^"), target);
+  assert.notEqual(moved, target);
+  // No stage was restacked onto the moved target, and the checkout is back on its branch.
+  assert.equal(repository.git("branch", "--show-current"), stageBranch);
+  assert.equal(repository.git("rev-parse", "HEAD"), stageHead);
+  assert.equal(repository.result("git", ["merge-base", "--is-ancestor", moved, stageHead]).status, 1);
+});
+
 test("sync --local restacks a stage whose patch exceeds the default 1 MiB subprocess buffer", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
@@ -413,6 +435,52 @@ test("refresh-target fast-forwards a target before new work and keeps local-only
   assert.notEqual(diverged.status, 0);
   assert.match(diverged.stderr, /diverged\. No refs were changed/);
   assert.equal(repository.git("rev-parse", "main"), local);
+});
+
+/** A hooks directory of the fixture's own, so no test writes to a hook Git would otherwise run. */
+function fixtureHook(repository, name, script) {
+  const hooks = path.join(path.resolve(repository.root, repository.git("rev-parse", "--git-common-dir")), "fixture-hooks");
+  fs.mkdirSync(hooks, { recursive: true });
+  repository.git("config", "core.hooksPath", hooks);
+  const hook = path.join(hooks, name);
+  fs.writeFileSync(hook, script, { mode: 0o755 });
+  return hook;
+}
+
+test("refresh-target refuses a target that is a symbolic ref to another branch", (t) => {
+  const repository = createRepository(t, "semantic-refresh-symbolic-");
+  const upstream = addUpstream(t, repository);
+  const initial = repository.git("rev-parse", "main");
+  repository.git("switch", "-c", "trunk");
+  repository.git("symbolic-ref", "refs/heads/main", "refs/heads/trunk");
+  upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  const result = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refs\/heads\/main is a symbolic ref to refs\/heads\/trunk/);
+  assert.equal(repository.git("rev-parse", "trunk"), initial);
+  assert.equal(repository.git("status", "--porcelain=v1", "--untracked-files=all"), "");
+});
+
+test("refresh-target reports a fast-forward it could not undo", (t) => {
+  const repository = createRepository(t, "semantic-refresh-undo-");
+  const upstream = addUpstream(t, repository);
+  const initial = repository.git("rev-parse", "main");
+  const advanced = upstream.commitFile("trunk.txt", "new upstream\n", "Advance upstream");
+  // Once main moves, an untracked file blocks the checkout's update and the
+  // move back is refused, as when another Git process holds the ref.
+  fixtureHook(repository, "reference-transaction", `#!/bin/sh
+while read old new ref; do
+  if [ "$ref" = refs/heads/main ]; then
+    if [ "$1" = committed ] && [ "$new" = ${advanced} ]; then echo blocker > "${repository.root}/trunk.txt"; fi
+    if [ "$1" = prepared ] && [ "$new" = ${initial} ]; then exit 1; fi
+  fi
+done
+exit 0
+`);
+  const result = repository.result(process.execPath, [flowCli, "refresh-target", "--json", "--target-branch", "main"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, new RegExp(`Could not update the files of .*; refs/heads/main could not be moved back from ${advanced} to ${initial}\\.`));
+  assert.equal(repository.git("rev-parse", "main"), advanced);
 });
 
 test("refresh-target never lets the fetch or the upstream configuration move other refs", (t) => {

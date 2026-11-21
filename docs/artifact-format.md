@@ -29,6 +29,7 @@ semantic stage branches. The key words **MUST**, **MUST NOT**, **SHOULD**, and
   manifest.json
   requirements/<specification-id>.json
   stages/<stage-id>.json
+  removed-stages/<stage-id>.json
   evidence/<stage-id>/<sha256>.<extension>
 ```
 
@@ -67,6 +68,7 @@ Fields (required unless marked optional):
 | `branchPrefix` | Shared folder-like prefix for all stage branches |
 | `requirements` | Indexed specification IDs |
 | `stages` | Stage IDs in bottom-to-top branch order |
+| `removedStages` | Optional `{ "id", "headRevision" }` records of empty stages removed from the stack, oldest first (see [Removing an empty stage](#removing-an-empty-stage)) |
 
 The default prefix is `semantic-flow/<implementation-id>`. Stage branches are
 named:
@@ -194,7 +196,8 @@ private to the CLI. It differs from the full form in three places:
   after a lower stage's corrected head was recorded and before restacking
   moves the stage onto it. Validation with Git reports that state and names
   the restack that ends it.
-- Stage documents omit `change`.
+- Stage documents omit `change`. Removed stage documents keep it, since no
+  stack derives it.
 - Working stage documents omit `branch`.
 
 One loader turns the active form into the full form for every reader: it names
@@ -220,7 +223,8 @@ object store, not in a worktree:
   Each snapshot carries them forward, so commits that feedback anchors may
   still refer to survive garbage collection.
 - A command that also moves stage branches, such as `stage begin`, `stage
-  discard` or `restack`, moves them and the artifact's ref in one transaction.
+  discard`, `stage remove` or `restack`, moves them and the artifact's ref in
+  one transaction.
 - Every worktree of the repository sees the same artifacts, and cleaning a
   worktree cannot remove them. Active implementations are found by listing
   `refs/semantic-review/active/`. With several, a command acts on the one whose
@@ -266,6 +270,31 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
 5. Record each affected `headRevision` (and the manifest's `baseRevision` when
    the target advanced); the other `change` fields follow from them.
 
+### Removing an empty stage
+
+An empty stage stays in the stack until `stage remove` takes it out. Only a
+finalized stage whose head is a marked empty commit can be removed, never the
+only stage, and not while a restack is pending, a stage is working, a feedback
+thread on the stage is not resolved, or its branch is checked out in another
+worktree.
+
+Because the removed stage has its base's tree, each stage above it is rebuilt
+on the stage below it (or on `baseRevision`) as a commit with the same tree,
+author, committer, dates and message, so every diff above stays byte for byte
+the same. One transaction deletes the stage branch, moves the branches above
+and records the new snapshot. The stage document moves, in its full form, to
+`removed-stages/<stage-id>.json`, with its insights, validation and evidence;
+its captures stay under `evidence/<stage-id>/`. The manifest's `removedStages`
+records its ID and last head. That head is provenance: the active artifact
+keeps it reachable as a superseded head, but nothing keeps it after archiving.
+A stage that depended on the removed one takes over its dependencies, without
+those another dependency already implies.
+
+A removed stage is not part of the stack, coverage or preparation. Its ID MUST
+NOT be used by another stage. Its resolved feedback threads keep their
+assignment and target and stay readable, but can no longer be replied to or
+reopened; a thread that is not resolved MUST NOT refer to a removed stage.
+
 The operation MUST refuse to overwrite an affected branch that changed after
 it was read. Tools SHOULD use compare-and-swap ref updates and
 `--force-with-lease` when pushing rewritten branches.
@@ -294,7 +323,8 @@ outside this format.
 Validation layers:
 
 1. Parse indexed JSON, derive the full form, and validate schemas.
-2. Validate IDs, references, and dependencies.
+2. Validate IDs, references, and dependencies, including that removed stage IDs
+   are listed once, are used by no other stage, and have empty changes.
 3. Resolve every base/head revision and stage branch.
 4. Verify the branch ref equals `headRevision`.
 5. Verify linear ancestry, no merges, unique heads, node coverage of the

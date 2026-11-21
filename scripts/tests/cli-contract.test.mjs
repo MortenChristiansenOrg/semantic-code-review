@@ -41,6 +41,7 @@ const commands = new Map([
       "stage no-evidence",
       "stage finish",
       "stage discard",
+      "stage remove",
       "restack",
       "publish",
       "export",
@@ -324,7 +325,19 @@ test("skill indexes command-specific workflows", () => {
     commandText.get("feedback"),
     /Do not ask for permission\s+merely because Git reported a conflict/,
   );
+  // The agent removes an empty stage on its own once nothing on it is open, and never asks in the chat.
+  const removeEmptyStage = /<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json/;
+  assert.match(commandText.get("feedback"), removeEmptyStage);
+  assert.match(commandText.get("feedback"), /Remove an empty stage without unresolved threads before posting replies/);
+  assert.match(commandText.get("feedback"), /the stage is now empty and will be removed once they\s+are resolved/);
+  assert.match(commandText.get("feedback"), /Never ask in the chat whether\s+to remove it, and never resolve threads to make it removable/);
+  assert.match(commandText.get("feedback"), /`emptyStageThreads`/);
+  assert.match(commandText.get("sync"), removeEmptyStage);
+  assert.match(commandText.get("sync"), /`emptyStageThreads`/);
+  assert.match(commandText.get("prepare"), removeEmptyStage);
+  assert.match(commandText.get("prepare"), /empty commit/);
   const restackConflicts = fs.readFileSync(path.join(skillRoot, "docs", "restack-conflicts.md"), "utf8");
+  assert.match(restackConflicts, removeEmptyStage);
   assert.match(restackConflicts, /<semantic-flow> implementation restack --continue/);
   assert.match(restackConflicts, /implementation restack --abort/);
   assert.doesNotMatch(restackConflicts, /update-ref/);

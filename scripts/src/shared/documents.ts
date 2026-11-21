@@ -35,6 +35,16 @@ export interface ImplementationManifest {
   branchPrefix: string;
   requirements: string[];
   stages: string[];
+  /** Empty stages removed from the stack, oldest first; each keeps its stage
+   * document at removed-stages/<id>.json. Absent when none was removed. */
+  removedStages?: RemovedStageRecord[];
+}
+
+/** A stage `stage remove` took out of the stack. */
+export interface RemovedStageRecord {
+  id: string;
+  /** The stage's last head; provenance only, kept reachable while the implementation is active. */
+  headRevision: string;
 }
 
 /** How an archive records where its implementation landed. */

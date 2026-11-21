@@ -1058,6 +1058,56 @@ test('a review whose every stage is empty claims no approval', async ({ page }) 
   await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('0/0');
 });
 
+test('threads of a removed stage are labelled and read-only', async ({ page }) => {
+  const data = fixture();
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [
+    { ...thread('on-gone', 'resolved', { kind: 'stage', stageId: 'gone', label: 'Stage gone' }), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' },
+    { ...thread('fixed-in-gone', 'resolved'), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' },
+    { ...thread('kept', 'resolved'), assignedStageId: 'first', resolvedAt: '2026-09-08T11:00:00Z' },
+  ];
+  await mount(page, data);
+  await showNotes(page);
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  const resolved = page.locator('.notes-col-resolved');
+  for (const id of ['on-gone', 'fixed-in-gone']) {
+    const item = resolved.locator(`.tthread[data-thread-id="${id}"]`);
+    await item.locator('[data-action="toggle-thread-collapse"]').click();
+    await expect(item.locator('.tthread-removed')).toHaveText('Stage removed');
+    await expect(item.locator('.tthread-removed-note')).toContainText('Stage “Stage gone” changed nothing and was removed.');
+    await expect(item.locator('.tmsg')).toHaveText(/Feedback/);
+    await expect(item.locator('[data-action="thread-reopen"], [data-action="thread-reply"]')).toHaveCount(0);
+  }
+  const kept = resolved.locator('.tthread[data-thread-id="kept"]');
+  await kept.locator('[data-action="toggle-thread-collapse"]').click();
+  await expect(kept.locator('.tthread-removed')).toHaveCount(0);
+  await expect(kept.locator('[data-action="thread-reopen"]')).toHaveCount(1);
+});
+
+test('a reply draft on a removed stage stays listed without Edit, also when the stage goes during its edit', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [{ ...thread('t'), assignedStageId: 'first' }];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'My reply', attachments: [], createdAt: 2 }] });
+  await showNotes(page);
+  const panelThread = page.locator('.side.notes [data-thread-id="t"]');
+  await panelThread.locator('[data-action="reply-edit"]').click();
+  await expect(panelThread.locator('textarea[name="reply-body"]')).toHaveValue('My reply');
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(0);
+  // The stage is removed while its draft is being edited.
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [{ ...thread('t', 'resolved'), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' }];
+  data.viewerRevision = 'stage-removed';
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  const removed = page.locator('.notes-col-resolved .tthread[data-thread-id="t"]');
+  if (await removed.evaluate((element) => element.classList.contains('is-collapsed'))) await removed.locator('[data-action="toggle-thread-collapse"]').click();
+  await expect(removed.locator('.tthread-removed')).toHaveText('Stage removed');
+  await expect(removed.locator('textarea[name="reply-body"]')).toHaveCount(0);
+  await expect(removed.locator('.tmsg-draft')).toContainText('My reply');
+  await expect(removed.locator('.tmsg-draft [data-action="reply-edit"]')).toHaveCount(0);
+  await expect(removed.locator('.tmsg-draft [data-action="reply-del"]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
 test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await mount(page);
@@ -4939,6 +4989,21 @@ async function selectAcrossLineThread(page) {
   return page.evaluate(() => String(window.getSelection()));
 }
 const lineTarget = { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' };
+
+test('a line thread assigned to a removed stage is read-only in the diff too', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [{ ...thread('line', 'resolved', lineTarget), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' }];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"] .tthread`);
+  await expect(lineThread).toContainText('Feedback line');
+  if (await lineThread.evaluate((element) => element.classList.contains('is-collapsed'))) await lineThread.locator('.tthread-h').click();
+  await expect(lineThread.locator('.tthread-removed')).toHaveText('Stage removed');
+  await expect(lineThread.locator('[data-action="thread-reopen"], [data-action="thread-reply"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
 
 test('a line thread held by a code selection applies the reviewer\'s collapse and busy state at once', async ({ page }) => {
   const data = fixture();

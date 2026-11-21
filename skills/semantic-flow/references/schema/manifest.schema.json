@@ -59,6 +59,26 @@
       "items": {
         "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
       }
+    },
+    "removedStages": {
+      "description": "Empty stages removed from the stack, oldest first. Each one's full stage document is kept at removed-stages/<id>.json, and its captured evidence under evidence/<id>/; it is not part of the stack, coverage or preparation. The head revision is provenance: nothing keeps that commit after the implementation is archived.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "headRevision"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/id"
+          },
+          "headRevision": {
+            "$ref": "https://semantic-code-review.dev/schemas/v0.1/common.schema.json#/$defs/sha1"
+          }
+        }
+      }
     }
   }
 }
