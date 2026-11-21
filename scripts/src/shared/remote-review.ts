@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, remoteProjectionStale, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
@@ -200,7 +200,8 @@ export function prepareRemoteReview(id: string, generation: string): void {
   let record: ReviewRecord;
   try { record = readReview(id); } catch { return; }
   if (!record.remote || record.generation !== generation) return;
-  try { if (readReviewArtifact(record.repositoryRoot)) return; } catch { /* Fetched below. */ }
+  // A projection shown in place of a newer one the checkout could not make is not enough.
+  try { if (readReviewArtifact(record.repositoryRoot) && !remoteProjectionStale(record.repositoryRoot)) return; } catch { /* Fetched below. */ }
   try { refreshRemoteReview(id, generation); } catch { /* The viewer reports what stays unavailable. */ }
 }
 export function refreshRemoteReview(id: string, generation: string) {

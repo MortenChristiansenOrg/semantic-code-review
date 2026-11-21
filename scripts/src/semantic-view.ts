@@ -2207,8 +2207,10 @@ export function prepareRegisteredReview(id: string, generation: string): ReviewC
  * counts from the launch, once preparing has finished. */
 export async function openRegisteredReview(context: ReviewContext): Promise<string> {
   const id = context.reviewId;
+  // Only the identity is checked again here, on the thread serving requests: the
+  // viewer it starts reads the review, and makes its projection, itself.
   const child = spawnReviewCommand(context, process.execPath, [fileURLToPath(import.meta.url), "viewer", "serve", context.repositoryRoot, "--review", context.reviewId, "--generation", context.generation], {
-    detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" },
+    detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" }, artifactCheck: "skip",
   });
   try {
     return await new Promise<string>((resolve, reject) => {

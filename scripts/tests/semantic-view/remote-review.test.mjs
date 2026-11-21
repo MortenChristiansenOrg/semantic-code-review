@@ -318,27 +318,32 @@ for (const layout of ['gitfile', 'reftable']) {
 test('reading a remote review while a refresh replaces its projection always finds a complete projection', async (t) => {
   const { source } = setup(t), review = startRemoteReview(source.root, 'feature');
   const module = (file) => JSON.stringify(new URL(`../../src/shared/${file}`, import.meta.url).href);
-  const until = Date.now() + 1500;
   // Each cycle moves the projection aside and back under the review's lock, as a
-  // refresh replaces it.
+  // refresh replaces it. Both sides count from the writer's start.
   const writer = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import { withReviewLock, projectionDirectory } from ${module('review-store.ts')};
     import { replaceFile } from ${module('json.ts')};
-    const [id, until] = process.argv.slice(1);
+    const [id] = process.argv.slice(1);
     const directory = projectionDirectory(id), aside = directory + '.previous';
     const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
     process.stdout.write('ready\\n');
-    while (Date.now() < Number(until)) {
+    const until = Date.now() + 1500;
+    let cycles = 0;
+    while (Date.now() < until) {
       withReviewLock(id, () => { replaceFile(directory, aside); sleep(2); replaceFile(aside, directory); });
+      cycles++;
       sleep(3);
     }
-  `, review.id, String(until)], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
+    process.stdout.write('cycles ' + cycles + '\\n');
+  `, review.id], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => writer.kill());
   const exited = new Promise((resolve) => writer.on('exit', resolve));
+  let output = '';
   await new Promise((resolve, reject) => {
-    writer.stdout.on('data', (chunk) => { if (String(chunk).includes('ready')) resolve(); });
+    writer.stdout.on('data', (chunk) => { output += chunk; if (output.includes('ready')) resolve(); });
     writer.on('exit', () => reject(new Error('The writer exited before starting.')));
   });
+  const until = Date.now() + 1500;
   let reads = 0;
   while (Date.now() < until) {
     for (const rebuild of [true, false]) {
@@ -348,6 +353,8 @@ test('reading a remote review while a refresh replaces its projection always fin
     }
   }
   assert.equal(await exited, 0);
+  assert.ok(reads > 0, 'No read ran while the writer replaced the projection.');
+  assert.ok(Number(/cycles (\d+)/.exec(output)?.[1]) > 0, `The writer replaced no projection: ${output}`);
   assert.equal(dataFor(review).stages.length, 1);
 });
 

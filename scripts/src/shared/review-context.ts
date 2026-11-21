@@ -73,8 +73,9 @@ export function runReviewCommand(context: ReviewContext, executable: string, arg
 }
 
 /** Asynchronous counterpart for launching another registered review service. */
-export function spawnReviewCommand(context: ReviewContext, executable: string, args: string[], options: Pick<SpawnOptions, "detached" | "stdio"> & { environment?: NodeJS.ProcessEnv } = {}) {
-  assertReviewContext(context);
+export function spawnReviewCommand(context: ReviewContext, executable: string, args: string[],
+  options: Pick<SpawnOptions, "detached" | "stdio"> & { environment?: NodeJS.ProcessEnv; artifactCheck?: ArtifactCheck } = {}) {
+  assertReviewContext(context, options.artifactCheck);
   return spawn(executable, args, {
     cwd: context.repositoryRoot, detached: options.detached, stdio: options.stdio, windowsHide: true,
     env: { ...reviewEnvironment(), ...options.environment, SEMANTIC_FLOW_HOME: reviewHome() },
