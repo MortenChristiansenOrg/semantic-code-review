@@ -1032,6 +1032,91 @@ test("ranges that share a head keep their own inventories", (t) => {
   ]);
 });
 
+test("a stage's inventory is the same alone and batched whatever the user's Git configuration", (t) => {
+  const repository = createRepository(t);
+  repository.git("config", "core.autocrlf", "false");
+  const base = repository.git("rev-parse", "HEAD");
+  // A submodule is a gitlink and a .gitmodules entry; Git compares gitlinks
+  // without the submodule's objects, so none is cloned.
+  const gitlink = (revision) => repository.git("update-index", "--add", "--cacheinfo", `160000,${revision},sub`);
+  fs.writeFileSync(repository.path(".gitmodules"), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n');
+  const lines = (name, end = "\n") => Array.from({ length: 40 }, (_, index) => `${name} line ${index}${end}`).join("");
+  fs.writeFileSync(repository.path("first.txt"), lines("first"));
+  fs.writeFileSync(repository.path("second.txt"), lines("second"));
+  // Only a text file's rename score ignores the carriage returns this rename removes.
+  fs.writeFileSync(repository.path("third.txt"), lines("third", "\r\n"));
+  repository.git("add", ".gitmodules", "first.txt", "second.txt", "third.txt");
+  gitlink(base);
+  repository.git("commit", "-m", "Add submodule and files");
+  const lower = repository.git("rev-parse", "HEAD");
+  // The upper stage updates the submodule and renames three edited files.
+  gitlink(lower);
+  for (const [from, to] of [["first.txt", "renamed-first.txt"], ["second.txt", "renamed-second.txt"]]) {
+    repository.git("mv", from, to);
+    fs.appendFileSync(repository.path(to), "edited\n");
+    repository.git("add", to);
+  }
+  repository.git("mv", "third.txt", "renamed-third.txt");
+  fs.writeFileSync(repository.path("renamed-third.txt"), lines("third"));
+  repository.git("add", "renamed-third.txt");
+  repository.git("commit", "-m", "Update submodule and rename files");
+  const upper = repository.git("rev-parse", "HEAD");
+  const expected = [
+    [
+      { path: ".gitmodules", kind: "added" },
+      { path: "first.txt", kind: "added" },
+      { path: "second.txt", kind: "added" },
+      { path: "sub", kind: "added" },
+      { path: "third.txt", kind: "added" },
+    ],
+    [
+      { path: "renamed-first.txt", kind: "renamed", previousPath: "first.txt" },
+      { path: "renamed-second.txt", kind: "renamed", previousPath: "second.txt" },
+      { path: "renamed-third.txt", kind: "renamed", previousPath: "third.txt" },
+      { path: "sub", kind: "modified" },
+    ],
+  ];
+  const hostile = {
+    "diff.ignoreSubmodules": "all",
+    "submodule.sub.ignore": "all",
+    "diff.renames": "copies",
+    "diff.renameLimit": "1",
+    "diff.orderFile": "missing-order-file",
+    "diff.relative": "true",
+    "diff.noprefix": "true",
+    "diff.external": "missing-external-diff",
+    "color.ui": "always",
+    "color.diff": "always",
+    "core.quotePath": "true",
+    "core.abbrev": "7",
+    "core.bigFileThreshold": "1",
+    "diff.hostile.binary": "true",
+    "diff.default.binary": "true",
+  };
+  // Attributes that make a file binary, from the user's attributes file and,
+  // where Git can read attributes from another tree (2.41 and later), from the
+  // worktree and attr.tree.
+  const attributesFile = path.join(repository.root, ".git", "hostile-attributes");
+  fs.writeFileSync(attributesFile, "* binary\n");
+  hostile["core.attributesFile"] = attributesFile;
+  const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+  if (repository.result("git", [`--attr-source=${emptyTree}`, "rev-parse", "HEAD"]).status === 0) {
+    const blob = repository.git("hash-object", "-w", path.relative(repository.root, attributesFile));
+    repository.git("update-index", "--add", "--cacheinfo", `100644,${blob},.gitattributes`);
+    hostile["attr.tree"] = repository.git("write-tree");
+    repository.git("rm", "--cached", "--quiet", ".gitattributes");
+    fs.writeFileSync(repository.path(".gitattributes"), "*.txt diff=hostile\n");
+  }
+  for (const [key, value] of Object.entries(hostile)) repository.git("config", key, value);
+  // A replacement ref that would show the upper stage as the empty base.
+  repository.git("replace", upper, repository.git("commit-tree", `${base}^{tree}`, "-m", "Decoy"));
+  // A root file named like a revision.
+  fs.writeFileSync(repository.path(upper), "");
+  const ranges = [[base, lower], [lower, upper]];
+  assert.deepEqual(changedFilesOfRanges(repository.root, ranges), expected);
+  assert.deepEqual(ranges.map((range) => changedFilesOfRanges(repository.root, [range])[0]), expected);
+});
+
 test("a base revision that is not a commit ID never reaches Git", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
