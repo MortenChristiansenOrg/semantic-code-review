@@ -312,6 +312,8 @@ function conflictingStack(t) {
 
 test("a restack conflict leaves Git conflict state in a scratch worktree until restack --continue", (t) => {
   const { repository, originalApi } = conflictingStack(t);
+  // A title changed before the restack reaches the stage that conflicts.
+  repository.semantic("stage", "set", "--finalized", "--id", "api", "--title", "Serve the API");
   const branches = () => repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/");
   const before = branches();
   const failure = repository.expectSemanticFailure("stopped at a conflict in shared.txt", "restack", "--from", "policy");
@@ -355,8 +357,9 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
   const api = "semantic-flow/test-implementation/stages/api";
   assert.equal(repository.git("show", `${api}:shared.txt`), "setting=resolved\npersistence=true\napi=true");
   assert.equal(repository.git("show", `${api}:policy.txt`), "policy=revised");
-  // The replayed stage keeps its generated message and author.
-  assert.equal(repository.git("show", "-s", "--format=%B", api), repository.git("show", "-s", "--format=%B", originalApi));
+  // The resolved stage keeps its author and takes its current title.
+  assert.equal(repository.git("show", "-s", "--format=%B", api), repository.git("show", "-s", "--format=%B", originalApi).replace(/^.*/, "Serve the API"));
+  assert.equal(repository.git("show", "-s", "--format=%an <%ae> %aI", api), repository.git("show", "-s", "--format=%an <%ae> %aI", originalApi));
   assert.equal(repository.git("rev-list", "--count", `${api}^..${api}`), "1");
   assert.equal(fs.existsSync(worktree), false);
   assert.doesNotMatch(repository.git("worktree", "list"), new RegExp(path.basename(worktree)));
@@ -593,6 +596,35 @@ test("restack rebuilds a finalized stage's commit message after its title or sum
   repository.commitFile("other.txt", "other\n", "Other work");
   repository.semantic("restack", "--base", "main");
   assert.equal(show("%B", policy), `Add the order policy\n\nDefine who may change orders.\n\nSemantic-Flow-Empty: ${emptied}\nCo-authored-by: Bob Pair <bob@example.test>`);
+  repository.semantic("validate", "--publish");
+});
+
+test("a rebuilt stage message keeps its trailers under any trailer separator and gains none from its summary", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy", title: "Add policy", summary: "Define the policy." });
+  repository.commitFile("policy-notes.txt", "notes\n", "Note the policy\n\nCo-authored-by: Bob Pair <bob@example.test>");
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  beginStage(repository, { id: "api", title: "Add API", summary: "Expose the policy.", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "api", file: "api.txt", contents: "api\n" });
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  const api = "semantic-flow/test-implementation/stages/api";
+  // Under another trailer separator the colon trailers still count.
+  repository.git("config", "trailer.separators", "=");
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--title", "Add the access policy");
+  // A summary that ends in a trailer-like paragraph gives no credit.
+  repository.semantic("stage", "set", "--finalized", "--id", "api", "--summary", "Expose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>");
+  repository.git("switch", "main");
+  repository.commitFile("other.txt", "other\n", "Other work");
+  repository.semantic("restack", "--base", "main");
+  const policyMessage = "Add the access policy\n\nDefine the policy.\n\nCo-authored-by: Bob Pair <bob@example.test>";
+  const apiMessage = "Add API\n\nExpose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>";
+  assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
+  assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
+  // A second restack rewrites nothing.
+  assert.equal(JSON.parse(repository.semantic("restack", "--base", "main", "--json")).rewrittenBranches, 0);
+  assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
+  assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
   repository.semantic("validate", "--publish");
 });
 

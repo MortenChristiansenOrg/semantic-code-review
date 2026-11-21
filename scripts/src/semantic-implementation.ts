@@ -298,18 +298,29 @@ function currentIdentity(root: string, variable: "GIT_AUTHOR_IDENT" | "GIT_COMMI
 const IDENTITY = /^[^<>\x00-\x1f]+ <[^<>\x00-\x1f]+>$/;
 const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?.toLowerCase() ?? identity.toLowerCase();
 
-/** The message of a stage commit: the stage's title and summary, then a
- * Co-authored-by trailer for each co-author. A marked empty stage commit also
- * names the stage commit whose changes the target contains. */
-function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coAuthors: readonly string[], emptyOf?: string): string {
-  const trailers = [...(emptyOf ? [`${EMPTY_STAGE_TRAILER}: ${emptyOf}`] : []), ...coAuthors.map((identity) => `Co-authored-by: ${identity}`)];
-  return [stage.title.trim(), stage.summary.trim(), ...(trailers.length ? [trailers.join("\n")] : [])].join("\n\n") + "\n";
+/** The message of a stage commit: the stage's title and summary, then its
+ * trailers, such as a Co-authored-by trailer for each co-author. A marked empty
+ * stage commit also names the stage commit whose changes the target contains. */
+function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, trailers: readonly string[], emptyOf?: string): string {
+  const block = [...(emptyOf ? [`${EMPTY_STAGE_TRAILER}: ${emptyOf}`] : []), ...trailers];
+  return [stage.title.trim(), stage.summary.trim(), ...(block.length ? [block.join("\n")] : [])].join("\n\n") + "\n";
 }
 
-/** The co-authors a commit's Co-authored-by trailers name. */
-function commitCoAuthors(root: string, commit: string): string[] {
-  return gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", commit], { cwd: root })
-    .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
+/** Reads trailers the way Semantic Flow writes them, with a colon, whatever
+ * trailer.separators says. */
+const COLON_TRAILERS = ["-c", "trailer.separators=:"];
+
+const coAuthorTrailer = (identity: string) => `Co-authored-by: ${identity}`;
+
+/** The trailers a stage commit carries over to a rebuilt message: every
+ * trailer but the empty-stage marker, which the caller decides. A summary
+ * whose last paragraph reads as trailers is parsed as such when no trailer
+ * follows it; lines that are part of the summary are not trailers. */
+function stageTrailers(root: string, commit: string, stage: Pick<EditableStage, "summary">): string[] {
+  const summaryLines = new Set(stage.summary.split(/\r?\n/).map((line) => line.trim()));
+  return gitRaw([...COLON_TRAILERS, "show", "-s", "--encoding=UTF-8", "--format=%(trailers:unfold,separator=%x00)", commit], { cwd: root })
+    .split("\0").map((trailer) => trailer.trim())
+    .filter((trailer) => trailer && !summaryLines.has(trailer) && !new RegExp(`^${EMPTY_STAGE_TRAILER}\\s*:`, "i").test(trailer));
 }
 
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
@@ -318,7 +329,7 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
   // Only the trailer block counts: a Co-authored-by line in the body is text,
   // not attribution. A message cannot hold NUL, so NUL separates the values
   // and two of them start each commit.
-  const log = gitRaw(["log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  const log = gitRaw([...COLON_TRAILERS, "log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\0\0").slice(1)) {
@@ -344,7 +355,7 @@ function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">
   // An unchanged stage keeps its commit here; withStageMessage brings its message up to date.
   if (count === 1 && keepOneCommit) return head;
   const author = currentIdentity(root);
-  const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author));
+  const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author).map(coAuthorTrailer));
   const [authorDate, committerDate, existing] = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%aI%x00%cI%x00%B", head], { cwd: root }).split("\0");
   if (count === 1 && existing.trimEnd() === message.trimEnd()) return head;
   // The folded head's dates make the fold repeatable: folding the same commits again gives the same commit.
@@ -359,7 +370,7 @@ function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">
  * summary over the commit's own trailers. Its tree, parent, authors and dates
  * stay, so a commit whose message is current is returned as it is. */
 function withStageMessage(root: string, stage: Pick<EditableStage, "title" | "summary">, commit: string): string {
-  const message = stageCommitMessage(stage, commitCoAuthors(root, commit), emptyStageMarker(root, commit));
+  const message = stageCommitMessage(stage, stageTrailers(root, commit, stage), emptyStageMarker(root, commit));
   if (commitMetadata(root, commit).message.trimEnd() === message.trimEnd()) return commit;
   return replayedCommit(root, `${commit}^{tree}`, `${commit}^`, commit, message);
 }
@@ -2080,7 +2091,7 @@ const RESOLVED_EMPTY = "resolved";
  * and the marker trailer: the stage commit it replaced, or RESOLVED_EMPTY.
  * Undefined when head is not one. */
 function emptyStageMarker(root: string, head: string): string | undefined {
-  const [tree, parent, ...markers] = gitRaw(["show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
+  const [tree, parent, ...markers] = gitRaw([...COLON_TRAILERS, "show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return undefined;
   if (tree !== git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return undefined;
   return markers.map((value) => value.trim()).find((value) => value === RESOLVED_EMPTY || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));
@@ -2107,7 +2118,7 @@ function isMarkedEmptyStage(root: string, head: string): boolean {
  * commit, its marker is kept. A stage resolved to nothing is marked as such. */
 function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string, resolved = false): string {
   const original = resolved ? RESOLVED_EMPTY : emptyStageMarker(root, source) ?? source;
-  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, commitCoAuthors(root, source), original));
+  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, stageTrailers(root, source, stage), original));
 }
 
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
@@ -2520,11 +2531,11 @@ function replacedBy(root: string, plan: Pick<RestackPlan, "emptied" | "nextHead"
 }
 
 /** The commit a replayed stage becomes: its tree on parent with the stage
- * commit's authors and co-authors under the stage's current title and summary,
+ * commit's authors and trailers under the stage's current title and summary,
  * or a marked empty commit when the target already contains its changes. */
 function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string, resolved = false): string {
   if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit, resolved);
-  return replayedCommit(root, tree, parent, stageCommit, stageCommitMessage(stage, commitCoAuthors(root, stageCommit)));
+  return replayedCommit(root, tree, parent, stageCommit, stageCommitMessage(stage, stageTrailers(root, stageCommit, stage)));
 }
 
 function restack(workspace: Workspace, options: Options): void {
