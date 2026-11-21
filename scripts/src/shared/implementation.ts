@@ -8,6 +8,7 @@
  * and archived artifacts are written in that full form, so they can be read
  * without the repository. */
 import { spawnSync } from "node:child_process";
+import { devNull } from "node:os";
 import {
   MANIFEST_SCHEMA_ID,
   SPECIFICATION_SCHEMA_ID,
@@ -116,16 +117,31 @@ function checkedChanges(files: FileChange[], parent: string, commit: string, all
  * diff.relative, color, external drivers), with flags for what plumbing still
  * reads. Submodule ignore rules from .gitmodules or submodule.<name>.ignore
  * would hide a submodule update, and diff.renameLimit would decide whether
- * inexact renames are found; the limit is Git's default. Paths are NUL
- * separated, so core.quotePath never applies. A range read alone and the same
- * range read in a batch thus have the same inventory whatever the user's
- * configuration. */
-const INVENTORY_DIFF = ["diff-tree", "-r", "-z", "--name-status", "--ignore-submodules=none", "--find-renames=50%", "-l1000"];
+ * inexact renames are found; 1000 is this project's limit, Git's default since
+ * 2.33. Paths are NUL separated, so core.quotePath never applies. Replacement
+ * refs would substitute other objects for the recorded commits. A range read
+ * alone and the same range read in a batch thus have the same inventory
+ * whatever the user's configuration. */
+const INVENTORY_DIFF = ["--no-replace-objects", "diff-tree", "-r", "-z", "--name-status", "--ignore-submodules=none",
+  "--find-renames=50%", "-l1000"];
 
-function runGit(root: string, args: string[], input?: string) {
-  return spawnSync("git", args, {
+/** The empty tree of each object format, by the length of its IDs. */
+const EMPTY_TREES: Record<number, string> = {
+  40: "4b825dc642cb6eb9a060e54bf8d69288fbe8b4b9",
+  64: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+};
+
+/** Runs an inventory diff of commits with the given object ID length.
+ * Attributes decide whether a file is binary, and a binary file's rename score
+ * counts the carriage returns a text file's ignores, so attributes could turn
+ * a rename into an addition and a deletion. Attributes are therefore read from
+ * the empty tree instead of the worktree, index or attr.tree (Git 2.41 and
+ * later; older Git ignores GIT_ATTR_SOURCE), and the system and user attribute
+ * files are not read. $GIT_DIR/info/attributes cannot be turned off. */
+function runInventoryDiff(root: string, idLength: number, args: string[], input?: string) {
+  return spawnSync("git", ["-c", `core.attributesFile=${devNull}`, ...INVENTORY_DIFF, ...args], {
     cwd: root,
-    env: gitEnvironment(),
+    env: gitEnvironment({ GIT_ATTR_SOURCE: EMPTY_TREES[idLength] ?? EMPTY_TREES[40], GIT_ATTR_NOSYSTEM: "1" }),
     // spawnSync encodes string input with the output encoding, which "buffer" is not.
     input: input === undefined ? undefined : Buffer.from(input, "utf8"),
     encoding: "buffer",
@@ -138,7 +154,8 @@ function runGit(root: string, args: string[], input?: string) {
 function readChangedFiles(root: string, parent: string, commit: string, allowEmpty = false): FileChange[] {
   // A revision that Git would read as an option is never passed to it.
   for (const revision of [parent, commit]) if (revision.startsWith("-")) fail(`Invalid revision ${JSON.stringify(revision)}.`);
-  const result = runGit(root, [...INVENTORY_DIFF, parent, commit]);
+  // After "--", a file named like a revision cannot make the revision ambiguous.
+  const result = runInventoryDiff(root, commit.length, [parent, commit, "--"]);
   if (result.error || result.status !== 0) {
     fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
   }
@@ -173,7 +190,7 @@ export function changedFilesOfRanges(
   const derived = new Map<string, FileChange[]>();
   if (valid && distinct.length > 1) {
     // Each line names a commit and the one parent to compare it with.
-    const result = runGit(root, [...INVENTORY_DIFF, "--stdin"],
+    const result = runInventoryDiff(root, 40, ["--stdin"],
       distinct.map(([parent, commit]) => `${commit} ${parent}\n`).join(""));
     if (!result.error && result.status === 0) {
       const fields = result.stdout.toString("utf8").split("\0").filter((field) => field.length > 0);
