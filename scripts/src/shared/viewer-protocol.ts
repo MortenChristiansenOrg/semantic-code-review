@@ -339,7 +339,13 @@ export interface FeedbackThread {
   stageHead: string;
   createdAt: string;
   resolvedAt: string | null;
-  /** The assigned or target stage head moved since the thread was anchored. */
+  /** Only for line targets whose stage still exists: the row in the stage's
+   * current diff, on the target's side and path, where the line the thread was
+   * written about still stands unchanged; null when there is none. The target's
+   * own line number stays as it was written. */
+  currentLine?: number | null;
+  /** A line target's line has no current row; another target's assigned or
+   * target stage head moved since the thread was anchored. */
   anchorStale: boolean;
 }
 

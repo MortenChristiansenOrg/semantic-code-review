@@ -56,7 +56,13 @@ async function startTracedViewer(t) {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository);
-  finalizeStage(repository, { file: "implementation.md", contents: "# Implementation\n" });
+  finalizeStage(repository, { file: "implementation.md", contents: "# Implementation\n\nDetails.\n" });
+  // Line threads are located with batched reads.
+  repository.feedback("init");
+  for (const [id, side, line] of [["first-line", "new", 1], ["last-line", "new", 3]]) {
+    repository.feedback("thread", "add", "--id", id, "--comment-id", `${id}-note`, "--body", "About this line.", "--label", `implementation.md:${line}`,
+      "--target-kind", "line", "--stage", "implementation", "--path", "implementation.md", "--side", side, "--line", String(line));
+  }
   const trace = path.join(fs.mkdtempSync(path.join(path.dirname(repository.root), "git-trace-")), "trace.log");
   const result = spawnSync(process.execPath, [flowCli, "review"], {
     cwd: repository.root, encoding: "utf8", timeout: 30_000,
@@ -93,6 +99,8 @@ test("a viewer request reads the active refs once, and a repeated one runs Git o
   const viewer = await startTracedViewer(t);
   const first = await viewer.get("/api/implementation");
   assert.equal(first.response.status, 200, first.response.text);
+  assert.deepEqual(first.response.json.implementation.feedback.map(({ id, currentLine }) => [id, currentLine]),
+    [["first-line", 1], ["last-line", 3]]);
   const stage = first.response.json.implementation.stages[0];
   const file = stage.files[0];
   const diff = `/api/diff?stage=${encodeURIComponent(stage.id)}&path=${encodeURIComponent(file.path)}&base=${file.baseRevision}&head=${stage.headRevision}`;

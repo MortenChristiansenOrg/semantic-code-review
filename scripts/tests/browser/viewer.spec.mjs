@@ -26,8 +26,10 @@ function fixture() {
     })),
   };
 }
+// The server sends a line thread's current row; by default its line is unchanged.
 function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first', label: 'Stage first' }) {
-  return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
+  return { id, status, target, ...(target.kind === 'line' ? { currentLine: target.line } : {}),
+    comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
 async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {}) {
   const allData = [data, ...other];
@@ -5968,13 +5970,50 @@ test('an older saved-review refresh does not replace a newer list', async ({ pag
 
 test('a stale anchor on an old line that is now unchanged jumps to its file', async ({ page }) => {
   const data = fixture();
-  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), anchorStale: true }];
+  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), currentLine: null, anchorStale: true }];
   await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:old:2:shared.js', nodeId: 'first-one', exported: true, threadId: 'old-context', body: 'Feedback old-context' }] });
   await showNotes(page);
   const jump = page.locator('.side.notes [data-thread-id="old-context"] [data-action="jump-to"]');
   await expect(jump).toHaveAttribute('data-kind', 'file');
   await jump.click();
   await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toBeVisible();
+});
+
+test('a line thread is shown on the row its unchanged line moved to, and its jump goes there', async ({ page }) => {
+  const data = fixture();
+  // Written about line 1; after a restack the same line is line 3.
+  data.feedback = [{ ...thread('moved', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' }), currentLine: 3 }];
+  const errors = await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', exported: true, threadId: 'moved', body: 'Feedback moved' }] });
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="moved"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'line');
+  await expect(jump).toHaveAttribute('data-id', 'l:first:new:3:shared.js');
+  await jump.click();
+  await expect(page.locator('.line-thread[data-thread="l:first:new:3:shared.js"] [data-thread-id="moved"]')).toBeVisible();
+  await expect(page.locator('.line-thread[data-thread="l:first:new:1:shared.js"]')).toHaveCount(0);
+  await expect(page.locator('.file-notes [data-thread-id="moved"]')).toHaveCount(0);
+  await expect(page.locator('[data-thread-id="moved"] .tthread-stale')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a line thread whose line changed stays at file level and keeps its notice after the agent replies', async ({ page }) => {
+  const data = fixture();
+  const target = { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' };
+  data.feedback = [{ ...thread('changed', 'open', target), currentLine: null, anchorStale: true,
+    comments: [{ author: 'user', body: 'Feedback changed', createdAt: '2026-09-08T10:00:00Z' }, { author: 'agent', body: 'Changed it.', createdAt: '2026-09-08T10:01:00Z' }] }];
+  const errors = await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', exported: true, threadId: 'changed', body: 'Feedback changed' }] });
+  await openFile(page);
+  const fileThread = page.locator('.file-notes [data-thread-id="changed"]');
+  await expect(fileThread).toContainText('shared.js:1');
+  await expect(fileThread).toContainText('The line this feedback was written about changed after it was sent.');
+  // The line that now has its number carries no thread.
+  await expect(page.locator('.line-thread [data-thread-id="changed"]')).toHaveCount(0);
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="changed"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'file');
+  await jump.click();
+  await expect(page.locator('details[data-node="first-one"] .file-notes [data-thread-id="changed"]')).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 test('a saved composer with a negative edit index does not keep a saved note from sending', async ({ page }) => {

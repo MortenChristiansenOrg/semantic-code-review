@@ -1,4 +1,5 @@
 import { resolveCodeTarget } from "./shared/insight-targets.js";
+import { locateLineAnchors } from "./shared/line-anchors.js";
 export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
  * Semantic Flow review viewer launcher.
@@ -1491,9 +1492,10 @@ export function createImplementationDataScript(repoRoot: string) {
 /** Where a file or line thread's path now is, relative to its original stage head. */
 type TargetState = { state: "present" } | { state: "renamed"; path: string } | { state: "deleted" } | { state: "not-in-stage" };
 
-// Load open and resolved feedback threads from the local feedback store. A
-// thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevision: string }[], implementationId: string) {
+// Load open and resolved feedback threads from the local feedback store. A line
+// thread's anchor is stale when its line no longer has a row in the stage's
+// current diff; another thread's when its assigned or target stage has moved.
+function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementationId: string) {
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), (): Thread[] => {
     requireImplementation(repoRoot, implementationId);
@@ -1504,6 +1506,18 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
     return manifest.threads.flatMap((id) => viewerThread(readStoredThread(path.join(feedbackRoot, "threads", `${id}.json`))) ?? []);
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  // Every line anchor is followed with one batch of Git reads.
+  const lineThreads = storedThreads.flatMap((thread) => {
+    const target = thread.target;
+    const stage = target.kind === "line" ? stageById.get(target.stageId) : undefined;
+    return target.kind === "line" && stage ? [{ thread, target, stage }] : [];
+  });
+  const currentLines = new Map(locateLineAnchors(repoRoot, lineThreads.map(({ target, stage }) => ({
+    anchor: target,
+    stage,
+    previousPath: stage.files.find((file) => file.path === target.path)?.previousPath,
+  }))).map((line, index) => [lineThreads[index].thread.id, line]));
   return storedThreads.map((thread) => {
     const target = thread.target;
     const currentHead = target.stageId === undefined ? undefined : currentHeads.get(target.stageId);
@@ -1546,12 +1560,14 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
       stageHead: thread.stageHead,
       createdAt: thread.createdAt,
       resolvedAt: thread.resolvedAt || null,
-      anchorStale:
-        currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
-        Boolean(
-          target.stageId &&
-            currentHeads.get(target.stageId) !== target.stageHead,
-        ),
+      ...(currentLines.has(thread.id) ? { currentLine: currentLines.get(thread.id) ?? null } : {}),
+      anchorStale: target.kind === "line"
+        ? (currentLines.get(thread.id) ?? null) === null
+        : currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
+          Boolean(
+            target.stageId &&
+              currentHeads.get(target.stageId) !== target.stageHead,
+          ),
     };
   });
 }

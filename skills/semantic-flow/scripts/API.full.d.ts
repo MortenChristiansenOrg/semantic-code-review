@@ -564,7 +564,7 @@ export declare function addFeedbackThreads(options: AddFeedbackThreadsOptions): 
 export interface NextFeedbackOptions {
     /** Emits machine-readable JSON instead of text. */
     json?: true;
-    /** Omits repeated metadata and reports stale and automatic re-anchoring status. Requires `json`. */
+    /** Omits repeated metadata and reports stale and automatic re-anchoring status, and where a current line thread's line now stands (`currentLine`). Requires `json`. */
     compact?: true;
     /** Claims the returned threads for one round, skipping threads another round is answering. Emits `{claim, claimedElsewhere, stages}`. Requires `json`. */
     claim?: true;

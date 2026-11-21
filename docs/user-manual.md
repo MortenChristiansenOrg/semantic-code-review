@@ -419,8 +419,11 @@ The viewer trusts other software serving on the machine's loopback address
 
 In **Review queue**, add notes containing change instructions or questions.
 Notes remain editable browser-local drafts until sent. Sending creates open
-threads and records the responsible stage head, which lets the UI detect a
-stale anchor after restacking.
+threads and records the responsible stage head. After a restack or correction,
+a line thread stays on the line it was written about, also when that line's
+number moved. Once that line changed or left the diff, the thread is shown at
+file level with its original line named, and says so, also after the agent
+replied.
 
 ## 8. Edit a lower stage and restack
 

@@ -5,9 +5,9 @@ import { sendingDrafts } from "./agent";
 import { attachmentEditorModel, attachmentModels, uploadOps } from "./attachments";
 import { data } from "./context";
 import { compose, draftSnapshots, replyAttachments, replyDraft, replyEditId, replyTo } from "./editor";
-import { currentFileEntry, fileBaseRevision, fileById, fileByPreviousId, fileHasLine, fileKey, insightByKey, insightKey, lineKey, parseLineId, requirements, stageById, stageOf } from "./lookups";
+import { currentFileEntry, fileBaseRevision, fileById, fileByPreviousId, fileKey, insightByKey, insightKey, parseLineId, requirements, stageById, stageOf } from "./lookups";
 import { state } from "./state";
-import { artifactThreadsForElement, elementNodeId, heldThreads, localVisibleForElement, matchesNodeContext, noteFileEntry, noteNodeId, renamedLineNote, repliesForThread, threadBusy, threadCollapsed, threadError, threadListKey, threadNote, threadStateKey } from "./threads";
+import { artifactThreadsForElement, elementNodeId, heldThreads, localVisibleForElement, matchesNodeContext, noteFileEntry, noteNodeId, renamedLineNote, repliesForThread, threadBusy, threadCollapsed, threadError, threadLineId, threadListKey, threadNote, threadStateKey } from "./threads";
 import { isUnreadReply, replyKey, threadAgentState } from "./unread-replies";
 import type { IndexedNote, Note } from "./types";
 import { fmtTime, splitPath } from "./util";
@@ -60,16 +60,13 @@ export function threadElementRef(t: FeedbackThread): ElementRef | null {
     const entry = currentFileEntry(tgt.stageId, tgt.path);
     return entry ? { kind: "file", id: entry.id, nodeId } : null;
   }
-  if (tgt.kind === "line" && tgt.path && tgt.stageId && tgt.line) {
+  if (tgt.kind === "line" && tgt.path && tgt.stageId) {
     const entry = currentFileEntry(tgt.stageId, tgt.path);
     if (!entry) return null;
-    // A later stage head can remove or move the saved line. Only offer an
-    // exact jump while that side and line still exist in the rendered diff.
-    if (entry.file.path === tgt.path && !t.anchorStale)
-      return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path), nodeId };
-    if (entry.file.path === tgt.path && fileHasLine(entry.file, tgt.side, tgt.line))
-      return { kind: "line", id: lineKey(tgt.stageId, tgt.side, tgt.line, tgt.path), nodeId };
-    return { kind: "file", id: entry.id, nodeId };
+    // Jump to the row the thread is shown on, never to another line that now
+    // has the saved number; without a row, to the file-level thread.
+    const lineId = threadLineId(t);
+    return lineId ? { kind: "line", id: lineId, nodeId } : { kind: "file", id: entry.id, nodeId };
   }
   if (tgt.kind === "stage" && tgt.stageId)
     return data.stages.some((s) => s.id === tgt.stageId) ? { kind: "stage", id: tgt.stageId } : null;
@@ -155,12 +152,15 @@ export function threadModel(t: FeedbackThread, withLabel?: boolean): ThreadView 
     staleMsg = `This file was renamed to ${splitPath(tstate.to).name} after the feedback was sent.${kind === "line" ? " The original line is shown here at file level; its current position is unverified." : ""}`;
   else if (tstate.state === "not-in-stage")
     staleMsg = `This file is no longer changed in this stage.`;
-  else if (t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
+  // Shown whoever replied: the thread is no longer about a line of the current diff.
+  else if (kind === "line" && !threadLineId(t))
+    staleMsg = "The line this feedback was written about changed after it was sent. The original line is shown here at file level.";
+  else if (kind !== "line" && t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
     staleMsg = `Stage changed since this feedback was sent.`;
   if (withLabel && !ref && !staleMsg) staleMsg = "The original target is no longer available.";
   return {
     id: t.id, status: t.status, collapsed: threadCollapsed(t), kind, kindLabel: threadTypeLabel(kind),
-    title: (withLabel || kind === "line" && tstate.state === "renamed") && t.target && t.target.label
+    title: (withLabel || kind === "line" && !threadLineId(t)) && t.target && t.target.label
       ? { text: disp.text, tooltip: disp.title } : null,
     assignedStage: showAssigned && assignedStage ? assignedStage.title : "",
     agentState: threadAgentState(t),
