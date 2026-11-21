@@ -709,11 +709,13 @@ async function launchViewer(
   console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
 }
 
-async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
+/** verifiedTarget is the target head the caller checked; the restack refuses
+ * a target that moved from it rather than restacking onto the new head. */
+async function refreshAdvancedTarget(candidate: ActiveCandidate, verifiedTarget?: string): Promise<{
   candidate: ActiveCandidate;
   targetRestack: TargetRestack | null;
 }> {
-  const targetHead = git(
+  const targetHead = verifiedTarget ?? git(
     ["rev-parse", "--verify", `refs/heads/${candidate.targetBranch}^{commit}`],
     { cwd: candidate.worktree },
   );
@@ -826,7 +828,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   try {
     restackSummary = restackOntoTarget(
       candidate.worktree,
-      candidate.targetBranch,
+      targetHead,
       detachedBranch === null ? undefined : { worktree: candidate.worktree, branch: detachedBranch, head: originalHead },
     );
   } catch (error) {
@@ -1190,22 +1192,31 @@ function branchCheckouts(root: string, ref: string): string[] {
  * of the branch then follows with its index and files, or the ref moves back. */
 function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
   const checkedOut = () => Boolean(checkout) && git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) === ref;
+  // update-ref would move the branch a symbolic ref names, whose checkout was never checked.
+  const symbolic = git(["symbolic-ref", "--quiet", ref], { cwd: root, allowFailure: true });
+  if (symbolic) fail(`${ref} is a symbolic ref to ${symbolic}, so it is not fast-forwarded. Make it a branch of its own before retrying.`);
   if (checkout) {
     requireCleanSyncWorktree(checkout);
     if (!checkedOut()) fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
   }
   git(["update-ref", "-m", "semantic-flow: fast-forward to upstream", ref, to, from], { cwd: root });
   if (!checkout || !checkedOut()) return;
-  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
+  // Each undo reports whether it succeeded; the ref is moved back only from the fast-forwarded revision.
+  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true }) !== null;
+  const unrestoredRef = `${ref} could not be moved back from ${to} to ${from}`;
   if (git(["read-tree", "-m", "-u", from, to], { cwd: checkout, allowFailure: true }) === null) {
-    undo();
-    fail(`Could not update the files of ${checkout} to ${to}; ${ref} was left at ${from}. Inspect the checkout before retrying.`);
+    const restored = undo();
+    fail(`Could not update the files of ${checkout} to ${to}; ${restored ? `${ref} was left at ${from}` : unrestoredRef}. Inspect the checkout before retrying.`);
   }
   // Git cannot lock a checkout's branch across commands; undo a switch that raced the file update.
   if (!checkedOut()) {
-    git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true });
-    undo();
-    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; both were restored. Inspect it before retrying.`);
+    const filesRestored = git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true }) !== null;
+    const refRestored = undo();
+    const unrestored = [
+      ...(filesRestored ? [] : [`the files of ${checkout} could not be restored to ${from}`]),
+      ...(refRestored ? [] : [unrestoredRef]),
+    ];
+    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; ${unrestored.length ? unrestored.join(", and ") : "both were restored"}. Inspect it before retrying.`);
   }
 }
 
@@ -1352,7 +1363,7 @@ async function sync(options: Options): Promise<void> {
 
   try {
     if (revision(targetRef) !== targetRevision) fail("Target branch moved before restacking; retry from its current head.");
-    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate);
+    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate, targetRevision);
     const snapshot = await feedbackSnapshot(refreshed, targetRestack);
     const result = {
       ...snapshot,

@@ -1084,6 +1084,30 @@ test('threads of a removed stage are labelled and read-only', async ({ page }) =
   await expect(kept.locator('[data-action="thread-reopen"]')).toHaveCount(1);
 });
 
+test('a reply draft on a removed stage stays listed without Edit, also when the stage goes during its edit', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [{ ...thread('t'), assignedStageId: 'first' }];
+  const errors = await mount(page, data, { replyDrafts: [{ id: 'rd-1', threadId: 't', body: 'My reply', attachments: [], createdAt: 2 }] });
+  await showNotes(page);
+  const panelThread = page.locator('.side.notes [data-thread-id="t"]');
+  await panelThread.locator('[data-action="reply-edit"]').click();
+  await expect(panelThread.locator('textarea[name="reply-body"]')).toHaveValue('My reply');
+  await expect(panelThread.locator('.tmsg-draft')).toHaveCount(0);
+  // The stage is removed while its draft is being edited.
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [{ ...thread('t', 'resolved'), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' }];
+  data.viewerRevision = 'stage-removed';
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  const removed = page.locator('.notes-col-resolved .tthread[data-thread-id="t"]');
+  if (await removed.evaluate((element) => element.classList.contains('is-collapsed'))) await removed.locator('[data-action="toggle-thread-collapse"]').click();
+  await expect(removed.locator('.tthread-removed')).toHaveText('Stage removed');
+  await expect(removed.locator('textarea[name="reply-body"]')).toHaveCount(0);
+  await expect(removed.locator('.tmsg-draft')).toContainText('My reply');
+  await expect(removed.locator('.tmsg-draft [data-action="reply-edit"]')).toHaveCount(0);
+  await expect(removed.locator('.tmsg-draft [data-action="reply-del"]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
 test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await mount(page);

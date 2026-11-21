@@ -630,6 +630,16 @@ test('unused cleanup protects references and recent uploads, and permits retry o
   assert.equal(preview(review).unused.length, 0); assert.ok(resolveAttachment(review.id, old.id));
 });
 
+test('unused cleanup rejects a preview when an upload has aged into a candidate since', (t) => {
+  const { review } = setup(t);
+  const recent = storeAttachment(review.id, review.generation, 'recent', 'text/plain', Buffer.from('recent'));
+  const before = preview(review); assert.equal(before.unused.length, 0);
+  const now = Date.now(); t.mock.method(Date, 'now', () => now + 2 * 60 * 60 * 1000);
+  assert.throws(() => cleanUnusedReviewFiles(review.id, review.generation, before.fingerprint), /changed since/);
+  assert.ok(resolveAttachment(review.id, recent.id));
+  assert.equal(preview(review).unused.length, 1);
+});
+
 test('stale process writes cannot resurrect a deleted review', async (t) => {
   const { review } = setup(t);
   const moduleUrl = new URL('../../src/semantic-view.ts', import.meta.url).href;

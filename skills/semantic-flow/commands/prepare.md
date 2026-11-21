@@ -36,6 +36,10 @@ From the returned `artifact.worktree`, remove every stage listed in
 <semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
 
+When `emptyStageThreads` is null, the empty stages or their threads are
+unknown. Run status once more; if it is still null, do not prepare: report that
+empty stages cannot be removed and the validation problems status reports.
+
 Report each removal. The command refuses the only remaining stage: when every
 stage is empty, keep the last one, report that the implementation no longer
 changes anything, and suggest archiving it instead of preparing. The stages above get new heads with unchanged content; the

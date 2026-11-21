@@ -188,8 +188,10 @@ export function threadModel(t: FeedbackThread, withLabel?: boolean): ThreadView 
     }),
     // Pending reply drafts render as unsent messages the reviewer can revise or
     // remove before preparing feedback; the one being edited is shown as a form.
-    drafts: repliesForThread(t.id).filter((r) => r.id !== replyEditId)
-      .map((r) => ({ id: r.id, body: r.body, attachments: attachmentModels(r.attachments), sending: sendingDrafts.has(r.id) })),
+    // A removed stage's thread shows no form, so its drafts stay listed and
+    // can only be removed.
+    drafts: repliesForThread(t.id).filter((r) => removed || r.id !== replyEditId)
+      .map((r) => ({ id: r.id, body: r.body, attachments: attachmentModels(r.attachments), sending: sendingDrafts.has(r.id), editable: !removed })),
     actionable: !removed && (t.status === "open" || t.status === "resolved"),
     ...(removed ? { removedStage: removed.title } : {}),
     replying: !removed && replyTo === t.id,
