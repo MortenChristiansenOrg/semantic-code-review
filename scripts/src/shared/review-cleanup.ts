@@ -75,7 +75,8 @@ function inspect(id: string, generation: string) {
   if (bytes > knownBytes) categories.push({ label: "Other owned files", bytes: bytes - knownBytes, detail: "Temporary and auxiliary review files" });
   const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, gitCommonDir: ignoredLocator, missingSince: ignoredMissing, ...identity } = review;
   return { review: identity, storageDirectory: directory, bytes, categories, drafts, unresolved, referenceError,
-    fingerprint: digest(JSON.stringify([review, entries])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0) };
+    // The candidates are included because an upload becomes one by age alone.
+    fingerprint: digest(JSON.stringify([review, entries, unused])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0) };
 }
 function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T): T {
   try { return withReviewLock(id, operation); }

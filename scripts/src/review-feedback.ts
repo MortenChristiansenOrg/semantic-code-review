@@ -43,7 +43,7 @@ import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
-import { activeImplementationId, implementationActive, readArtifact } from "./shared/artifact-store.js";
+import { activeImplementationId, implementationActive, readArtifact, readingActiveRefsNow } from "./shared/artifact-store.js";
 import { loadImplementation } from "./shared/implementation.js";
 import { atomicJson, readReview, readReviewArtifact, registerReview, relocateReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
@@ -79,6 +79,8 @@ interface SemanticArtifact {
   manifest: ImplementationManifest;
   requirements: Map<string, Specification>;
   stages: Map<string, Stage>;
+  /** Stages `stage remove` took out of the stack; their threads are read-only. */
+  removedStages: Set<string>;
 }
 
 /** The validated feedback manifest and its threads, keyed by thread ID. */
@@ -189,9 +191,20 @@ function listJsonIds(directory: string): string[] {
 function semanticArtifact(paths: FeedbackPaths): SemanticArtifact {
   const files = readArtifact(paths.root);
   if (!files) fail("No active semantic implementation exists.");
-  const { manifest, requirements, stages } = loadImplementation(paths.root, files, { includeWork: false });
+  const { manifest, requirements, stages, removedStages } = loadImplementation(paths.root, files, { includeWork: false });
   if (manifest.implementationId !== paths.implementationId) fail("The active implementation changed. Retry from the current review.");
-  return { manifest, requirements, stages };
+  return { manifest, requirements, stages, removedStages: new Set(removedStages.keys()) };
+}
+
+/** The removed stage a thread is assigned to or targets, if any. */
+function removedStageOf(thread: Thread, semantic: SemanticArtifact): string | undefined {
+  return [thread.assignedStageId, thread.target.stageId].find((stageId) => stageId !== undefined && semantic.removedStages.has(stageId));
+}
+
+/** Refuses a change to a thread of a removed stage, before anything is written. */
+function assertThreadWritable(thread: Thread, semantic: SemanticArtifact): void {
+  const removed = removedStageOf(thread, semantic);
+  if (removed !== undefined) fail(`Feedback thread ${thread.id} cannot change: stage ${removed} was removed, so its threads are read-only.`);
 }
 
 /** Reads the feedback manifest and the unvalidated threads it lists; validateFeedback validates each thread. */
@@ -400,8 +413,16 @@ function validateFeedback(
       commentIds.add(comment.id);
       validateAttachmentReferences(paths.reviewId, comment.attachments);
     }
-    validateTarget(thread.target, semantic, paths.root);
-    if (!semantic.stages.has(thread.assignedStageId)) {
+    // Only a resolved thread may stay on a removed stage. It keeps the target it
+    // had; a target on a stage that remains is still checked.
+    const removed = removedStageOf(thread, semantic);
+    if (removed !== undefined && thread.status !== "resolved") {
+      fail(`Feedback thread ${id} is open on removed stage ${removed}; only a resolved thread may refer to a removed stage.`);
+    }
+    if (thread.target.stageId === undefined || !semantic.removedStages.has(thread.target.stageId)) {
+      validateTarget(thread.target, semantic, paths.root);
+    }
+    if (!semantic.stages.has(thread.assignedStageId) && !semantic.removedStages.has(thread.assignedStageId)) {
       fail(
         `Feedback thread ${id} is assigned to missing stage ${thread.assignedStageId}.`,
       );
@@ -898,7 +919,7 @@ function reopened(thread: Thread): Thread {
   return { ...rest, status: "open" };
 }
 
-function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback): { id: string; commentId: string; thread: Thread } {
+function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback, semantic: SemanticArtifact): { id: string; commentId: string; thread: Thread } {
   assertKnownOptions(
     options,
     commandOptionNames(reviewFeedbackApi, "thread reply"),
@@ -906,6 +927,7 @@ function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback):
   const id = option(options, "id", { required: true });
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  assertThreadWritable(thread, semantic);
   const commentId = option(options, "comment-id", { required: true });
   if (thread.comments.some((comment) => comment.id === commentId)) {
     fail(`Comment ${commentId} already exists in thread ${id}.`);
@@ -943,7 +965,7 @@ function agentReplies(optionSets: Options[]): AgentReply[] {
 }
 
 function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string; commentId: string; thread: Thread }[] {
-  const { feedback } = validateFeedback(paths, { quiet: true });
+  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const originals = new Map<string, Thread>();
   for (const options of optionSets) {
     const id = option(options, "id", { required: true });
@@ -952,7 +974,7 @@ function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string
       originals.set(id, structuredClone(thread));
     }
   }
-  const replies = optionSets.map((options) => applyReply(paths, options, feedback));
+  const replies = optionSets.map((options) => applyReply(paths, options, feedback, semantic));
   try {
     for (const id of originals.keys()) {
       const thread = feedback.threads.get(id);
@@ -1057,7 +1079,7 @@ function partialFeedbackBatch(paths: FeedbackPaths, values: unknown[], mode: "ad
         feedback.threads.set(id, thread);
         feedback.manifest.threads.push(id);
       } else {
-        const reply = applyReply(paths, options, feedback);
+        const reply = applyReply(paths, options, feedback, semantic);
         parseDocument(THREAD_SCHEMA_ID, reply.thread, "Feedback reply input");
         if (option(options, "author") === "agent") replies.push({ threadId: id, claimId: option(options, "claim") });
       }
@@ -1170,9 +1192,10 @@ function reopenThread(paths: FeedbackPaths, options: Options): void {
 }
 
 function reopenThreadById(paths: FeedbackPaths, id: string): void {
-  const { feedback } = validateFeedback(paths, { quiet: true });
+  const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const thread = feedback.threads.get(id);
   if (!thread) fail(`Feedback thread ${id} does not exist.`);
+  assertThreadWritable(thread, semantic);
   if (thread.status !== "resolved") {
     fail(`Feedback thread ${id} is not resolved.`);
   }
@@ -1247,13 +1270,15 @@ function feedbackOperation<T>(paths: FeedbackPaths, action: () => T): T {
     fail("The initiating review session changed. Reopen the viewer.");
   }
   if (fs.existsSync(path.join(reviewDirectory(paths.reviewId), "review.json")) && readReview(paths.reviewId).remote) fail("Remote reviews support personal notes only.");
-  // Validation also holds the shared lock so it never observes a partial batch.
-  return withFeedbackLock(paths, () => {
+  // Validation also holds the shared lock so it never observes a partial batch,
+  // and reads the artifact then: a viewer request read the refs before it waited
+  // for the lock, perhaps while a stage was being removed.
+  return withFeedbackLock(paths, () => readingActiveRefsNow(() => {
     // Archiving checks the feedback and removes the active ref under this lock,
     // possibly after paths were found or a viewer request read the refs.
     if (!implementationActive(paths.root, paths.implementationId)) fail(`Implementation ${paths.implementationId} is no longer active, so its review is unavailable.`);
     return withValidationContext(action);
-  });
+  }));
 }
 
 /** Runs one `semantic-flow feedback` command line in the current working directory. */

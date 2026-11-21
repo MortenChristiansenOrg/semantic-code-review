@@ -36,8 +36,17 @@ synchronization, `feedback --json` for feedback) to validate and refresh
 pending feedback anchors. If validation reports invalid node selectors, use
 `stage organize --finalized` for the affected stages before rerunning it. A
 stage whose changes the target or the stages below already contain stays as a
-marked empty stage; validation accepts it and stack preparation skips it.
-Report it.
+marked empty stage; validation accepts it and stack preparation skips it. When
+the rerun helper's `emptyStageThreads` lists it without unresolved threads,
+remove it from the artifact worktree, naming the rerun helper's
+`implementationId`, and report the removal; otherwise keep it and report it:
+
+```text
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
+```
+
+The command refuses the only remaining stage; keep it and report that the
+implementation no longer changes anything.
 
 If resolving requires a product or code-intent decision, ask about that
 behavior in plain language under `user-decisions.md`. The pending restack and

@@ -228,14 +228,15 @@ test("the jobs after a request body share one read of the active refs", async (t
     headers: { "content-type": "application/json", [KEY_HEADER]: viewer.key }, body: { implementationId, threadId: "missing" } });
   assert.equal(status, 422);
   const reads = viewer.runs().slice(before).filter((line) => / trace: built-in: git for-each-ref /.test(line));
-  // One read checks the review before the body, one serves the jobs after it.
-  // The feedback change reads only its implementation's active ref again, under
+  // One read checks the review before the body, one serves the jobs after it,
+  // and the thread write reads again under the review lock, as a stage removal may have moved them.
+  // The feedback change also reads its implementation's active ref again, under
   // the review lock, as an archive may have removed it since.
   // Its failure reads whether the implementation was archived, which may have refused it.
   const recheck = `refs/semantic-review/active/${implementationId}`, archive = `refs/semantic-review/archive/${implementationId}`;
   const rechecking = (line) => line.trimEnd().endsWith(` ${recheck}`), archiveChecking = (line) => line.trimEnd().endsWith(` ${archive}`);
   const checks = reads.filter((line) => !rechecking(line) && !archiveChecking(line));
-  assert.equal(checks.length, 2, reads.join("\n"));
+  assert.equal(checks.length, 3, reads.join("\n"));
   assert.equal(reads.filter(rechecking).length, 1, reads.join("\n"));
   assert.equal(reads.filter(archiveChecking).length, 1, reads.join("\n"));
 });

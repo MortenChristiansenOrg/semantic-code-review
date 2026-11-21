@@ -53,6 +53,7 @@ import {
   fullFormFiles,
   loadImplementation,
   loadManifest,
+  removedStageFile,
   stageBranchName,
   stageFile,
   writeManifest,
@@ -70,12 +71,14 @@ import {
   exportArtifactFiles,
   hasFile,
   listJsonIds,
+  ownImplementationId,
   readArtifact,
   activeRef,
   readPublishedArtifact,
   rememberImplementation,
   removeArtifact,
   requireArtifact,
+  selectedImplementation,
   updateRefs,
   worktreeImplementation,
   ZERO_OID,
@@ -85,8 +88,8 @@ import {
 } from "./shared/artifact-store.js";
 import { errorCode, errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
-import { gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
-import { describeFinalizedStages, emptyStageIds } from "./shared/stage-report.js";
+import { feedbackDirectory, gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
+import { describeFinalizedStages, emptyStageIds, stageThreads } from "./shared/stage-report.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
@@ -265,6 +268,12 @@ function checkedOutBranches(root: string): Set<string> {
       .filter((line) => line.startsWith("branch refs/heads/"))
       .map((line) => line.slice("branch refs/heads/".length)),
   );
+}
+
+/** How many worktrees have branch checked out; git switch --ignore-other-worktrees allows several. */
+function worktreesOnBranch(root: string, branch: string): number {
+  return git(["worktree", "list", "--porcelain"], { cwd: root }).split(/\r?\n/)
+    .filter((line) => line === `branch refs/heads/${branch}`).length;
 }
 
 function isAncestor(root: string, ancestor: string, descendant: string): boolean {
@@ -677,6 +686,31 @@ function evidenceItemErrors(stage: EditableStage): string[] {
     .map((reference) => `Stage ${stage.id} evidence ${item.id} references ${reference}, which the stage does not address.`));
 }
 
+/** What validation requires of the stages `stage remove` took out of the stack:
+ * each listed once, with its document, an ID no other stage has, and the empty
+ * head it was removed at. */
+function removedStageErrors(files: ArtifactFiles, { manifest, stages, workStages, removedStages }: Artifact): string[] {
+  const errors: string[] = [];
+  const records = manifest.removedStages ?? [];
+  for (const duplicate of duplicateValues(records.map(({ id }) => id))) errors.push(`Removed stage ${duplicate} is listed more than once.`);
+  for (const id of listJsonIds(files, "removed-stages")) {
+    if (!records.some((record) => record.id === id)) errors.push(`Unlisted removed stage file removed-stages/${id}.json.`);
+  }
+  for (const { id, headRevision } of records) {
+    if (stages.has(id) || workStages.has(id)) errors.push(`Stage ${id} is both removed and part of the implementation.`);
+    const stage = removedStages.get(id);
+    if (!stage) continue;
+    if (stage.id !== id) errors.push(`Removed stage ${id} has internal ID ${stage.id}.`);
+    if (stage.change.headRevision !== headRevision) errors.push(`Removed stage ${id} records head ${headRevision}, but its document has ${stage.change.headRevision}.`);
+    if (stage.change.files.length > 0) errors.push(`Removed stage ${id} changes files; only an empty stage is removed.`);
+    for (const collection of STAGE_ITEM_COLLECTIONS) {
+      for (const duplicate of duplicateValues(stageItems(stage, collection).map((item) => item.id))) errors.push(`Removed stage ${id} repeats ${collection} ID ${duplicate}.`);
+    }
+    errors.push(...evidenceItemErrors(stage));
+  }
+  return errors;
+}
+
 interface SemanticValidationOptions {
   validateGit?: boolean;
   /** Branch heads the command moves together with the draft it validates. */
@@ -692,10 +726,11 @@ function validateSemantic(
   { validateGit = true, allowLandedTarget = false, allowTargetDrift = false, movingBranches = new Map() }: SemanticValidationOptions = {},
 ): void {
   const errors: string[] = [];
-  const { manifest, requirements, stages, workStages } = artifact;
+  const { manifest, requirements, stages, workStages, removedStages } = artifact;
   // Checked only in full validation: an edit prunes replaced files once it has saved.
   if (validateGit) {
-    const allStages = [...stages.values(), ...workStages.values()];
+    // A removed stage keeps its captures.
+    const allStages = [...stages.values(), ...workStages.values(), ...removedStages.values()];
     errors.push(...evidenceTreeErrors(files, allStages), ...allStages.flatMap((stage) => evidenceAttachmentErrors(files, stage)));
   }
 
@@ -711,6 +746,7 @@ function validateSemantic(
       errors.push(`Unlisted stage file stages/${id}.json.`);
     }
   }
+  errors.push(...removedStageErrors(files, artifact));
 
   const criterionIds = new Map<string, Set<string>>();
   for (const [id, specification] of requirements) {
@@ -927,6 +963,12 @@ function validateArtifact(
       if (item.codeTarget) validateCodeTarget(workspace.root, item.codeTarget, !schemaOnly && validateGit);
     }
   }
+  // A removed stage's commits are provenance, which an archive does not keep.
+  for (const stage of artifact.removedStages.values()) {
+    for (const collection of STAGE_ITEM_COLLECTIONS) for (const item of stageItems(stage, collection)) {
+      if (item.codeTarget) validateCodeTarget(workspace.root, item.codeTarget, false);
+    }
+  }
   if (!schemaOnly) {
     validateSemantic(workspace, files, artifact, { validateGit, allowLandedTarget, allowTargetDrift, movingBranches });
   }
@@ -1100,6 +1142,9 @@ function beginStage(workspace: Workspace, options: Options): void {
   const id = option(options, "id", { required: true });
   if (artifact.stages.has(id)) {
     fail(`Stage ${id} is already finalized.`);
+  }
+  if (artifact.removedStages.has(id)) {
+    fail(`Stage ${id} was removed from this implementation; its record keeps the ID, so choose another one.`);
   }
   const file = `.work/stages/${id}.json`;
   if (workspace.snapshot.type(file) !== undefined) {
@@ -2028,6 +2073,298 @@ function discardStage(workspace: Workspace, options: Options): void {
   console.log(`Discarded working stage ${id}.${branchNote}`);
 }
 
+/** A stage above a removed one, rebuilt on the stage below it with the same tree. */
+export interface RebuiltStage {
+  id: string;
+  branch: string;
+  previousBaseRevision: string;
+  previousHeadRevision: string;
+  baseBranch: string;
+  baseRevision: string;
+  headRevision: string;
+}
+
+/** What `implementation stage remove --json` prints. */
+export interface StageRemoval {
+  stageId: string;
+  title: string;
+  /** The deleted stage branch. */
+  branch: string;
+  headRevision: string;
+  /** The stage commit the empty stage stood in for. Its changes no longer come
+   * back if the target drops them. Null when a resolution or correction dropped them. */
+  replacedCommit: string | null;
+  /** Where the stage document is kept, with every insight, validation and evidence item. */
+  removedStageFile: string;
+  keptItems: Array<{ collection: InsightCollection; id: string }>;
+  /** Criteria the removed stage addressed that no remaining stage addresses. */
+  uncoveredCriteria: string[];
+  /** Resolved threads on the stage; they stay readable but can no longer be replied to or reopened. */
+  resolvedThreadIds: string[];
+  /** Stages whose dependencies changed: they take over the removed stage's own. */
+  dependsOn: Array<{ stageId: string; previous: string[]; next: string[] }>;
+  rebuiltStages: RebuiltStage[];
+  /** The commit this worktree's detached HEAD moved to; null when the checkout did not change. */
+  detachedAt: string | null;
+}
+
+const GIT_OPERATION_STATES = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG"];
+
+/** The Git operation in progress in the worktree at root, such as a merge,
+ * cherry-pick, rebase or bisect; undefined when none is. The state is read
+ * from that worktree's own Git directory. */
+function gitOperationInProgress(root: string): string | undefined {
+  const paths = git(["rev-parse", ...GIT_OPERATION_STATES.flatMap((state) => ["--git-path", state])], { cwd: root }).split(/\r?\n/);
+  return GIT_OPERATION_STATES.find((_, index) => fs.existsSync(path.resolve(root, paths[index])));
+}
+
+/** The checked-out branch of every worktree of the repository, by worktree path;
+ * detached and bare worktrees are left out. */
+function worktreeBranches(root: string): Array<{ worktree: string; branch: string }> {
+  return git(["worktree", "list", "--porcelain", "-z"], { cwd: root }).split("\0\0")
+    .map((entry) => entry.split("\0"))
+    .flatMap((lines) => {
+      const worktree = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+      const branch = lines.find((line) => line.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
+      return worktree !== undefined && branch !== undefined ? [{ worktree: path.resolve(worktree), branch }] : [];
+    });
+}
+
+/** Detaches HEAD at commit while it is still at expected, without touching
+ * the index or the working tree, which match both. */
+function moveHead(root: string, commit: string, expected: string | undefined): void {
+  git(["update-ref", "--no-deref", "-m", "semantic-implementation: stage remove", "HEAD", commit, ...(expected ? [expected] : [])], { cwd: root });
+}
+
+/** Removes a marked empty stage: the stages above it are rebuilt on the stage
+ * below with unchanged trees, its branch is deleted in the same transaction,
+ * and its document is kept as a removed stage. */
+function removeStage(workspace: Workspace, options: Options): void {
+  assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage remove"));
+  const json = flag(options, "json");
+  const id = option(options, "id", { required: true });
+  const requestedImplementation = option(options, "implementation-id");
+  const { root } = workspace;
+  // The worktree's own implementation decides, not a selection the process
+  // inherited: both the option and an inherited selection must name it.
+  const own = ownImplementationId(root);
+  for (const [requested, source] of [[requestedImplementation, ""], [selectedImplementation(), ", which SEMANTIC_FLOW_IMPLEMENTATION_ID selects"]] as const) {
+    if (requested !== undefined && requested !== own) {
+      fail(`This worktree works on ${own === undefined ? "no implementation" : `implementation ${own}`}, not ${requested}${source}. Run the command in the worktree of ${requested}.`);
+    }
+  }
+  if (own !== undefined && activeImplementationId(root, workspace.snapshot) !== own) {
+    fail(`This worktree works on implementation ${own}, not ${activeImplementationId(root, workspace.snapshot)}.`);
+  }
+  // Full validation refuses a pending restack and a stack that differs from its branches.
+  const artifact = validateArtifact(workspace, { quiet: true });
+  const implementationId = artifact.manifest.implementationId;
+  if (artifact.workStages.size > 0) {
+    fail(`Removing a stage requires every stage to be finalized; finish or discard working stage ${[...artifact.workStages.keys()].join(", ")} first.`);
+  }
+  if (artifact.removedStages.has(id)) fail(`Stage ${id} was already removed.`);
+  const stage = artifact.stages.get(id) ?? fail(`Finalized stage ${id} does not exist.`);
+  const { branch, baseRevision: removedBase, headRevision: removedHead } = stage.change;
+  const marker = stage.change.files.length === 0 ? emptyStageMarker(root, removedHead) : undefined;
+  if (marker === undefined) fail(`Stage ${id} changes files; only an empty stage can be removed.`);
+  const stack = artifact.manifest.stages;
+  if (stack.length === 1) {
+    fail(`Stage ${id} is the only stage of ${implementationId}, so nothing would remain to prepare. Keep it, or archive the implementation if its work has landed.`);
+  }
+  // Every worktree is counted: this one may share the branch with another.
+  if (worktreesOnBranch(root, branch) > (currentBranch(root) === branch ? 1 : 0)) {
+    fail(`Stage branch ${branch} is checked out in another worktree. Run git switch --detach there, then run the command again.`);
+  }
+  const targetRef = `refs/heads/${artifact.manifest.targetBranch}`;
+  assertDirectRefs(root, [targetRef, ...stack.map((stageId) => `refs/heads/${finalizedStage(artifact, stageId).change.branch}`)]);
+
+  // The removed stage's tree is its base's, so every stage above keeps its tree
+  // and only gets a new parent: its diff stays byte for byte the same.
+  const index = stack.indexOf(id);
+  const belowId = index > 0 ? stack[index - 1] : undefined;
+  const baseBranch = belowId === undefined ? artifact.manifest.targetBranch : finalizedStage(artifact, belowId).change.branch;
+  let parentBranch = baseBranch;
+  let parent = removedBase;
+  const rebuilt: RebuiltStage[] = [];
+  for (const aboveId of stack.slice(index + 1)) {
+    const above = finalizedStage(artifact, aboveId);
+    const previous = above.change;
+    const headRevision = replayedCommit(root, `${previous.headRevision}^{tree}`, parent, previous.headRevision);
+    rebuilt.push({
+      id: aboveId,
+      branch: previous.branch,
+      previousBaseRevision: previous.baseRevision,
+      previousHeadRevision: previous.headRevision,
+      baseBranch: parentBranch,
+      baseRevision: parent,
+      headRevision,
+    });
+    above.change = { ...previous, baseBranch: parentBranch, baseRevision: parent, headRevision };
+    parentBranch = previous.branch;
+    parent = headRevision;
+  }
+
+  // A stage that depended on the removed one depends on what it depended on,
+  // without the dependencies that others already imply.
+  const remaining = stack.filter((stageId) => stageId !== id);
+  const graph = new Map(remaining.map((stageId): [string, string[]] => {
+    const dependsOn = finalizedStage(artifact, stageId).dependsOn;
+    return [stageId, dependsOn.includes(id) ? [...new Set(dependsOn.flatMap((dependency) => dependency === id ? stage.dependsOn : [dependency]))] : dependsOn];
+  }));
+  const dependencyChanges: StageRemoval["dependsOn"] = [];
+  for (const stageId of remaining) {
+    const spliced = graph.get(stageId) ?? [];
+    const next = spliced.filter((dependency) => !spliced.some((other) => other !== dependency && reachable(graph, other, dependency)));
+    const dependent = finalizedStage(artifact, stageId);
+    if (JSON.stringify(next) === JSON.stringify(dependent.dependsOn)) continue;
+    dependencyChanges.push({ stageId, previous: dependent.dependsOn, next });
+    dependent.dependsOn = next;
+  }
+  const stillCovered = new Set(remaining.flatMap((stageId) => finalizedStage(artifact, stageId).specificationRefs));
+  const uncoveredCriteria = stage.specificationRefs.filter((reference) => !stillCovered.has(reference));
+  const keptItems = STAGE_ITEM_COLLECTIONS.flatMap((collection) => stageItems(stage, collection).map((item) => ({ collection, id: item.id })));
+
+  artifact.manifest.stages = remaining;
+  artifact.manifest.removedStages = [...(artifact.manifest.removedStages ?? []), { id, headRevision: removedHead }];
+  artifact.stages.delete(id);
+  artifact.removedStages.set(id, stage);
+  const draft = new ArtifactDraft(workspace.snapshot);
+  draft.remove(`stages/${id}.json`);
+  draft.writeJson(removedStageFile(id), stage);
+  for (const { stageId } of dependencyChanges) writeStage(draft, finalizedStage(artifact, stageId));
+  writeManifest(draft, artifact);
+  // The whole result is validated before any checkout or ref changes.
+  validateArtifact(workspace, { quiet: true, movingBranches: new Map(rebuilt.map((entry) => [entry.branch, entry.headRevision])) }, draft);
+
+  const refUpdates: RefUpdate[] = [
+    { ref: targetRef, next: artifact.manifest.baseRevision, previous: artifact.manifest.baseRevision },
+    ...stack.slice(0, index).map((stageId): RefUpdate => {
+      const head = finalizedStage(artifact, stageId).change.headRevision;
+      return { ref: `refs/heads/${finalizedStage(artifact, stageId).change.branch}`, next: head, previous: head };
+    }),
+    { ref: `refs/heads/${branch}`, next: ZERO_OID, previous: removedHead },
+    ...rebuilt.map((entry): RefUpdate => ({ ref: `refs/heads/${entry.branch}`, next: entry.headRevision, previous: entry.previousHeadRevision })),
+  ];
+  // A checkout of the removed branch is detached at the stage below, which has
+  // the same tree; a detached checkout of a replaced head here follows it.
+  // Checkouts change while the command runs, so this is decided again under the lock.
+  const movedBranches = new Set([branch, ...rebuilt.map((entry) => entry.branch)]);
+  const planCheckouts = () => {
+    const current = currentBranch(root);
+    if (worktreesOnBranch(root, branch) > (current === branch ? 1 : 0)) {
+      fail(`Stage branch ${branch} is checked out in another worktree. Run git switch --detach there, then run the command again.`);
+    }
+    const wasCurrent = current === branch;
+    const detachedHead = current === undefined ? gitOptional(["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root }) : undefined;
+    const follow = detachedHead === undefined ? undefined
+      : detachedHead === removedHead ? removedBase
+        : rebuilt.find((entry) => entry.previousHeadRevision === detachedHead)?.headRevision;
+    // Moving a checked-out branch, or HEAD with update-ref, skips the checks a
+    // checkout makes, so a stopped merge, cherry-pick, rebase or bisect would
+    // lose its place. Other worktrees keep a detached HEAD where it is.
+    const moved = worktreeBranches(root).filter((entry) => movedBranches.has(entry.branch)).map((entry) => entry.worktree);
+    if (follow !== undefined) moved.push(root);
+    for (const worktree of new Set(moved)) {
+      // A worktree whose directory is gone cannot have an operation running.
+      const operation = fs.existsSync(worktree) ? gitOperationInProgress(worktree) : undefined;
+      if (operation !== undefined) {
+        fail(`A Git operation is in progress in ${worktree} (${operation}). Finish or abort it, then run the command again.`);
+      }
+    }
+    return { wasCurrent, detachedHead, follow };
+  };
+  planCheckouts();
+  let resolvedThreadIds: string[] = [];
+  let committed = false;
+  let wasCurrent = false;
+  let detachedAt: string | null = null;
+  // The review lock keeps threads from being added to or reopened on the stage
+  // between the check and the commit.
+  try {
+    withArtifactLock(workspace, implementationId, () => {
+      // Another command, such as a concurrent removal, may have changed the
+      // artifact since it was read; everything above was decided on that read.
+      if (gitOptional(["rev-parse", "--verify", "--quiet", activeRef(implementationId)], { cwd: root }) !== workspace.snapshot.version) {
+        fail(`Implementation ${implementationId} changed while stage ${id} was being removed; run the command again.`);
+      }
+      const threads = stageThreads(feedbackDirectory(root, implementationId), [id]).get(id) ?? { open: [], resolved: [] };
+      if (threads.open.length > 0) {
+        fail(`Stage ${id} has feedback threads that are not resolved: ${threads.open.join(", ")}. It can be removed once the reviewer resolves them.`);
+      }
+      resolvedThreadIds = threads.resolved;
+      const checkouts = planCheckouts();
+      wasCurrent = checkouts.wasCurrent;
+      const { detachedHead, follow } = checkouts;
+      let detached = false;
+      try {
+        // Both trees are the same, so only HEAD moves; no checkout hook runs.
+        if (wasCurrent) {
+          moveHead(root, removedBase, removedHead);
+          detached = true;
+        }
+        commitArtifact(root, workspace.snapshot, draft, refUpdates);
+        committed = true;
+        if (wasCurrent) detachedAt = removedBase;
+      } catch (error) {
+        // HEAD goes back to the branch only while nothing else moved either.
+        if (detached && currentBranch(root) === undefined
+          && gitOptional(["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root }) === removedBase
+          && gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: root }) === removedHead) {
+          git(["symbolic-ref", "HEAD", `refs/heads/${branch}`], { cwd: root, allowFailure: true });
+        }
+        throw error;
+      }
+      // Under the lock, so a later removal reads HEAD once it followed; it
+      // moves only while still at the head read above.
+      if (follow !== undefined) {
+        try {
+          const started = gitOperationInProgress(root);
+          if (started !== undefined) throw new Error(`a Git operation is in progress (${started})`);
+          moveHead(root, follow, detachedHead);
+          detachedAt = follow;
+        } catch (error) {
+          console.error(`semantic-implementation: the stage was removed, but HEAD stays at ${detachedHead}, which has the same tree as ${follow}: ${errorMessage(error)}`);
+        }
+      }
+    });
+  } catch (error) {
+    // Only renewing the feedback round failed: the stage is removed.
+    if (!committed) throw error;
+    console.error(`semantic-implementation: the stage was removed, but ${errorMessage(error)}`);
+  }
+  // The worktree no longer has a stage branch checked out, but it continues the implementation.
+  if (wasCurrent) rememberImplementation(root, implementationId);
+
+  const replacedCommit = marker === RESOLVED_EMPTY ? null : marker;
+  const result: StageRemoval = {
+    stageId: id,
+    title: stage.title,
+    branch,
+    headRevision: removedHead,
+    replacedCommit,
+    removedStageFile: removedStageFile(id),
+    keptItems,
+    uncoveredCriteria,
+    resolvedThreadIds,
+    dependsOn: dependencyChanges,
+    rebuiltStages: rebuilt,
+    detachedAt,
+  };
+  if (json) {
+    console.log(JSON.stringify(result));
+    return;
+  }
+  const lines = [`Removed empty stage ${id} (${stage.title}) and deleted its branch ${branch}; rebuilt ${rebuilt.length} stage(s) above on ${baseBranch}, their content unchanged.`];
+  for (const entry of rebuilt) lines.push(`  ${entry.id}: ${entry.previousBaseRevision}..${entry.previousHeadRevision} -> ${entry.baseRevision}..${entry.headRevision}`);
+  lines.push(`Its document is kept in ${removedStageFile(id)}${keptItems.length ? `, with ${keptItems.map((item) => `${item.collection} ${item.id}`).join(", ")}` : ""}.`);
+  if (resolvedThreadIds.length) lines.push(`Its resolved feedback thread(s) stay readable and can no longer be replied to or reopened: ${resolvedThreadIds.join(", ")}.`);
+  for (const change of dependencyChanges) lines.push(`Stage ${change.stageId} now depends on ${change.next.length ? change.next.join(", ") : "no stage"} instead of ${change.previous.join(", ")}.`);
+  if (uncoveredCriteria.length) lines.push(`No remaining stage addresses ${uncoveredCriteria.join(", ")}.`);
+  if (replacedCommit) lines.push(`The stage stood in for ${replacedCommit}; its changes no longer come back if the target drops them.`);
+  if (detachedAt) lines.push(`HEAD is detached at ${detachedAt}.`);
+  console.log(lines.join("\n"));
+}
+
 interface CommitMetadata {
   authorName: string;
   authorEmail: string;
@@ -2668,7 +3005,7 @@ function emptiedStagesNote(root: string, summary: RestackSummary): string {
   return notes.length ? ` ${notes.join(" ")} Empty stages stay in the implementation as marked empty stages, which stack preparation skips.` : "";
 }
 
-/** Restacks every stage onto the current target branch head. checkout names
+/** Restacks every stage onto base, which must still be the target branch head. checkout names
  * a stage branch the caller detached for it; a restack that stops at a
  * conflict records it, so --continue and --abort switch the worktree back. */
 export function restackOntoTarget(root: string, base: string, checkout?: DetachedCheckout): RestackSummary {
@@ -3761,6 +4098,7 @@ function exportImplementation(workspace: Workspace, options: Options): void {
       requirements: Object.fromEntries(artifact.requirements),
       stages: Object.fromEntries(artifact.stages),
       workingStages: Object.fromEntries(artifact.workStages),
+      removedStages: Object.fromEntries(artifact.removedStages),
     }, null, 2));
     return;
   }
@@ -3880,6 +4218,7 @@ function dispatch(root: string, positionals: string[], options: Options): void {
     discardStage(openWorkspace(root), options);
     return;
   }
+  if (command === "stage" && subcommand === "remove") return removeStage(openWorkspace(root), options);
   if (command === "restack" && subcommand === undefined) {
     restack(openWorkspace(root), options);
     return;

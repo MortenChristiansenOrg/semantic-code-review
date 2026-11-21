@@ -41,7 +41,7 @@ import {
   type JsonRecord,
 } from "./shared/narrow.js";
 import { withValidationContext } from "./shared/validation-context.js";
-import { describeFinalizedStages } from "./shared/stage-report.js";
+import { describeFinalizedStages, stageThreads } from "./shared/stage-report.js";
 import {
   probeViewer,
   stopViewerAndWait,
@@ -350,6 +350,28 @@ async function checkImplementation(root: string): Promise<CapturedValidation & {
   return { ...captured, emptyStages };
 }
 
+/** An empty stage and the threads on it that are not resolved; with none, `stage remove` can remove it. */
+interface EmptyStageThreads {
+  stageId: string;
+  openThreadIds: string[];
+}
+
+/** The empty stages with their unresolved threads, read from the review's feedback. */
+function emptyStageThreads(feedbackRoot: string, emptyStages: readonly string[]): EmptyStageThreads[] {
+  return [...stageThreads(feedbackRoot, emptyStages)].map(([stageId, threads]) => ({ stageId, openThreadIds: threads.open }));
+}
+
+/** emptyStageThreads, or null when the feedback cannot be read, such as while
+ * another command initializes it. */
+function knownEmptyStageThreads(feedbackRoot: string, emptyStages: readonly string[]): EmptyStageThreads[] | null {
+  try {
+    return emptyStageThreads(feedbackRoot, emptyStages);
+  } catch (error) {
+    console.error(`Warning: the threads on empty stages are unknown: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
 async function checkFeedback(root: string): Promise<CapturedValidation> {
   const { validateFeedbackAt } = await feedbackService();
   return captureValidation(() => validateFeedbackAt(root));
@@ -465,10 +487,16 @@ async function status(options: Options): Promise<void> {
   );
 
   const { emptyStages, ...implementationValidation } = artifactValidation;
+  let threadsOfEmptyStages: EmptyStageThreads[] | null = null;
+  if (emptyStages !== null && (!feedbackValidation || feedbackValidation.passed)) {
+    try { threadsOfEmptyStages = emptyStageThreads(feedbackRoot, emptyStages); } catch { /* Unknown; validation reports why. */ }
+  }
   const result = {
     artifact: candidate,
     /** The marked empty finalized stages; null when the artifact does not validate, so they are unknown. */
     emptyStages,
+    /** Each empty stage with its unresolved threads; null when either is unknown. */
+    emptyStageThreads: threadsOfEmptyStages,
     criteria: {
       total: allCriteria.length,
       covered: allCriteria.filter((criterion) =>
@@ -681,11 +709,13 @@ async function launchViewer(
   console.log(`Viewer is running persistently in the background (PID ${launch.processId}).`);
 }
 
-async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
+/** verifiedTarget is the target head the caller checked; the restack refuses
+ * a target that moved from it rather than restacking onto the new head. */
+async function refreshAdvancedTarget(candidate: ActiveCandidate, verifiedTarget?: string): Promise<{
   candidate: ActiveCandidate;
   targetRestack: TargetRestack | null;
 }> {
-  const targetHead = git(
+  const targetHead = verifiedTarget ?? git(
     ["rev-parse", "--verify", `refs/heads/${candidate.targetBranch}^{commit}`],
     { cwd: candidate.worktree },
   );
@@ -798,7 +828,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   try {
     restackSummary = restackOntoTarget(
       candidate.worktree,
-      candidate.targetBranch,
+      targetHead,
       detachedBranch === null ? undefined : { worktree: candidate.worktree, branch: detachedBranch, head: originalHead },
     );
   } catch (error) {
@@ -853,17 +883,19 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   };
 }
 
-async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<void> {
+/** Validates the implementation for a feedback command and returns its empty stages. */
+async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<string[]> {
   const artifactValidation = await checkImplementation(candidate.worktree);
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
+  return artifactValidation.emptyStages ?? [];
 }
 
 /** Claiming marks the returned threads as one round so no other run answers them. */
 async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
-  await validateArtifactForFeedback(candidate);
+  const emptyStages = await validateArtifactForFeedback(candidate);
 
   const worktreeStatus =
     git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
@@ -914,11 +946,15 @@ async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: Tar
 
   return {
     worktree: candidate.worktree,
+    implementationId: candidate.implementationId,
     currentBranch: candidate.currentBranch,
     worktreeChanges,
     targetRestack,
     feedbackExists: candidate.feedbackExists,
     stages,
+    // Read after the round's threads were validated; an empty stage without any
+    // is removable. Null when they cannot be read: sync has already moved refs.
+    emptyStageThreads: knownEmptyStageThreads(feedbackRoot, emptyStages),
     ...(claim ? { claim: claimId, claimedElsewhere, responses } : {}),
   };
 }
@@ -1156,22 +1192,31 @@ function branchCheckouts(root: string, ref: string): string[] {
  * of the branch then follows with its index and files, or the ref moves back. */
 function fastForwardBranch(root: string, ref: string, checkout: string | undefined, from: string, to: string): void {
   const checkedOut = () => Boolean(checkout) && git(["symbolic-ref", "--quiet", "HEAD"], { cwd: checkout, allowFailure: true }) === ref;
+  // update-ref would move the branch a symbolic ref names, whose checkout was never checked.
+  const symbolic = git(["symbolic-ref", "--quiet", ref], { cwd: root, allowFailure: true });
+  if (symbolic) fail(`${ref} is a symbolic ref to ${symbolic}, so it is not fast-forwarded. Make it a branch of its own before retrying.`);
   if (checkout) {
     requireCleanSyncWorktree(checkout);
     if (!checkedOut()) fail(`The checkout of ${ref} at ${checkout} changed; inspect it before retrying.`);
   }
   git(["update-ref", "-m", "semantic-flow: fast-forward to upstream", ref, to, from], { cwd: root });
   if (!checkout || !checkedOut()) return;
-  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true });
+  // Each undo reports whether it succeeded; the ref is moved back only from the fast-forwarded revision.
+  const undo = () => git(["update-ref", "-m", "semantic-flow: undo fast-forward", ref, from, to], { cwd: root, allowFailure: true }) !== null;
+  const unrestoredRef = `${ref} could not be moved back from ${to} to ${from}`;
   if (git(["read-tree", "-m", "-u", from, to], { cwd: checkout, allowFailure: true }) === null) {
-    undo();
-    fail(`Could not update the files of ${checkout} to ${to}; ${ref} was left at ${from}. Inspect the checkout before retrying.`);
+    const restored = undo();
+    fail(`Could not update the files of ${checkout} to ${to}; ${restored ? `${ref} was left at ${from}` : unrestoredRef}. Inspect the checkout before retrying.`);
   }
   // Git cannot lock a checkout's branch across commands; undo a switch that raced the file update.
   if (!checkedOut()) {
-    git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true });
-    undo();
-    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; both were restored. Inspect it before retrying.`);
+    const filesRestored = git(["read-tree", "-m", "-u", to, from], { cwd: checkout, allowFailure: true }) !== null;
+    const refRestored = undo();
+    const unrestored = [
+      ...(filesRestored ? [] : [`the files of ${checkout} could not be restored to ${from}`]),
+      ...(refRestored ? [] : [unrestoredRef]),
+    ];
+    fail(`The checkout at ${checkout} switched branches while ${ref} was fast-forwarded; ${unrestored.length ? unrestored.join(", and ") : "both were restored"}. Inspect it before retrying.`);
   }
 }
 
@@ -1318,7 +1363,7 @@ async function sync(options: Options): Promise<void> {
 
   try {
     if (revision(targetRef) !== targetRevision) fail("Target branch moved before restacking; retry from its current head.");
-    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate);
+    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate, targetRevision);
     const snapshot = await feedbackSnapshot(refreshed, targetRestack);
     const result = {
       ...snapshot,

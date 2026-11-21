@@ -108,6 +108,11 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   are derived from the stage order.
 - **Stage stack**: The linear chain of stage branches from the target branch
   upward.
+- **Removed stage**: A marked empty stage that `stage remove` took out of the
+  stage stack once no feedback thread on it was open. The stages above are
+  rebuilt with unchanged content; its document, insights and evidence are kept
+  under `removed-stages/`, its ID cannot be reused, and its resolved threads
+  stay readable but read-only.
 - **Target branch**: The repository branch the implementation is built on top of and
   eventually lands on.
 - **Base revision / head revision**: Immutable commit snapshots recorded for a

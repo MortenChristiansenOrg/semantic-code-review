@@ -60,9 +60,9 @@ import { agentStatus, liveSession, markSending, readAgentState, respondToRequest
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { activeImplementationId, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
+import { activeImplementationId, hasFile, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
 import { git } from "./shared/git.js";
-import { readUnvalidatedImplementation } from "./shared/implementation.js";
+import { readUnvalidatedImplementation, removedStageFile } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { ReviewRecord, ViewerRecord } from "./shared/review-store.js";
@@ -200,6 +200,8 @@ interface ViewerManifest {
   baseRevision: string;
   requirements: string[];
   stages: string[];
+  /** The IDs of removed stages. */
+  removedStages: string[];
 }
 
 interface ViewerSpecification {
@@ -293,6 +295,10 @@ function readManifest(document: unknown, file: string): ViewerManifest {
     targetBranch: displayString(value, "targetBranch"), baseRevision: displayString(value, "baseRevision"),
     requirements: isStringArray(requirements) ? requirements : [],
     stages,
+    removedStages: listOf(value.removedStages).flatMap((entry) => {
+      const id = stringField(entry, "id");
+      return id === undefined ? [] : [id];
+    }),
   };
 }
 
@@ -348,6 +354,8 @@ interface ViewerArtifact {
   manifest: ViewerManifest;
   specification(id: string): ViewerSpecification;
   stage(id: string): StageDocument;
+  /** A removed stage's title, or its ID when its document cannot be read. */
+  removedStageTitle(id: string): string;
 }
 
 /** Reads the artifact of a review: the active artifact through the loader
@@ -364,6 +372,10 @@ function readViewerArtifact(repoRoot: string): ViewerArtifact {
       manifest: readManifest(readArtifactJson(files, "manifest.json"), label("manifest.json")),
       specification: (id) => readSpecification(readArtifactJson(files, `requirements/${id}.json`), id),
       stage: (id) => readStageDocument(readArtifactJson(files, `stages/${id}.json`), label(`stages/${id}.json`)),
+      removedStageTitle: (id) => {
+        const file = removedStageFile(id);
+        return (/^[a-z0-9-]+$/.test(id) && hasFile(files, file) ? stringField(readArtifactJson(files, file), "title") : undefined) ?? id;
+      },
     };
   }
   // The documents are narrowed field by field, as a projection's are, so an
@@ -374,6 +386,7 @@ function readViewerArtifact(repoRoot: string): ViewerArtifact {
     manifest: readManifest(model.manifest, label("manifest.json")),
     specification: (id) => readSpecification(model.requirements.get(id), id),
     stage: (id) => readStageDocument(model.stages.get(id), label(`stages/${id}.json`)),
+    removedStageTitle: (id) => stringField(model.removedStages.get(id), "title") ?? id,
   };
 }
 
@@ -1306,6 +1319,8 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
     baseRevision: manifest.baseRevision,
     requirements,
     stages,
+    // Threads of a removed stage are read-only; the page derives that from this list.
+    removedStages: manifest.removedStages.map((id) => ({ id, title: artifact.removedStageTitle(id) })),
     feedback,
     viewerRevision: snapshot.revision,
     awaitingAgentReplies: snapshot.awaitingAgentReplies,
