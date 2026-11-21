@@ -39,6 +39,7 @@ import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
 import { locateLineAnchors } from "./shared/line-anchors.js";
+import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
@@ -801,10 +802,16 @@ function pendingFeedback(
     const stage = target.kind === "line" ? semantic.stages.get(target.stageId) : undefined;
     return target.kind === "line" && stage ? [{ thread, target, stage }] : [];
   }) : [];
+  // Files as the review shows them, as the viewer locates its lines.
+  const ordered = semantic.manifest.stages.flatMap((id) => {
+    const stage = semantic.stages.get(id);
+    return stage ? [{ ...stage, id }] : [];
+  });
+  const shownFiles = new Map(shownStageFiles(ordered).map((files, index) => [ordered[index].id, files]));
   const currentLines = new Map(locateLineAnchors(paths.root, lineThreads.map(({ target, stage }) => ({
     anchor: target,
     stage: stage.change,
-    file: stage.change.files.find((file) => file.path === target.path),
+    file: shownFiles.get(target.stageId)?.find((file) => file.path === target.path),
   }))).map((line, index) => [lineThreads[index].thread.id, line]));
   const groups: FeedbackGroup[] = [];
   const listed: Thread[] = [];

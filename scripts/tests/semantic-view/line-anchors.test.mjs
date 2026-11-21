@@ -71,8 +71,8 @@ test("a line thread follows its unchanged line through new heads and moves", (t)
   const cache = new Map();
   const { result, runs } = locate(repository, inputs, cache);
   assert.deepEqual(result, [2, 4, 4, 5, null]);
-  // One read resolves the anchored snapshots, one the diff settings, and two diffs serve every line.
-  assert.deepEqual(runs, ["cat-file", "config", "diff-tree", "diff-tree"]);
+  // One read resolves the anchored snapshots, one the diff settings, and one diff serves every line.
+  assert.deepEqual(runs, ["cat-file", "config", "diff-tree"]);
   // Locating them again runs no Git.
   const again = locate(repository, inputs, cache);
   assert.deepEqual(again.result, result);
@@ -131,12 +131,12 @@ test("rows of renamed files and unusual paths are followed", (t) => {
   const renamed = { kind: "renamed", previousPath: "old.js" };
   const { result } = locate(repository, [
     { anchor: { stageHead: head, path: "new.js", side: "new", line: 5 }, stage, file: renamed },
-    // A renamed file's removed rows are read at its previous path.
+    // A renamed file's removed rows are not followed.
     { anchor: { stageHead: head, path: "new.js", side: "old", line: 5 }, stage, file: renamed },
     { anchor: { stageHead: head, path: odd, side: "old", line: 2 }, stage, file: modified },
     { anchor: { stageHead: head, path: odd, side: "new", line: 1 }, stage, file: modified },
   ]);
-  assert.deepEqual(result, [6, 6, 3, 2]);
+  assert.deepEqual(result, [6, null, 3, 2]);
 });
 
 test("removed lines that look like diff headers do not confuse the reading", (t) => {
@@ -174,4 +174,30 @@ test("lines are compared as the viewer's diff shows them", (t) => {
     return gitRaw(args, { cwd: repository.root, input, allowFailure: true });
   } });
   assert.ok(runs.filter((args) => args.includes("diff-tree")).every((args) => args.includes("--diff-algorithm=patience")));
+});
+
+test("a line stays where it was written while the stage head is the anchored one", (t) => {
+  const { repository, root, commit } = history(t);
+  const base = commit(root, { "old.js": lines("a", "b") });
+  const head = commit(base, { "old.js": null, "new.js": lines("a", "c") });
+  const stage = { baseRevision: base, headRevision: head };
+  const file = { previousPath: "old.js" };
+  const { result, runs } = locate(repository, [
+    { anchor: { stageHead: head, path: "new.js", side: "old", line: 2 }, stage, file },
+    { anchor: { stageHead: head, path: "new.js", side: "new", line: 2 }, stage, file },
+  ]);
+  assert.deepEqual(result, [2, 2]);
+  assert.deepEqual(runs, []);
+});
+
+test("a file renamed without changes shows no lines", (t) => {
+  const { repository, root, commit } = history(t);
+  const base = commit(root, { "old.js": lines("a", "b") });
+  const head = commit(base, { "old.js": null, "new.js": lines("a", "c") });
+  // The correction keeps only the rename.
+  const corrected = commit(base, { "old.js": null, "new.js": lines("a", "b") });
+  const { result } = locate(repository, [
+    { anchor: { stageHead: head, path: "new.js", side: "new", line: 1 }, stage: { baseRevision: base, headRevision: corrected }, file: { previousPath: "old.js" } },
+  ]);
+  assert.deepEqual(result, [null]);
 });

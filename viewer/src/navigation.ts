@@ -64,15 +64,14 @@ export function resumePendingLazyJump(): void {
   const parsed = parseLineId(pending.id);
   // A line number is only the same line in the diff it was taken from. After a
   // live update moved the stage, the jump ends at the line only while a thread
-  // it was going to is still shown there, and otherwise at the file.
-  const sameLine = entry && (entry.stage.headRevision === pending.head ||
-    artifactThreads.some((t) => pending.threads.includes(t.id) && threadLineId(t) === pending.id));
-  const exact =
-    entry &&
-    parsed &&
-    sameLine &&
-    Array.isArray(entry.file.lines) &&
-    fileHasLine(entry.file, parsed.side, parsed.line);
+  // it was going to is still shown there, and otherwise at the file. Decided
+  // when it scrolls, as an update can land before.
+  const exact = () => {
+    const current = fileById.get(pending.fileId);
+    return Boolean(current && parsed && (current.stage.headRevision === pending.head ||
+      artifactThreads.some((t) => pending.threads.includes(t.id) && threadLineId(t) === pending.id)) &&
+      Array.isArray(current.file.lines) && fileHasLine(current.file, parsed.side, parsed.line));
+  };
   requestAnimationFrame(() => {
     if (resumingJump !== pending) return;
     if (pending.membership?.nodeId) {
@@ -84,7 +83,7 @@ export function resumePendingLazyJump(): void {
     requestAnimationFrame(() => {
       if (resumingJump !== pending) return;
       resumingJump = null;
-      const target = exact
+      const target = exact()
         ? app.querySelector(`[data-line-id="${cssEsc(pending.id)}"]`)
         : fileRowElement(pending.fileId, pending.membership?.nodeId);
       if (target)

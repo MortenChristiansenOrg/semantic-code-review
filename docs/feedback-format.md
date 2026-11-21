@@ -49,8 +49,9 @@ A non-line thread remains stale when its target disappeared.
 
 Line anchors remain fixed. A stage's head commit changes at every fold and
 restack, also when its content stays the same, so the head says nothing about
-one line. Instead, the line is followed through Git's diff from the anchored
-snapshot to the stage's current diff: the new side from the target's
+one line. While the stage head is the anchored one, the line is where it was
+written. Otherwise it is followed through Git's diff of its path from the
+anchored snapshot to the stage's current diff: the new side from the target's
 `stageHead`, the old side from that commit's first parent, since a stage holds
 one commit on its base. Superseded heads stay reachable as parents of the
 artifact snapshot. Lines are compared as the viewer's diff shows them, with text
@@ -59,7 +60,8 @@ same line stands unchanged at the same path and on the same side, and the
 current diff shows it there; its current line number may differ from the stored
 one. Otherwise the thread is stale: the line changed or was removed, the file
 moved or left the stage, its diff shows no lines, or the line is no longer shown
-on that side. The viewer and `feedback next --compact` give the same answer.
+on that side. Removed lines of a file the stage renames are not followed once
+the head moves. The viewer and `feedback next --compact` give the same answer.
 
 ## Agent processing
 

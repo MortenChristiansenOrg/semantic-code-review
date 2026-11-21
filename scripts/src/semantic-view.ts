@@ -1,5 +1,6 @@
 import { resolveCodeTarget } from "./shared/insight-targets.js";
 import { locateLineAnchors, type LineAnchorCache } from "./shared/line-anchors.js";
+import { shownStageFiles } from "./shared/stage-files.js";
 export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
  * Semantic Flow review viewer launcher.
@@ -776,24 +777,9 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
 function readViewerStages(artifact: ViewerArtifact): ViewerStage[] {
-  const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
-  return artifact.manifest.stages.map((id) => {
-    const stage = artifact.stage(id);
-    const files = stage.change.files.map((file): ViewerFile => {
-      const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
-      const { previousPath: ignored, ...current } = file;
-      const oldPath = last ? last.path : file.previousPath;
-      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item): item is string => Boolean(item) && item !== file.path))];
-      return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
-        previousPaths, baseRevision: last ? last.headRevision : stage.change.baseRevision,
-        ...(last ? { previousStageId: last.stageId } : {}) };
-    });
-    for (const file of stage.change.files) if (file.previousPath) previous.delete(file.previousPath);
-    for (const file of files) {
-      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path, previousPaths: file.previousPaths });
-    }
-    return { ...stage, change: { ...stage.change, files } };
-  });
+  const stages = artifact.manifest.stages.map((id) => artifact.stage(id));
+  const files = shownStageFiles(stages);
+  return stages.map((stage, index) => ({ ...stage, change: { ...stage.change, files: files[index] } }));
 }
 
 /** The revision range a diff is computed over. */
