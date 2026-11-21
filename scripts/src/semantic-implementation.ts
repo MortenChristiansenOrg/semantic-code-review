@@ -306,21 +306,23 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, tra
   return [stage.title.trim(), stage.summary.trim(), ...(block.length ? [block.join("\n")] : [])].join("\n\n") + "\n";
 }
 
-/** Reads trailers the way Semantic Flow writes them, with a colon, whatever
- * trailer.separators says. */
+/** Reads the trailers of stage commits, which Semantic Flow writes with a
+ * colon, whatever trailer.separators says. */
 const COLON_TRAILERS = ["-c", "trailer.separators=:"];
 
 const coAuthorTrailer = (identity: string) => `Co-authored-by: ${identity}`;
 
 /** The trailers a stage commit carries over to a rebuilt message: every
  * trailer but the empty-stage marker, which the caller decides. A summary
- * whose last paragraph reads as trailers is parsed as such when no trailer
- * follows it; lines that are part of the summary are not trailers. */
+ * whose last paragraph Git reads as trailers is parsed as such when no
+ * trailer follows it, so the lines Git finds there are not taken as trailers. */
 function stageTrailers(root: string, commit: string, stage: Pick<EditableStage, "summary">): string[] {
-  const summaryLines = new Set(stage.summary.split(/\r?\n/).map((line) => line.trim()));
-  return gitRaw([...COLON_TRAILERS, "show", "-s", "--encoding=UTF-8", "--format=%(trailers:unfold,separator=%x00)", commit], { cwd: root })
-    .split("\0").map((trailer) => trailer.trim())
-    .filter((trailer) => trailer && !summaryLines.has(trailer) && !new RegExp(`^${EMPTY_STAGE_TRAILER}\\s*:`, "i").test(trailer));
+  const parse = (args: string[], input?: string) => gitRaw([...COLON_TRAILERS, ...args], { cwd: root, ...(input === undefined ? {} : { input }) })
+    .split(/\0|\r?\n/).map((trailer) => trailer.trim()).filter(Boolean);
+  // The summary follows the title in a stage message, as it does here.
+  const fromSummary = new Set(parse(["interpret-trailers", "--parse", "--no-divider"], `Title\n\n${stage.summary.trim()}\n`));
+  return parse(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:unfold,separator=%x00)", commit])
+    .filter((trailer) => !fromSummary.has(trailer) && !new RegExp(`^${EMPTY_STAGE_TRAILER}\\s*:`, "i").test(trailer));
 }
 
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
@@ -329,7 +331,8 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
   // Only the trailer block counts: a Co-authored-by line in the body is text,
   // not attribution. A message cannot hold NUL, so NUL separates the values
   // and two of them start each commit.
-  const log = gitRaw([...COLON_TRAILERS, "log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  // These are the user's commits, so their trailers are read as the user's Git configuration says.
+  const log = gitRaw(["log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\0\0").slice(1)) {

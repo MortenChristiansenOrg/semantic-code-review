@@ -614,10 +614,12 @@ test("a rebuilt stage message keeps its trailers under any trailer separator and
   repository.semantic("stage", "set", "--finalized", "--id", "policy", "--title", "Add the access policy");
   // A summary that ends in a trailer-like paragraph gives no credit.
   repository.semantic("stage", "set", "--finalized", "--id", "api", "--summary", "Expose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>");
+  // A summary that quotes a real trailer mid-text keeps the trailer.
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--summary", "Define the policy.\nCo-authored-by: Bob Pair <bob@example.test>\nsaid so.");
   repository.git("switch", "main");
   repository.commitFile("other.txt", "other\n", "Other work");
   repository.semantic("restack", "--base", "main");
-  const policyMessage = "Add the access policy\n\nDefine the policy.\n\nCo-authored-by: Bob Pair <bob@example.test>";
+  const policyMessage = "Add the access policy\n\nDefine the policy.\nCo-authored-by: Bob Pair <bob@example.test>\nsaid so.\n\nCo-authored-by: Bob Pair <bob@example.test>";
   const apiMessage = "Add API\n\nExpose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>";
   assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
   assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
