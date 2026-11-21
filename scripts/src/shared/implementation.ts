@@ -21,6 +21,7 @@ import {
 } from "./documents.js";
 import { ArtifactDraft, hasFile, listJsonIds, readArtifactJson, type ArtifactFiles } from "./artifact-store.js";
 import { fail } from "./errors.js";
+import { gitEnvironment } from "./git.js";
 import { isRecord, type JsonRecord } from "./narrow.js";
 import { parseDocument } from "./schema-validation.js";
 import { processFailureDetail, SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
@@ -110,9 +111,21 @@ function checkedChanges(files: FileChange[], parent: string, commit: string, all
   return files;
 }
 
+/** How every inventory is derived: plumbing, which reads none of the porcelain
+ * diff settings (diff.ignoreSubmodules, diff.renames, diff.orderFile,
+ * diff.relative, color, external drivers), with flags for what plumbing still
+ * reads. Submodule ignore rules from .gitmodules or submodule.<name>.ignore
+ * would hide a submodule update, and diff.renameLimit would decide whether
+ * inexact renames are found; the limit is Git's default. Paths are NUL
+ * separated, so core.quotePath never applies. A range read alone and the same
+ * range read in a batch thus have the same inventory whatever the user's
+ * configuration. */
+const INVENTORY_DIFF = ["diff-tree", "-r", "-z", "--name-status", "--ignore-submodules=none", "--find-renames=50%", "-l1000"];
+
 function runGit(root: string, args: string[], input?: string) {
   return spawnSync("git", args, {
     cwd: root,
+    env: gitEnvironment(),
     // spawnSync encodes string input with the output encoding, which "buffer" is not.
     input: input === undefined ? undefined : Buffer.from(input, "utf8"),
     encoding: "buffer",
@@ -125,7 +138,7 @@ function runGit(root: string, args: string[], input?: string) {
 function readChangedFiles(root: string, parent: string, commit: string, allowEmpty = false): FileChange[] {
   // A revision that Git would read as an option is never passed to it.
   for (const revision of [parent, commit]) if (revision.startsWith("-")) fail(`Invalid revision ${JSON.stringify(revision)}.`);
-  const result = runGit(root, ["diff", "--name-status", "-z", "--find-renames=50%", parent, commit]);
+  const result = runGit(root, [...INVENTORY_DIFF, parent, commit]);
   if (result.error || result.status !== 0) {
     fail(`Cannot derive changed files: ${processFailureDetail(result)}`);
   }
@@ -160,7 +173,7 @@ export function changedFilesOfRanges(
   const derived = new Map<string, FileChange[]>();
   if (valid && distinct.length > 1) {
     // Each line names a commit and the one parent to compare it with.
-    const result = runGit(root, ["diff-tree", "--stdin", "-r", "-z", "--name-status", "--find-renames=50%"],
+    const result = runGit(root, [...INVENTORY_DIFF, "--stdin"],
       distinct.map(([parent, commit]) => `${commit} ${parent}\n`).join(""));
     if (!result.error && result.status === 0) {
       const fields = result.stdout.toString("utf8").split("\0").filter((field) => field.length > 0);

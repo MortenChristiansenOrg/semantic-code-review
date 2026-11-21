@@ -164,6 +164,11 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    `restack --continue` (or discarded with `--abort`) instead of the manual
    recipe, and that a stage the target already contains stays as a marked
    empty stage that stack preparation skips.
+   The first release that derives stage inventories independently of Git
+   configuration must say that a stage's inventory now lists submodule updates
+   and inexact renames even where `diff.ignoreSubmodules`, a submodule `ignore`
+   setting or a low `diff.renameLimit` hid them, so such a stage's nodes may need
+   to assign those paths.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed

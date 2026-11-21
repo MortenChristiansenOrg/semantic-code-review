@@ -1032,6 +1032,62 @@ test("ranges that share a head keep their own inventories", (t) => {
   ]);
 });
 
+test("a stage's inventory is the same alone and batched whatever the user's diff configuration", (t) => {
+  const repository = createRepository(t);
+  const base = repository.git("rev-parse", "HEAD");
+  // A submodule is a gitlink and a .gitmodules entry; Git compares gitlinks
+  // without the submodule's objects, so none is cloned.
+  const gitlink = (revision) => repository.git("update-index", "--add", "--cacheinfo", `160000,${revision},sub`);
+  fs.writeFileSync(repository.path(".gitmodules"), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n');
+  const lines = (name) => Array.from({ length: 40 }, (_, index) => `${name} line ${index}\n`).join("");
+  fs.writeFileSync(repository.path("first.txt"), lines("first"));
+  fs.writeFileSync(repository.path("second.txt"), lines("second"));
+  repository.git("add", ".gitmodules", "first.txt", "second.txt");
+  gitlink(base);
+  repository.git("commit", "-m", "Add submodule and files");
+  const lower = repository.git("rev-parse", "HEAD");
+  // The upper stage updates the submodule and renames two edited files.
+  gitlink(lower);
+  for (const [from, to] of [["first.txt", "renamed-first.txt"], ["second.txt", "renamed-second.txt"]]) {
+    repository.git("mv", from, to);
+    fs.appendFileSync(repository.path(to), "edited\n");
+    repository.git("add", to);
+  }
+  repository.git("commit", "-m", "Update submodule and rename files");
+  const upper = repository.git("rev-parse", "HEAD");
+  const expected = [
+    [
+      { path: ".gitmodules", kind: "added" },
+      { path: "first.txt", kind: "added" },
+      { path: "second.txt", kind: "added" },
+      { path: "sub", kind: "added" },
+    ],
+    [
+      { path: "renamed-first.txt", kind: "renamed", previousPath: "first.txt" },
+      { path: "renamed-second.txt", kind: "renamed", previousPath: "second.txt" },
+      { path: "sub", kind: "modified" },
+    ],
+  ];
+  const hostile = {
+    "diff.ignoreSubmodules": "all",
+    "submodule.sub.ignore": "all",
+    "diff.renames": "copies",
+    "diff.renameLimit": "1",
+    "diff.orderFile": "missing-order-file",
+    "diff.relative": "true",
+    "diff.noprefix": "true",
+    "diff.external": "missing-external-diff",
+    "color.ui": "always",
+    "color.diff": "always",
+    "core.quotePath": "true",
+    "core.abbrev": "7",
+  };
+  for (const [key, value] of Object.entries(hostile)) repository.git("config", key, value);
+  const ranges = [[base, lower], [lower, upper]];
+  assert.deepEqual(changedFilesOfRanges(repository.root, ranges), expected);
+  assert.deepEqual(ranges.map((range) => changedFilesOfRanges(repository.root, [range])[0]), expected);
+});
+
 test("a base revision that is not a commit ID never reaches Git", (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);
