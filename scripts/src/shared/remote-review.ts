@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, remoteProjectionStale, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
@@ -13,9 +13,9 @@ import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { MAX_EVIDENCE_ATTACHMENT_BYTES, MAX_EVIDENCE_TOTAL_BYTES, sha256Hex } from "./evidence.js";
 
 /** Runs Git in the reviewer's own repository at root. */
-function sourceGit(root: string, args: string[]) {
+function sourceGit(root: string, args: string[], env: NodeJS.ProcessEnv = {}) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
-    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, encoding: "utf8", windowsHide: true,
+    cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", ...env }, encoding: "utf8", windowsHide: true,
     maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd();
 }
@@ -26,6 +26,8 @@ function checkoutRepository(root: string) { return ["--git-dir", path.join(root,
 /** Runs Git in the managed checkout at root. */
 function git(root: string, args: string[]) { return sourceGit(root, [...checkoutRepository(root), ...args]); }
 function optional(root: string, args: string[], run = git) { try { return run(root, args); } catch { return null; } }
+/** Runs Git in the managed checkout at root; null where it fails. */
+export function managedCheckoutGit(root: string, args: string[]): string | null { return optional(root, args); }
 const MAX_REMOTE_EVIDENCE_BYTES = 10 * MAX_EVIDENCE_TOTAL_BYTES;
 type EvidenceFile = { files: ArtifactFiles; source: string; sha256: string; size: number };
 /** Runs Git in the managed clone for the artifact store, which may pass input. */
@@ -198,8 +200,8 @@ export function prepareRemoteReview(id: string, generation: string): void {
   let record: ReviewRecord;
   try { record = readReview(id); } catch { return; }
   if (!record.remote || record.generation !== generation) return;
-  try { readReviewArtifact(record.repositoryRoot); return; } catch { /* Fetched below where that may help. */ }
-  if (remoteProjectionStale(record.repositoryRoot)) try { refreshRemoteReview(id, generation); } catch { /* See above. */ }
+  try { if (readReviewArtifact(record.repositoryRoot)) return; } catch { /* Fetched below. */ }
+  try { refreshRemoteReview(id, generation); } catch { /* The viewer reports what stays unavailable. */ }
 }
 export function refreshRemoteReview(id: string, generation: string) {
   return withReviewLock(id, () => {
@@ -266,7 +268,10 @@ function startNewRemoteReview(id: string, sourceRoot: string, remoteName: string
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   try {
     const root = path.join(directory, "checkout");
-    sourceGit(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
+    // Refs are kept as files, so reading a projection finds the revision checked
+    // out in .git/HEAD without running Git. Git versions without other ref
+    // formats ignore the variable.
+    sourceGit(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root], { GIT_DEFAULT_REF_FORMAT: "files" });
     const targetRef = optional(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
     const targetBranch = targetRef?.replace(/^refs\/remotes\/origin\//, "") || ["main", "master"].find((name) => optional(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`]));
     if (!targetBranch) throw new Error("The remote has no default branch. Set its default branch before starting a review.");

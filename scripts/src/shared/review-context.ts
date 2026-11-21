@@ -24,9 +24,10 @@ export function reviewEnvironment(): NodeJS.ProcessEnv {
 export const isolateReviewEnvironment = isolateGitEnvironment;
 /** How a review check treats the review's artifact. "read" reads it, first
  * making a remote review's projection again where an interrupted refresh left
- * it unusable; "unbuilt" accepts such a projection without making it, which
- * opening the review does; "skip" reads no artifact and checks only the review's
- * identity, for a refresh that makes the projection anyway. */
+ * it unusable; "unbuilt" reads it as it is and accepts a projection such a
+ * refresh left missing without making it, which opening the review does; "skip"
+ * reads no artifact and checks only the review's identity, for a refresh that
+ * makes the projection anyway. */
 export type ArtifactCheck = "read" | "unbuilt" | "skip";
 export function captureReviewContext(id: string, artifactCheck: ArtifactCheck = "read"): ReviewContext {
   const review = readReview(id);
@@ -42,8 +43,10 @@ export function assertReviewContext(context: ReviewContext, artifactCheck: Artif
     if (!fs.existsSync(path.join(context.repositoryRoot, ".git"))) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     // The implementation's artifact names its review; a deleted review's ID was replaced there.
     if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The implementation has another review now. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
-    if (artifactCheck === "skip" || (artifactCheck === "unbuilt" && remoteProjectionStale(context.repositoryRoot))) return review;
-    const artifact = readReviewArtifact(context.repositoryRoot, context.implementationId);
+    if (artifactCheck === "skip") return review;
+    const artifact = readReviewArtifact(context.repositoryRoot, context.implementationId, { rebuild: artifactCheck === "read" });
+    // Opening makes a projection that an interrupted refresh left missing.
+    if (!artifact && artifactCheck === "unbuilt" && remoteProjectionStale(context.repositoryRoot)) return review;
     if (!artifact) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     if (activeImplementationId(context.repositoryRoot, artifact.files) !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
   } catch (error) {

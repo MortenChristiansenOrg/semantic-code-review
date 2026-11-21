@@ -1,6 +1,5 @@
 /** User-local review storage. All writes hold a per-review lock and replace one
  * document atomically; private data is never placed in implementation branches. */
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { jsonBytes, parseJson, replaceFile } from "./json.js";
 import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readActiveArtifactInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
 import { gitRaw } from "./git.js";
-import { recoverRemoteProjection } from "./remote-review.js";
+import { managedCheckoutGit, recoverRemoteProjection } from "./remote-review.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
 
@@ -418,51 +417,81 @@ function managedCheckoutOwner(root: string): string | undefined {
 /** Moves the projection an earlier version kept inside a managed checkout out
  * of it, whole. It runs under the review's lock, so a refresh that briefly
  * vacates the projection is never mistaken for a missing one, and it moves
- * only an untracked folder, never one that the checked-out branch tracks. */
+ * only an untracked folder, never one that the checked-out branch tracks. Git
+ * runs in the checkout only, so a checkout that lost its .git keeps the folder
+ * instead of consulting a repository around it. */
 function moveLegacyProjection(owner: string, root: string, directory: string): void {
   const legacy = path.join(root, ".semantic-review");
-  if (!fs.existsSync(path.join(legacy, "manifest.json"))) return;
+  if (!fs.existsSync(path.join(legacy, "manifest.json")) || !fs.existsSync(path.join(root, ".git"))) return;
   withReviewLock(owner, () => {
     if (fs.existsSync(directory) || !fs.existsSync(path.join(legacy, "manifest.json"))) return;
     // Any tracked file inside means the checked-out branch owns the folder; the
     // match ignores case, as the file system may.
-    const tracked = spawnSync("git", ["ls-files", "--", ":(icase).semantic-review"], { cwd: root, encoding: "utf8", windowsHide: true });
-    if (tracked.status !== 0 || tracked.stdout.trim()) return;
+    const tracked = managedCheckoutGit(root, ["ls-files", "--", ":(icase).semantic-review"]);
+    if (tracked === null || tracked) return;
     try { fs.renameSync(legacy, directory); } catch { /* It stays unavailable until reopened. */ }
   });
 }
+/** The revision a managed checkout at root has checked out, read from its HEAD
+ * file without running Git where the file names it: refreshes leave the
+ * checkout detached, which a files ref store records there. Anything else, such
+ * as a branch, a reftable store's placeholder or a .git file naming the
+ * repository elsewhere, Git resolves; null where it cannot. */
+function checkoutHead(root: string): string | null {
+  try {
+    const head = fs.readFileSync(path.join(root, ".git", "HEAD"), "utf8").trim();
+    if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) return head;
+  } catch { /* Git resolves it below. */ }
+  return managedCheckoutGit(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
+}
 /** Whether the projection of the remote review owning the managed checkout at
- * root must be made again: an interrupted refresh left none, or the review
- * records another revision than the checkout holds, which it records only once
- * the projection for it is in place. It reads files only, so checking a current
- * projection runs no Git. */
-function projectionStale(owner: string, root: string, directory: string): boolean {
-  if (!fs.existsSync(path.join(directory, "manifest.json"))) return true;
-  let head: string;
-  try { head = fs.readFileSync(path.join(root, ".git", "HEAD"), "utf8").trim(); } catch { return false; }
-  // Refreshes leave the checkout detached; one on a branch is not compared.
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) return false;
-  try { return readReview(owner).remote?.headRevision !== head; } catch { return false; }
+ * root is complete and made for the revision the checkout holds. A refresh
+ * records the revision only once the projection for it is in place, so a record
+ * naming another revision tells that a refresh is under way or was interrupted. */
+function projectionCurrent(owner: string, root: string, directory: string): boolean {
+  if (!fs.existsSync(path.join(directory, "manifest.json"))) return false;
+  let recorded: string | undefined;
+  try { recorded = readReview(owner).remote?.headRevision; } catch { return true; }
+  return recorded === undefined || checkoutHead(root) === recorded;
 }
 /** Whether root is the managed checkout of a remote review whose projection
  * must be made again before it is shown. */
 export function remoteProjectionStale(root: string): boolean {
   const owner = managedCheckoutOwner(root);
-  return owner !== undefined && projectionStale(owner, root, projectionDirectory(owner));
+  return owner !== undefined && !projectionCurrent(owner, root, projectionDirectory(owner));
+}
+/** The projection in directory, or undefined while it is missing, including
+ * while a refresh moves it aside as this reads it. */
+function readProjection(root: string, directory: string): { files: ArtifactSnapshot; projection: true } | undefined {
+  try {
+    const projection = readArtifactDirectory(root, directory);
+    return projection && { files: projection, projection: true };
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(errorCode(error) ?? "")) return undefined;
+    throw error;
+  }
 }
 /** The artifact a review of root shows: the projection a remote review made for
- * its managed checkout, or else the active artifact of root. A projection that
- * an interrupted refresh left missing or for another revision than the checkout
- * holds is made again first, unless `rebuild` is false. */
+ * its managed checkout, or else the active artifact of root. A refresh replaces
+ * the projection under the review's lock, so a projection that is missing or
+ * not confirmed for the checkout's revision is read again under that lock, once
+ * a refresh under way has finished; there, one that an interrupted refresh left
+ * missing or for another revision is made again first, unless `rebuild` is
+ * false. A complete projection is always shown in place of none. */
 export function readReviewArtifact(root: string, implementationId?: string, { rebuild = true }: { rebuild?: boolean } = {}): { files: ArtifactSnapshot; projection: boolean } | undefined {
   const owner = managedCheckoutOwner(root);
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
     const directory = projectionDirectory(owner);
     if (!fs.existsSync(directory)) moveLegacyProjection(owner, root, directory);
-    if (rebuild && projectionStale(owner, root, directory)) recoverRemoteProjection(owner);
-    const projection = readArtifactDirectory(root, directory);
-    return projection && { files: projection, projection: true };
+    if (projectionCurrent(owner, root, directory)) {
+      const projection = readProjection(root, directory);
+      if (projection) return projection;
+    }
+    return withReviewLock(owner, () => {
+      if (rebuild) recoverRemoteProjection(owner);
+      return readProjection(root, directory);
+    });
   }
   const active = readArtifact(root, implementationId);
   return active && { files: active, projection: false };
