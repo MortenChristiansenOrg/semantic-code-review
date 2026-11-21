@@ -58,7 +58,7 @@ import { agentStatus, liveSession, markSending, readAgentState, respondToRequest
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { parseJson, readJson } from "./shared/json.js";
-import { activeImplementationId, readArtifactJson, selectImplementation, type ArtifactSnapshot } from "./shared/artifact-store.js";
+import { activeImplementationId, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
 import { git } from "./shared/git.js";
 import { readUnvalidatedImplementation } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
@@ -2031,7 +2031,7 @@ function isTrustedRequest(request: http.IncomingMessage, port: number) {
 /** What the HTTP handlers need from the server for one feedback request. */
 interface FeedbackRequestContext {
   repoRoot: string;
-  jobs: ViewerWorker;
+  jobs: RequestJobs<ViewerJobs>;
   port: number;
 }
 
@@ -2057,8 +2057,7 @@ async function handleFeedbackExport(request: http.IncomingMessage, response: htt
       return;
     }
     const received = parseFeedbackExport(payload);
-    const implementation = buildFeedbackTargetData(context.repoRoot);
-    if (received.implementationId !== implementation.implementationId) {
+    if (received.implementationId !== await context.jobs.call("reviewedImplementationId")) {
       sendJson<Wire.ApiFailure>(response, 409, {
         ok: false,
         error: "This viewer is showing a different implementation than the one being exported.",
@@ -2111,7 +2110,7 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
       sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
       return;
     }
-    const currentImplementationId = reviewedImplementationId(context.repoRoot);
+    const currentImplementationId = await context.jobs.call("reviewedImplementationId");
     const input = isRecord(payload) ? parseThreadAction(payload) : undefined;
     if (!input || input.implementationId !== context.implementationId || input.implementationId !== currentImplementationId) {
       sendJson<Wire.ApiFailure>(response, 409, {
@@ -2142,7 +2141,7 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
       sendJson<Wire.ApiFailure>(response, 422, { ok: false, error: cliErrorMessage(error) });
       return;
     }
-    const thread = readFeedbackThread(context.repoRoot, threadId);
+    const thread = await context.jobs.call("feedbackThread", threadId);
     if (!thread) {
       sendJson<Wire.ThreadActionResponse>(response, 200, { ok: true });
       return;
@@ -2276,12 +2275,30 @@ function serveViewer({
     if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
     return management;
   };
+  // A worker retired with its review no longer says why; the review's own
+  // check does. The worker never returns, so a reason the check gave is kept.
+  let retired: { reason: unknown } | undefined;
+  const retiredReason = (error: unknown): unknown => {
+    if (dataSource.healthy) return error;
+    if (!retired) { try { assertReviewContext(context); } catch (cause) { retired = { reason: cause }; } }
+    return retired ? retired.reason : error;
+  };
   const plain = (response: http.ServerResponse, status: number, text: string) => {
     response.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
     response.end(text);
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
+    // The request's jobs read the active refs once, in the worker, so checking
+    // its review neither runs Git again nor holds up this thread.
+    const jobs = dataSource.forRequest();
+    // A queued request of a connection that closes gets no response to close,
+    // so the connection closing releases it too.
+    const socket = request.socket;
+    socket.once("close", jobs.release);
+    response.once("close", () => { socket.off("close", jobs.release); jobs.release(); });
+    // A body can take any time to arrive, so jobs after it check the review again.
+    request.once("end", jobs.restart);
     // Only requests addressed to this viewer by its own name are served.
     if (!ownHost(request, port)) { plain(response, 421, "Misdirected request."); return; }
     const target = request.url;
@@ -2293,6 +2310,8 @@ function serveViewer({
     const param = (key: string) => url.searchParams.get(key);
     const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) =>
       sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra });
+    /** Answers a request whose review check failed. */
+    const refuse = (error: unknown) => failure(409, retiredReason(error), { reviewUnavailable: reviewSessionUnavailable(context) });
 
     if (pathname.startsWith("/api/")) {
       if (!ownApiCaller(request, port)) {
@@ -2314,8 +2333,8 @@ function serveViewer({
       if (scope.review !== context.reviewId || scope.generation !== context.generation) {
         sendJson<Wire.ApiFailure>(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
-      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") assertReviewContext(context); }
-      catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); return; }
+      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") await jobs.call("checkReview"); }
+      catch (error) { refuse(error); return; }
     }
 
     if (pathname === "/api/session" && request.method === "POST") {
@@ -2339,7 +2358,7 @@ function serveViewer({
     }
     if (pathname === "/api/bootstrap" && request.method === "GET") {
       let implementation: Wire.ImplementationData | Wire.UnavailableImplementationData;
-      try { implementation = await dataSource.call("implementation"); }
+      try { implementation = await jobs.call("implementation"); }
       catch (error) {
         const code = errorCode(error);
         if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) { failure(500, error); return; }
@@ -2357,7 +2376,7 @@ function serveViewer({
     if (pathname === "/api/remote/refresh" && request.method === "POST") {
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Refreshing requires a same-origin request.");
-        await dataSource.call("refreshRemote", implementationId);
+        await jobs.call("refreshRemote", implementationId);
         sendJson<Wire.RemoteRefreshResponse>(response, 200, { ok: true });
       } catch (error) { failure(409, error); }
       return;
@@ -2367,6 +2386,8 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
         const { data, filename, mediaType } = parseAttachmentUpload(await readRequestFields(request, 29 * 1024 * 1024), MAX_ATTACHMENT_BYTES);
+        // The upload may have taken long; the review is checked again before it is stored.
+        try { await jobs.call("checkReview"); } catch (error) { refuse(error); return; }
         const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, filename, mediaType, Buffer.from(data, "base64")));
         sendJson<Wire.AttachmentUploadResponse>(response, 200, { ok: true, attachment });
       } catch (error) { failure(400, error); }
@@ -2395,7 +2416,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Draft snapshots require a same-origin request.");
         const fields = await readRequestFields(request);
-        sendJson<Wire.DraftSnapshotsResponse>(response, 200, { ok: true, snapshots: await dataSource.call("resolveDraftSnapshots", implementationId, fields) });
+        sendJson<Wire.DraftSnapshotsResponse>(response, 200, { ok: true, snapshots: await jobs.call("resolveDraftSnapshots", implementationId, fields) });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2404,7 +2425,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
         const fields = await readRequestFields(request);
-        sendJson<Wire.ApprovalSnapshotResponse>(response, 200, { ok: true, ...await dataSource.call("captureApproval", implementationId, fields) });
+        sendJson<Wire.ApprovalSnapshotResponse>(response, 200, { ok: true, ...await jobs.call("captureApproval", implementationId, fields) });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2412,7 +2433,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
         const fields = await readRequestFields(request);
-        sendJson<Wire.ApprovalComparisonResponse>(response, 200, { ok: true, ...await dataSource.call("compareApproval", implementationId, fields) });
+        sendJson<Wire.ApprovalComparisonResponse>(response, 200, { ok: true, ...await jobs.call("compareApproval", implementationId, fields) });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2455,12 +2476,12 @@ function serveViewer({
     if (pathname === "/api/review-state") {
       try {
         let result: Wire.ApiSuccess<Wire.ReviewStateResponse>;
-        if (request.method === "GET") result = await dataSource.call("readReview", review.id);
+        if (request.method === "GET") result = await jobs.call("readReview", review.id);
         else if (request.method === "POST" && isTrustedRequest(request, port)) {
           // The worker reads the changes after checking the review session.
           const fields = await readRequestFields(request);
           if (fields.reviewId !== review.id) throw new Error("This request belongs to another review.");
-          result = await dataSource.call("patchReviewState", review.id, fields);
+          result = await jobs.call("patchReviewState", review.id, fields);
         } else { sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: "Review state requires a same-origin request." }); return; }
         sendJson<Wire.ReviewStateResponse>(response, 200, { ok: true, ...result });
       } catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); }
@@ -2471,7 +2492,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
         await readRequestFields(request);
-        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await dataSource.call("controlAgent", implementationId, "stop") });
+        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await jobs.call("controlAgent", implementationId, "stop") });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2479,7 +2500,7 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Agent controls require a same-origin request.");
         const fields = await readRequestFields(request);
-        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await dataSource.call("controlAgent", implementationId, "respond", fields) });
+        sendJson<Wire.AgentControlResponse>(response, 200, { ok: true, agent: await jobs.call("controlAgent", implementationId, "respond", fields) });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2507,7 +2528,7 @@ function serveViewer({
       try {
         sendJson<Wire.RevisionResponse>(response, 200, {
           ok: true,
-          ...await dataSource.call("snapshot", false),
+          ...await jobs.call("snapshot", false),
         });
       } catch (error) {
         failure(500, error);
@@ -2518,7 +2539,7 @@ function serveViewer({
     if (request.method === "GET" && pathname === "/api/evidence") {
       try {
         const query: QueryText<Wire.EvidenceQuery> = { stage: param("stage"), item: param("item"), index: param("index") };
-        const result = await dataSource.call("evidenceFile", query);
+        const result = await jobs.call("evidenceFile", query);
         const bytes = Buffer.from(result.content, "base64");
         const headers = { "content-type": result.mediaType, "accept-ranges": "bytes", "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'", "cache-control": "no-store" };
         // Safari refuses to play video from a server without range support.
@@ -2543,7 +2564,7 @@ function serveViewer({
     if (request.method === "GET" && pathname === "/api/file-content") {
       try {
         const query = parseFileContentQuery({ stage: param("stage"), path: param("path"), base: param("base"), head: param("head"), target: param("target"), raw: param("raw"), image: param("image") });
-        const result = await dataSource.call("fileContent", query);
+        const result = await jobs.call("fileContent", query);
         const content = Buffer.from(result.content, "base64");
         if (query.raw === "1") {
           if (query.image === "1" && !result.mediaType.startsWith("image/")) throw new Error("Image unavailable at this revision.");
@@ -2569,7 +2590,7 @@ function serveViewer({
       try {
         sendJson<Wire.DiffResponse>(response, 200, {
           ok: true,
-          ...await dataSource.call("fileDiff", query),
+          ...await jobs.call("fileDiff", query),
         });
       } catch (error) {
         failure(422, error);
@@ -2599,7 +2620,7 @@ function serveViewer({
     if (request.method === "POST" && pathname === "/api/feedback/export") {
       handleFeedbackExport(request, response, {
         repoRoot,
-        jobs: dataSource,
+        jobs,
         port,
       });
       return;
@@ -2613,7 +2634,7 @@ function serveViewer({
       handleThreadAction(
         request,
         response,
-        { repoRoot, port, implementationId, jobs: dataSource },
+        { repoRoot, port, implementationId, jobs },
         action,
       );
       return;
@@ -2621,7 +2642,7 @@ function serveViewer({
 
     if (request.method === "GET" && pathname === "/api/implementation") {
       try {
-        sendJson<Wire.ImplementationResponse>(response, 200, { ok: true, implementation: await dataSource.call("implementation") });
+        sendJson<Wire.ImplementationResponse>(response, 200, { ok: true, implementation: await jobs.call("implementation") });
       } catch (error) { failure(500, error); }
       return;
     }
@@ -2664,6 +2685,20 @@ type Job = (...args: never[]) => unknown;
  * serves. The worker picks its table by the same flag. */
 type WorkerJobs<Management extends boolean> = Management extends true ? ManagementJobs : ViewerJobs;
 
+/** Runs one job of a job table with its parameters, resolving to its result. */
+type JobCall<Jobs> = <Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>) => Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
+
+/** The jobs of one request. They read the active refs at most once between
+ * them, so they all see the artifact as the first of them read it. */
+interface RequestJobs<Jobs> {
+  readonly call: JobCall<Jobs>;
+  /** Makes later jobs read the active refs again. */
+  readonly restart: () => void;
+  /** Ends the request's reads once its running jobs finish; call it once the
+   * request is answered. Later jobs read the refs again each. */
+  readonly release: () => void;
+}
+
 /** A running worker of a job table. */
 interface JobWorker<Jobs> {
   /** Never set: names the job table, so that a worker of one table is not accepted
@@ -2671,7 +2706,9 @@ interface JobWorker<Jobs> {
   readonly jobs?: Jobs;
   readonly healthy: boolean;
   /** Runs one job with its parameters, resolving to its result. */
-  readonly call: <Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>) => Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
+  readonly call: JobCall<Jobs>;
+  /** Runs the jobs of one request. */
+  forRequest(): RequestJobs<Jobs>;
   close(): Promise<number>;
 }
 
@@ -2701,17 +2738,18 @@ function createViewerWorker<Management extends boolean>(repoRoot: string, contex
   /** Runs one job. The overload gives each job's result its type: the worker runs this
    * module's own job for `method` and sends back plain data, which keeps its shape
    * across the structured clone between threads. */
-  function call<Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>): Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
-  function call(method: string, ...args: unknown[]): Promise<unknown> {
+  function send(scope: number | undefined, method: string, args: unknown[]): Promise<unknown> {
     if (stopped) return Promise.reject(new Error("Viewer worker is unavailable; reopen the viewer."));
-    const key = ["snapshot", "fileDiff", "fileContent", "implementation"].includes(method) ? JSON.stringify([method, args]) : null;
+    // A read is shared only within its scope: another request checked its review
+    // against what it read, and must get data from that snapshot.
+    const key = ["snapshot", "fileDiff", "fileContent", "implementation"].includes(method) ? JSON.stringify([method, args, scope ?? null]) : null;
     const shared = key ? reads.get(key) : undefined;
     if (shared) return shared;
     if (pending.size >= 64) return Promise.reject(new Error("Viewer is busy; retry after the current requests finish."));
     const id = ++sequence;
     const promise = new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ id, method, args });
+      worker.postMessage({ id, method, args, scope });
     });
     if (key) {
       reads.set(key, promise);
@@ -2719,9 +2757,35 @@ function createViewerWorker<Management extends boolean>(repoRoot: string, contex
     }
     return promise;
   }
+  function call<Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>): Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
+  function call(method: string, ...args: unknown[]): Promise<unknown> { return send(undefined, method, args); }
+  let scopes = 0;
   return {
     get healthy() { return !stopped; },
     call,
+    forRequest() {
+      let current: number | undefined = ++scopes;
+      // The scopes jobs were sent in, by how many of them still run. A scope
+      // is released once it is no longer current and none of its jobs runs.
+      const running = new Map<number, number>();
+      const retire = (scope: number) => {
+        if (scope === current || running.get(scope) !== 0) return;
+        running.delete(scope);
+        if (!stopped) worker.postMessage({ release: scope });
+      };
+      function scoped<Method extends keyof Jobs & string>(method: Method, ...args: Parameters<Extract<Jobs[Method], Job>>): Promise<Awaited<ReturnType<Extract<Jobs[Method], Job>>>>;
+      function scoped(method: string, ...args: unknown[]): Promise<unknown> {
+        const scope = current;
+        if (scope === undefined) return send(undefined, method, args);
+        running.set(scope, (running.get(scope) ?? 0) + 1);
+        const promise = send(scope, method, args);
+        const settled = () => { running.set(scope, (running.get(scope) ?? 1) - 1); retire(scope); };
+        promise.then(settled, settled);
+        return promise;
+      }
+      const leave = () => { const scope = current; current = undefined; if (scope !== undefined) retire(scope); };
+      return { call: scoped, restart: () => { leave(); current = ++scopes; }, release: leave };
+    },
     close() { return worker.terminate(); },
   };
 }
@@ -2771,6 +2835,10 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
   };
   const storedState = (record: ReviewRecord) => ({ reviewId: record.id, generation: record.generation, state: record.state, stateRevision: record.stateRevision, lastSaveId: record.lastSaveId ?? null });
   return {
+    /** Checks that the review is still the one this viewer serves. */
+    checkReview: (): void => review(),
+    reviewedImplementationId: (): string => reviewedImplementationId(root),
+    feedbackThread: (threadId: string): Thread | null => readFeedbackThread(root, threadId),
     readReview: (reviewId: string): ReviewStateBody => storedState(session(reviewId)),
     patchReviewState: (reviewId: string, fields: JsonRecord): ReviewStateBody => {
       session(reviewId);
@@ -2846,13 +2914,44 @@ function runJob(jobs: object, method: unknown, args: unknown, unknownJob: string
   return Reflect.apply(job, jobs, args);
 }
 
+/** Viewer jobs that read only review data, never the active refs. */
+const REF_FREE_JOBS = new Set<string>(["readReview", "patchReviewState"]);
+
 function serveWorkerJobs(port: MessagePort, root: string, context: ReviewContext, management: boolean) {
   const jobs = management ? managementJobs : viewerJobs(root, context, createViewerDataSource(root));
   const unknownJob = management ? "Unknown review management operation." : "Unknown viewer operation.";
+  // The refs each open request read. Viewer jobs only read active refs; moving
+  // one, as deleting a review does, is a management job, which runs unscoped.
+  // Each scope's refs are read first without blocking the worker, so a job
+  // waits for Git only while other jobs run.
+  const scopes = new Map<number, { reads: ActiveRefReads; preloaded: Promise<void> | undefined }>();
+  // The main thread releases each scope once no job of it runs any more. The
+  // cap only bounds scopes whose release was lost: one dropped too early is
+  // read again.
+  const MAX_SCOPES = 1024;
+  const scoped = (scope: unknown) => {
+    if (management || typeof scope !== "number") return undefined;
+    let found = scopes.get(scope);
+    if (!found) {
+      scopes.set(scope, found = { reads: new Map(), preloaded: undefined });
+      for (const oldest of scopes.keys()) { if (scopes.size <= MAX_SCOPES) break; scopes.delete(oldest); }
+    }
+    return found;
+  };
+  /** Reads the scope's refs first, unless the job needs none. */
+  const preload = (found: { reads: ActiveRefReads; preloaded: Promise<void> | undefined }, method: unknown) => {
+    if (typeof method === "string" && REF_FREE_JOBS.has(method)) return undefined;
+    return found.preloaded ??= readingActiveRefsOnce(found.reads, async () => {
+      for (const at of new Set([context.repositoryRoot, root])) await preloadActiveRefs(at);
+    });
+  };
   port.on("message", async (message: unknown) => {
-    const { id, method, args } = fieldsOf(message);
+    const { id, method, args, scope, release } = fieldsOf(message);
+    if (release !== undefined) { if (typeof release === "number") scopes.delete(release); return; }
     try {
-      const result = await runJob(jobs, method, args, unknownJob);
+      const found = scoped(scope);
+      if (found) await preload(found, method);
+      const result = await (found ? readingActiveRefsOnce(found.reads, () => runJob(jobs, method, args, unknownJob)) : runJob(jobs, method, args, unknownJob));
       port.postMessage({ id, result });
     } catch (error) { port.postMessage({ id, error: cliErrorMessage(error), code: errorCode(error) }); }
   });
