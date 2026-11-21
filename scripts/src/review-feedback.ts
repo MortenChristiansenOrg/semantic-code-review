@@ -43,7 +43,7 @@ import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
-import { activeImplementationId, implementationActive, readArtifact } from "./shared/artifact-store.js";
+import { activeImplementationId, implementationActive, readArtifact, readingActiveRefsNow } from "./shared/artifact-store.js";
 import { loadImplementation } from "./shared/implementation.js";
 import { atomicJson, readReview, readReviewArtifact, registerReview, relocateReview, reviewId, reviewDirectory, touchReview, withReviewLock } from "./shared/review-store.js";
 
@@ -1270,13 +1270,15 @@ function feedbackOperation<T>(paths: FeedbackPaths, action: () => T): T {
     fail("The initiating review session changed. Reopen the viewer.");
   }
   if (fs.existsSync(path.join(reviewDirectory(paths.reviewId), "review.json")) && readReview(paths.reviewId).remote) fail("Remote reviews support personal notes only.");
-  // Validation also holds the shared lock so it never observes a partial batch.
-  return withFeedbackLock(paths, () => {
+  // Validation also holds the shared lock so it never observes a partial batch,
+  // and reads the artifact then: a viewer request read the refs before it waited
+  // for the lock, perhaps while a stage was being removed.
+  return withFeedbackLock(paths, () => readingActiveRefsNow(() => {
     // Archiving checks the feedback and removes the active ref under this lock,
     // possibly after paths were found or a viewer request read the refs.
     if (!implementationActive(paths.root, paths.implementationId)) fail(`Implementation ${paths.implementationId} is no longer active, so its review is unavailable.`);
     return withValidationContext(action);
-  });
+  }));
 }
 
 /** Runs one `semantic-flow feedback` command line in the current working directory. */

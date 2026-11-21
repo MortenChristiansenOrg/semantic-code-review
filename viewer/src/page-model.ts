@@ -27,33 +27,13 @@ import type { NodeView } from "./views/node";
 import type { NoteStageView, NotesPanelView } from "./views/notes-panel";
 import type { StageView } from "./views/stage";
 import type { SpecificationSourceView, SpecificationView, StoryView } from "./views/story";
-import type { ThreadEntryView, ThreadListView } from "./views/thread";
+import type { ThreadListView } from "./views/thread";
 import type { AgentPresence, TopbarView } from "./views/topbar";
 
 export const CLASS_LABEL: Record<string, string | undefined> = {
   behavior: "behavior", test: "test", configuration: "config",
   documentation: "docs", generated: "generated", dependency: "deps", chore: "chore"
 };
-
-/** The removed stage a thread is assigned to or targets; such a thread can be
- * read but no longer replied to or reopened. */
-function removedStageOf(thread: FeedbackThread): { id: string; title: string } | undefined {
-  const removed = data.removedStages ?? [];
-  return removed.find((stage) => stage.id === thread.target?.stageId) ?? removed.find((stage) => stage.id === thread.assignedStageId);
-}
-/** A thread entry made read-only when its stage was removed. Its note says why
- * a target on that stage is gone, so no other notice repeats it. */
-export function readOnlyIfRemoved(entry: ThreadEntryView): ThreadEntryView {
-  if (entry.type !== "thread") return entry;
-  const thread = artifactThreads.find((t) => t.id === entry.thread.id);
-  const removed = thread && removedStageOf(thread);
-  if (!thread || !removed) return entry;
-  const stale = removed.id === thread.target?.stageId ? "" : entry.thread.stale;
-  return { ...entry, thread: { ...entry.thread, removedStage: removed.title, stale, actionable: false, replying: false, reply: null } };
-}
-function readOnlyList(list: ThreadListView | null): ThreadListView | null {
-  return list && { ...list, entries: list.entries.map(readOnlyIfRemoved) };
-}
 
 export function stageAcceptanceRefs(stage: ViewerStage): string[] {
   return (stage.specificationRefs || []).filter(Boolean);
@@ -150,7 +130,7 @@ export function fileNotesModel(id: string): ThreadListView {
   const listKey = threadListKey("file", elementNodeId("file", id), id);
   const latest = artifactThreadsForElement("file", id);
   const threads = state.openThreads[id] === false ? [] : heldThreads(listKey, latest);
-  const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads, latest })).map(readOnlyIfRemoved);
+  const entries = state.openThreads[id] === false ? [] : threadListEntries(threads, localVisibleForElement(id, undefined, null, undefined, { key: listKey, threads, latest }));
   return { id, kind: "file", stageId: null, listKey, entries, composer: composingNew && compose ? composerModel(compose) : null };
 }
 
@@ -246,10 +226,10 @@ export function nodeModel(stage: ViewerStage, node: ChangeNode, nodeIndex: numbe
     approval: nodeApprovalState(stage, node),
     legend: reasoningLegendModel(linked),
     insights: list.map((ins) => insightTagModel(stage, ins, node)),
-    insightThreads: list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => readOnlyList(inlineThreadModel(insightKey(stage.id, ins.collection, ins.id), "insight"))).filter((thread) => thread !== null),
+    insightThreads: list.filter((ins) => hostsEvidenceThread(ins, node)).map((ins) => inlineThreadModel(insightKey(stage.id, ins.collection, ins.id), "insight")).filter((thread) => thread !== null),
     files: nodeFilesModel(stage, node),
     notes: notesToggleModel("node", node.id, stage.id),
-    thread: readOnlyList(inlineThreadModel(node.id, "node", stage.id)),
+    thread: inlineThreadModel(node.id, "node", stage.id),
   };
 }
 
@@ -270,7 +250,7 @@ export function stageModel(stage: ViewerStage, i: number): StageView {
     acceptance: stageAcceptanceRefs(stage).map(acceptanceChipModel),
     notes: notesToggleModel("stage", stage.id),
     approve: stageApproveModel(stage),
-    thread: readOnlyList(inlineThreadModel(stage.id, "stage")),
+    thread: inlineThreadModel(stage.id, "stage"),
     nodes: stage.nodes.map((n, ni) => nodeModel(stage, n, ni, i)),
   };
 }
@@ -355,7 +335,7 @@ export function noteGroupsModel(entries: NoteListItem[]): NoteStageView[] {
   return groupedNotes(entries).map((st) => ({ key: st.key, title: st.title,
     nodes: st.nodesArr.map((nd) => ({ key: nd.key, title: nd.title,
       days: nd.daysArr.map((day) => ({ key: day.key, label: day.label,
-        entries: uniqueKeys(day.items.map((item) => item.thread ? readOnlyIfRemoved(threadEntry(item.thread, true)) : localNoteEntry({ c: item.c, i: item.i }, true))) })) })) }));
+        entries: uniqueKeys(day.items.map((item) => item.thread ? threadEntry(item.thread, true) : localNoteEntry({ c: item.c, i: item.i }, true))) })) })) }));
 }
 export function notesPanelModel(): NotesPanelView {
   // Each column is held on its own; the reviewer's own resolve or reopen still moves a held thread.

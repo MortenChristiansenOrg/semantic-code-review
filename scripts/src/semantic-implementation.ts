@@ -268,6 +268,12 @@ function checkedOutBranches(root: string): Set<string> {
   );
 }
 
+/** How many worktrees have branch checked out; git switch --ignore-other-worktrees allows several. */
+function worktreesOnBranch(root: string, branch: string): number {
+  return git(["worktree", "list", "--porcelain"], { cwd: root }).split(/\r?\n/)
+    .filter((line) => line === `branch refs/heads/${branch}`).length;
+}
+
 function isAncestor(root: string, ancestor: string, descendant: string): boolean {
   return gitOptional(["merge-base", ancestor, descendant], {
     cwd: root,
@@ -2100,6 +2106,12 @@ export interface StageRemoval {
   detachedAt: string | null;
 }
 
+/** Detaches HEAD at commit while it is still at expected, without touching
+ * the index or the working tree, which match both. */
+function moveHead(root: string, commit: string, expected: string | undefined): void {
+  git(["update-ref", "--no-deref", "-m", "semantic-implementation: stage remove", "HEAD", commit, ...(expected ? [expected] : [])], { cwd: root });
+}
+
 /** Removes a marked empty stage: the stages above it are rebuilt on the stage
  * below with unchanged trees, its branch is deleted in the same transaction,
  * and its document is kept as a removed stage. */
@@ -2124,7 +2136,8 @@ function removeStage(workspace: Workspace, options: Options): void {
     fail(`Stage ${id} is the only stage of ${implementationId}, so nothing would remain to prepare. Keep it, or archive the implementation if its work has landed.`);
   }
   const current = currentBranch(root);
-  if (current !== branch && checkedOutBranches(root).has(branch)) {
+  // Every worktree is counted: this one may share the branch with another.
+  if (worktreesOnBranch(root, branch) > (current === branch ? 1 : 0)) {
     fail(`Stage branch ${branch} is checked out in another worktree. Run git switch --detach there, then run the command again.`);
   }
   const targetRef = `refs/heads/${artifact.manifest.targetBranch}`;
@@ -2205,22 +2218,31 @@ function removeStage(workspace: Workspace, options: Options): void {
     : detachedHead === removedHead ? removedBase
       : rebuilt.find((entry) => entry.previousHeadRevision === detachedHead)?.headRevision;
   let resolvedThreadIds: string[] = [];
+  let committed = false;
   // The review lock keeps threads from being added to or reopened on the stage
   // between the check and the commit.
-  withArtifactLock(workspace, implementationId, () => {
-    const threads = stageThreads(feedbackDirectory(root, implementationId), [id]).get(id) ?? { open: [], resolved: [] };
-    if (threads.open.length > 0) {
-      fail(`Stage ${id} has feedback threads that are not resolved: ${threads.open.join(", ")}. It can be removed once the reviewer resolves them.`);
-    }
-    resolvedThreadIds = threads.resolved;
-    if (wasCurrent) git(["switch", "--quiet", "--detach", removedBase], { cwd: root });
-    try {
-      commitArtifact(root, workspace.snapshot, draft, refUpdates);
-    } catch (error) {
-      if (wasCurrent) git(["switch", "--quiet", branch], { cwd: root, allowFailure: true });
-      throw error;
-    }
-  });
+  try {
+    withArtifactLock(workspace, implementationId, () => {
+      const threads = stageThreads(feedbackDirectory(root, implementationId), [id]).get(id) ?? { open: [], resolved: [] };
+      if (threads.open.length > 0) {
+        fail(`Stage ${id} has feedback threads that are not resolved: ${threads.open.join(", ")}. It can be removed once the reviewer resolves them.`);
+      }
+      resolvedThreadIds = threads.resolved;
+      try {
+        // Both trees are the same, so only HEAD moves; no checkout hook runs.
+        if (wasCurrent) moveHead(root, removedBase, removedHead);
+        commitArtifact(root, workspace.snapshot, draft, refUpdates);
+        committed = true;
+      } catch (error) {
+        if (wasCurrent) git(["symbolic-ref", "HEAD", `refs/heads/${branch}`], { cwd: root, allowFailure: true });
+        throw error;
+      }
+    });
+  } catch (error) {
+    // Only renewing the feedback round failed: the stage is removed.
+    if (!committed) throw error;
+    console.error(`semantic-implementation: the stage was removed, but ${errorMessage(error)}`);
+  }
   let detachedAt: string | null = null;
   if (wasCurrent) {
     // The worktree no longer has a stage branch checked out, but it continues the implementation.
@@ -2228,7 +2250,7 @@ function removeStage(workspace: Workspace, options: Options): void {
     detachedAt = removedBase;
   } else if (follow !== undefined) {
     try {
-      git(["switch", "--quiet", "--detach", follow], { cwd: root });
+      moveHead(root, follow, detachedHead);
       detachedAt = follow;
     } catch (error) {
       console.error(`semantic-implementation: the stage was removed, but HEAD stays at ${detachedHead}, which has the same tree as ${follow}: ${errorMessage(error)}`);

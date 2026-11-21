@@ -239,6 +239,13 @@ export function readingActiveRefsOnce<T>(reads: ActiveRefReads, work: () => T): 
   return activeRefReads.run(reads, work);
 }
 
+/** Runs work outside any readingActiveRefsOnce scope, so it reads the active
+ * refs as they are now: a write that checks the artifact under the review lock
+ * must not trust refs read before it took the lock. */
+export function readingActiveRefsNow<T>(work: () => T): T {
+  return activeRefReads.exit(work);
+}
+
 const ACTIVE_REF_FORMAT = "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)";
 
 function parseActiveImplementations(output: string): ActiveImplementation[] {

@@ -10,8 +10,12 @@ import {
   finalizeStage,
   implementationFromScript,
   initializeImplementation,
+  semanticCli,
 } from "../helpers/repository.mjs";
 import { createViewerDataSource } from "../../src/semantic-view.ts";
+import { reviewFeedback } from "../../src/review-feedback.ts";
+import { listActiveImplementations, readingActiveRefsOnce } from "../../src/shared/artifact-store.ts";
+import { readReview } from "../../src/shared/review-store.ts";
 
 const branchOf = (id) => `semantic-flow/test-implementation/stages/${id}`;
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
@@ -53,6 +57,14 @@ function emptiedStack(t) {
   return { repository, replaced: x };
 }
 
+/** A hooks directory of the fixture's own, so no test writes to a hook Git would otherwise run. */
+function fixtureHooks(repository) {
+  const hooks = path.join(path.resolve(repository.root, repository.git("rev-parse", "--git-common-dir")), "fixture-hooks");
+  fs.mkdirSync(hooks, { recursive: true });
+  repository.git("config", "core.hooksPath", hooks);
+  return hooks;
+}
+
 /** The stage branch heads and the artifact's version, which a refused removal leaves as they were. */
 function stackState(repository) {
   return repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/semantic-review");
@@ -82,8 +94,7 @@ test("an empty stage is removed in one transaction and the stages above keep the
   assert.deepEqual(JSON.parse(repository.flow("status", "--json")).emptyStageThreads, [{ stageId: "x", openThreadIds: [] }]);
 
   // The branch deletion, the moves above and the snapshot are one transaction: refusing one refuses all.
-  const hooks = path.resolve(repository.root, repository.git("rev-parse", "--git-path", "hooks"));
-  fs.mkdirSync(hooks, { recursive: true });
+  const hooks = fixtureHooks(repository);
   const hook = path.join(hooks, "reference-transaction");
   fs.writeFileSync(hook, `#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = refs/heads/${branchOf("x")} ] && [ "$new" = 0000000000000000000000000000000000000000 ]; then exit 1; fi\ndone\n`, { mode: 0o755 });
   repository.git("switch", branchOf("x"));
@@ -93,7 +104,11 @@ test("an empty stage is removed in one transaction and the stages above keep the
   assert.equal(repository.git("symbolic-ref", "--short", "HEAD"), branchOf("x"));
   fs.rmSync(hook);
 
+  // Detaching needs no checkout, so a failing checkout hook does not stop it.
+  const postCheckout = path.join(hooks, "post-checkout");
+  fs.writeFileSync(postCheckout, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
   const removal = JSON.parse(repository.semantic("stage", "remove", "--id", "x", "--json"));
+  fs.rmSync(postCheckout);
   const after = Object.fromEntries(["a", "b", "y"].map((id) => [id, repository.git("rev-parse", branchOf(id))]));
   assert.deepEqual(removal.rebuiltStages, [
     { id: "b", branch: branchOf("b"), previousBaseRevision: before.x, previousHeadRevision: before.b, baseBranch: branchOf("a"), baseRevision: before.a, headRevision: after.b },
@@ -201,6 +216,12 @@ test("stage remove refuses stages that change files, the only stage, and an unse
   repository.expectSemanticFailure(`Stage branch ${branchOf("x")} is checked out in another worktree.`, "stage", "remove", "--id", "x");
   assert.equal(stackState(repository), state);
   repository.git("worktree", "remove", "--force", path.join(other, "x"));
+  // Also when this worktree has it checked out too.
+  repository.git("switch", branchOf("x"));
+  repository.git("worktree", "add", "--quiet", "--force", path.join(other, "shared"), branchOf("x"));
+  repository.expectSemanticFailure(`Stage branch ${branchOf("x")} is checked out in another worktree.`, "stage", "remove", "--id", "x");
+  assert.equal(stackState(repository), state);
+  repository.git("worktree", "remove", "--force", path.join(other, "shared"));
 
   // A working stage blocks the removal.
   repository.git("switch", branchOf("y"));
@@ -225,4 +246,63 @@ test("stage remove refuses the only stage, since nothing would remain to prepare
   repository.git("merge", "--quiet", "--ff-only", head);
   repository.semantic("restack", "--base", "main");
   repository.expectSemanticFailure("Stage policy is the only stage of test-implementation, so nothing would remain to prepare.", "stage", "remove", "--id", "policy");
+});
+
+/** policy and api, with policy landed on the target, so restacking empties it. */
+function emptiedPolicy(t) {
+  const { repository, commits } = createImplementationWithStages(t, ["policy", "api"]);
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", commits.get("policy"));
+  repository.semantic("restack", "--base", "main");
+  return repository;
+}
+
+test("stage remove refuses while threads cannot be read, and completes when only the round's heartbeat fails", (t) => {
+  const repository = emptiedPolicy(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "on-policy", "--comment-id", "on-policy-1", "--body", "Why policy?",
+    "--label", "Policy", "--target-kind", "stage", "--stage", "policy");
+  // Threads without their manifest are unknown, not none.
+  const manifest = repository.feedbackPath("manifest.json");
+  const stored = fs.readFileSync(manifest);
+  fs.rmSync(manifest);
+  const state = stackState(repository);
+  repository.expectSemanticFailure("manifest.json is missing", "stage", "remove", "--id", "policy");
+  assert.equal(stackState(repository), state);
+  fs.writeFileSync(manifest, stored);
+  repository.feedback("thread", "resolve", "--id", "on-policy");
+
+  // A running round's heartbeat cannot be written once the stage is removed.
+  if (process.getuid?.() === 0) return t.skip("root ignores directory permissions");
+  const review = path.dirname(repository.feedbackPath());
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(review, "agent.json"), JSON.stringify({ session: { id: "round", startedAt: now, heartbeatAt: now, feedbackAt: now } }));
+  fs.chmodSync(review, 0o500);
+  t.after(() => fs.chmodSync(review, 0o700));
+  repository.git("switch", branchOf("policy"));
+  const execution = repository.result(process.execPath, [...semanticCli, "stage", "remove", "--id", "policy", "--json"]);
+  fs.chmodSync(review, 0o700);
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stderr, /the stage was removed, but /);
+  const removal = JSON.parse(execution.stdout);
+  assert.equal(removal.stageId, "policy");
+  assert.equal(removal.detachedAt, repository.git("rev-parse", "main"));
+  assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branchOf("policy")}`]).status, 1);
+  repository.semantic("validate");
+});
+
+test("a viewer request that read the refs before the removal cannot reopen a thread of the removed stage", (t) => {
+  const repository = emptiedPolicy(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "on-policy", "--comment-id", "on-policy-1", "--body", "Why policy?",
+    "--label", "Policy", "--target-kind", "stage", "--stage", "policy");
+  repository.feedback("thread", "resolve", "--id", "on-policy");
+  // The viewer reads the refs once per request, before it waits for the review lock.
+  const reads = new Map();
+  readingActiveRefsOnce(reads, () => listActiveImplementations(repository.root));
+  repository.semantic("stage", "remove", "--id", "policy");
+  const reviewId = path.basename(path.dirname(repository.feedbackPath()));
+  const feedback = readingActiveRefsOnce(reads, () => reviewFeedback(repository.root, { reviewId, generation: readReview(reviewId).generation }));
+  assert.throws(() => readingActiveRefsOnce(reads, () => feedback.reopenThread("on-policy")), /stage policy was removed, so its threads are read-only/);
+  assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads", "on-policy.json")).status, "resolved");
 });

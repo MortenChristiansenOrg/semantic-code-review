@@ -209,15 +209,21 @@ Question-only feedback needs no checkout, commit, organization, or restack.
 
 A restack, including preflight's target restack, can leave a stage that changes
 nothing; the restack names it. `emptyStageThreads` in the feedback result, and
-in `<semantic-flow> status --json`, lists each empty stage with the IDs of its
+in `<semantic-flow> status --json` run with the same `--project` and
+`--implementation-id` as `feedback`, lists each empty stage with the IDs of its
 threads that are not resolved. Threads returned in this round count as not
 resolved.
 
-Remove an empty stage without unresolved threads before posting replies:
+Remove an empty stage without unresolved threads before posting replies, from
+the returned `worktree`:
 
 ```text
 <semantic-flow> implementation stage remove --id <stage-id> --json
 ```
+
+The command refuses the only remaining stage; when every stage is empty, keep
+the last one and say in the reply or closing line that the implementation no
+longer changes anything.
 
 It rebuilds the stages above with unchanged content and deletes the stage
 branch. The stage document, with its insights and evidence, is kept under
