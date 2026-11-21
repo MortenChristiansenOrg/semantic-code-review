@@ -3005,7 +3005,7 @@ function emptiedStagesNote(root: string, summary: RestackSummary): string {
   return notes.length ? ` ${notes.join(" ")} Empty stages stay in the implementation as marked empty stages, which stack preparation skips.` : "";
 }
 
-/** Restacks every stage onto the current target branch head. checkout names
+/** Restacks every stage onto base, which must still be the target branch head. checkout names
  * a stage branch the caller detached for it; a restack that stops at a
  * conflict records it, so --continue and --abort switch the worktree back. */
 export function restackOntoTarget(root: string, base: string, checkout?: DetachedCheckout): RestackSummary {

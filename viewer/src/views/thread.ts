@@ -37,6 +37,8 @@ export interface ReplyDraftView {
   attachments: readonly AttachmentView[];
   /** The draft is in a send request and cannot be changed. */
   sending: boolean;
+  /** The draft can be revised; false on a read-only thread, where it can only be removed. */
+  editable: boolean;
 }
 
 export interface ReplyFormView {
@@ -190,7 +192,7 @@ function replyDraft(threadId: string, draft: ReplyDraftView): TemplateResult {
   return html`<div class="tmsg tmsg-user tmsg-draft" data-reply-id=${draft.id}>
           <div class="tmsg-h"><span class="tmsg-who">You</span><span class="tmsg-draft-tag">${draft.sending ? "Sending…" : "Draft"}</span>
             ${draft.sending ? nothing : html`<span class="tmsg-act">
-              <button data-action="reply-edit" data-id=${threadId} data-reply-id=${draft.id} type="button">Edit</button>
+              ${draft.editable ? html`<button data-action="reply-edit" data-id=${threadId} data-reply-id=${draft.id} type="button">Edit</button>` : nothing}
               <button class="tmsg-del" data-action="reply-del" data-reply-id=${draft.id} type="button" aria-label="Delete draft reply">×</button>
             </span>`}
           </div>
