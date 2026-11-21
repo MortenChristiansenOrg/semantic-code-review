@@ -46,6 +46,8 @@ If `--continue` reports that a ref or the artifact changed since the restack
 began, inspect what changed instead of retrying. `<semantic-flow>
 implementation restack --abort` discards the pending restack and its worktree;
 no ref has moved, so start the restack again from the current state. It also
-switches back a stage branch that `sync` or `feedback` detached. When
-`--continue` or `--abort` reports that it left a worktree as it is, check out the
-original branch there yourself. Never move a stage ref with raw Git commands.
+switches back a stage branch that `sync` or `feedback` detached. If the
+artifact worktree is still detached after `--continue` or `--abort`, for
+example because either reports that it left the worktree as it is, check out
+the original branch there yourself. Never move a stage ref with raw Git
+commands.

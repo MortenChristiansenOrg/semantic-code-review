@@ -51,8 +51,8 @@ For a restack conflict, read `../docs/restack-conflicts.md` completely and
 complete the pending restack with `<semantic-flow> implementation restack
 --continue`. Do not rerun sync until it succeeds, and do not fetch again during
 recovery. `--continue` and `--abort` switch the artifact worktree back to a stage
-branch that sync detached; restore the original branch yourself only when they
-report that they left the worktree as it is. For an originally detached
+branch that sync detached; restore the original branch yourself when the
+worktree is still detached after either. For an originally detached
 stage/base checkout, detach at its new recorded stage/base revision.
 
 If node ownership, hunk selectors, or line ranges no longer fit the rewritten
