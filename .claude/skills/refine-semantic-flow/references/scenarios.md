@@ -71,19 +71,20 @@ a guarded write. The current runner does not support that interception; mark it
 unsupported rather than claiming coverage from deterministic CLI tests. The
 built-ins exercise either completion without questions or a correct
 question-and-stop boundary. Scenarios that need replies use a scripted reviewer
-(`drive`), such as interactive review below.
+(`drive`), such as review listening below.
 
-## Interactive review
+## Review listening
 
-The maintained [interactive-review adapter](../../../../scripts/evaluations/adapters/interactive-review.mjs)
-covers `/semantic-flow review -i`. It is not part of the broad set; add it explicitly:
+The maintained [review-listening adapter](../../../../scripts/evaluations/adapters/review-listening.mjs)
+covers `/semantic-flow review`, which listens for feedback until the review ends.
+It is not part of the broad set; add it explicitly:
 
 ```json
-{ "id": "interactive-review", "repetitions": 1, "adapter": "<repository>/scripts/evaluations/adapters/interactive-review.mjs", "runMinutes": 40 }
+{ "id": "review-listening", "repetitions": 1, "adapter": "<repository>/scripts/evaluations/adapters/review-listening.mjs", "runMinutes": 40 }
 ```
 
 Fixture: three finalized stages (`notifications`, `delivery-docs`, `templates`) with
-initialized feedback. The request is only `/semantic-flow review -i`. The scripted
+initialized feedback. The request is only `/semantic-flow review`. The scripted
 reviewer uses the agent's viewer over loopback HTTP and never the chat:
 
 1. Once the agent listens, it sends one round: a question about the unchanged

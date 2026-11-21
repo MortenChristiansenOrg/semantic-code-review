@@ -15,7 +15,7 @@ export const CLAIM_LEASE_MS = 30 * 60_000;
 export const LISTENER_GRACE_MS = 90_000;
 /** Upper bound for one viewer send; a crashed send cannot hold feedback back longer. */
 export const SENDING_LIMIT_MS = 60_000;
-/** An interactive session ends after this long without new feedback. */
+/** A listening session ends after this long without new feedback. */
 export const IDLE_LIMIT_MS = 2 * 60 * 60_000;
 /** How long a listener leaves a finished round's unanswered threads claimed, so
  * replies posted alongside the next wait land before the threads return to the queue. */
@@ -38,8 +38,9 @@ export interface AgentSession {
   id: string; startedAt: string; heartbeatAt: string; feedbackAt: string;
   stopRequestedAt?: string; endedAt?: string; endReason?: string;
 }
-/** What a released or completed round answered, so its late replies stay fenced. */
-export interface RetiredClaim { id: string; threads: { id: string; through: string }[] }
+/** What a released or completed round answered, so its late replies stay fenced.
+ * Its session and start tell whether a later session took its threads over. */
+export interface RetiredClaim { id: string; threads: { id: string; through: string }[]; sessionId?: string | null; startedAt?: string }
 /** The latest automatic move of the implementation onto its advanced target branch. */
 export interface TargetRefresh { at: string; targetBranch: string; previousBaseRevision: string; baseRevision: string }
 export interface AgentState {
@@ -94,7 +95,10 @@ function parseRetiredThread(value: unknown): RetiredClaim["threads"][number] | u
 function parseRetiredClaim(value: unknown): RetiredClaim | undefined {
   if (!isRecord(value) || !isString(value.id) || !Array.isArray(value.threads)) return undefined;
   const threads = listOf(value.threads, parseRetiredThread);
-  return threads.length === value.threads.length ? { id: value.id, threads } : undefined;
+  if (threads.length !== value.threads.length) return undefined;
+  const startedAt = optional(value.startedAt);
+  return { id: value.id, threads, ...(isNullableString(value.sessionId) ? { sessionId: value.sessionId } : {}),
+    ...(startedAt === undefined ? {} : { startedAt }) };
 }
 function parseAgentRequest(value: unknown): AgentRequest | undefined {
   if (!isRecord(value) || !isString(value.id) || !isNullableString(value.sessionId) || !isString(value.body) ||
@@ -158,7 +162,8 @@ export function updateAgentState<T>(reviewId: string, change: (state: AgentState
     for (const [token, until] of Object.entries(state.sends)) if (age(now, until) >= 0) delete state.sends[token];
     const remaining = new Set(state.claims.map((claim) => claim.id));
     const retired = previous.filter((claim) => !remaining.has(claim.id))
-      .map((claim) => ({ id: claim.id, threads: claim.threads.map(({ id, through }) => ({ id, through })) }));
+      .map((claim) => ({ id: claim.id, threads: claim.threads.map(({ id, through }) => ({ id, through })),
+        sessionId: claim.sessionId, startedAt: claim.startedAt }));
     if (retired.length) state.retiredClaims = [...state.retiredClaims, ...retired].slice(-RETIRED_CLAIM_LIMIT);
     if (JSON.stringify(state) !== before && fs.existsSync(path.join(reviewDirectory(reviewId), "review.json"))) atomicJson(agentFile(reviewId), state);
     return result;
@@ -192,7 +197,7 @@ export function touchAgent(state: AgentState, now: number, claimIds?: Iterable<s
   if (session) session.heartbeatAt = iso(now);
 }
 
-/** Starting an interactive review replaces any earlier session and returns its threads to the queue. */
+/** Starting to listen replaces any earlier session and returns the threads of every running round to the queue. */
 export function startSession(state: AgentState, now: number): AgentSession {
   endSession(state, now, "superseded");
   state.claims = [];
@@ -260,6 +265,15 @@ export function claimedThrough(state: AgentState, now: number, threadId: string)
     if (thread) return thread.through;
   }
   return undefined;
+}
+
+/** Whether a session that started after the named round took its threads over.
+ * The new session's agent answers them, so the replaced round must not. */
+export function roundReplaced(state: AgentState, claimId: string) {
+  const claim = state.claims.find((item) => item.id === claimId) ?? state.retiredClaims.find((item) => item.id === claimId);
+  const session = state.session;
+  if (!claim?.startedAt || claim.sessionId === undefined || !session || claim.sessionId === session.id) return false;
+  return Date.parse(session.startedAt) > Date.parse(claim.startedAt);
 }
 
 /** The comment a named round answers in a thread, even after the round was released. */

@@ -1,8 +1,9 @@
 # Feedback command
 
 Use after a reviewer has sent feedback for the implementation agent to
-address. Interactive review (`review -i`) runs the same round procedure each
-time feedback arrives.
+address, for one round without listening. While `/semantic-flow review`
+listens, every round follows this procedure; its wait returns each round in
+place of the preflight below.
 
 Follow this file and the task-specific guides it explicitly requires. Do not
 read the shared runtime guide, artifact-quality guide, or full API declaration
@@ -220,10 +221,13 @@ comment the round answered, and comments the reviewer added during the round
 stay queued for the next round, even if the round was replaced meanwhile. Never resolve
 a thread. Closing the conversation is the reviewer's decision.
 
+If a reply reports that the round was replaced, another agent started listening
+and took over its threads. End with one short line and change nothing more.
+
 ## Finish
 
-In interactive review, continue with the next wait as
-`../docs/interactive-review.md` describes, once every reply of the round is posted.
+While listening, continue with the next wait as `review.md` describes, once
+every reply of the round is posted.
 
 Otherwise rerun `<semantic-flow> feedback --json --project
 <artifact-worktree-path>`. It validates the revised stack and feedback in one

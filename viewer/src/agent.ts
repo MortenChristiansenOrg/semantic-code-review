@@ -25,7 +25,7 @@ export const agentAnswers = new Map<string, string>();
 export const agentAnswerOps = new Map<string, { busy: boolean; error: string }>();
 // Questions the reviewer minimized; a new question opens the overlay again.
 export const minimizedAgentQuestions = new Set<string>();
-export const AGENT_COMMAND = "/semantic-flow review -i";
+export const AGENT_COMMAND = "/semantic-flow review";
 // The "Send automatically" choice is a viewer preference, kept in this browser across reviews.
 export const AUTO_SEND_KEY = "semantic-flow:auto-send-feedback";
 // Null when storage is unavailable, so the in-page choice still applies.
@@ -48,7 +48,7 @@ export function setAutoSendPreferred(on: boolean): void {
   adoptAutoSendPreferred(on);
   try { localStorage.setItem(AUTO_SEND_KEY, String(on)); autoSendStoreFailed = false; } catch { autoSendStoreFailed = true; }
 }
-// Offered only while an interactive session can take feedback as it arrives.
+// Offered only while a listening session can take feedback as it arrives.
 export const agentTakesFeedback = (): boolean => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
 export const autoSendActive = (): boolean => autoSendPreferred && agentTakesFeedback();
 // Send just the saved note or reply at once; a save during a send goes out when that send finishes.

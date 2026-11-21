@@ -607,7 +607,7 @@ export interface AgentRequest {
 
 /** The listening agent's status (`agentStatus(...)` on the server). */
 export interface AgentStatus {
-  /** An interactive session is running. */
+  /** A listening session is running. */
   session: boolean;
   /** The session sent a heartbeat recently. */
   listening: boolean;

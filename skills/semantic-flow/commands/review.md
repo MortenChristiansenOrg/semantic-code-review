@@ -1,85 +1,95 @@
 # Review command
 
-Use to open the local semantic review viewer. Without `-i`, this command is
-read-only with respect to implementation artifacts and implementation branches.
+Opens the local review viewer and keeps you listening for the reviewer's
+feedback until the review ends. The reviewer works only in the viewer and never
+runs another command between rounds; feedback sent while you work waits for
+your next round. A review of someone else's branch (`--branch`) follows
+`review-branch.md` instead, and nothing listens there.
 
-## Interactive review
+Launching the viewer changes nothing: it does not mutate the artifact, switch
+branches, approve work, or prepare outputs. Rounds change the implementation as
+`feedback.md` describes.
 
-`/semantic-flow review -i` (or `--interactive`) opens the viewer and keeps the
-agent listening for feedback until the review ends. Read
-`../docs/interactive-review.md` completely and follow it. It applies only to
-local implementations, not to `--branch` reviews.
+`<semantic-flow>` means `node` followed by the quoted `scripts/semantic-flow.mjs`
+path under the installed skill root.
 
-`<semantic-flow>` means `node <installed-skill-root>/scripts/semantic-flow.mjs`.
-Quote the script path. Launch:
+## Open the viewer
 
 ```text
 <semantic-flow> review [--project <repository-or-worktree-path>] [--implementation-id <id>]
-<semantic-flow> review --branch <branch-name> [--project <repository-or-worktree-path>]
 ```
 
-The helper resolves linked worktrees without requiring `targetBranch` to match
-the invoking branch, then starts the bundled viewer as a detached background
-process. It reports the local URL only after the server is listening and then
-exits; do not run a separate inspect, validation, HTTP probe, or shell
-backgrounding command. The detached viewer remains running after the agent turn
-or terminal command completes. Once the implementation is archived, the viewer
-tells its open pages and stops by itself once no page has made a request for
-ten minutes.
+Pass only these options. A leftover `-i` or `--interactive` in the request
+means plain `review`; it is not a CLI option.
 
-The viewer renders stages, change nodes, project-grouped files, linked insights,
-full-context diffs, and feedback threads. A user can add and edit draft notes
-before sending. Sent notes become open threads; agent follow-ups appear in
-the same thread after the feedback workflow runs. The viewer shows whether an
-agent is listening and offers `/semantic-flow review -i` when none is. It refreshes changed artifacts and feedback in place, retaining drafts and
-unchanged diffs. A matching healthy viewer is reused when reopening review.
-Large files load in pages; full context remains available on demand.
+The command resolves linked worktrees, starts the viewer as a detached
+background process or reuses a healthy one for the same review, reports the
+local URL once the server is listening, and exits. Do not run a separate
+inspect, validation, HTTP probe, or shell backgrounding command. If it fails,
+for example because the implementation was archived, report the error in one
+line and stop without waiting.
 
-Feedback and browser-local review state may be created through the viewer, but
-the launch command itself must not mutate the artifact, switch branches,
-approve work, or prepare outputs. Run feedback CLI commands from the resolved
-artifact worktree root.
+If you are already listening in this conversation, the reviewer only wants the
+viewer back: run the command, then continue your loop with the same session.
+Never start a second wait without `--session` beside it.
 
-## Reviewing someone else's remote branch
+## Listen
 
-Pass `--branch feature-name` to review the branch from `origin` (or the only
-configured remote). Use `--branch upstream/feature-name` to select another
-remote. This option cannot be combined with `--implementation-id` and works
-without a local Semantic Flow artifact. Git uses your configured credentials;
-no code from the reviewed branch is built or executed.
+```text
+<semantic-flow> feedback --json --wait [--project <repository-or-worktree-path>] [--implementation-id <id>] [--timeout <seconds>]
+```
 
-Remote reviews appear in Saved reviews with a **Remote** label. Their independent
-Git clone lives at `~/.semantic-flow/reviews/<review-id>/checkout/` (or the
-configured `SEMANTIC_FLOW_HOME`). Your project's checkout, refs and uncommitted
-changes stay untouched. Opening the same remote branch from any checkout reopens
-its review. Deleting a review removes its clone, notes, attachments and
-approved-content snapshots together.
+The first wait starts a session, replacing any earlier listener for this review.
+Every result includes `session`; pass `--session <session>` to every later wait.
 
-The viewer allows personal notes and approvals only. It does not offer feedback
-messages or send anything to an implementation agent or remote author. Do not
-run the feedback, sync, reconcile or implementation workflows for these reviews.
+If the harness can run a command in the background and resume you when it
+finishes, run each wait that way with `--timeout 3600`, so the conversation
+stays free. Otherwise run it in the foreground with a timeout below the
+harness's command limit; the default 540 seconds suits common limits.
 
-Matching published Semantic Flow metadata supplies the original stages, nodes,
-requirements and insights. Without usable metadata, the viewer reconstructs
-stages from first-parent commits, including merge commits. Each later occurrence
-of a file compares against the previous stage that changed it, skipping any
-intervening stages. There is no duplicate cumulative stage.
-The fallback compares against the merge base with the remote's default branch
-(`main` or `master` if the remote does not advertise one). Git-derived groupings
-provide commit messages and authors, but cannot recover undocumented intent.
+| Result | Action |
+| --- | --- |
+| `stages` is not empty | Process the round, then wait again. |
+| `responses` is not empty | Apply the reviewer's answers to the work they unblock, then wait again. |
+| `timedOut: true` | Wait again immediately. |
+| `stopped: true` | End the loop with one short line in the chat. `reason` is `stopped` (the reviewer pressed Stop agent), `completed` (the review is marked complete), `idle` (two hours without feedback), or `superseded` (another agent started listening). |
 
-Reopening a saved review retains the last reviewed snapshot. Choose **Refresh
-branch** in the viewer to fetch updates. Changed file approvals become stale and
-**Since approval** compares current content with the saved approved content,
-including after force-pushes, and leaves out changes that came from the base when
-they can be separated. In commit-based reviews, the newest occurrence of
-a file can compare against its latest saved approval from an earlier commit.
-Unchanged file content retains its approval when
-the base and ownership are unchanged. Refresh failures keep the previous
-snapshot available. A refresh that was interrupted, for example because the
-viewer was stopped, may already have checked out the fetched revision; the
-review then shows that revision when it is next opened or refreshed. Where
-that revision cannot be shown again from the review's own copy of the
-repository, opening the review fetches the branch, as **Refresh branch** does.
-Notes and approvals on removed commit stages remain saved but those stages no
-longer appear in the current branch's history.
+When the first wait already returns `completed`, say that the review is marked
+complete, so nothing listens, and that **Reopen review** in Saved reviews
+followed by `/semantic-flow review` resumes listening.
+
+Never end the loop on your own and never ask whether to continue. Waiting again
+with a session after a round first validates the stack and feedback; fix any
+failure it reports before continuing. Stop and two hours without feedback take
+effect only after the current round.
+
+## Rounds
+
+When a result first has `stages` or `responses`, read `feedback.md` completely
+once. A round's result has the same fields as its `feedback --json` preflight,
+with the threads already claimed, so do not run that preflight. Process each
+round by its “Ask in the viewer”, “Address feedback”, “Restack conflicts”, and
+“Reply” sections, including parallel subagents for questions and for
+independent stage changes. Reuse stage worktrees created in earlier rounds.
+
+Start the next wait only after `reply` or `reply-batch` has finished, never as
+a parallel tool call beside it, even when the harness encourages parallel
+calls. A wait that finds the round still unanswered returns its threads to the
+queue after a few seconds and reports them on stderr. If a reply reports that
+the round was replaced, another agent took over the review: end with one short
+line and change nothing more.
+
+Before long steps, you may show what the round is doing:
+
+```text
+<semantic-flow> feedback agent progress --input -
+{"body":"Changing the cancellation and refund stages"}
+```
+
+When a round needs an answer from `agent ask`, wait with the session as usual.
+The round keeps its threads while the question is open, and the answer returns
+in `responses`. New feedback waits until the round completes.
+
+All interaction with the reviewer happens in the viewer. In the chat, write one
+short line per round, such as “Answered 3 threads; listening”, and report only
+failures that make the viewer or its review data unusable.

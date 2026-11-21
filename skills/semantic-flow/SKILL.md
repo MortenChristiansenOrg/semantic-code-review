@@ -33,7 +33,8 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | --- | --- | --- |
 | Natural-language semantic-flow request | | `commands/implicit.md` |
 | `/semantic-flow implement` | | `commands/implement.md` |
-| `/semantic-flow review` (`-i` to keep handling feedback) | `rv` | `commands/review.md` |
+| `/semantic-flow review` (opens the viewer and listens for feedback) | `rv` | `commands/review.md` |
+| `/semantic-flow review --branch <branch>` (someone else's branch) | | `commands/review-branch.md` |
 | `/semantic-flow feedback` | `fb` | `commands/feedback.md` |
 | `/semantic-flow reconcile` | `rc` | `commands/reconcile.md` |
 | `/semantic-flow simulate` | `sim` | `commands/simulate.md` |
@@ -48,6 +49,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | `/semantic-flow update` | `up` | `commands/update.md` |
 | `/semantic-flow help` or `/semantic-flow help <command>` | | `commands/help.md` |
 
-Treat the first word after `/semantic-flow` as the command. With no explicit
+Treat the first word after `/semantic-flow` as the command; `review` with
+`--branch` uses `commands/review-branch.md`. With no explicit
 command, use `commands/implicit.md`. Unknown commands route to
 `commands/help.md`; do not guess.

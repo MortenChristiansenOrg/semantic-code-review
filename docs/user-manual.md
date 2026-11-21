@@ -385,6 +385,10 @@ Repeat begin, implement, commit, and finish for each stage.
 <semantic-flow> review
 ```
 
+Run by hand, this command opens the viewer with no agent. Ask your agent for
+`/semantic-flow review` instead to open it with an agent listening for your
+feedback (see [The listening agent](#the-listening-agent)).
+
 The UI leads with each stage's node descriptions, then shows their classified
 file or hunk membership, linked insights, branch snapshots, and
 Git-backed diffs.
@@ -532,10 +536,11 @@ reviewer then resolves the thread in the viewer or with:
 Reopening or replying to a resolved thread makes it open again. Later stage
 rewrites require no feedback metadata updates.
 
-### Interactive review
+### The listening agent
 
-`/semantic-flow review -i` opens the viewer and keeps the agent listening, so
-you never run the feedback command between rounds. The agent waits with:
+`/semantic-flow review` opens the viewer and keeps the agent listening, so you
+never run the feedback command between rounds. `/semantic-flow feedback` handles
+one round without listening. The agent waits with:
 
 ```text
 <semantic-flow> feedback --json --wait [--session <session-id>] [--timeout <seconds>]
@@ -557,8 +562,21 @@ The viewer shows whether an agent is listening or working, each thread as
 queued, in progress, or answered, and a notice with unread markers when a round
 finishes; it can also notify you while the tab is hidden. When the agent needs
 a decision that is not about one thread, its question appears at the top of the
-viewer. **Stop agent** ends listening after the current round, as does marking
-the review complete or two hours without feedback.
+viewer. When no agent listens, the viewer names `/semantic-flow review` to start
+one.
+
+To stop listening, press **Stop agent** in the viewer. Listening also ends when
+you mark the review complete or after two hours without feedback, each once the
+current round is finished, and when another agent starts listening to the same
+review, which takes over its threads at once. A completed
+review starts no listening: choose **Reopen review** in Saved reviews first.
+Running `/semantic-flow review` again in the same conversation reopens the
+viewer and keeps the agent's existing session.
+
+In tools that can run a command in the background and resume afterwards, such as
+Claude Code, the conversation stays free while the agent listens. Other tools
+keep the agent waiting in the foreground, so the conversation stays busy until
+you press **Stop agent** or interrupt the agent.
 
 ## 10. Publish and prepare local outputs
 
@@ -780,7 +798,7 @@ Attachments appear as compact rows with image thumbnails where supported.
 The viewer does not offer file downloads; agents access the managed local files
 through feedback commands.
 Saving a message keeps it local until you prepare feedback, unless it is sent
-automatically in an interactive review.
+automatically to a listening agent.
 
 The CLI can register context too:
 

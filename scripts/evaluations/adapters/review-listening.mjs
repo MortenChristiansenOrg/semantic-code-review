@@ -1,4 +1,4 @@
-// Interactive review (`/semantic-flow review -i`) with a scripted reviewer.
+// A review (`/semantic-flow review`) the agent listens to, with a scripted reviewer.
 // The reviewer acts only through the review viewer's HTTP API while the agent
 // runs: it sends feedback, follows up mid-round, sends contradictory notes,
 // answers the agent's question, and presses Stop. Nothing reaches the chat.
@@ -169,7 +169,7 @@ export async function prepare({ root, skill, env, capabilities }) {
   cli('feedback', 'init');
   const exported = JSON.parse(cli('implementation', 'export'));
   const heads = Object.fromEntries(stages.map(stage => [stage.id, exported.stages[stage.id].change.headRevision]));
-  return { repo, skill, request: '/semantic-flow review -i',
+  return { repo, skill, request: '/semantic-flow review',
     agentSetup: 'The implementation in this repository is complete and ready for review. In this environment the review viewer serves on 127.0.0.1 without opening a browser.',
     before: { baseRevision, heads, template: stages[2].content } };
 }

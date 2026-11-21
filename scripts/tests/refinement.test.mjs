@@ -434,7 +434,7 @@ console.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,cached_i
 export const checkIds = ['reviewed']; export const transcriptChecks = ['observed'];
 export const transcriptCriteria = { observed: 'Pass when the scripted exchange is visible; always applicable here.' };
 export async function preflight() { return { scripted: true }; }
-export async function prepare({ root }) { const repo = path.join(root, 'project'); fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]); return { repo, request: 'Review interactively.' }; }
+export async function prepare({ root }) { const repo = path.join(root, 'project'); fs.mkdirSync(repo); execFileSync('git', ['init', '-q', repo]); return { repo, request: 'Open the review and listen.' }; }
 export async function drive({ agentExited, signal }) { ${drive} }
 export async function verify({ driver }) { return { checks: [{ id: 'reviewed', passed: driver?.sawExit === true, evidence: driver }] }; }`);
     return file;
