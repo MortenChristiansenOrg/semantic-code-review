@@ -229,5 +229,11 @@ test("the jobs after a request body share one read of the active refs", async (t
   assert.equal(status, 422);
   const reads = viewer.runs().slice(before).filter((line) => / trace: built-in: git for-each-ref /.test(line));
   // One read checks the review before the body, one serves the jobs after it.
-  assert.equal(reads.length, 2, reads.join("\n"));
+  // The feedback change reads only its implementation's active ref again, under
+  // the review lock, as an archive may have removed it since.
+  const recheck = `refs/semantic-review/active/${implementationId}`;
+  const rechecking = (line) => line.trimEnd().endsWith(` ${recheck}`);
+  const [checks, rechecks] = [reads.filter((line) => !rechecking(line)), reads.filter(rechecking)];
+  assert.equal(checks.length, 2, reads.join("\n"));
+  assert.equal(rechecks.length, 1, reads.join("\n"));
 });

@@ -1589,6 +1589,79 @@ test('a page whose implementation was archived says so, keeps unsent text for co
   expect(requests).toHaveLength(seen);
 });
 
+/** The server's refusal once the implementation was archived. */
+const archivedRefusal = { status: 409, json: { ok: false, error: 'Implementation browser-review is no longer active, so its review is unavailable.', reviewUnavailable: false, implementationArchived: true } };
+/** Whether the page asks before it is left. */
+const warnsBeforeLeaving = (page) => page.evaluate(() => {
+  const event = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+});
+
+test('an archive that arrives before a draft is saved keeps the text for copying and asks before leaving', async ({ page }) => {
+  await mount(page); await openFile(page);
+  await saveAction(page, () => page.locator('.file-notes .thread-add').click(), (state) => Boolean(state.editor?.compose));
+  let archived = false, holdSaves = false, releaseSave;
+  const saveHeld = new Promise((resolve) => { releaseSave = resolve; });
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  // The draft's save reaches the server only after the archive notice.
+  await page.route('**/api/review-state?*', async (route) => {
+    if (!holdSaves || route.request().method() !== 'POST') return route.fallback();
+    await saveHeld; return route.fulfill(archivedRefusal);
+  });
+  holdSaves = true;
+  const sent = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST' && request.postData().includes('Unsaved explanation'));
+  await page.locator('textarea[name="nc-body"]').fill('Unsaved explanation');
+  await sent;
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  await expect(page.locator('.ended-review textarea')).toHaveValue('Unsaved explanation');
+  releaseSave();
+  await expect(page.locator('.ended-review textarea')).toHaveValue('Unsaved explanation');
+  // Leaving, by a reload or by opening another review, would discard the text.
+  expect(await warnsBeforeLeaving(page)).toBe(true);
+});
+
+test('an approval whose content is retained after the archive notice is listed as not saved', async ({ page }) => {
+  const data = fixture(); await mount(page, data); await openFile(page);
+  let archived = false, release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const saved = [];
+  page.on('request', (request) => { if (archived && new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') saved.push(request.postData()); });
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  await page.route('**/api/approval-snapshots*', async (route) => { await pending; await route.fulfill({ json: { ok: true, snapshotId: 'b'.repeat(32) } }); });
+  await page.locator('details[data-node="first-one"] .mini-approve').click();
+  // With the saved reviews already open, the notice's heading takes focus, so screen readers announce it.
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  await expect(page.locator('#review-list')).toBeVisible();
+  archived = true;
+  const heading = page.getByRole('heading', { name: 'Implementation archived' });
+  await expect(heading).toBeVisible();
+  await expect(heading).toBeFocused();
+  release();
+  await expect(page.locator('.ended-review')).toContainText('These approvals were not saved:');
+  await expect(page.locator('.ended-review li')).toHaveText([data.stages[0].files[0].path]);
+  await expect(heading).toBeFocused();
+  expect(saved).toEqual([]);
+  // Only unsent text makes leaving ask.
+  expect(await warnsBeforeLeaving(page)).toBe(false);
+});
+
+test('a page loaded after the archive starts archived, even before any poll', async ({ page }) => {
+  const data = fixture(); await mount(page, data); await openFile(page);
+  await page.locator('.file-notes .thread-add').click();
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').fill('Saved before the archive'), (state) => state.editor?.compose?.body === 'Saved before the archive');
+  // No poll can tell, as in a hidden tab; only the bootstrap does.
+  await page.route('**/api/revision?*', (route) => route.fulfill({ status: 500, json: { ok: false, error: 'Not now.' } }));
+  await page.route('**/api/bootstrap*', (route) => route.fulfill({ json: { ok: true, context: { reviewId: 'browser-review', generation: 'test' }, implementation: {
+    implementationId: data.implementationId, reviewId: 'browser-review', title: data.title, viewerReleaseVersion: 'unversioned', summary: 'Implementation browser-review is no longer active, so its review is unavailable.',
+    stages: [], requirements: [], feedback: [], baseRevision: '', targetBranch: '', implementationArchived: true } } }));
+  await reload(page);
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  await expect(page.locator('.ended-review textarea')).toHaveValue('Saved before the archive');
+  expect(await warnsBeforeLeaving(page)).toBe(true);
+});
+
 
 test('a failed deletion reports where the files are held and can be retried', async ({ page }) => {
   await mount(page); let failed = false, gone = false;

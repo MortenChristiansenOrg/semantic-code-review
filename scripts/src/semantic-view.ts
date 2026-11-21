@@ -2305,19 +2305,25 @@ function serveViewer({
   const review = assertReviewContext(context);
   let server: http.Server | null = null;
   // Archiving ends the review: pages are told, and the viewer stops once no
-  // page has made a request for archivedViewerIdleMs.
-  let archivedAt: number | undefined, lastRequestAt = Date.now();
+  // page has used it for archivedViewerIdleMs. Only requests that pass the host
+  // and access checks use it, and each one does until it ends.
+  let archivedAt: number | undefined, lastRequestAt = Date.now(), requestsInFlight = 0;
   /** Whether the implementation was archived; once it was, it stays so. */
   const archived = async () => {
     if (archivedAt === undefined && await readReviewImplementationArchived(review)) archivedAt = Date.now();
     return archivedAt !== undefined;
   };
-  /** Stops listening, then ends the process. */
-  const exit = () => {
+  /** Stops listening, lets requests in flight finish for up to graceMs, then
+   * ends the process. */
+  const exit = (graceMs: number) => {
     const done = () => process.exit(0);
-    if (server) server.close(done);
-    else done();
-    setTimeout(done, 500).unref();
+    const closing = server;
+    if (!closing) { done(); return; }
+    closing.close(done);
+    // A connection kept alive between requests would hold the server open.
+    closing.closeIdleConnections();
+    setInterval(() => closing.closeIdleConnections(), 100).unref();
+    setTimeout(done, graceMs).unref();
   };
   /** Ends a viewer whose implementation was archived, releasing its record first
    * so no launch looks for it on its port. */
@@ -2326,7 +2332,8 @@ function serveViewer({
       const recorded = readReview(context.reviewId).viewer;
       if (recorded?.processId === process.pid && recorded.port === port) recordViewer(context.reviewId, context.generation, undefined, recorded);
     } catch { /* A deleted or replaced review records no viewer of this one. */ }
-    exit();
+    // No request was in flight; one that arrived since may finish.
+    exit(30_000);
   };
   let management: ManagementWorker | null = null;
   const manage = (): ManagementWorker => {
@@ -2346,7 +2353,13 @@ function serveViewer({
     response.end(text);
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
-    lastRequestAt = Date.now();
+    let used = false;
+    /** Counts the request, once it passed the host and access checks, as use of the viewer until it ends. */
+    const use = () => {
+      if (used) return;
+      used = true; requestsInFlight += 1; lastRequestAt = Date.now();
+      response.once("close", () => { requestsInFlight -= 1; lastRequestAt = Date.now(); });
+    };
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // The request's jobs read the active refs once, in the worker, so checking
     // its review neither runs Git again nor holds up this thread.
@@ -2388,6 +2401,8 @@ function serveViewer({
       if (!exchange && !keyed && !readable) {
         sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: FRESH_LINK_MESSAGE, keyRequired: true }); return;
       }
+      // A launch code exchange counts once the code is redeemed.
+      if (keyed || readable) use();
     }
 
     // Every review API request is explicitly scoped, even on a dedicated server.
@@ -2409,6 +2424,7 @@ function serveViewer({
         if (!access.redeem(code)) {
           sendJson<Wire.ApiFailure>(response, 403, { ok: false, error: FRESH_LINK_MESSAGE, keyRequired: true }); return;
         }
+        use();
         sendJson<Wire.SessionResponse>(response, 200, { ok: true, key: access.key, read: access.read });
       } catch (error) { failure(400, error); }
       return;
@@ -2426,10 +2442,13 @@ function serveViewer({
       try { implementation = await jobs.call("implementation"); }
       catch (error) {
         const code = errorCode(error);
-        if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !reviewSessionUnavailable(context)) { failure(500, error); return; }
+        const deleted = reviewSessionUnavailable(context);
+        if (code !== "REVIEW_UNAVAILABLE" && code !== "REVIEW_TARGET_UNAVAILABLE" && !deleted) { failure(500, error); return; }
         // The saved-review manager remains usable after deletion or worktree removal.
+        // A page loaded after an archive shows it at once, as no poll may run in a hidden tab.
         implementation = { implementationId, reviewId: context.reviewId, title: review.title, viewerReleaseVersion,
-          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "" };
+          summary: cliErrorMessage(error), stages: [], requirements: [], feedback: [], baseRevision: "", targetBranch: "",
+          ...(!deleted && await archived() ? { implementationArchived: true as const } : {}) };
       }
       sendJson<Wire.BootstrapResponse>(response, 200, { ok: true, implementation, context: { reviewId: context.reviewId, generation: context.generation } });
       return;
@@ -2674,7 +2693,8 @@ function serveViewer({
         return;
       }
       sendJson<Wire.ShutdownResponse>(response, 200, { ok: true });
-      setTimeout(exit, 50);
+      // Requests in flight may finish within the five seconds `review --stop` waits.
+      setTimeout(() => exit(3000), 50);
       return;
     }
 
@@ -2738,7 +2758,7 @@ function serveViewer({
         if (checking) return;
         checking = true;
         try {
-          if (!await archived() || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
+          if (!await archived() || requestsInFlight || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
           clearInterval(archiveCheck); stopArchived();
         } finally { checking = false; }
       }, Math.min(60_000, idle));

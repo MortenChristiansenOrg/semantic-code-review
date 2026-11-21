@@ -2021,6 +2021,8 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .cleanup-delete, .cleanup-warning { color: #ffb09a; }
 .ended-review { max-width: 900px; margin: 32px auto; padding: 20px; }
 .ended-review textarea { display: block; width: 100%; margin-top: 10px; box-sizing: border-box; }
+/* Focused by script so screen readers announce the end; it is not a control. */
+.ended-review h1:focus { outline: none; }
 .review-cleanup td:nth-child(2) { white-space: nowrap; }
 
 .note-compose textarea.is-file-drop-target, .tthread-reply textarea.is-file-drop-target {

@@ -282,6 +282,14 @@ export function listActiveImplementations(root: string): ActiveImplementation[] 
   return actives;
 }
 
+/** Whether the implementation's active ref exists, read from Git now, never
+ * from a readingActiveRefsOnce scope: a scope's read may predate an archive
+ * that removed the ref since. */
+export function implementationActive(root: string, implementationId: string): boolean {
+  const ref = activeRef(implementationId);
+  return gitRaw(["for-each-ref", "--format=%(refname)", ref], { cwd: root }).split(/\r?\n/).includes(ref);
+}
+
 /** Names the implementation a process acts on once a command selected it.
  * Worker threads and child processes, such as the viewer and the commands it
  * runs, inherit the selection with the environment. */

@@ -45,7 +45,12 @@ async function startApp(): Promise<boolean> {
       const failure = failureOf(body);
       if (failure.reviewUnavailable) { ended = "deleted"; saved = { reviewId: requestReviewId, generation: requestGeneration ?? "", state: {}, stateRevision: 0 }; }
       else throw new Error(failure.error || "Review data could not be loaded.");
-    } else saved = body;
+    } else {
+      saved = body;
+      // The server said when the page loaded that the implementation was archived.
+      const loaded = window.SEMANTIC_IMPLEMENTATION;
+      if ("implementationArchived" in loaded && loaded.implementationArchived) ended = "archived";
+    }
   } catch (error) {
     app.textContent = `${errorMessage(error)} Reload to retry.`;
     return false;

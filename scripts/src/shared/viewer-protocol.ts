@@ -403,6 +403,8 @@ export interface UnavailableImplementationData {
   feedback: [];
   baseRevision: "";
   targetBranch: "";
+  /** Set when the review's implementation was archived, which ends its review. */
+  implementationArchived?: true;
 }
 
 /* ---- persisted review state ----------------------------------------------- */
