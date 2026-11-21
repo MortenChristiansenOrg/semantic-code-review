@@ -437,8 +437,16 @@ The command:
 
 1. Accepts the edited lower branch's current head and folds the correction into
    its one stage commit.
-2. Replays every branch above it, bottom-up.
-3. Moves all affected refs only after every replay succeeds.
+2. Replays every branch above it, bottom-up, by cherry-picking its stage commit
+   in a scratch worktree under the user data root, outside your checkouts. A
+   stage whose changes the target already contains stays as a marked empty
+   stage, which validation accepts and stack preparation skips; preparing a
+   cumulative branch is refused when every stage is empty.
+3. Moves all affected refs only after every replay succeeds. On a conflict it
+   moves nothing and keeps the scratch worktree with normal Git conflict state:
+   resolve and `git add` there, then run `restack --continue`, or discard the
+   restack with `restack --abort`. `--continue` moves refs only if the target,
+   stage and artifact refs are unchanged since the restack began.
 4. Refreshes base/head snapshots and file inventories.
 5. Leaves the edited branch checked out.
 
@@ -473,9 +481,10 @@ The helper is also available directly:
 
 `--local` uses only the current local target head, without fetching or requiring
 an upstream. `--project` and `--implementation-id` select a linked artifact.
-If replay conflicts, the target fast-forward is retained, while stage refs and
-artifacts remain unchanged. Follow the skill's `docs/restack-conflicts.md`,
-resume the underlying restack directly, then run `sync --local` to validate.
+If replay conflicts, the target fast-forward is retained and stage refs remain
+unchanged. Resolve the conflict in the reported worktree as the skill's
+`docs/restack-conflicts.md` describes, run `implementation restack --continue`,
+then run `sync --local` to validate.
 
 For a direct restack after the local target has already advanced:
 

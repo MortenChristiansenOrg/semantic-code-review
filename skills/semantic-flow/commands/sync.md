@@ -44,16 +44,15 @@ into a stage branch; merge commits in stage ranges are unsupported.
 ## Conflicts and validation failures
 
 Use the reported artifact worktree for every subsequent command. A failed
-restack leaves stage refs and artifacts unchanged; an earlier fast-forward of
-the target is retained. Record the original checkout and reported revisions.
+restack leaves stage refs unchanged; an earlier fast-forward of the target is
+retained. Record the original checkout and reported revisions.
 
-For a patch conflict, read `../docs/restack-conflicts.md` completely. Recover
-using the underlying `<semantic-flow> implementation restack --base <target-branch>`
-invocation. Do not re-enter sync preflight between recovery and the successful
-restack: the recovery intentionally moves a stage head, which preflight rejects.
-Do not fetch again during recovery. Restore the original branch after the
-restack succeeds; for an originally detached stage/base checkout, detach at its
-new recorded stage/base revision. Retain recovery refs until validation passes.
+For a restack conflict, read `../docs/restack-conflicts.md` completely and
+complete the pending restack with `<semantic-flow> implementation restack
+--continue`. Do not rerun sync until it succeeds, and do not fetch again during
+recovery. Restore the original branch after the restack succeeds; for an
+originally detached stage/base checkout, detach at its new recorded stage/base
+revision.
 
 If node ownership, hunk selectors, or line ranges no longer fit the rewritten
 diff, read `../scripts/api/stages.d.ts` and reorganize only the affected finalized

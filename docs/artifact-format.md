@@ -237,7 +237,20 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
 1. Read the current head of stage `k` and fold its commits into one.
 2. Replay each branch above it onto the newly computed lower head, bottom-up,
    folding any branch that was edited too.
-3. Abort without moving refs if any patch conflicts.
+3. Move no ref while any replay conflicts. The reference tooling cherry-picks
+   each stage commit in a scratch worktree and, on a conflict, records the
+   restack as pending in the active artifact (`.work/restack.json`) and keeps
+   the worktree's Git conflict state until `restack --continue` or `--abort`.
+   A stage whose changes the target already contains stays in the stack as
+   an empty commit marked with the trailer `Semantic-Flow-Empty: <commit>`,
+   naming the stage commit it replaced, which the artifact keeps reachable;
+   its `files` is empty and its nodes keep describing the change. A later
+   restack replays the named commit, so the stage's changes return if the
+   target no longer contains them. A stage whose conflict was resolved to no
+   change is marked `Semantic-Flow-Empty: resolved` and is not replayed again.
+   A correction to an empty stage replaces its commit, and with it the marker:
+   the named commit is no longer replayed, and the tooling warns when that
+   happens.
 4. Move affected branch refs as one transaction.
 5. Record each affected `headRevision` (and the manifest's `baseRevision` when
    the target advanced); the other `change` fields follow from them.

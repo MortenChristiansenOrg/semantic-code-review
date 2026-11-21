@@ -159,6 +159,11 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    `restack` fold a stage's commits into one commit whose message comes from
    the stage title and summary, with the folded commits' authors as
    co-authors, and that validation rejects a stage of several commits.
+   The first release that replays stages by cherry-pick must say that restack
+   conflicts are resolved in the reported scratch worktree and completed with
+   `restack --continue` (or discarded with `--abort`) instead of the manual
+   recipe, and that a stage the target already contains stays as a marked
+   empty stage that stack preparation skips.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed
