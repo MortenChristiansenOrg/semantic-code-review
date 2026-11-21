@@ -546,8 +546,12 @@ test("branches stay outside the short names of Semantic Flow's own refs", (t) =>
   // A branch an older artifact left at the tag's short name blocks sharing until it is gone.
   repository.semantic("archive");
   repository.git("branch", "semantic-review-archive/reserved", "main");
-  repository.expectSemanticFailure("refs/heads/semantic-review-archive/reserved has the short name", "archive", "share", "--id", "reserved");
+  repository.expectSemanticFailure("refs/heads/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
   assert.equal(repository.result("git", ["show-ref", "--verify", "--quiet", "refs/tags/semantic-review-archive/reserved"]).status, 1);
   repository.git("branch", "-D", "semantic-review-archive/reserved");
+  // So does a branch named after the tag's full name, which would make pushing the full name fail.
+  repository.git("branch", "refs/tags/semantic-review-archive/reserved", "main");
+  repository.expectSemanticFailure("refs/heads/refs/tags/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
+  repository.git("branch", "-D", "refs/tags/semantic-review-archive/reserved");
   repository.semantic("archive", "share", "--id", "reserved");
 });

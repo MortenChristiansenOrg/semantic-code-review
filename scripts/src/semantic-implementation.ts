@@ -3576,8 +3576,8 @@ function shareArchive(root: string, options: Options): void {
   const push = `git push <remote> ${tag}`;
   // A ref of an older artifact may share the tag's short name, which would make pushing it by that name fail.
   const short = tag.slice("refs/tags/".length);
-  const clash = [`refs/heads/${short}`, `refs/${short}`].find((ref) => gitOptional(["show-ref", "--verify", "--quiet", ref], { cwd: root }) !== undefined);
-  if (clash) fail(`${clash} has the short name ${short} of the archive tag ${tag}; rename or delete it before sharing the archive.`);
+  const clash = [`refs/heads/${short}`, `refs/${short}`, `refs/heads/${tag}`].find((ref) => gitOptional(["show-ref", "--verify", "--quiet", ref], { cwd: root }) !== undefined);
+  if (clash) fail(`${clash} shares a name with the archive tag ${tag}, so pushing the tag by name would fail; rename or delete it before sharing the archive.`);
   if (shared) {
     if (!shared.annotated || shared.commit !== archive.commit) fail(`${tag} already exists and is not an annotated tag of the current archive commit ${archive.commit}; a shared archive tag is never moved or replaced.`);
     console.log(`The archive of ${implementationId} is already shared as ${tag}. Push it with: ${push}`);
