@@ -495,6 +495,12 @@ test("a stage the target already contains stays as a marked empty stage that pre
   // The viewer shows the emptied stage with its nodes and no diff.
   const viewed = implementationFromScript(createViewerDataSource(repository.root).implementationDataScript());
   assert.deepEqual(viewed.stages.map((stage) => [stage.id, stage.empty ?? false]), [["policy", true], ["api", false]]);
+  // A replacement ref that rewrites the stage commit's parents changes nothing the viewer decides.
+  const policyHead = repository.git("rev-parse", policy);
+  repository.git("replace", "--graft", policyHead, "main~1");
+  const replaced = implementationFromScript(createViewerDataSource(repository.root).implementationDataScript());
+  assert.deepEqual(replaced.stages.map((stage) => [stage.id, stage.empty ?? false]), [["policy", true], ["api", false]]);
+  repository.git("replace", "--delete", policyHead);
   const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
   assert.deepEqual(stack.emptyStages, ["policy"]);
   assert.deepEqual(stack.stages.map(({ stageId, baseBranch, position }) => ({ stageId, baseBranch, position })), [{ stageId: "api", baseBranch: "main", position: 1 }]);

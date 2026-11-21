@@ -1210,9 +1210,13 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
  * to say so; false when the commits cannot be read. */
 function changesNothing(root: string, base: string, head: string): boolean {
   // Exactly one parent, the base: a merge can hide commits behind an unchanged tree.
-  const parents = git(["rev-list", "--parents", "--max-count=1", head], { cwd: root, allowFailure: true })?.split(" ");
-  if (parents?.length !== 2 || parents[1] !== base) return false;
-  return git(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
+  // The raw commit object names its parents; replacement refs and grafts cannot hide one.
+  const commit = git(["--no-replace-objects", "cat-file", "commit", head], { cwd: root, allowFailure: true });
+  if (commit === null) return false;
+  const header = commit.slice(0, commit.indexOf("\n\n") < 0 ? commit.length : commit.indexOf("\n\n"));
+  const parents = header.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice("parent ".length).trim());
+  if (parents.length !== 1 || parents[0] !== base) return false;
+  return git(["--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
