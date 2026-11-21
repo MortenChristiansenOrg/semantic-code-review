@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { jsonBytes, parseJson, replaceFile } from "./json.js";
 import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readActiveArtifactInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
 import { gitRaw } from "./git.js";
+import { recoverRemoteProjection } from "./remote-review.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
 
@@ -431,13 +432,15 @@ function moveLegacyProjection(owner: string, root: string, directory: string): v
   });
 }
 /** The artifact a review of root shows: the projection a remote review made for
- * its managed checkout, or else the active artifact of root. */
+ * its managed checkout, rebuilt when an interrupted refresh left none, or else
+ * the active artifact of root. */
 export function readReviewArtifact(root: string, implementationId?: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
   const owner = managedCheckoutOwner(root);
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
     const directory = projectionDirectory(owner);
     if (!fs.existsSync(directory)) moveLegacyProjection(owner, root, directory);
+    if (!fs.existsSync(path.join(directory, "manifest.json"))) recoverRemoteProjection(owner);
     const projection = readArtifactDirectory(root, directory);
     return projection && { files: projection, projection: true };
   }

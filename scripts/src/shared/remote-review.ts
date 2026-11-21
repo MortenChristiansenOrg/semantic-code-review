@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
@@ -127,6 +127,12 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   const root = record.repositoryRoot;
   git(root, ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/*:refs/remotes/origin/*"]);
   const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
+  return show(record, remote, head, new Date().toISOString());
+}
+/** Checks head out in the managed checkout and replaces the projection with
+ * the one for head, then records head as the reviewed revision. */
+function show(record: ReviewRecord, remote: RemoteReview, head: string, refreshedAt: string) {
+  const root = record.repositoryRoot;
   const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
   // Evidence is read one file at a time, as the projection is written.
   function* files(): Generator<[string, Buffer]> {
@@ -148,10 +154,27 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   }, () => {
     if (checkoutStarted && previousHead) git(root, ["checkout", "--force", "--detach", previousHead]);
   });
-  record.remote = { ...remote, headRevision: head, refreshedAt: new Date().toISOString() };
+  record.remote = { ...remote, headRevision: head, refreshedAt };
   record.title = projected.manifest.title;
   atomicJson(path.join(reviewDirectory(record.id), "review.json"), record);
   return record;
+}
+/** Rebuilds the projection of a remote review whose refresh was interrupted
+ * between moving the previous projection aside and moving the new one in. The
+ * checkout may already hold the new revision, so the projection is made again
+ * for the revision it has, without fetching; a copy left aside is discarded
+ * once the new one is in place. Without a usable record or checkout the review
+ * stays unavailable. */
+export function recoverRemoteProjection(id: string): void {
+  withReviewLock(id, () => {
+    // A refresh that held the lock may have finished meanwhile.
+    if (fs.existsSync(path.join(projectionDirectory(id), "manifest.json"))) return;
+    let record: ReviewRecord;
+    try { record = readReview(id); } catch { return; }
+    const head = record.remote && optional(record.repositoryRoot, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    if (!record.remote || !head) return;
+    show(record, record.remote, head, record.remote.refreshedAt ?? new Date().toISOString());
+  });
 }
 export function refreshRemoteReview(id: string, generation: string) {
   return withReviewLock(id, () => {
@@ -178,7 +201,13 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   const startLock = `remote--${key}--${hash}`;
   return withReviewLock(startLock, () => {
     const existing = findRemoteReview(keys);
-    if (existing) return existing; // Opening preserves the reviewed snapshot; refresh is explicit.
+    if (existing) {
+      // Opening preserves the reviewed snapshot; refresh is explicit. Reading
+      // the projection only makes one again where an interrupted refresh left
+      // none; what stays unavailable the viewer reports.
+      try { readReviewArtifact(existing.repositoryRoot); } catch { /* See above. */ }
+      return readReview(existing.id);
+    }
     const id = newReviewId(label, branch);
     return withReviewLock(id, () => startNewRemoteReview(id, sourceRoot, remoteName, url, branch, key));
   });
