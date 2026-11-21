@@ -2584,12 +2584,14 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
         run.newBase,
       );
       const stageCommit = replaced ?? foldStage(root, stage, stageBase, actualHead, `Stage ${id}`, unchanged);
+      // A correction that takes out every change of the stage drops them on purpose, wherever it replays.
+      const dropped = replaced === undefined && sameTree(root, stageCommit, `${stageCommit}^`);
       if (run.scratch) run.scratch.reset(run.parentHead);
       else run.scratch = ScratchWorktree.create(root, run.location, run.parentHead);
       if (!run.scratch.cherryPick(stageCommit)) {
         throw new RestackConflict({ id, previousHead: actualHead, stageCommit, parent: run.parentHead }, run.scratch.unmerged());
       }
-      nextHead = stageResult(root, stage, run.scratch.writeTree(), run.parentHead, stageCommit);
+      nextHead = stageResult(root, stage, run.scratch.writeTree(), run.parentHead, stageCommit, dropped);
     }
     run.plans.push({
       id,
@@ -3269,7 +3271,7 @@ function validateStack(workspace: Workspace, options: Options): void {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  console.log(`Local stage stack valid (${result.stages.length} stage(s)):`);
+  console.log(`Local stage stack valid (${result.stages.length} stage(s) to prepare of ${describeFinalizedStages(result.stages.length + result.emptyStages.length, result.emptyStages)}):`);
   for (const entry of result.stages) {
     console.log(
       `  ${entry.position}. ${entry.branch} -> ${entry.baseBranch} (${entry.headRevision})`,

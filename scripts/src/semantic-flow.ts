@@ -338,9 +338,10 @@ function captureValidation(validate: () => string): CapturedValidation {
   }
 }
 
-async function checkImplementation(root: string): Promise<CapturedValidation & { emptyStages: string[] }> {
+async function checkImplementation(root: string): Promise<CapturedValidation & { emptyStages: string[] | null }> {
   const { validateImplementation } = await implementationService();
-  let emptyStages: string[] = [];
+  // Unknown (null) unless the implementation validates.
+  let emptyStages: string[] | null = null;
   const captured = captureValidation(() => {
     const validation = validateImplementation(root);
     emptyStages = validation.emptyStages;
@@ -466,7 +467,7 @@ async function status(options: Options): Promise<void> {
   const { emptyStages, ...implementationValidation } = artifactValidation;
   const result = {
     artifact: candidate,
-    /** The marked empty finalized stages; known only when the artifact validates. */
+    /** The marked empty finalized stages; null when the artifact does not validate, so they are unknown. */
     emptyStages,
     criteria: {
       total: allCriteria.length,
@@ -503,7 +504,7 @@ async function status(options: Options): Promise<void> {
   console.log(`${candidate.implementationId}: ${candidate.title}`);
   console.log(`Artifact: ${candidate.worktree}`);
   console.log(
-    `Stages: ${describeFinalizedStages(candidate.finalizedStageIds.length, emptyStages)}, ${candidate.workingStageIds.length} working stage(s)`,
+    `Stages: ${describeFinalizedStages(candidate.finalizedStageIds.length, emptyStages ?? [])}, ${candidate.workingStageIds.length} working stage(s)`,
   );
   console.log(
     `Criteria: ${result.criteria.covered}/${result.criteria.total} covered`,

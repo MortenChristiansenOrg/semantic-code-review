@@ -1205,6 +1205,13 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
   };
 }
 
+/** Whether two commits have the same tree; false when either cannot be read. */
+function sameTree(root: string, left: string, right: string): boolean {
+  const trees = git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: root, allowFailure: true });
+  const [first, second] = (trees ?? "").split(/\r?\n/);
+  return Boolean(first) && first === second;
+}
+
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
   lineAnchorCache?: LineAnchorCache): Wire.ImplementationData {
   const artifact = readViewerArtifact(repoRoot);
@@ -1272,8 +1279,9 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       nodes,
       files,
       insights: buildInsights(s, repoRoot),
-      // A finalized stage without files is a marked empty stage; validation requires the marker.
-      ...(files.length === 0 ? { empty: true as const } : {}),
+      // A stage changes nothing when its head has its base's tree; remote
+      // metadata is not trusted to say so.
+      ...(files.length === 0 && sameTree(repoRoot, base, head) ? { empty: true as const } : {}),
     };
   });
 

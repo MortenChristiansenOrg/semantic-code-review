@@ -506,7 +506,9 @@ test("a stage the target already contains stays as a marked empty stage that pre
   assert.match(flowValidation, /^Skipped empty stage\(s\): policy$/m);
   assert.match(repository.flow("status"), /^Stages: 2 finalized stage\(s\) \(1 empty: policy\), 0 working stage\(s\)$/m);
   assert.deepEqual(JSON.parse(repository.flow("status", "--json")).emptyStages, ["policy"]);
-  assert.match(repository.semantic("validate-stack"), /^Skipped empty stage\(s\): policy$/m);
+  const stackReport = repository.semantic("validate-stack");
+  assert.match(stackReport, /^Local stage stack valid \(1 stage\(s\) to prepare of 2 finalized stage\(s\) \(1 empty: policy\)\):$/m);
+  assert.match(stackReport, /^Skipped empty stage\(s\): policy$/m);
   // Restacking again keeps it empty, and says so without a reason that no longer applies.
   repository.commitFile("other.txt", "other\n", "Other work");
   const again = repository.semantic("restack", "--base", "main");
@@ -541,6 +543,22 @@ test("a stage the target fast-forwarded to is emptied, and preparing an all-empt
   const reverted = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
   assert.deepEqual(reverted.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: false }]);
   assert.equal(repository.git("show", "semantic-flow/test-implementation/stages/policy:policy.txt"), "policy");
+});
+
+test("a correction that drops every change of a stage says so when the stage replays onto an advanced target", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  repository.git("switch", policy);
+  repository.git("rm", "--quiet", "policy.txt");
+  repository.git("commit", "--quiet", "--no-verify", "-m", "Drop the policy");
+  repository.git("switch", "main");
+  repository.commitFile("other.txt", "other\n", "Other work");
+  const restacked = repository.semantic("restack", "--base", "main");
+  assert.match(restacked, /Stage\(s\) policy now change nothing, because a conflict resolution or a correction dropped their changes\./);
+  assert.match(repository.git("show", "-s", "--format=%B", policy), /^Semantic-Flow-Empty: resolved$/m);
 });
 
 test("a correction to an emptied stage warns that its replaced commit no longer comes back", (t) => {

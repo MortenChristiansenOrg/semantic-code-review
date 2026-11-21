@@ -1047,6 +1047,15 @@ test('an empty stage is marked as empty, asks for no approval and stays out of c
   // The first stage is unaffected.
   await expect(page.locator('.stage[data-stage="first"]')).not.toHaveClass(/is-empty/);
   await expect(page.locator('.stage[data-stage="first"] .stage-approve .approve')).toHaveCount(1);
+  await expect(page.locator('.story-end')).toContainText('5 of 5 items still await your review.');
+});
+
+test('a review whose every stage is empty claims no approval', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) Object.assign(stage, { files: [], empty: true });
+  await mount(page, data);
+  await expect(page.locator('.story-end')).toContainText('Every stage is empty, so nothing awaits your review.');
+  await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('0/0');
 });
 
 test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {

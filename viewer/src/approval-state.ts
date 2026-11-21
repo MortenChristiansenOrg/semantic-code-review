@@ -225,8 +225,11 @@ export function acceptanceStatus(ref: string): { key: "uncovered" | "approved" |
     .map((s, i) => ({ s, i }))
     .filter((x) => (x.s.specificationRefs || []).includes(ref));
   if (!stages.length) return { key: "uncovered", stages: [] };
-  // An empty stage has nothing to approve, so it holds no criterion back.
-  const allApproved = stages.every((x) => x.s.empty || stageApproved(x.s));
+  // An empty stage has nothing to approve: it neither holds a criterion back
+  // nor covers one on its own.
+  const counted = stages.filter((x) => !x.s.empty);
+  if (!counted.length) return { key: "uncovered", stages: [] };
+  const allApproved = counted.every((x) => stageApproved(x.s));
   return { key: allApproved ? "approved" : "pending", stages: stages.map((x) => x.i + 1) };
 }
 
