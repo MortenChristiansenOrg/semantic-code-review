@@ -76,5 +76,8 @@ Unchanged file content retains its approval when
 the base and ownership are unchanged. Refresh failures keep the previous
 snapshot available. A refresh that was interrupted, for example because the
 viewer was stopped, may already have checked out the fetched revision; the
-review then shows that revision when it is next opened or refreshed. Notes and approvals on removed commit stages remain saved
-but those stages no longer appear in the current branch's history.
+review then shows that revision when it is next opened or refreshed. Where
+that revision cannot be shown again from the review's own copy of the
+repository, opening the review fetches the branch, as **Refresh branch** does.
+Notes and approvals on removed commit stages remain saved but those stages no
+longer appear in the current branch's history.

@@ -431,16 +431,36 @@ function moveLegacyProjection(owner: string, root: string, directory: string): v
     try { fs.renameSync(legacy, directory); } catch { /* It stays unavailable until reopened. */ }
   });
 }
+/** Whether the projection of the remote review owning the managed checkout at
+ * root must be made again: an interrupted refresh left none, or the review
+ * records another revision than the checkout holds, which it records only once
+ * the projection for it is in place. It reads files only, so checking a current
+ * projection runs no Git. */
+function projectionStale(owner: string, root: string, directory: string): boolean {
+  if (!fs.existsSync(path.join(directory, "manifest.json"))) return true;
+  let head: string;
+  try { head = fs.readFileSync(path.join(root, ".git", "HEAD"), "utf8").trim(); } catch { return false; }
+  // Refreshes leave the checkout detached; one on a branch is not compared.
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) return false;
+  try { return readReview(owner).remote?.headRevision !== head; } catch { return false; }
+}
+/** Whether root is the managed checkout of a remote review whose projection
+ * must be made again before it is shown. */
+export function remoteProjectionStale(root: string): boolean {
+  const owner = managedCheckoutOwner(root);
+  return owner !== undefined && projectionStale(owner, root, projectionDirectory(owner));
+}
 /** The artifact a review of root shows: the projection a remote review made for
- * its managed checkout, rebuilt when an interrupted refresh left none, or else
- * the active artifact of root. */
-export function readReviewArtifact(root: string, implementationId?: string): { files: ArtifactSnapshot; projection: boolean } | undefined {
+ * its managed checkout, or else the active artifact of root. A projection that
+ * an interrupted refresh left missing or for another revision than the checkout
+ * holds is made again first, unless `rebuild` is false. */
+export function readReviewArtifact(root: string, implementationId?: string, { rebuild = true }: { rebuild?: boolean } = {}): { files: ArtifactSnapshot; projection: boolean } | undefined {
   const owner = managedCheckoutOwner(root);
   if (owner !== undefined) {
     // A managed checkout shows only its review's projection, never files in the checkout.
     const directory = projectionDirectory(owner);
     if (!fs.existsSync(directory)) moveLegacyProjection(owner, root, directory);
-    if (!fs.existsSync(path.join(directory, "manifest.json"))) recoverRemoteProjection(owner);
+    if (rebuild && projectionStale(owner, root, directory)) recoverRemoteProjection(owner);
     const projection = readArtifactDirectory(root, directory);
     return projection && { files: projection, projection: true };
   }

@@ -153,17 +153,20 @@ test('refresh preserves notes and approved snapshots through appends, force-push
 });
 
 /** Leaves a remote review as a refresh to the author's new commit leaves it
- * when it stops between its two moves: the checkout holds the new commit, the
- * previous projection is aside, and the new one is staged, here incompletely. */
-function interruptRefresh(author, review, contents = 'updated\n') {
+ * when it stops: after checking the commit out ("checkout"), or between moving
+ * the previous projection aside and moving the new one, staged incompletely
+ * here, in ("moved"). Returns the commit checked out. */
+function interruptRefresh(author, review, { contents = 'updated\n', at = 'moved' } = {}) {
   author.git('switch', 'feature'); author.commitFile('code.txt', contents, 'Update code'); author.git('switch', 'main');
   const git = (...args) => execFileSync('git', args, { cwd: review.repositoryRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('fetch', '--prune', '--no-tags', 'origin', '+refs/heads/*:refs/remotes/origin/*');
   git('checkout', '--force', '--detach', 'refs/remotes/origin/feature');
-  const projection = path.join(reviewDirectory(review.id), 'artifact');
-  fs.renameSync(projection, `${projection}.previous`);
-  fs.mkdirSync(path.join(`${projection}.next`, 'stages'), { recursive: true });
-  fs.writeFileSync(path.join(`${projection}.next`, 'stages', 'partial.json'), '{');
+  if (at === 'moved') {
+    const projection = path.join(reviewDirectory(review.id), 'artifact');
+    fs.renameSync(projection, `${projection}.previous`);
+    fs.mkdirSync(path.join(`${projection}.next`, 'stages'), { recursive: true });
+    fs.writeFileSync(path.join(`${projection}.next`, 'stages', 'partial.json'), '{');
+  }
   return git('rev-parse', 'HEAD');
 }
 /** Asserts that the review shows exactly the projection of its checkout. */
@@ -176,28 +179,102 @@ function showsCheckout(review, head, stages) {
   assert.deepEqual(fs.readdirSync(reviewDirectory(review.id)).filter((name) => name.startsWith('artifact')), ['artifact']);
 }
 
-test('a remote review whose refresh was interrupted is shown again for its checkout when reopened', (t) => {
+for (const at of ['moved', 'checkout']) {
+  test(`a remote review whose refresh was interrupted after ${at === 'moved' ? 'moving its projection aside' : 'checking out'} is shown for its checkout when reopened`, (t) => {
+    const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+    patchReviewState(review.id, review.generation, [change(['notes'], 'Kept')]);
+    const head = interruptRefresh(author, review, { at });
+    const reopened = startRemoteReview(source.root, 'feature');
+    assert.equal(reopened.id, review.id);
+    assert.equal(reopened.generation, review.generation);
+    assert.equal(reopened.remote.headRevision, head);
+    assert.equal(reopened.state.notes, 'Kept');
+    showsCheckout(review, head, 2);
+  });
+}
+
+test('a remote review whose record was not updated after a refresh records its checkout again', (t) => {
   const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
-  patchReviewState(review.id, review.generation, [change(['notes'], 'Kept')]);
-  const head = interruptRefresh(author, review);
-  const reopened = startRemoteReview(source.root, 'feature');
-  assert.equal(reopened.id, review.id);
-  assert.equal(reopened.generation, review.generation);
-  assert.equal(reopened.remote.headRevision, head);
-  assert.equal(reopened.state.notes, 'Kept');
+  author.git('switch', 'feature'); const head = author.commitFile('code.txt', 'updated\n', 'Update code'); author.git('switch', 'main');
+  refreshRemoteReview(review.id, review.generation);
+  const file = path.join(reviewDirectory(review.id), 'review.json'), record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...record, remote: { ...record.remote, headRevision: review.remote.headRevision } }));
+  assert.equal(captureReviewContext(review.id).implementationId, review.implementationId);
   showsCheckout(review, head, 2);
 });
 
-test('a remote review whose refresh was interrupted serves requests and fetches updates', (t) => {
+test('a remote review whose refresh was interrupted is listed as it is and rebuilt when used', (t) => {
   const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
   const head = interruptRefresh(author, review);
+  const listed = registeredReviews().find((entry) => entry.id === review.id);
+  assert.equal(listed.available, true, listed.unavailableReason);
+  assert.equal(fs.existsSync(path.join(reviewDirectory(review.id), 'artifact')), false, 'Listing made the projection again.');
   // Each viewer request first checks the review it serves.
   assert.equal(captureReviewContext(review.id).implementationId, review.implementationId);
   showsCheckout(review, head, 2);
-  interruptRefresh(author, review, 'interrupted again\n');
+});
+
+test('fetching updates repairs a remote review whose refresh was interrupted where its checkout cannot', async (t) => {
+  const { author, source } = setup(t);
+  const result = spawnSync(process.execPath, [flowCli, 'review', '--branch', 'feature', '--project', source.root], {
+    cwd: source.root, encoding: 'utf8', env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: '1' }, timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const url = /http:\/\/127\.0\.0\.1:\d+\//.exec(result.stdout)?.[0]; assert.ok(url, result.stdout);
+  const identity = await (await viewerFetch(url + 'api/whoami')).json();
+  t.after(async () => {
+    await viewerFetch(url + 'api/shutdown', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { process.kill(identity.processId, 0); }
+      catch (error) { if (error.code === 'ESRCH') return; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.fail('The remote review viewer did not exit.');
+  });
+  const query = `?review=${identity.reviewId}&generation=${identity.generation}`;
+  const review = readReview(identity.reviewId);
+  interruptRefresh(author, review);
+  // Without the target branch the checkout holds too little to show the review again.
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: review.repositoryRoot });
+  assert.equal((await viewerFetch(url + 'api/implementation' + query)).status, 409);
   author.git('switch', 'feature'); const latest = author.commitFile('code.txt', 'latest\n', 'Latest code'); author.git('switch', 'main');
-  refreshRemoteReview(review.id, review.generation);
-  showsCheckout(review, latest, 4);
+  const refreshed = await viewerFetch(url + 'api/remote/refresh' + query, { method: 'POST', headers: { origin: new URL(url).origin, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(refreshed.status, 200, await refreshed.text());
+  const implementation = await viewerFetch(url + 'api/implementation' + query);
+  assert.equal(implementation.status, 200, await implementation.clone().text());
+  assert.equal((await implementation.json()).implementation.stages.at(-1).headRevision, latest);
+  showsCheckout(review, latest, 3);
+});
+
+test('reopening fetches a remote review whose refresh was interrupted where its checkout cannot show it again', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  interruptRefresh(author, review);
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: review.repositoryRoot });
+  author.git('switch', 'feature'); const latest = author.commitFile('code.txt', 'latest\n', 'Latest code'); author.git('switch', 'main');
+  assert.equal(startRemoteReview(source.root, 'feature').remote.headRevision, latest);
+  showsCheckout(review, latest, 3);
+});
+
+test('a remote review whose checkout lost its repository never uses a repository around it', (t) => {
+  const { author, source } = setup(t), enclosing = createRepository(t, 'enclosing-');
+  enclosing.commitFile('tracked.txt', 'committed\n', 'Tracked file');
+  enclosing.write('tracked.txt', 'uncommitted\n');
+  const branch = enclosing.git('symbolic-ref', 'HEAD'), commit = enclosing.git('rev-parse', 'HEAD');
+  // With a target branch there, the enclosing repository could be reviewed in the checkout's place.
+  enclosing.git('update-ref', 'refs/remotes/origin/main', commit);
+  const home = process.env.SEMANTIC_FLOW_HOME;
+  process.env.SEMANTIC_FLOW_HOME = enclosing.path('review-home');
+  t.after(() => { process.env.SEMANTIC_FLOW_HOME = home; });
+  const review = startRemoteReview(source.root, 'feature');
+  interruptRefresh(author, review);
+  fs.rmSync(path.join(review.repositoryRoot, '.git'), { recursive: true, force: true });
+  startRemoteReview(source.root, 'feature');
+  assert.throws(() => captureReviewContext(review.id), /unavailable/);
+  assert.throws(() => refreshRemoteReview(review.id, review.generation));
+  assert.equal(enclosing.git('symbolic-ref', 'HEAD'), branch);
+  assert.equal(enclosing.git('rev-parse', 'HEAD'), commit);
+  assert.equal(fs.readFileSync(enclosing.path('tracked.txt'), 'utf8'), 'uncommitted\n');
+  assert.equal(enclosing.git('for-each-ref', '--format=%(refname)', 'refs/remotes'), 'refs/remotes/origin/main');
 });
 
 test('remote feedback is rejected in store, export, and CLI while personal notes save', (t) => {

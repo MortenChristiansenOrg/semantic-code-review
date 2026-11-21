@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
+import { atomicJson, isReviewId, newReviewId, projectionDirectory, readReview, readReviewArtifact, remoteProjectionStale, reviewDirectory, reviewHome, withReviewLock, type RemoteReview, type ReviewRecord } from "./review-store.js";
 import { MANIFEST_SCHEMA_ID, SPECIFICATION_SCHEMA_ID, STAGE_SCHEMA_ID, type Evidence, type Linked, type Specification, type Stage } from "./documents.js";
 import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
@@ -12,24 +12,31 @@ import { reviewEnvironment } from "./review-context.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { MAX_EVIDENCE_ATTACHMENT_BYTES, MAX_EVIDENCE_TOTAL_BYTES, sha256Hex } from "./evidence.js";
 
-function git(root: string, args: string[]) {
+/** Runs Git in the reviewer's own repository at root. */
+function sourceGit(root: string, args: string[]) {
   return execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
     cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, encoding: "utf8", windowsHide: true,
     maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"],
   }).trimEnd();
 }
-function optional(root: string, args: string[]) { try { return git(root, args); } catch { return null; } }
+/** Names the managed checkout at root as Git's repository and worktree, so a
+ * checkout that lost its .git fails instead of reaching a repository around it,
+ * such as one holding the review store. */
+function checkoutRepository(root: string) { return ["--git-dir", path.join(root, ".git"), "--work-tree", root]; }
+/** Runs Git in the managed checkout at root. */
+function git(root: string, args: string[]) { return sourceGit(root, [...checkoutRepository(root), ...args]); }
+function optional(root: string, args: string[], run = git) { try { return run(root, args); } catch { return null; } }
 const MAX_REMOTE_EVIDENCE_BYTES = 10 * MAX_EVIDENCE_TOTAL_BYTES;
 type EvidenceFile = { files: ArtifactFiles; source: string; sha256: string; size: number };
 /** Runs Git in the managed clone for the artifact store, which may pass input. */
 function gitRunner(root: string): GitRunner {
-  return (args, input) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...args], {
+  return (args, input) => execFileSync("git", ["-c", "core.hooksPath=", "-c", "core.fsmonitor=false", "-c", "core.longpaths=true", ...checkoutRepository(root), ...args], {
     cwd: root, env: { ...reviewEnvironment(), GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "" }, windowsHide: true, input,
     maxBuffer: SUBPROCESS_MAX_BUFFER, timeout: 120_000, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
   });
 }
-function branchName(root: string, name: string) {
-  if (!name || name.startsWith("-") || !optional(root, ["check-ref-format", "--branch", name])) throw new Error("Invalid remote branch name.");
+function branchName(root: string, name: string, run = git) {
+  if (!name || name.startsWith("-") || !optional(root, ["check-ref-format", "--branch", name], run)) throw new Error("Invalid remote branch name.");
   return name;
 }
 function files(root: string, base: string, head: string) {
@@ -129,9 +136,10 @@ function refresh(record: ReviewRecord, remote: RemoteReview) {
   const head = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${remote.branch}^{commit}`]);
   return show(record, remote, head, new Date().toISOString());
 }
-/** Checks head out in the managed checkout and replaces the projection with
- * the one for head, then records head as the reviewed revision. */
-function show(record: ReviewRecord, remote: RemoteReview, head: string, refreshedAt: string) {
+/** Replaces the projection with the one for head, checking head out in the
+ * managed checkout unless it is there already, then records head as the
+ * reviewed revision. */
+function show(record: ReviewRecord, remote: RemoteReview, head: string, refreshedAt: string, checkOut = true) {
   const root = record.repositoryRoot;
   const projected = projection(record, remote, head); // Complete all fallible discovery before replacing the visible artifact.
   // Evidence is read one file at a time, as the projection is written.
@@ -144,37 +152,54 @@ function show(record: ReviewRecord, remote: RemoteReview, head: string, refreshe
     }
     yield ["manifest.json", jsonBytes(projected.manifest)];
   }
-  const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
-  let checkoutStarted = false;
-  // The checkout and the projection stay on the same revision: a failed
-  // refresh checks the previous revision out again and keeps the previous projection.
-  replaceArtifactDirectory(projectionDirectory(record.id), files(), () => {
-    checkoutStarted = true;
-    git(root, ["checkout", "--force", "--detach", head]);
-  }, () => {
-    if (checkoutStarted && previousHead) git(root, ["checkout", "--force", "--detach", previousHead]);
-  });
+  if (checkOut) {
+    const previousHead = optional(root, ["rev-parse", "--verify", "HEAD"]);
+    let checkoutStarted = false;
+    // The checkout and the projection stay on the same revision: a failed
+    // refresh checks the previous revision out again and keeps the previous projection.
+    replaceArtifactDirectory(projectionDirectory(record.id), files(), () => {
+      checkoutStarted = true;
+      git(root, ["checkout", "--force", "--detach", head]);
+    }, () => {
+      if (checkoutStarted && previousHead) git(root, ["checkout", "--force", "--detach", previousHead]);
+    });
+  } else replaceArtifactDirectory(projectionDirectory(record.id), files(), () => {});
+  // The record names the revision last, once its projection is in place, so a
+  // record that names another revision than the checkout holds tells that the
+  // projection may not match the checkout.
   record.remote = { ...remote, headRevision: head, refreshedAt };
   record.title = projected.manifest.title;
   atomicJson(path.join(reviewDirectory(record.id), "review.json"), record);
   return record;
 }
-/** Rebuilds the projection of a remote review whose refresh was interrupted
- * between moving the previous projection aside and moving the new one in. The
- * checkout may already hold the new revision, so the projection is made again
- * for the revision it has, without fetching; a copy left aside is discarded
- * once the new one is in place. Without a usable record or checkout the review
- * stays unavailable. */
+/** Makes the projection of a remote review again for the revision its checkout
+ * holds, where an interrupted refresh left none or one that may be for another
+ * revision: the record names another revision than the checkout. The checkout
+ * is used as it is, without fetching or checking out; a copy left aside is
+ * discarded once the new one is in place. Without a usable record or checkout
+ * the review stays unavailable. */
 export function recoverRemoteProjection(id: string): void {
   withReviewLock(id, () => {
-    // A refresh that held the lock may have finished meanwhile.
-    if (fs.existsSync(path.join(projectionDirectory(id), "manifest.json"))) return;
     let record: ReviewRecord;
     try { record = readReview(id); } catch { return; }
     const head = record.remote && optional(record.repositoryRoot, ["rev-parse", "--verify", "HEAD^{commit}"]);
     if (!record.remote || !head) return;
-    show(record, record.remote, head, record.remote.refreshedAt ?? new Date().toISOString());
+    // A refresh that held the lock may have finished meanwhile.
+    if (record.remote.headRevision === head && fs.existsSync(path.join(projectionDirectory(id), "manifest.json"))) return;
+    show(record, record.remote, head, record.remote.refreshedAt ?? new Date().toISOString(), false);
   });
+}
+/** Makes a saved remote review ready to open. Opening preserves the reviewed
+ * snapshot, as refreshing is explicit: reading the projection makes it again
+ * from the checkout where an interrupted refresh left it unusable. Where the
+ * checkout alone cannot, no snapshot is left to preserve, so the branch is
+ * fetched as a refresh does. What stays unavailable the viewer reports. */
+export function prepareRemoteReview(id: string, generation: string): void {
+  let record: ReviewRecord;
+  try { record = readReview(id); } catch { return; }
+  if (!record.remote || record.generation !== generation) return;
+  try { readReviewArtifact(record.repositoryRoot); return; } catch { /* Fetched below where that may help. */ }
+  if (remoteProjectionStale(record.repositoryRoot)) try { refreshRemoteReview(id, generation); } catch { /* See above. */ }
 }
 export function refreshRemoteReview(id: string, generation: string) {
   return withReviewLock(id, () => {
@@ -186,14 +211,14 @@ export function refreshRemoteReview(id: string, generation: string) {
 }
 export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   sourceRoot = fs.realpathSync(sourceRoot);
-  const remotes = git(sourceRoot, ["remote"]).split("\n").filter(Boolean);
+  const remotes = sourceGit(sourceRoot, ["remote"]).split("\n").filter(Boolean);
   let remoteName = remotes.includes("origin") ? "origin" : remotes.length === 1 ? remotes[0] : "";
   let branch = requestedBranch;
   const qualified = [...remotes].sort((a, b) => b.length - a.length).find((remote) => branch.startsWith(remote + "/"));
   if (qualified) { remoteName = qualified; branch = branch.slice(qualified.length + 1); }
   if (!remoteName) throw new Error("Select a remote with --branch <remote>/<branch>; no default remote is available.");
-  branchName(sourceRoot, branch);
-  let url = git(sourceRoot, ["remote", "get-url", remoteName]);
+  branchName(sourceRoot, branch, sourceGit);
+  let url = sourceGit(sourceRoot, ["remote", "get-url", remoteName]);
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url) && !/^[^/]+:/.test(url)) url = path.resolve(sourceRoot, url);
   const { key, hash, keys, label } = remoteIdentity(url, branch);
   // A remote review has a random ID and is found again by what it reviews, so any
@@ -202,10 +227,7 @@ export function startRemoteReview(sourceRoot: string, requestedBranch: string) {
   return withReviewLock(startLock, () => {
     const existing = findRemoteReview(keys);
     if (existing) {
-      // Opening preserves the reviewed snapshot; refresh is explicit. Reading
-      // the projection only makes one again where an interrupted refresh left
-      // none; what stays unavailable the viewer reports.
-      try { readReviewArtifact(existing.repositoryRoot); } catch { /* See above. */ }
+      prepareRemoteReview(existing.id, existing.generation);
       return readReview(existing.id);
     }
     const id = newReviewId(label, branch);
@@ -244,7 +266,7 @@ function startNewRemoteReview(id: string, sourceRoot: string, remoteName: string
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   try {
     const root = path.join(directory, "checkout");
-    git(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
+    sourceGit(sourceRoot, ["clone", "--config", "core.longpaths=true", "--no-checkout", "--no-local", "--no-tags", "--", url, root]);
     const targetRef = optional(root, ["symbolic-ref", "refs/remotes/origin/HEAD"]);
     const targetBranch = targetRef?.replace(/^refs\/remotes\/origin\//, "") || ["main", "master"].find((name) => optional(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}^{commit}`]));
     if (!targetBranch) throw new Error("The remote has no default branch. Set its default branch before starting a review.");
