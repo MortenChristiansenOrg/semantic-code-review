@@ -99,7 +99,7 @@ story using semantic flow") or with explicit commands:
 | `archive` | Store the captured reasoning once the change has landed. |
 | `report` | Diagnose a Semantic Flow defect and prepare an upstream bug report. |
 | `version` | Report the installed skill version. |
-| `update` or `up` | Install the latest published skill release. |
+| `update` or `up` | Install the latest published skill release; `update -p` includes prereleases. |
 | `help` | Explain the available commands, or one command in detail. |
 
 ## Report a Semantic Flow problem

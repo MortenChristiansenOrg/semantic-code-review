@@ -1,6 +1,7 @@
 # Update command
 
-Install the latest published release of Semantic Flow. This command replaces the
+Install the latest published release of Semantic Flow, or with `-p` the latest
+release including prereleases. This command replaces the
 installed skill without changing repository code, implementation artifacts, or
 feedback files. Updates can run from any directory, including outside Git.
 
@@ -10,6 +11,28 @@ feedback files. Updates can run from any directory, including outside Git.
 ```text
 <semantic-flow> update
 ```
+
+## Prereleases
+
+`/semantic-flow update -p` and `/semantic-flow update --prerelease` mean the
+same thing. For either, run:
+
+```text
+<semantic-flow> update --prerelease
+```
+
+It installs the highest version among normal releases and prereleases
+(`X.Y.Z-rc.N`). Pass `--prerelease` only when the user asked for a prerelease,
+never on your own, and tell the user that a prerelease is less tested than a
+normal release. The choice holds for this run only; nothing is stored.
+
+Plain `update` stays on normal releases. On a prerelease installation it moves
+only to a normal release of the same version or newer. While the installed
+prerelease is newer than every normal release, it changes nothing and says so;
+report that `/semantic-flow update -p` gets later prereleases. An installed
+version that reports no `--prerelease` option, or rejects a prerelease version,
+predates prereleases: point the user to the one-time manual installation in the
+release documentation instead of improvising a workaround.
 
 The helper downloads the built GitHub release, displays its notes and any skipped
 release notes, verifies checksums, archive paths, required files, version, and
@@ -42,8 +65,10 @@ For an explicitly requested version or recovery:
 <semantic-flow> update --version X.Y.Z --allow-downgrade
 ```
 
-Use `--allow-downgrade` only when the user intends to restore older tooling;
-downgrading cannot undo changes to data formats.
+An explicit version may be a prerelease (`--version 0.15.0-rc.2`) and needs no
+`--prerelease`. Use `--allow-downgrade` only when the user intends to restore
+older tooling, including going from a normal release back to one of its
+prereleases; downgrading cannot undo changes to data formats.
 
 ## Contributor source updates
 
@@ -62,7 +87,8 @@ uncommitted changes), rather than verified latest upstream contents. Ask whether
 that is the intended source only if not already authorized; then add
 `--use-current-source`. Do not present the flag itself as the user's choice.
 Existing authorization to use that checkout is sufficient. Source updates never
-discard changes and are never a fallback for failed release downloads.
+discard changes, cannot be combined with `--prerelease`, and are never a fallback
+for failed release downloads.
 
 When invoked from the source repository, follow its `AGENTS.md` destination rules.
 Never replace this repository's source skill with a release installation.

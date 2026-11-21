@@ -115,7 +115,7 @@ The installed skill also supports intent-level commands:
 /semantic-flow prepare
 /semantic-flow archive
 /semantic-flow version
-/semantic-flow update
+/semantic-flow update [-p]
 /semantic-flow help [command]
 ```
 

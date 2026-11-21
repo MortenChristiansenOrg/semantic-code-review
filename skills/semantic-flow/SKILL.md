@@ -46,7 +46,7 @@ commands. Treat them as equivalent. All examples use `/semantic-flow`.
 | `/semantic-flow archive` | | `commands/archive.md` |
 | `/semantic-flow report` | | `commands/report.md` |
 | `/semantic-flow version` | | `commands/version.md` |
-| `/semantic-flow update` | `up` | `commands/update.md` |
+| `/semantic-flow update` (`-p` or `--prerelease` includes prereleases) | `up` | `commands/update.md` |
 | `/semantic-flow help` or `/semantic-flow help <command>` | | `commands/help.md` |
 
 Treat the first word after `/semantic-flow` as the command; `review` with

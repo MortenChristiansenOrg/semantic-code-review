@@ -171,10 +171,12 @@ export declare function semanticFlowVersion(
 ): void;
 
 export interface UpdateSemanticFlowOptions {
-  /** Installs a particular published version instead of the latest release. */
+  /** Installs a particular published version, normal or prerelease, instead of the latest release. */
   version?: string;
   /** Allows an explicit --version to replace a newer installation for recovery. */
   "allow-downgrade"?: true;
+  /** Includes prereleases when choosing the newest release; never with --source. */
+  prerelease?: true;
   /** Explicit contributor mode: maintained semantic-code-review source repository. */
   source?: string;
   /** Builds the current source checkout without pulling; requires explicit approval for questionable source state. */

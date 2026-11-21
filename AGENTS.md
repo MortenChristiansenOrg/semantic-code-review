@@ -24,8 +24,9 @@ Follow the requested PR/publication scope.
 
 ### Updating an installed skill from this repository
 
-`/semantic-flow update` installs the latest published release by default. When
-working here, first identify the installed copy outside this source directory.
+`/semantic-flow update` installs the latest published release by default
+(`-p` includes prereleases). When working here, first identify the installed
+copy outside this source directory.
 If a user-level installation exists and the destination is not already specified,
 ask whether to update it or a repository-level installation (request that target
 repository path). If no user-level installation exists, request the target path.

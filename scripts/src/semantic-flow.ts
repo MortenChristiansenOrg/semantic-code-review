@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import { downloadRelease, listReleases, selectRelease, upgradeNotes } from "./shared/release-client.js";
-import { compareVersions, parseVersion } from "./shared/release-version.js";
+import { compareVersions, isPrerelease, parseVersion } from "./shared/release-version.js";
 import { skillFiles, unpackDistribution } from "./shared/distribution.js";
 import path from "node:path";
 import process from "node:process";
@@ -1758,8 +1758,9 @@ async function update(options: Options): Promise<void> {
   const requested = option(options, "version");
   const source = option(options, "source");
   const allowDowngrade = flag(options, "allow-downgrade");
+  const prerelease = flag(options, "prerelease");
   if (source) {
-    if (requested || allowDowngrade) fail("--source cannot be combined with release version options.");
+    if (requested || allowDowngrade || prerelease) fail("--source cannot be combined with release version options.");
     return updateFromSource(options);
   }
   if (flag(options, "use-current-source")) fail("--use-current-source requires an explicit --source.");
@@ -1771,9 +1772,14 @@ async function update(options: Options): Promise<void> {
   const previousVersion = readVersion(skillDirectory);
   parseVersion(previousVersion);
   const releases = await listReleases();
-  const release = selectRelease(releases, requested);
+  const release = selectRelease(releases, { requested, prerelease });
   const targetVersion = release.tag_name.slice(1);
   const difference = compareVersions(targetVersion, previousVersion);
+  // Without --prerelease, a prerelease ahead of every normal release stays.
+  if (difference < 0 && !requested && !prerelease && isPrerelease(previousVersion)) {
+    console.log(`semantic-flow ${previousVersion} is a prerelease, newer than the latest release ${targetVersion}; nothing was changed. Run update --prerelease to get later prereleases. Installed at: ${skillDirectory}`);
+    return;
+  }
   if (difference < 0 && !allowDowngrade) fail(`Installed ${previousVersion} is newer than ${targetVersion}. Use --version with --allow-downgrade only for intentional recovery.`);
   const installedMetadata = path.join(skillDirectory, "RELEASE.json");
   if (difference === 0 && fs.existsSync(installedMetadata)) {
