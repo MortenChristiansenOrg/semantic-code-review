@@ -306,9 +306,13 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, tra
   return [stage.title.trim(), stage.summary.trim(), ...(block.length ? [block.join("\n")] : [])].join("\n\n") + "\n";
 }
 
-/** Reads the trailers of stage commits, which Semantic Flow writes with a
- * colon, whatever trailer.separators says. */
-const COLON_TRAILERS = ["-c", "trailer.separators=:"];
+/** Git options that read trailers with the separators the user configured
+ * and with the colon Semantic Flow writes, so neither kind is missed. */
+function trailerReading(root: string): string[] {
+  const configured = gitOptional(["config", "--get", "trailer.separators"], { cwd: root }) ?? ":";
+  // The first separator is the one Git prints trailers with, so the colon comes first.
+  return ["-c", `trailer.separators=:${configured.replaceAll(":", "")}`];
+}
 
 const coAuthorTrailer = (identity: string) => `Co-authored-by: ${identity}`;
 
@@ -317,7 +321,8 @@ const coAuthorTrailer = (identity: string) => `Co-authored-by: ${identity}`;
  * whose last paragraph Git reads as trailers is parsed as such when no
  * trailer follows it, so the lines Git finds there are not taken as trailers. */
 function stageTrailers(root: string, commit: string, stage: Pick<EditableStage, "summary">): string[] {
-  const parse = (args: string[], input?: string) => gitRaw([...COLON_TRAILERS, ...args], { cwd: root, ...(input === undefined ? {} : { input }) })
+  const reading = trailerReading(root);
+  const parse = (args: string[], input?: string) => gitRaw([...reading, ...args], { cwd: root, ...(input === undefined ? {} : { input }) })
     .split(/\0|\r?\n/).map((trailer) => trailer.trim()).filter(Boolean);
   // The summary follows the title in a stage message, as it does here.
   const fromSummary = new Set(parse(["interpret-trailers", "--parse", "--no-divider"], `Title\n\n${stage.summary.trim()}\n`));
@@ -331,8 +336,8 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
   // Only the trailer block counts: a Co-authored-by line in the body is text,
   // not attribution. A message cannot hold NUL, so NUL separates the values
   // and two of them start each commit.
-  // These are the user's commits, so their trailers are read as the user's Git configuration says.
-  const log = gitRaw(["log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  // The range holds the user's commits and the stage commit Semantic Flow wrote.
+  const log = gitRaw([...trailerReading(root), "log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\0\0").slice(1)) {
@@ -2094,7 +2099,7 @@ const RESOLVED_EMPTY = "resolved";
  * and the marker trailer: the stage commit it replaced, or RESOLVED_EMPTY.
  * Undefined when head is not one. */
 function emptyStageMarker(root: string, head: string): string | undefined {
-  const [tree, parent, ...markers] = gitRaw([...COLON_TRAILERS, "show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
+  const [tree, parent, ...markers] = gitRaw([...trailerReading(root), "show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return undefined;
   if (tree !== git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return undefined;
   return markers.map((value) => value.trim()).find((value) => value === RESOLVED_EMPTY || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));

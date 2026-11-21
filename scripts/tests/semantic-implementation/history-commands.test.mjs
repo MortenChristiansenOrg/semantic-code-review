@@ -627,6 +627,11 @@ test("a rebuilt stage message keeps its trailers under any trailer separator and
   assert.equal(JSON.parse(repository.semantic("restack", "--base", "main", "--json")).rewrittenBranches, 0);
   assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
   assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
+  // A correction credited with the configured separator keeps the stage's colon co-author too.
+  repository.git("switch", policy);
+  repository.commitFile("policy.txt", "policy fixed\n", "Fix the policy\n\nCo-authored-by=Carol Fixer <carol@example.test>");
+  repository.semantic("restack", "--from", "policy");
+  assert.match(repository.git("show", "-s", "--format=%B", policy), /Co-authored-by: Bob Pair <bob@example\.test>\nCo-authored-by: Carol Fixer <carol@example\.test>$/);
   repository.semantic("validate", "--publish");
 });
 
