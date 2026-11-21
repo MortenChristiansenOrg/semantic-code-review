@@ -223,12 +223,14 @@ export function createClaim(state: AgentState, now: number, sessionId: string | 
   if (!threads.length) return null;
   const claim: AgentClaim = { id: randomUUID(), sessionId, startedAt: iso(now), activityAt: iso(now), threads };
   state.claims.push(claim);
-  // A listening session that takes a thread over from another agent's retired round
-  // replaces that round; a round its own session reissued keeps answering.
+  // A listening session that takes a thread over from another agent's expired or
+  // retired round replaces that round; a round its own session reissued keeps
+  // answering, as does a retired round recorded without its session.
   if (sessionId) {
     const taken = new Set(threads.map((thread) => thread.id));
-    for (const retired of state.retiredClaims) {
-      if (retired.sessionId !== sessionId && retired.threads.some((thread) => taken.has(thread.id))) retired.replaced = true;
+    for (const earlier of [...state.claims, ...state.retiredClaims]) {
+      if (earlier === claim || earlier.sessionId === undefined || earlier.sessionId === sessionId) continue;
+      if (earlier.threads.some((thread) => taken.has(thread.id))) earlier.replaced = true;
     }
   }
   const session = liveSession(state);

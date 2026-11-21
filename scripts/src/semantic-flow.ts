@@ -956,8 +956,9 @@ async function waitForFeedback(options: Options): Promise<void> {
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
   // A session that ended, for example because another agent took over, stops before
   // validating, which could otherwise fail on the other agent's work in progress.
-  const ended = (state: AgentState) => liveSession(state)?.id === requested ? null
-    : state.session?.id === requested ? state.session?.endReason || "stopped" : "superseded";
+  const endedOf = (id: string) => (state: AgentState) => liveSession(state)?.id === id ? null
+    : state.session?.id === id ? state.session?.endReason || "stopped" : "superseded";
+  const ended = endedOf(requested ?? "");
   const endedFirst = requested ? updateAgentState(review, ended) : null;
   if (endedFirst) { print({ session: requested, stopped: true, reason: endedFirst }); return; }
   // Continuing a session first checks the round just completed. A round still waiting
@@ -1041,6 +1042,10 @@ async function waitForFeedback(options: Options): Promise<void> {
       await delay(WAIT_POLL_MS);
     }
   } catch (error) {
+    // Another agent may have taken over while this wait validated its work in progress.
+    let endedSince: string | null = null;
+    try { endedSince = updateAgentState(review, endedOf(session)); } catch { /* Report the original failure. */ }
+    if (endedSince) { print({ session, stopped: true, reason: endedSince }); return; }
     // A first wait that fails has not reported its session, so no later wait can
     // resume it. End it so the viewer does not show an agent that is listening.
     if (!requested) {

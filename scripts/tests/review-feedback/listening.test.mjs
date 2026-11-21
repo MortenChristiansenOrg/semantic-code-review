@@ -200,6 +200,23 @@ test("a round that retired before another agent took over posts no more replies,
     { session: first.session, stopped: true, reason: "superseded" });
 });
 
+test("a listener that takes over an expired round's thread refuses that round's late reply", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const idle = await waitAsync(repository, "--timeout", "1");
+  addThread(repository, "slow");
+  const standalone = flowJson(repository);
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].activityAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const listener = await waitAsync(repository, "--session", idle.session, "--timeout", "5");
+  assert.deepEqual(threadIds(listener), ["slow"]);
+  repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "slow", "--comment-id", "late", "--author", "agent", "--claim", standalone.claim, "--body", "Done late.");
+  repository.feedback("thread", "reply", "--id", "slow", "--comment-id", "answer", "--author", "agent", "--claim", listener.claim, "--body", "Done.");
+  assert.equal(agentState(repository).lastRound.id, listener.claim);
+});
+
 test("a listener that takes no thread from a retired round leaves that round's replies accepted", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
