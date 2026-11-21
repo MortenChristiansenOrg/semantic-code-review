@@ -45,7 +45,7 @@ export function installActions(): void {
       const key = insightKey(stage.id, ins.collection, ins.id);
       if (insightReviewState(stage, ins) === "reviewed") delete state.insightReviews[key];
       else state.insightReviews[key] = { fingerprint: insightFingerprint(ins), at: Date.now() };
-      // Rendering hides the tooltip, so reopen it with the new state.
+      // Rendering hides a tooltip the pointer opened, so reopen it with the new state.
       const tooltipOpen = popOwner === btn;
       persist(); render();
       if (tooltipOpen) showPop(btn);
