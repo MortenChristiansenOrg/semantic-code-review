@@ -339,8 +339,8 @@ test('reading a remote review while a refresh replaces its projection always fin
       cycles++;
       sleep(3);
     }
-    fs.writeFileSync(done, '');
-    process.stdout.write('cycles ' + cycles + '\\n');
+    // The count goes in the marker: the process can exit before its last output is read.
+    fs.writeFileSync(done, String(cycles));
   `, review.id, done], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
   t.after(() => writer.kill());
   const exited = new Promise((resolve) => writer.on('exit', resolve));
@@ -364,7 +364,8 @@ test('reading a remote review while a refresh replaces its projection always fin
   }
   assert.equal(await exited, 0);
   assert.ok(reads > 0, 'No read ran while the writer replaced the projection.');
-  assert.ok(Number(/cycles (\d+)/.exec(output)?.[1]) > 0, `The writer replaced no projection: ${output}`);
+  const cycles = fs.readFileSync(done, 'utf8');
+  assert.ok(Number(cycles) > 0, `The writer replaced no projection: ${cycles}`);
   assert.equal(dataFor(review).stages.length, 1);
 });
 
