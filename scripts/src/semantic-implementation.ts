@@ -309,7 +309,9 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, tra
 /** Git options that read trailers with the separators the user configured
  * and with the colon Semantic Flow writes, so neither kind is missed. */
 function trailerReading(root: string): string[] {
-  const configured = gitOptional(["config", "--get", "trailer.separators"], { cwd: root }) ?? ":";
+  // Untrimmed: a space or tab can be a separator.
+  let configured = ":";
+  try { configured = gitRaw(["config", "--get", "trailer.separators"], { cwd: root }).replace(/\r?\n$/, ""); } catch { /* Unset: Git's default. */ }
   // The first separator is the one Git prints trailers with, so the colon comes first.
   return ["-c", `trailer.separators=:${configured.replaceAll(":", "")}`];
 }
