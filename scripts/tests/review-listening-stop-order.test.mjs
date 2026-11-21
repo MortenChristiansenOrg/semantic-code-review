@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verify } from '../evaluations/adapters/interactive-review.mjs';
-import { session, skill } from './helpers/interactive-session.mjs';
+import { verify } from '../evaluations/adapters/review-listening.mjs';
+import { session, skill } from './helpers/listening-session.mjs';
 
 const stopCheck = async (context, driver) => (await verify({ ...context, skill, driver })).checks.find(check => check.id === 'stopped-on-request');
 

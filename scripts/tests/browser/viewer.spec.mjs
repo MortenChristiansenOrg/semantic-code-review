@@ -3899,7 +3899,7 @@ test('reply drafts saved before attachments existed stay listed', async ({ page 
   expect(errors).toEqual([]);
 });
 
-test('interactive review shows agent presence, round progress, unread replies, and agent questions', async ({ page }) => {
+test('a listening agent shows its presence, round progress, unread replies, and agent questions', async ({ page }) => {
   const now = new Date().toISOString();
   const comment = (id, author, body, extra = {}) => ({ id, author, body, attachments: [], createdAt: '2026-10-08T10:00:00Z', ...extra });
   const stageTarget = { kind: 'stage', stageId: 'first', label: 'Stage first' };
@@ -3966,11 +3966,11 @@ test('interactive review shows agent presence, round progress, unread replies, a
   data.agent = { ...data.agent, session: false, listening: false, stopRequested: false };
   data.viewerRevision = 'offline';
   await expect(page.locator('.agent-bar.is-offline')).toContainText('1 thread waiting for an agent');
-  await expect(page.locator('.agent-bar.is-offline code')).toHaveText('/semantic-flow review -i');
+  await expect(page.locator('.agent-bar.is-offline code')).toHaveText('/semantic-flow review');
   await expect(page.locator('.agent-pill.is-offline')).toHaveText('No agent listening');
 });
 
-test('interactive reviews can send feedback notes and replies automatically when saved', async ({ page }) => {
+test('reviews with a listening agent can send feedback notes and replies automatically when saved', async ({ page }) => {
   const now = new Date().toISOString();
   const data = { ...fixture(), feedback: [thread('existing')],
     agent: { session: false, listening: false, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now } };

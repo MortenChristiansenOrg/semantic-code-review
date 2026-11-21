@@ -22,7 +22,7 @@ implementation, an external side effect not already authorized, or a safety
 condition you cannot resolve with the documented procedures. Existing user
 instructions and approvals remain sufficient; do not ask for them again.
 
-During review feedback, including interactive review, the reviewer is in the
+During review feedback, including while you listen, the reviewer is in the
 viewer. Ask there, never in the chat: reply on the thread a question is about,
 or use `agent ask` as `../commands/feedback.md` describes. The chat is only for
 failures that make the viewer or its review data unusable.

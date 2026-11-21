@@ -3,7 +3,7 @@ import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { controlAgent, feedbackDirectory, sendFeedback, buildFeedbackTargetData } from "../../src/semantic-view.ts";
+import { controlAgent, feedbackDirectory, readReview, sendFeedback, setReviewCompleted, buildFeedbackTargetData } from "../../src/semantic-view.ts";
 import { createImplementationWithStages, flowCli } from "../helpers/repository.mjs";
 
 function addThread(repository, id) {
@@ -145,28 +145,103 @@ test("standalone runs leave another run's active round alone", (t) => {
   assert.equal(second.claim, null);
 });
 
-test("a replaced round's late reply answers only what that round claimed", async (t) => {
+test("a round another agent's session took over posts no more replies, and a standalone round started later still does", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
   addThread(repository, "late");
+  addThread(repository, "solo");
   const earlier = await waitAsync(repository, "--timeout", "5");
   reply(repository, "late", "follow-up", "user");
   const replacement = await waitAsync(repository, "--timeout", "5");
-  assert.notEqual(replacement.claim, earlier.claim);
-  assert.deepEqual(threadIds(replacement), ["late"]);
+  assert.notEqual(replacement.session, earlier.session);
+  assert.deepEqual(threadIds(replacement), ["late", "solo"]);
 
-  repository.feedback("thread", "reply", "--id", "late", "--comment-id", "late-answer", "--author", "agent", "--claim", earlier.claim, "--body", "Answered the first note.");
-  let thread = repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json"));
-  assert.equal(thread.comments.at(-1).respondsTo, "late-note");
-  assert.deepEqual(agentState(repository).claims.map((claim) => [claim.id, claim.threads[0].answeredAt]), [[replacement.claim, undefined]]);
+  repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "late", "--comment-id", "late-answer", "--author", "agent", "--claim", earlier.claim, "--body", "Answered the first note.");
+  repository.expectFeedbackFailure("was replaced", "thread", "reply-batch", "--replies", JSON.stringify([{ id: "solo", "comment-id": "solo-answer", author: "agent", body: "Done." }]), "--claim", earlier.claim);
+  assert.deepEqual(repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json")).comments.map((comment) => comment.id), ["late-note", "follow-up"]);
+  assert.deepEqual(repository.readAbsoluteJson(repository.feedbackPath("threads", "solo.json")).comments.map((comment) => comment.id), ["solo-note"]);
   repository.expectFeedbackFailure("is not part of round", "thread", "reply", "--id", "late", "--comment-id", "unknown", "--author", "agent", "--claim", "missing-round", "--body", "?");
   repository.expectFeedbackFailure("--claim applies only to agent replies", "thread", "reply", "--id", "late", "--comment-id", "user-claim", "--claim", earlier.claim, "--body", "?");
 
   repository.feedback("thread", "reply-batch", "--replies", JSON.stringify([{ id: "late", "comment-id": "final", author: "agent", body: "Done." }]), "--claim", replacement.claim);
-  thread = repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json"));
+  const thread = repository.readAbsoluteJson(repository.feedbackPath("threads", "late.json"));
   assert.equal(thread.comments.at(-1).respondsTo, "follow-up");
+
+  // A standalone round taken while the session listens is not replaced by it.
+  reply(repository, "late", "again", "user");
+  const standalone = flowJson(repository);
+  assert.deepEqual(threadIds(standalone), ["late"]);
+  repository.feedback("thread", "reply", "--id", "late", "--comment-id", "standalone-answer", "--author", "agent", "--claim", standalone.claim, "--body", "Done again.");
+  repository.feedback("thread", "reply", "--id", "solo", "--comment-id", "solo-answer", "--author", "agent", "--claim", replacement.claim, "--body", "Done.");
   assert.equal(agentState(repository).lastRound.id, replacement.claim);
   assert.deepEqual(flowJson(repository).stages, []);
+});
+
+test("a round that retired before another agent took over posts no more replies, and its replaced wait skips validation", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "late");
+  const first = await waitAsync(repository, "--timeout", "5");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].releasingAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const reissued = await waitAsync(repository, "--session", first.session, "--timeout", "5");
+  assert.notEqual(reissued.claim, first.claim);
+
+  const replacement = await waitAsync(repository, "--timeout", "5");
+  assert.deepEqual(threadIds(replacement), ["late"]);
+  for (const claim of [first.claim, reissued.claim]) {
+    repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "late", "--comment-id", `late-${claim}`, "--author", "agent", "--claim", claim, "--body", "Answered.");
+  }
+  // The replaced agent learns it was replaced even while the feedback fails validation.
+  fs.writeFileSync(repository.feedbackPath("threads", "late.json"), "{");
+  assert.deepEqual(await waitAsync(repository, "--session", first.session, "--timeout", "2"),
+    { session: first.session, stopped: true, reason: "superseded" });
+});
+
+test("a listener that takes over an expired round's thread refuses that round's late reply", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const idle = await waitAsync(repository, "--timeout", "1");
+  addThread(repository, "slow");
+  const standalone = flowJson(repository);
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].activityAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const listener = await waitAsync(repository, "--session", idle.session, "--timeout", "5");
+  assert.deepEqual(threadIds(listener), ["slow"]);
+  repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "slow", "--comment-id", "late", "--author", "agent", "--claim", standalone.claim, "--body", "Done late.");
+  repository.feedback("thread", "reply", "--id", "slow", "--comment-id", "answer", "--author", "agent", "--claim", listener.claim, "--body", "Done.");
+  assert.equal(agentState(repository).lastRound.id, listener.claim);
+});
+
+test("a listener that takes no thread from a retired round leaves that round's replies accepted", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "done");
+  const standalone = flowJson(repository);
+  repository.feedback("thread", "reply", "--id", "done", "--comment-id", "answer", "--author", "agent", "--claim", standalone.claim, "--body", "Done.");
+  const listener = await waitAsync(repository, "--timeout", "1");
+  assert.deepEqual(listener, { session: listener.session, timedOut: true });
+  repository.feedback("thread", "reply", "--id", "done", "--comment-id", "addendum", "--author", "agent", "--claim", standalone.claim, "--body", "One more note.");
+  assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads", "done.json")).comments.at(-1).respondsTo, "done-note");
+});
+
+test("a first wait on a completed review starts no session and leaves a running round its threads", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "finishing");
+  const standalone = flowJson(repository);
+  assert.deepEqual(threadIds(standalone), ["finishing"]);
+  const { reviewId } = reviewContext(repository);
+  setReviewCompleted(reviewId, readReview(reviewId).generation, true, null);
+
+  assert.deepEqual(await waitAsync(repository, "--timeout", "5"), { session: null, stopped: true, reason: "completed" });
+  assert.equal(agentState(repository).session, null);
+  repository.feedback("thread", "reply", "--id", "finishing", "--comment-id", "finished", "--author", "agent", "--claim", standalone.claim, "--body", "Done.");
+  assert.equal(agentState(repository).lastRound.id, standalone.claim);
 });
 
 test("a wait started alongside the round's replies does not reissue the round", async (t) => {

@@ -2,19 +2,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { checkIds, transcriptChecks, transcriptCriteria } from '../evaluations/adapters/interactive-review.mjs';
-import { session, setup } from './helpers/interactive-session.mjs';
+import { checkIds, transcriptChecks, transcriptCriteria } from '../evaluations/adapters/review-listening.mjs';
+import { session, setup } from './helpers/listening-session.mjs';
 
 test('prepare finishes three stages and keeps the reviewer script out of the agent request', async t => {
   const { fixture, env } = await setup(t);
-  assert.equal(fixture.request, '/semantic-flow review -i');
+  assert.equal(fixture.request, '/semantic-flow review');
   assert.deepEqual(Object.keys(fixture.before.heads), ['notifications', 'delivery-docs', 'templates']);
   assert.ok(fs.existsSync(path.join(env.SEMANTIC_FLOW_HOME, 'reviews')));
   assert.doesNotMatch(fixture.request + fixture.agentSetup, /retry|HTML|plain|placeholder|Stop/i);
   assert.deepEqual(Object.keys(transcriptCriteria), transcriptChecks);
 });
 
-test('a known-good interactive agent passes every fixed check and its viewer is stopped', async t => {
+test('a known-good listening agent passes every fixed check and its viewer is stopped', async t => {
   const { driver, execution, stderr, checks, result } = await session(t, 'good');
   assert.equal(execution.exitCode, 0, stderr);
   assert.deepEqual(result.checks.map(check => check.id), checkIds);

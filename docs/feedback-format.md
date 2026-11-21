@@ -86,9 +86,11 @@ round, recording the latest user comment of each; its reply to a claimed thread
 answers through that comment. Other runs skip claimed threads. A claim ends when
 every thread has a reply, and expires after 30 minutes without agent activity.
 
-An interactive review (`review -i`) records one listening session with a
-heartbeat. Starting another session replaces it, and ending a session returns
-threads its unfinished round claimed to the queue. A round waiting for the
+A review the agent listens to (`/semantic-flow review`) records one listening
+session with a heartbeat. Starting another session replaces it and returns the
+threads of every running round to the queue; replies a replaced round posts
+afterwards are refused. Ending a session returns threads its unfinished round
+claimed to the queue. A round waiting for the
 reviewer's answer to `agent ask` keeps its claim until the answer arrives. The viewer shows the session, the running round, and questions the
 agent asks with `agent ask`; reviewer answers, stop requests, and completing the
 review are written to the same file. A viewer send marks itself in progress so a

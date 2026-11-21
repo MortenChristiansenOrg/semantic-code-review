@@ -50,7 +50,7 @@ import { atomicJson, readReview, readReviewArtifact, registerReview, relocateRev
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
-import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundThrough, sendInProgress, touchAgent, updateAgentState, type ClaimedThread } from "./shared/agent-session.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundReplaced, roundThrough, sendInProgress, touchAgent, updateAgentState, type ClaimedThread } from "./shared/agent-session.js";
 
 const renamedPathFacts = factCache<string | null>();
 const renameMapFacts = factCache<string | null>();
@@ -761,7 +761,7 @@ function pendingFeedback(
   if (claim) {
     // The caller holds the review lock, so this exclusion and the claim below are one step.
     const state = readAgentState(paths.reviewId);
-    if (sessionId && liveSession(state)?.id !== sessionId) fail("This interactive review session was replaced or stopped.");
+    if (sessionId && liveSession(state)?.id !== sessionId) fail("This listening session was replaced or stopped.");
     // A viewer send writes notes and replies separately; the listener takes them together.
     if (sessionId && sendInProgress(state, Date.now())) awaiting = [];
     const taken = claimedThreadIds(state, Date.now());
@@ -921,6 +921,7 @@ function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback):
   let respondsTo: string | undefined;
   if (author === "agent") {
     const state = readAgentState(paths.reviewId);
+    if (claimId && roundReplaced(state, claimId)) fail(`Round ${claimId} was replaced: another agent started listening to this review and took over its threads. Post no more replies for this round and stop.`);
     respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
     if (!respondsTo) fail(`Feedback thread ${id} is not part of round ${claimId}.`);
   }

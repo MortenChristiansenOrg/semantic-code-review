@@ -2,8 +2,8 @@
 
 Issues #13 and #2 reduce repeated instruction reads, CLI round trips, immutable
 Git reads, and viewer work. Artifact schemas, feedback storage, browser storage,
-and approval behavior are unchanged. The interactive agent loop in #1 remains
-future work; incremental viewer refresh is available independently.
+and approval behavior are unchanged. The agent loop that listens for feedback
+(#1) came later; incremental viewer refresh is available independently.
 
 ## Reproduce
 

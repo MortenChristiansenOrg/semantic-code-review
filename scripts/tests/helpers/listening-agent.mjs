@@ -1,4 +1,4 @@
-// Deterministic stand-in for an evaluated agent in interactive review. It exercises
+// Deterministic stand-in for an evaluated agent while it listens to a review. It exercises
 // the scripted reviewer and verifier, not model behavior. Modes: good (follows the
 // skill), early-exit (stops after the first round), decides (settles the
 // contradictory notes itself instead of asking), sloppy (documents that deliveries

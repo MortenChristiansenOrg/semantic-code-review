@@ -77,7 +77,7 @@ export interface NextFeedbackOptions {
   compact?: true;
   /** Claims the returned threads for one round, skipping threads another round is answering. Emits `{claim, claimedElsewhere, stages}`. Requires `json`. */
   claim?: true;
-  /** Interactive review session that owns the claim. Requires `claim`. */
+  /** Listening session that owns the claim. Requires `claim`. */
   session?: string;
 }
 

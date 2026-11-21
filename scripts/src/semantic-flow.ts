@@ -49,7 +49,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
@@ -954,28 +954,43 @@ async function waitForFeedback(options: Options): Promise<void> {
     candidate = { ...candidate, feedbackDirectory: directory, feedbackExists: fs.existsSync(path.join(directory, "manifest.json")) };
   }
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
+  // A session that ended, for example because another agent took over, stops before
+  // validating, which could otherwise fail on the other agent's work in progress.
+  const endedOf = (id: string) => (state: AgentState) => liveSession(state)?.id === id ? null
+    : state.session?.id === id ? state.session?.endReason || "stopped" : "superseded";
+  const ended = endedOf(requested ?? "");
+  const endedFirst = requested ? updateAgentState(review, ended) : null;
+  if (endedFirst) { print({ session: requested, stopped: true, reason: endedFirst }); return; }
   // Continuing a session first checks the round just completed. A round still waiting
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
-    await validateArtifactForFeedback(candidate);
-    if (candidate.feedbackExists) {
-      const feedbackValidation = await checkFeedback(candidate.worktree);
-      if (!feedbackValidation.passed) {
-        if (feedbackValidation.output) console.error(feedbackValidation.output);
-        fail("Feedback validation failed.");
+    try {
+      await validateArtifactForFeedback(candidate);
+      if (candidate.feedbackExists) {
+        const feedbackValidation = await checkFeedback(candidate.worktree);
+        if (!feedbackValidation.passed) {
+          if (feedbackValidation.output) console.error(feedbackValidation.output);
+          fail("Feedback validation failed.");
+        }
       }
+    } catch (error) {
+      // Another agent may have taken over while this wait validated its work in progress.
+      const endedSince = updateAgentState(review, ended);
+      if (endedSince) { print({ session: requested, stopped: true, reason: endedSince }); return; }
+      throw error;
     }
   }
   const start = updateAgentState(review, (state, now) => {
-    if (!requested) return { session: startSession(state, now).id };
+    // A completed review starts no session, so it takes over no other agent's round.
+    if (!requested) return readReview(review).completedAt ? { stopped: "completed" } : { session: startSession(state, now).id };
     const session = liveSession(state);
     if (session?.id === requested) {
       session.heartbeatAt = new Date(now).toISOString();
       return { session: session.id };
     }
-    return { stopped: state.session?.id === requested ? state.session.endReason || "stopped" : "superseded" };
+    return { stopped: ended(state) ?? "stopped" };
   });
-  if (!start.session) { print({ session: requested, stopped: true, reason: start.stopped }); return; }
+  if (!start.session) { print({ session: requested ?? null, stopped: true, reason: start.stopped }); return; }
   const session = start.session;
   const deadline = Date.now() + seconds * 1000;
   let heartbeat = Date.now();
@@ -1027,6 +1042,10 @@ async function waitForFeedback(options: Options): Promise<void> {
       await delay(WAIT_POLL_MS);
     }
   } catch (error) {
+    // Another agent may have taken over while this wait validated its work in progress.
+    let endedSince: string | null = null;
+    try { endedSince = updateAgentState(review, endedOf(session)); } catch { /* Report the original failure. */ }
+    if (endedSince) { print({ session, stopped: true, reason: endedSince }); return; }
     // A first wait that fails has not reported its session, so no later wait can
     // resume it. End it so the viewer does not show an agent that is listening.
     if (!requested) {

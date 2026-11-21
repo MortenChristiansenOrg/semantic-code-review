@@ -92,7 +92,7 @@ export interface SemanticFlowFeedbackOptions {
   json?: true;
   /** Listens for the next feedback round instead of returning immediately. Requires `json`. */
   wait?: true;
-  /** Continues the interactive session returned by an earlier wait; omit to start a new session. Requires `wait`. */
+  /** Continues the listening session returned by an earlier wait; omit to start a new session. Requires `wait`. */
   session?: string;
   /** Maximum seconds to wait before returning `timedOut` (default 540). Requires `wait`. */
   timeout?: string;
