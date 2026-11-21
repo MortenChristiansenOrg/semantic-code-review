@@ -38,11 +38,11 @@ pending feedback anchors. If validation reports invalid node selectors, use
 stage whose changes the target or the stages below already contain stays as a
 marked empty stage; validation accepts it and stack preparation skips it. When
 the rerun helper's `emptyStageThreads` lists it without unresolved threads,
-remove it from the artifact worktree and report the removal; otherwise keep it
-and report it:
+remove it from the artifact worktree, naming the rerun helper's
+`implementationId`, and report the removal; otherwise keep it and report it:
 
 ```text
-<semantic-flow> implementation stage remove --id <stage-id> --json
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
 
 The command refuses the only remaining stage; keep it and report that the

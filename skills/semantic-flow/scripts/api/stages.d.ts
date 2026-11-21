@@ -242,6 +242,8 @@ export interface RemoveStageOptions {
     json?: true;
     /** Finalized empty stage to remove. */
     id: string;
+    /** Implementation the stage belongs to; refused when this worktree works on another one. */
+    "implementation-id"?: string;
 }
 /**
  * Removes a finalized stage that changes nothing, such as one a restack or a
@@ -251,7 +253,9 @@ export interface RemoveStageOptions {
  * and its ID cannot be reused. Refused while a thread on the stage is not
  * resolved; its resolved threads stay readable but can no longer be replied to
  * or reopened. Refused for the only stage, with a pending restack or a working
- * stage, and while its branch is checked out in another worktree.
+ * stage, while its branch is checked out in another worktree, and while a Git
+ * operation such as a merge, cherry-pick, rebase or bisect is in progress in
+ * this worktree with the stage's branch or a rebuilt head checked out.
  * @cli semantic-flow.mjs
  * @command implementation stage remove
  */

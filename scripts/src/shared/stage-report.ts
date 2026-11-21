@@ -25,11 +25,12 @@ export function stageThreads(feedbackRoot: string, stageIds: readonly string[]):
   for (const id of stageIds) result.set(id, { open: [], resolved: [] });
   const manifest = path.join(feedbackRoot, "manifest.json");
   if (!fs.existsSync(manifest)) {
-    // Threads without their manifest are unknown, never none.
-    if (fs.existsSync(feedbackRoot) && fs.readdirSync(feedbackRoot).length > 0) {
+    if (!fs.existsSync(feedbackRoot) || fs.readdirSync(feedbackRoot).length === 0) return result;
+    // A concurrent feedback init may have written the manifest by now; threads
+    // without their manifest are unknown, never none.
+    if (!fs.existsSync(manifest)) {
       throw new Error(`Incomplete feedback state in ${feedbackRoot}: manifest.json is missing.`);
     }
-    return result;
   }
   for (const id of readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest).threads) {
     const thread = readDocument(THREAD_SCHEMA_ID, path.join(feedbackRoot, "threads", `${id}.json`));
