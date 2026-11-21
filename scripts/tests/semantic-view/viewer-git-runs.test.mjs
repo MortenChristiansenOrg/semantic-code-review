@@ -60,7 +60,7 @@ async function startTracedViewer(t) {
   const trace = path.join(fs.mkdtempSync(path.join(path.dirname(repository.root), "git-trace-")), "trace.log");
   const result = spawnSync(process.execPath, [flowCli, "review"], {
     cwd: repository.root, encoding: "utf8", timeout: 30_000,
-    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(await reservePort()), GIT_TRACE: trace },
+    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(await reservePort()), GIT_TRACE: trace, GIT_TRACE2: `${trace}2` },
   });
   assert.equal(result.status, 0, result.stderr);
   const url = viewerBase(/^Semantic review viewer: (\S+)$/m.exec(result.stdout)?.[1]);
@@ -74,6 +74,8 @@ async function startTracedViewer(t) {
   viewer.trace = trace;
   const scope = `review=${encodeURIComponent(identity.reviewId)}&generation=${encodeURIComponent(identity.generation)}`;
   viewer.scope = () => scope;
+  // Trace2 records each Git process's exit, which Git's trace does not.
+  viewer.exits = () => (fs.existsSync(`${trace}2`) ? fs.readFileSync(`${trace}2`, "utf8") : "").split("\n").filter((line) => / atexit /.test(line)).length;
   const runs = viewer.runs = () => (fs.existsSync(trace) ? fs.readFileSync(trace, "utf8") : "").split("\n").filter((line) => / trace: built-in: git /.test(line));
   /** The response to a scoped request, and the Git commands it ran. */
   viewer.get = async (route) => {
@@ -189,15 +191,17 @@ for (const [route, fields] of [["/api/draft-snapshots", { notes: [] }], ["/api/a
       request.write(body.slice(0, 1));
       hold().then(() => request.end(body.slice(1)), reject);
     });
-    const checked = async (before) => {
-      for (let attempt = 0; attempt < 200 && viewer.runs().length === before; attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
-      // The check read the refs before the rest of the body is sent.
-      assert.ok(viewer.runs().length > before, "The request's review was not checked.");
+    // The check's ref read has finished before the rest of the body is sent.
+    const checked = async ({ runs, exits }) => {
+      const done = () => viewer.runs().length > runs && viewer.exits() > exits;
+      for (let attempt = 0; attempt < 200 && !done(); attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.ok(done(), "The request's review was not checked.");
     };
-    let before = viewer.runs().length;
+    const now = () => ({ runs: viewer.runs().length, exits: viewer.exits() });
+    let before = now();
     const accepted = await post(() => checked(before));
     assert.equal(accepted.status, 200, JSON.stringify(accepted.json));
-    before = viewer.runs().length;
+    before = now();
     const refused = await post(async () => {
       await checked(before);
       replaceReviewId(viewer.repository, implementationId, reviewId.replace(/[a-f0-9]{8}$/, "00000000"));
