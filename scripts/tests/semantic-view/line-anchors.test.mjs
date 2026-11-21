@@ -20,16 +20,18 @@ function history(t) {
   repository.git("commit", "--allow-empty", "-m", "Root");
   const root = repository.git("rev-parse", "HEAD");
   let count = 0;
+  // Windows Git refuses such paths in the index unless told the files are never written.
+  const index = (...args) => repository.git("-c", "core.protectNTFS=false", ...args);
   const commit = (parent, files, { mode } = {}) => {
-    repository.git("read-tree", parent);
+    index("read-tree", parent);
     for (const [file, contents] of Object.entries(files)) {
-      if (contents === null) { repository.git("update-index", "--force-remove", "--", file); continue; }
+      if (contents === null) { index("update-index", "--force-remove", "--", file); continue; }
       const source = path.join(scratch, `blob-${++count}`);
       fs.writeFileSync(source, contents);
       const blob = repository.git("hash-object", "-w", "--", source);
-      repository.git("update-index", "--add", "--cacheinfo", `${mode?.[file] ?? "100644"},${blob},${file}`);
+      index("update-index", "--add", "--cacheinfo", `${mode?.[file] ?? "100644"},${blob},${file}`);
     }
-    const tree = repository.git("write-tree");
+    const tree = index("write-tree");
     return repository.git("commit-tree", tree, "-p", parent, "-m", `Change ${count}`);
   };
   return { repository, root, commit };
