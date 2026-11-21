@@ -1091,6 +1091,7 @@ test("a stage's inventory is the same alone and batched whatever the user's Git 
     "core.abbrev": "7",
     "core.bigFileThreshold": "1",
     "diff.hostile.binary": "true",
+    "diff.default.binary": "true",
   };
   // Attributes that make a file binary, from the user's attributes file and,
   // where Git can read attributes from another tree (2.41 and later), from the
@@ -1098,7 +1099,7 @@ test("a stage's inventory is the same alone and batched whatever the user's Git 
   const attributesFile = path.join(repository.root, ".git", "hostile-attributes");
   fs.writeFileSync(attributesFile, "* binary\n");
   hostile["core.attributesFile"] = attributesFile;
-  const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbe8b4b9";
+  const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   if (repository.result("git", [`--attr-source=${emptyTree}`, "rev-parse", "HEAD"]).status === 0) {
     const blob = repository.git("hash-object", "-w", path.relative(repository.root, attributesFile));
     repository.git("update-index", "--add", "--cacheinfo", `100644,${blob},.gitattributes`);

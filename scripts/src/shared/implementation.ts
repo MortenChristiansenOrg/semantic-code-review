@@ -8,7 +8,6 @@
  * and archived artifacts are written in that full form, so they can be read
  * without the repository. */
 import { spawnSync } from "node:child_process";
-import { devNull } from "node:os";
 import {
   MANIFEST_SCHEMA_ID,
   SPECIFICATION_SCHEMA_ID,
@@ -127,7 +126,7 @@ const INVENTORY_DIFF = ["--no-replace-objects", "diff-tree", "-r", "-z", "--name
 
 /** The empty tree of each object format, by the length of its IDs. */
 const EMPTY_TREES: Record<number, string> = {
-  40: "4b825dc642cb6eb9a060e54bf8d69288fbe8b4b9",
+  40: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
   64: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
 };
 
@@ -137,9 +136,11 @@ const EMPTY_TREES: Record<number, string> = {
  * a rename into an addition and a deletion. Attributes are therefore read from
  * the empty tree instead of the worktree, index or attr.tree (Git 2.41 and
  * later; older Git ignores GIT_ATTR_SOURCE), and the system and user attribute
- * files are not read. $GIT_DIR/info/attributes cannot be turned off. */
+ * files are not read; Git reads /dev/null as the null device on every platform.
+ * Without attributes Git uses the "default" diff driver, whose binary setting
+ * is restored to detection. $GIT_DIR/info/attributes cannot be turned off. */
 function runInventoryDiff(root: string, idLength: number, args: string[], input?: string) {
-  return spawnSync("git", ["-c", `core.attributesFile=${devNull}`, ...INVENTORY_DIFF, ...args], {
+  return spawnSync("git", ["-c", "core.attributesFile=/dev/null", "-c", "diff.default.binary=auto", ...INVENTORY_DIFF, ...args], {
     cwd: root,
     env: gitEnvironment({ GIT_ATTR_SOURCE: EMPTY_TREES[idLength] ?? EMPTY_TREES[40], GIT_ATTR_NOSYSTEM: "1" }),
     // spawnSync encodes string input with the output encoding, which "buffer" is not.
