@@ -162,7 +162,10 @@ The local branch ref MUST point to `headRevision` during an active implementatio
 Tooling folds the commits made while a stage is worked on or corrected into
 that commit when it records the stage head. The reference tooling generates its
 message from the stage title and summary and adds a `Co-authored-by` trailer
-for every other author of the folded commits.
+for every other author of the folded commits. A restack rebuilds the message
+of every stage it covers from the current title and summary and keeps the
+commit's trailers, so a title or summary changed on a finalized stage reaches
+its commit at the next restack.
 
 `files` is derived from:
 

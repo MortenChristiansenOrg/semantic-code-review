@@ -306,6 +306,12 @@ function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coA
   return [stage.title.trim(), stage.summary.trim(), ...(trailers.length ? [trailers.join("\n")] : [])].join("\n\n") + "\n";
 }
 
+/** The co-authors a commit's Co-authored-by trailers name. */
+function commitCoAuthors(root: string, commit: string): string[] {
+  return gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", commit], { cwd: root })
+    .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
+}
+
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
  * author, in order of first appearance. */
 function rangeCoAuthors(root: string, base: string, head: string, author: string): string[] {
@@ -335,7 +341,7 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
 function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">, base: string, head: string, label: string, keepOneCommit = false): string {
   const count = assertLinearRange(root, base, head, label);
   if (count === 0) fail(`${label} has no commits.`);
-  // An unchanged stage keeps its commit, even when its title or summary was edited since.
+  // An unchanged stage keeps its commit here; withStageMessage brings its message up to date.
   if (count === 1 && keepOneCommit) return head;
   const author = currentIdentity(root);
   const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author));
@@ -347,6 +353,15 @@ function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">
     input: message,
     env: { GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: committerDate },
   });
+}
+
+/** commit with the message its stage now generates: the current title and
+ * summary over the commit's own trailers. Its tree, parent, authors and dates
+ * stay, so a commit whose message is current is returned as it is. */
+function withStageMessage(root: string, stage: Pick<EditableStage, "title" | "summary">, commit: string): string {
+  const message = stageCommitMessage(stage, commitCoAuthors(root, commit), emptyStageMarker(root, commit));
+  if (commitMetadata(root, commit).message.trimEnd() === message.trimEnd()) return commit;
+  return replayedCommit(root, `${commit}^{tree}`, `${commit}^`, commit, message);
 }
 
 /** Points code targets captured on commits a fold replaced at the folded
@@ -1246,6 +1261,9 @@ function setStage(workspace: Workspace, options: Options): void {
     return stage;
   });
   console.log(`Updated ${finalized ? "finalized" : "working"} stage ${id}.`);
+  if (finalized && (title !== undefined || summary !== undefined)) {
+    console.log(`Its commit message takes the new title and summary at the next restack, such as implementation restack --from ${id} with its stage branch checked out.`);
+  }
 }
 
 /** An insight item built from command options, validated when stored in its stage. */
@@ -2088,10 +2106,8 @@ function isMarkedEmptyStage(root: string, head: string): boolean {
  * stage commit whose changes parent contains; when it is itself a marked empty
  * commit, its marker is kept. A stage resolved to nothing is marked as such. */
 function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string, resolved = false): string {
-  const coAuthors = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
-    .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
   const original = resolved ? RESOLVED_EMPTY : emptyStageMarker(root, source) ?? source;
-  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, original));
+  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, commitCoAuthors(root, source), original));
 }
 
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
@@ -2461,7 +2477,8 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
       if (marker !== RESOLVED_EMPTY) console.error(`semantic-implementation: stage ${id} stays empty: the stage commit ${replaced} its marker names no longer exists, so its changes cannot be replayed.`);
       nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
     } else if (replaced === undefined && !integrated && isAncestor(root, run.parentHead, actualHead)) {
-      nextHead = foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged);
+      // A title or summary edited since the stage was folded reaches its commit here.
+      nextHead = withStageMessage(root, stage, foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged));
       // A correction that takes out every change of the stage drops them on purpose.
       if (sameTree(root, nextHead, run.parentHead)) nextHead = emptyStageCommit(root, stage, run.parentHead, nextHead, true);
     } else {
@@ -2503,11 +2520,11 @@ function replacedBy(root: string, plan: Pick<RestackPlan, "emptied" | "nextHead"
 }
 
 /** The commit a replayed stage becomes: its tree on parent with the stage
- * commit's message and authors, or a marked empty commit when the target
- * already contains its changes. */
+ * commit's authors and co-authors under the stage's current title and summary,
+ * or a marked empty commit when the target already contains its changes. */
 function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string, resolved = false): string {
   if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit, resolved);
-  return replayedCommit(root, tree, parent, stageCommit);
+  return replayedCommit(root, tree, parent, stageCommit, stageCommitMessage(stage, commitCoAuthors(root, stageCommit)));
 }
 
 function restack(workspace: Workspace, options: Options): void {

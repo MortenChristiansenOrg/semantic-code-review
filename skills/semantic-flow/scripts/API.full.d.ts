@@ -118,7 +118,8 @@ export interface SetStageOptions {
 }
 /**
  * Updates stage metadata on the active working stage or, with `finalized`, on a finalized stage.
- * At least one field to update must be supplied.
+ * At least one field to update must be supplied. A finalized stage's commit
+ * message takes a new title or summary at the next restack that covers it.
  * @cli semantic-flow.mjs
  * @command implementation stage set
  */
@@ -379,7 +380,9 @@ export interface RestackOptions {
 /**
  * Accepts edited stage branches, folds each into one stage commit again, and
  * replays every branch above the earliest one by cherry-picking its stage commit
- * in a scratch worktree outside the user's checkouts. A stage whose changes the
+ * in a scratch worktree outside the user's checkouts. Each stage commit's
+ * message is rebuilt from the stage's current title and summary, keeping its
+ * trailers and authors. A stage whose changes the
  * target already contains becomes a marked empty commit. On a conflict, no ref
  * moves: the restack is recorded as pending and the worktree keeps normal Git
  * conflict state for `continue` or `abort`.
