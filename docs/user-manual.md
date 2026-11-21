@@ -450,7 +450,9 @@ The command:
    moves nothing and keeps the scratch worktree with normal Git conflict state:
    resolve and `git add` there, then run `restack --continue`, or discard the
    restack with `restack --abort`. `--continue` moves refs only if the target,
-   stage and artifact refs are unchanged since the restack began.
+   stage and artifact refs are unchanged since the restack began. When `sync`
+   or `feedback` detached a checked-out stage branch for the restack, either
+   command switches that worktree back to the branch.
 4. Refreshes base/head snapshots and file inventories.
 5. Leaves the edited branch checked out.
 

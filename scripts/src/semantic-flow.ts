@@ -785,7 +785,11 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
 
   let restackSummary: RestackSummary;
   try {
-    restackSummary = restackOntoTarget(candidate.worktree, candidate.targetBranch);
+    restackSummary = restackOntoTarget(
+      candidate.worktree,
+      candidate.targetBranch,
+      detachedBranch === null ? undefined : { worktree: candidate.worktree, branch: detachedBranch, head: originalHead },
+    );
   } catch (error) {
     console.error(`Error: ${errorMessage(error)}`);
     fail(
@@ -793,7 +797,8 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
     );
   } finally {
     // A pending restack still has to move the branch, so the checkout stays
-    // detached until it completes; the worktree remembers which implementation it continues.
+    // detached until restack --continue or --abort switches it back; the
+    // worktree remembers which implementation it continues.
     const pending = restackPending(candidate);
     if (pending) rememberImplementation(candidate.worktree, candidate.implementationId);
     else if (detachedBranch !== null) git(["switch", detachedBranch], { cwd: candidate.worktree });
@@ -1305,7 +1310,13 @@ async function sync(options: Options): Promise<void> {
   } catch (error) {
     console.error(`Synchronization stopped in ${root}. Target ${candidate.targetBranch} is at ${revision(targetRef)}; the target update is retained.`);
     const stageDetached = candidate.currentBranch !== null && stageHeads.has(candidate.currentBranch) && restackPending(candidate);
-    console.error(`For a reported restack conflict, resolve it in the reported worktree and run semantic-flow.mjs implementation restack --continue${stageDetached ? `; ${candidate.worktree} stays detached until then, so the restack can move ${candidate.currentBranch}` : ""}. Then restore ${candidate.currentBranch ? `branch ${candidate.currentBranch}` : `the original detached stage/base at its refreshed revision (previously ${originalHead})`} and run sync --local to validate without fetching again.`);
+    const restore = stageDetached
+      ? `; ${candidate.worktree} stays detached until then, so the restack can move ${candidate.currentBranch}, and restack --continue or --abort switches it back`
+      : "";
+    const then = candidate.currentBranch
+      ? stageDetached ? "Then" : `Then restore branch ${candidate.currentBranch} if it is not checked out, and`
+      : `Then detach at the original stage/base's refreshed revision (previously ${originalHead}), and`;
+    console.error(`For a reported restack conflict, resolve it in the reported worktree and run semantic-flow.mjs implementation restack --continue${restore}. ${then} run sync --local to validate without fetching again.`);
     throw error;
   }
 }

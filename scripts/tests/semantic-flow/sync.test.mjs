@@ -11,6 +11,7 @@ import {
   finalizeStage,
   flowCli,
   initializeImplementation,
+  semanticCli,
 } from "../helpers/repository.mjs";
 
 function addUpstream(t, repository) {
@@ -304,14 +305,43 @@ test("sync conflict recovery continues the pending restack before re-entering pr
   fs.writeFileSync(path.join(worktree, "shared.txt"), "upstream and stage\n");
   assert.equal(spawnSync("git", ["add", "shared.txt"], { cwd: worktree }).status, 0);
   expectSyncFailure(repository, /restack stopped at a conflict in stage behavior/, "--local");
-  repository.semantic("restack", "--continue");
-  repository.git("switch", before.branch);
+  // Completing the restack switches the worktree back to the stage branch sync detached.
+  assert.match(repository.semantic("restack", "--continue"), new RegExp(`back to ${before.branch}\\.`));
+  assert.equal(repository.git("branch", "--show-current"), before.branch);
+  assert.equal(repository.git("status", "--porcelain"), "");
   const result = JSON.parse(repository.flow("sync", "--local", "--json"));
   assert.equal(result.targetRevision, target);
   assert.equal(repository.read("shared.txt"), "upstream and stage\n");
   assert.equal(repository.read("later.txt"), "later\n");
   repository.semantic("validate", "--publish");
   assert.equal(stage.change.branch, "semantic-flow/test-implementation/stages/behavior");
+});
+
+test("restack --abort after a sync conflict switches the worktree back to the stage branch sync detached", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("shared.txt", "base\n", "Base shared file");
+  initializeImplementation(repository);
+  beginStage(repository, { id: "behavior" });
+  finalizeStage(repository, { id: "behavior", file: "shared.txt", contents: "stage\n" });
+  const upstream = addUpstream(t, repository);
+  upstream.commitFile("shared.txt", "upstream\n", "Conflicting upstream");
+  const branch = repository.git("branch", "--show-current");
+  const head = repository.git("rev-parse", "HEAD");
+
+  expectSyncFailure(repository, /stopped at a conflict in shared\.txt/);
+  assert.equal(repository.git("branch", "--show-current"), "");
+  assert.match(repository.semantic("restack", "--abort"), new RegExp(`Discarded the restack[\\s\\S]*back to ${branch}\\.`));
+  assert.equal(repository.git("branch", "--show-current"), branch);
+  assert.equal(repository.git("rev-parse", "HEAD"), head);
+  assert.equal(repository.git("status", "--porcelain"), "");
+
+  // A worktree that no longer sits where sync left it is not switched.
+  expectSyncFailure(repository, /stopped at a conflict in shared\.txt/);
+  repository.git("switch", "main");
+  const aborted = repository.result(process.execPath, [...semanticCli, "restack", "--abort"]);
+  assert.equal(aborted.status, 0, aborted.stderr);
+  assert.match(aborted.stderr, new RegExp(`was left as it is, because it is no longer detached at ${head}; check out ${branch} there`));
+  assert.equal(repository.git("branch", "--show-current"), "main");
 });
 
 test("a sync conflict from a detached stage checkout remembers the implementation to continue", (t) => {
