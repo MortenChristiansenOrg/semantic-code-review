@@ -86,6 +86,7 @@ import {
 import { errorCode, errorMessage, isRecord, isStringArray, type JsonRecord } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
 import { gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
+import { describeFinalizedStages, emptyStageIds } from "./shared/stage-report.js";
 import { touchAgent, updateAgentState } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
@@ -949,7 +950,8 @@ function validateArtifact(
 }
 
 function validationMessage(artifact: Artifact, mode: "schema" | "publication" | "full"): string {
-  return `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${artifact.stages.size} finalized stage(s), ${artifact.workStages.size} working stage(s).`;
+  const empty = mode === "schema" ? [] : emptyStageIds(artifact.manifest.stages.map((id) => finalizedStage(artifact, id)));
+  return `Semantic implementation ${mode} validation passed: ${artifact.requirements.size} specification(s), ${describeFinalizedStages(artifact.stages.size, empty)}, ${artifact.workStages.size} working stage(s).`;
 }
 
 function reportEvidenceWarnings(stages: Iterable<Stage>): void {
@@ -962,6 +964,8 @@ export interface ImplementationValidation {
   /** The summary `implementation validate` prints. */
   message: string;
   warnings: string[];
+  /** The marked empty finalized stages. */
+  emptyStages: string[];
 }
 
 /** Fully validates the implementation in root, as `implementation validate` does. */
@@ -971,6 +975,7 @@ export function validateImplementation(root: string): ImplementationValidation {
     return {
       message: validationMessage(artifact, "full"),
       warnings: [...artifact.stages.values()].flatMap((stage) => evidenceWarnings(stage)),
+      emptyStages: emptyStageIds(artifact.manifest.stages.map((id) => finalizedStage(artifact, id))),
     };
   });
 }
@@ -2634,7 +2639,6 @@ function restack(workspace: Workspace, options: Options): void {
   if (json) {
     console.log(JSON.stringify(summary));
   } else {
-    const emptied = summary.stages.filter((stage) => stage.emptied).map((stage) => stage.id);
     console.log(
       `Restacked ${summary.refreshedStages} stage(s) ${
         summary.mode === "base"
@@ -2642,9 +2646,24 @@ function restack(workspace: Workspace, options: Options): void {
           : `from ${summary.fromStage}`
       }; rewrote ${summary.rewrittenBranches} ${
         summary.rewrittenBranches === 1 ? "branch" : "branches"
-      }.${emptied.length ? ` Stage(s) ${emptied.join(", ")} now change nothing, because the target already contains their changes or a resolution dropped them; they stay as marked empty stages.` : ""}`,
+      }.${emptiedStagesNote(workspace.root, summary)}`,
     );
   }
+}
+
+/** What a restack says about its empty stages: why the ones it emptied change
+ * nothing, and which stayed empty. */
+function emptiedStagesNote(root: string, summary: RestackSummary): string {
+  const notes: string[] = [];
+  const emptied = summary.stages.filter((stage) => stage.emptied);
+  const already = emptied.filter((stage) => isMarkedEmptyStage(root, stage.previousHead));
+  const dropped = emptied.filter((stage) => !already.includes(stage) && emptyStageMarker(root, stage.nextHead) === RESOLVED_EMPTY);
+  const contained = emptied.filter((stage) => !already.includes(stage) && !dropped.includes(stage));
+  const ids = (stages: typeof emptied) => stages.map(({ id }) => id).join(", ");
+  if (contained.length) notes.push(`Stage(s) ${ids(contained)} now change nothing, because the target or the stages below already contain their changes.`);
+  if (dropped.length) notes.push(`Stage(s) ${ids(dropped)} now change nothing, because a conflict resolution or a correction dropped their changes.`);
+  if (already.length) notes.push(`Stage(s) ${ids(already)} stay empty.`);
+  return notes.length ? ` ${notes.join(" ")} Empty stages stay in the implementation as marked empty stages, which stack preparation skips.` : "";
 }
 
 /** Restacks every stage onto the current target branch head. checkout names

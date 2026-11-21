@@ -267,6 +267,10 @@ export interface Stage {
   nodes: ChangeNode[];
   files: StageFile[];
   insights: Insight[];
+  /** The stage changes nothing: the target or the stages below already contain
+   * its changes, or a resolution dropped them. It stays in the implementation,
+   * stack preparation skips it, and it has nothing to approve. */
+  empty?: true;
 }
 
 export interface AcceptanceCriterion {

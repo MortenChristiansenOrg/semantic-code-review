@@ -252,8 +252,8 @@ Branches are mutable; recorded revisions are snapshots. When stage `k` changes:
    each stage commit in a scratch worktree and, on a conflict, records the
    restack as pending in the active artifact (`.work/restack.json`) and keeps
    the worktree's Git conflict state until `restack --continue` or `--abort`.
-   A stage whose changes the target already contains stays in the stack as
-   an empty commit marked with the trailer `Semantic-Flow-Empty: <commit>`,
+   A stage whose changes the new lower head (the target and the stages
+   below) already contains stays in the stack as an empty commit marked with the trailer `Semantic-Flow-Empty: <commit>`,
    naming the stage commit it replaced, which the artifact keeps reachable;
    its `files` is empty and its nodes keep describing the change. A later
    restack replays the named commit, so the stage's changes return if the

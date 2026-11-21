@@ -241,7 +241,7 @@ export function stageModel(stage: ViewerStage, i: number): StageView {
   });
   return {
     id: stage.id, number: String(i + 1).padStart(2, "0"), title: stage.title, summary: stage.summary, rationale: stage.rationale,
-    open: Boolean(state.openStages[stage.id]), approved: stageApproved(stage),
+    open: Boolean(state.openStages[stage.id]), approved: !stage.empty && stageApproved(stage), empty: Boolean(stage.empty),
     nodesApproved: stage.nodes.filter((n) => nodeApprovalState(stage, n) === "approved").length, nodeCount: stage.nodes.length,
     filesApproved: fileApprovals.filter(approved).length, fileCount: fileApprovals.length,
     insightsReviewed: stage.insights.filter((ins) => insightReviewState(stage, ins) === "reviewed").length, insightCount: stage.insights.length,
@@ -273,7 +273,8 @@ export function storyModel(): StoryView {
 export function coverageModel(): CoverageView {
   return {
     open: Boolean(state.coverageOpen), approved: approvedCount(), reviewable: reviewable(), percent: pct(),
-    stages: data.stages.map((s, i) => {
+    // An empty stage has nothing to approve, so coverage leaves it out.
+    stages: data.stages.flatMap((s, i) => s.empty ? [] : [{ s, i }]).map(({ s, i }) => {
       const fileApprovals = stageFileApprovals(s);
       return { id: s.id, number: String(i + 1).padStart(2, "0"), title: s.title, approved: stageApproved(s),
         nodesApproved: s.nodes.filter((n) => nodeApprovalState(s, n) === "approved").length, nodes: s.nodes.length,

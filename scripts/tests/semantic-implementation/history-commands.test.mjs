@@ -480,7 +480,10 @@ test("a stage the target already contains stays as a marked empty stage that pre
   repository.git("switch", "main");
   repository.commitFile("policy.txt", "policy\n", "Land the policy elsewhere");
 
-  const result = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  const restacked = repository.semantic("restack", "--base", "main");
+  assert.match(restacked, /Stage\(s\) policy now change nothing, because the target or the stages below already contain their changes\./);
+  assert.doesNotMatch(restacked, /resolution/);
+  const result = { stages: repository.artifact.implementation().manifest.stages.map((id) => ({ id, emptied: repository.artifact.stage(id).change.files.length === 0 })) };
   assert.deepEqual(result.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }, { id: "api", emptied: false }]);
   assert.equal(repository.git("rev-parse", `${policy}^`), repository.git("rev-parse", "main"));
   assert.equal(repository.git("rev-parse", `${policy}^{tree}`), repository.git("rev-parse", "main^{tree}"));
@@ -491,13 +494,24 @@ test("a stage the target already contains stays as a marked empty stage that pre
   repository.semantic("validate", "--publish");
   // The viewer shows the emptied stage with its nodes and no diff.
   const viewed = implementationFromScript(createViewerDataSource(repository.root).implementationDataScript());
-  assert.deepEqual(viewed.stages.map((stage) => stage.id), ["policy", "api"]);
+  assert.deepEqual(viewed.stages.map((stage) => [stage.id, stage.empty ?? false]), [["policy", true], ["api", false]]);
   const stack = JSON.parse(repository.semantic("validate-stack", "--json"));
   assert.deepEqual(stack.emptyStages, ["policy"]);
   assert.deepEqual(stack.stages.map(({ stageId, baseBranch, position }) => ({ stageId, baseBranch, position })), [{ stageId: "api", baseBranch: "main", position: 1 }]);
-  // Restacking again keeps it empty.
+  // Every command that reports on the stack counts the empty stage as finalized and names it.
+  const counted = /2 finalized stage\(s\) \(1 empty: policy\)/;
+  assert.match(repository.semantic("validate", "--publish"), counted);
+  const flowValidation = repository.flow("validate", "--publish", "--stack");
+  assert.match(flowValidation, counted);
+  assert.match(flowValidation, /^Skipped empty stage\(s\): policy$/m);
+  assert.match(repository.flow("status"), /^Stages: 2 finalized stage\(s\) \(1 empty: policy\), 0 working stage\(s\)$/m);
+  assert.deepEqual(JSON.parse(repository.flow("status", "--json")).emptyStages, ["policy"]);
+  assert.match(repository.semantic("validate-stack"), /^Skipped empty stage\(s\): policy$/m);
+  // Restacking again keeps it empty, and says so without a reason that no longer applies.
   repository.commitFile("other.txt", "other\n", "Other work");
-  repository.semantic("restack", "--base", "main");
+  const again = repository.semantic("restack", "--base", "main");
+  assert.match(again, /Stage\(s\) policy stay empty\./);
+  assert.doesNotMatch(again, /now change nothing/);
   assert.match(repository.git("show", "-s", "--format=%B", policy), marker);
   repository.semantic("validate", "--publish");
   // Once the target no longer contains them, the stage's changes come back, after garbage collection too.
@@ -659,8 +673,9 @@ test("a stage resolved to nothing at a conflict stays empty in later restacks", 
   // The resolution keeps the lower stages' version: the API stage's change is dropped.
   gitIn(worktree, "checkout", "--ours", "--", "shared.txt");
   gitIn(worktree, "add", "shared.txt");
-  const result = JSON.parse(repository.semantic("restack", "--continue", "--json"));
-  assert.equal(result.stages.find(({ id }) => id === "api").emptied, true);
+  const continued = repository.semantic("restack", "--continue");
+  assert.match(continued, /Stage\(s\) api now change nothing, because a conflict resolution or a correction dropped their changes\./);
+  assert.equal(repository.artifact.stage("api").change.files.length, 0);
   const api = "semantic-flow/test-implementation/stages/api";
   assert.match(repository.git("show", "-s", "--format=%B", api), /^Semantic-Flow-Empty: resolved$/m);
   repository.semantic("validate", "--publish");

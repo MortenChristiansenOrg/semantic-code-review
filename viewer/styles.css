@@ -340,6 +340,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   letter-spacing: .03em;
 }
 .sm-ac { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.sm-empty { color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px; }
+.stage.is-empty .stage-card { border-style: dashed; }
+.stage.is-empty .node-check { visibility: hidden; }
 .sm-deps { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .sm-deps-label { color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
 .dep-chip {

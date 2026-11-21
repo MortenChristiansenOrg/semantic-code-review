@@ -225,18 +225,21 @@ export function acceptanceStatus(ref: string): { key: "uncovered" | "approved" |
     .map((s, i) => ({ s, i }))
     .filter((x) => (x.s.specificationRefs || []).includes(ref));
   if (!stages.length) return { key: "uncovered", stages: [] };
-  const allApproved = stages.every((x) => stageApproved(x.s));
+  // An empty stage has nothing to approve, so it holds no criterion back.
+  const allApproved = stages.every((x) => x.s.empty || stageApproved(x.s));
   return { key: allApproved ? "approved" : "pending", stages: stages.map((x) => x.i + 1) };
 }
 
+/** The stages with something to approve: every stage but the empty ones. */
+export const approvableStages = (): ViewerStage[] => data.stages.filter((s) => !s.empty);
 export function reviewable(): number {
   let n = 0;
-  data.stages.forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
+  approvableStages().forEach((s) => { n += 1 + s.nodes.length + stageFileApprovals(s).length; });
   return n;
 }
 export function approvedCount(): number {
   let n = 0;
-  data.stages.forEach((s) => {
+  approvableStages().forEach((s) => {
     if (stageApproved(s)) n += 1;
     s.nodes.forEach((node) => { if (nodeApprovalState(s, node) === "approved") n += 1; });
     stageFileApprovals(s).forEach((key) => { if (approved(key)) n += 1; });

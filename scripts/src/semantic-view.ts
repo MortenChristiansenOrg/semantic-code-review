@@ -1272,6 +1272,8 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       nodes,
       files,
       insights: buildInsights(s, repoRoot),
+      // A finalized stage without files is a marked empty stage; validation requires the marker.
+      ...(files.length === 0 ? { empty: true as const } : {}),
     };
   });
 
