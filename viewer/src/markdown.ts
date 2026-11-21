@@ -109,7 +109,8 @@ function showTitlesAsTooltips(root: DocumentFragment, unavailable: ReadonlySet<E
     if (hint.clipped) element.setAttribute('data-clippable', '');
     const inLink = element.parentElement?.closest('a');
     // Without its title, a link or image the title alone named would have no name.
-    if (!inLink && (element.tagName === 'A' || element.tagName === 'IMG') && !hasContentName(element)) {
+    // An image keeps its name inside a link too; its link shares the stop.
+    if ((element.tagName === 'IMG' || (!inLink && element.tagName === 'A')) && !hasContentName(element)) {
       const name = joinHintList([authored.get(element), ...[...element.querySelectorAll('img')].map((img) => authored.get(img))]);
       if (name) element.setAttribute('aria-label', name);
     }

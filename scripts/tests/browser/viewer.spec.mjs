@@ -5246,6 +5246,7 @@ test('the keyboard reaches every Markdown title outside a usable link, and untit
   const cells = Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('');
   const content = [
     'Intro with [Usable](https://example.com/u) and **plain** text.',
+    '<a href="https://example.com/c">Open <img src="https://example.com/c.png" title="Chart"></a>',
     '![Diagram](https://example.com/d.png "Image title") ![Plain](https://example.com/p.png)',
     '[Script](javascript:alert(1)) [![Badge](https://example.com/b.png "Badge title")](javascript:alert(2))',
     '<a title="Download the guide">Guide</a> <img alt="Broken" title="Architecture overview">',
@@ -5289,6 +5290,8 @@ test('the keyboard reaches every Markdown title outside a usable link, and untit
   const unavailable = 'Target unavailable in this preview';
   expect(stops).toEqual([
     ['a Usable', '', false],
+    // A usable link is its image's stop, and is described by the image's title.
+    ['a Open', 'Chart', true],
     ['img Diagram', 'Image title', true],
     ['a Script', unavailable, true],
     ['a', `${unavailable} · Badge title`, true],
@@ -5308,6 +5311,8 @@ test('the keyboard reaches every Markdown title outside a usable link, and untit
   ]);
   await expect(preview.getByRole('link', { name: 'Download', exact: true })).toHaveAccessibleName('Download');
   await expect(preview.getByRole('img', { name: 'Standalone', exact: true })).toHaveAccessibleName('Standalone');
+  // An image inside a link keeps the name its title gave it.
+  await expect(preview.locator('a[href="https://example.com/c"] img')).toHaveAccessibleName('Chart');
   await expect(preview.locator('[title]')).toHaveCount(0);
   const tooltip = page.locator('#review-tooltip');
   const trigger = preview.getByRole('table').filter({ hasText: /^Titled cell$/ });
