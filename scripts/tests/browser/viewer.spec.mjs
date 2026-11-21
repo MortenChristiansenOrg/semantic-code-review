@@ -26,8 +26,10 @@ function fixture() {
     })),
   };
 }
+// The server sends a line thread's current row; by default its line is unchanged.
 function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first', label: 'Stage first' }) {
-  return { id, status, target, comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
+  return { id, status, target, ...(target.kind === 'line' ? { currentLine: target.line } : {}),
+    comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
 async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {}) {
   const allData = [data, ...other];
@@ -3046,6 +3048,36 @@ test('a request for a line that a restack makes stale asks again for that line',
   expect(errors).toEqual([]);
 });
 
+test('a line jump whose thread a restack moves while its page loads does not land on the old number', async ({ page }) => {
+  const data = fixture(), file = data.stages[0].files[0];
+  const rows = Array.from({ length: 1900 }, (_, i) => ({ t: 'ctx', o: i + 1, n: i + 1, s: `const row${i + 1} = ${i + 1};` }));
+  file.lines = rows.slice(0, 900); file.nextOffset = 900;
+  data.feedback = [thread('far', 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1200, label: 'shared.js:1200' })];
+  const errors = await mount(page, data, { openStages: { first: true } });
+  const respond = (route) => {
+    const params = new URL(route.request().url()).searchParams, line = Number(params.get('line'));
+    const offset = line ? Math.floor((line - 1) / 900) * 900 : Number(params.get('offset'));
+    return route.fulfill({ json: { ok: true, lines: rows.slice(offset, offset + 900), offset,
+      nextOffset: offset + 900 < rows.length ? offset + 900 : null, additions: 0 } });
+  };
+  const pending = await holdDiffRequests(page);
+  await showNotes(page);
+  await page.locator('.side.notes [data-action="jump-to"][data-kind="line"]').click();
+  await expect.poll(() => pending.length).toBe(1);
+  // The restack moves the thread's line while the page loads.
+  delete file.lines; delete file.nextOffset;
+  data.stages[0].headRevision = 'c'.repeat(40); data.viewerRevision = 'restacked';
+  data.feedback[0].currentLine = 1250;
+  await expect(page.locator('.review-update')).toHaveText('Review updated', { timeout: 15000 });
+  await respond(pending[0]);
+  await expect.poll(() => pending.length).toBe(2);
+  await respond(pending[1]);
+  await expect(page.locator('.cinema-diff [data-line-id="l:first:new:1200:shared.js"]')).toHaveCount(1);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 600)))));
+  await expect(page.locator('.cinema-diff [data-line-id="l:first:new:1200:shared.js"]')).not.toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
 test('file search requires a contiguous current filename substring and completes inline', async ({ page }) => {
   const data = fixture();
   const file = (path, kind = 'added', previousPath) => ({ path, kind, previousPath, additions: 3, deletions: 1, memberships: [{ nodeId: 'first-one', classification: 'behavior' }] });
@@ -5968,13 +6000,53 @@ test('an older saved-review refresh does not replace a newer list', async ({ pag
 
 test('a stale anchor on an old line that is now unchanged jumps to its file', async ({ page }) => {
   const data = fixture();
-  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), anchorStale: true }];
+  data.feedback = [{ ...thread('old-context', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'old', line: 2, label: 'shared.js:2' }), currentLine: null, anchorStale: true }];
   await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:old:2:shared.js', nodeId: 'first-one', exported: true, threadId: 'old-context', body: 'Feedback old-context' }] });
   await showNotes(page);
   const jump = page.locator('.side.notes [data-thread-id="old-context"] [data-action="jump-to"]');
   await expect(jump).toHaveAttribute('data-kind', 'file');
   await jump.click();
   await expect(page.locator('details[data-node="first-one"] .cinema-diff')).toBeVisible();
+});
+
+test('a line thread is shown on the row its unchanged line moved to, and its jump goes there', async ({ page }) => {
+  const data = fixture();
+  // Written about line 1; after a restack the same line is line 3.
+  data.feedback = [{ ...thread('moved', 'open', { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' }), currentLine: 3 }];
+  const errors = await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', exported: true, threadId: 'moved', body: 'Feedback moved' }] });
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="moved"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'line');
+  await expect(jump).toHaveAttribute('data-id', 'l:first:new:3:shared.js');
+  const header = page.locator('.side.notes [data-thread-id="moved"] .tthread-h');
+  await expect(header.locator('.tthread-title')).toHaveText('shared.js:3');
+  await expect(header).toHaveAttribute('data-tooltip', /shared\.js:3 \(written on line 1\)/);
+  await jump.click();
+  await expect(page.locator('.line-thread[data-thread="l:first:new:3:shared.js"] [data-thread-id="moved"]')).toBeVisible();
+  await expect(page.locator('.line-thread[data-thread="l:first:new:1:shared.js"]')).toHaveCount(0);
+  await expect(page.locator('.file-notes [data-thread-id="moved"]')).toHaveCount(0);
+  await expect(page.locator('[data-thread-id="moved"] .tthread-stale')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a line thread whose line changed stays at file level and keeps its notice after the agent replies', async ({ page }) => {
+  const data = fixture();
+  const target = { kind: 'line', stageId: 'first', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' };
+  data.feedback = [{ ...thread('changed', 'open', target), currentLine: null, anchorStale: true,
+    comments: [{ author: 'user', body: 'Feedback changed', createdAt: '2026-09-08T10:00:00Z' }, { author: 'agent', body: 'Changed it.', createdAt: '2026-09-08T10:01:00Z' }] }];
+  const errors = await mount(page, data, { comments: [{ kind: 'line', id: 'l:first:new:1:shared.js', nodeId: 'first-one', exported: true, threadId: 'changed', body: 'Feedback changed' }] });
+  await openFile(page);
+  const fileThread = page.locator('.file-notes [data-thread-id="changed"]');
+  await expect(fileThread).toContainText('shared.js:1');
+  await expect(fileThread).toContainText('The line this feedback was written about changed or left this diff after it was sent.');
+  // The line that now has its number carries no thread.
+  await expect(page.locator('.line-thread [data-thread-id="changed"]')).toHaveCount(0);
+  await showNotes(page);
+  const jump = page.locator('.side.notes [data-thread-id="changed"] [data-action="jump-to"]');
+  await expect(jump).toHaveAttribute('data-kind', 'file');
+  await jump.click();
+  await expect(page.locator('details[data-node="first-one"] .file-notes [data-thread-id="changed"]')).toBeVisible();
+  expect(errors).toEqual([]);
 });
 
 test('a saved composer with a negative edit index does not keep a saved note from sending', async ({ page }) => {

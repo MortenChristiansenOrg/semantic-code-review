@@ -9,6 +9,7 @@ import {
   initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
+import { createViewerDataSource } from "../../src/semantic-view.ts";
 
 /** Records a new head for a stage, as if the stage branch had been revised;
  * Git derives the stage's inventory from it. */
@@ -597,4 +598,44 @@ test("feedback validation sees every stored property, including __proto__", (t) 
   repository.writeAbsolute(file, `{"__proto__":null,${text.slice(1)}`);
 
   repository.expectFeedbackFailure("must NOT have additional properties", "validate");
+});
+
+test("a line thread stays on its line until the line changes, for the agent and the viewer alike", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository);
+  finalizeStage(repository, { contents: "a\nb\nc\nd\n" });
+  repository.feedback("init");
+  const addLineThread = (id, line) => repository.feedback(
+    "thread", "add", "--id", id, "--comment-id", `${id}-note`, "--body", `About line ${line}.`,
+    "--label", `implementation.txt:${line}`, "--target-kind", "line", "--stage", "implementation",
+    "--path", "implementation.txt", "--side", "new", "--line", String(line),
+  );
+  addLineThread("on-b", 2);
+  addLineThread("on-d", 4);
+  const agentView = () => Object.fromEntries(JSON.parse(repository.feedback("next", "--json", "--compact"))
+    .flatMap((group) => group.threads).map(({ id, stale, currentLine }) => [id, { stale, currentLine }]));
+  const reviewerView = () => Object.fromEntries(createViewerDataSource(repository.root).implementationData().feedback
+    .map(({ id, anchorStale, currentLine }) => [id, { stale: anchorStale, currentLine: currentLine ?? undefined }]));
+  const head = () => repository.artifact.stage("implementation").change.headRevision;
+
+  // A fold that leaves the file as it was gives the stage a new head only.
+  const written = head();
+  repository.commitFile("notes.txt", "unrelated\n", "Add notes");
+  repository.semantic("restack", "--from", "implementation");
+  assert.notEqual(head(), written);
+  const unchanged = { "on-b": { stale: false, currentLine: 2 }, "on-d": { stale: false, currentLine: 4 } };
+  assert.deepEqual(agentView(), unchanged);
+  assert.deepEqual(reviewerView(), unchanged);
+
+  // Lines added above move "d"; "b" itself changes.
+  repository.commitFile("implementation.txt", "x\ny\na\nB\nc\nd\n", "Move and change lines");
+  repository.semantic("restack", "--from", "implementation");
+  const moved = { "on-b": { stale: true, currentLine: undefined }, "on-d": { stale: false, currentLine: 6 } };
+  assert.deepEqual(agentView(), moved);
+  assert.deepEqual(reviewerView(), moved);
+  // The stored anchors are not moved.
+  const stored = repository.readAbsoluteJson(repository.feedbackPath("threads/on-d.json"));
+  assert.equal(stored.target.line, 4);
+  assert.equal(stored.target.stageHead, written);
 });

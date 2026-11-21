@@ -38,6 +38,8 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
+import { locateLineAnchors } from "./shared/line-anchors.js";
+import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
 import { parseDocument } from "./shared/schema-validation.js";
@@ -697,7 +699,8 @@ function refreshPendingAnchor(paths: FeedbackPaths, semantic: SemanticArtifact, 
 interface CompactComment { author: CommentAuthor; body: string; attachments?: ResolvedAttachment[] }
 /** A compact target omits the anchor its stage group already states. */
 type CompactTarget = Omit<Target, "stageBranch" | "stageHead">;
-export interface CompactThread { id: string; stale: boolean; reanchored?: true; comments: CompactComment[]; target: CompactTarget }
+/** `currentLine`: where a line target's unchanged line now stands, while it is not stale. */
+export interface CompactThread { id: string; stale: boolean; reanchored?: true; currentLine?: number; comments: CompactComment[]; target: CompactTarget }
 interface FullThread { id: string; stageHead: string; comments: ResolvedComment[]; target: Target }
 export interface FeedbackGroup<T extends CompactThread | FullThread = CompactThread | FullThread> {
   stageId: string;
@@ -793,6 +796,23 @@ function pendingFeedback(
       throw error;
     }
   }
+  // A line thread is current while its line still has a row in the stage's diff.
+  const lineThreads = compact ? awaiting.flatMap((thread) => {
+    const target = thread.target;
+    const stage = target.kind === "line" ? semantic.stages.get(target.stageId) : undefined;
+    return target.kind === "line" && stage ? [{ thread, target, stage }] : [];
+  }) : [];
+  // Files as the review shows them, as the viewer locates its lines.
+  const ordered = semantic.manifest.stages.flatMap((id) => {
+    const stage = semantic.stages.get(id);
+    return stage ? [{ ...stage, id }] : [];
+  });
+  const shownFiles = new Map(shownStageFiles(ordered).map((files, index) => [ordered[index].id, files]));
+  const currentLines = new Map(locateLineAnchors(paths.root, lineThreads.map(({ target, stage }) => ({
+    anchor: target,
+    stage: stage.change,
+    file: shownFiles.get(target.stageId)?.find((file) => file.path === target.path),
+  }))).map((line, index) => [lineThreads[index].thread.id, line]));
   const groups: FeedbackGroup[] = [];
   const listed: Thread[] = [];
   for (const [stageId, stage] of semantic.stages) {
@@ -817,16 +837,19 @@ function pendingFeedback(
                 const targetStage = target.stageId
                   ? semantic.stages.get(target.stageId)
                   : null;
+                const currentLine = target.kind === "line" ? currentLines.get(thread.id) ?? null : null;
                 return {
                   id: thread.id,
-                  stale:
-                    thread.stageHead !== stage.change.headRevision ||
-                    Boolean(
-                      targetHead &&
-                        targetStage &&
-                        targetHead !== targetStage.change.headRevision,
-                    ),
+                  stale: target.kind === "line"
+                    ? currentLine === null
+                    : thread.stageHead !== stage.change.headRevision ||
+                      Boolean(
+                        targetHead &&
+                          targetStage &&
+                          targetHead !== targetStage.change.headRevision,
+                      ),
                   ...(reanchored.has(thread.id) ? { reanchored: true } : {}),
+                  ...(currentLine !== null ? { currentLine } : {}),
                   comments: agentComments(paths, thread.comments).map(({ author, body, attachments }) => ({ author, body, ...(attachments.length ? { attachments } : {}) })),
                   target,
                 };

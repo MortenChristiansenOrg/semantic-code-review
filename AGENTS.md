@@ -144,8 +144,9 @@ compatibility contract and the explicit transition to semantic versioning at 1.0
   it was last initialized or begun.
 - **Anchor**: A stage head snapshot a feedback thread is attached to. Pending
   non-line anchors may refresh when the exact target still exists; line anchors
-  remain immutable. An anchor is **stale** when it no longer matches and cannot
-  be refreshed safely.
+  remain immutable. A line thread follows its line, unchanged, to its row in the
+  stage's current diff. An anchor is **stale** when it no longer matches and
+  cannot be refreshed safely: for a line thread, when its line has no such row.
 - **Working branch**: The branch checked out in the repository checkout or
   linked worktree where the LLM is currently making implementation changes.
   When no changes are in progress, it is the branch currently checked out

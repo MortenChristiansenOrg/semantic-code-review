@@ -1,4 +1,6 @@
 import { resolveCodeTarget } from "./shared/insight-targets.js";
+import { locateLineAnchors, type LineAnchorCache } from "./shared/line-anchors.js";
+import { shownStageFiles } from "./shared/stage-files.js";
 export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
  * Semantic Flow review viewer launcher.
@@ -775,24 +777,9 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
 /** Files follow their last occurrence in the ordered review, independently of
  * intervening stages. */
 function readViewerStages(artifact: ViewerArtifact): ViewerStage[] {
-  const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
-  return artifact.manifest.stages.map((id) => {
-    const stage = artifact.stage(id);
-    const files = stage.change.files.map((file): ViewerFile => {
-      const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
-      const { previousPath: ignored, ...current } = file;
-      const oldPath = last ? last.path : file.previousPath;
-      const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item): item is string => Boolean(item) && item !== file.path))];
-      return { ...current, ...(oldPath && oldPath !== file.path ? { previousPath: oldPath } : {}),
-        previousPaths, baseRevision: last ? last.headRevision : stage.change.baseRevision,
-        ...(last ? { previousStageId: last.stageId } : {}) };
-    });
-    for (const file of stage.change.files) if (file.previousPath) previous.delete(file.previousPath);
-    for (const file of files) {
-      previous.set(file.path, { stageId: stage.id, headRevision: stage.change.headRevision, path: file.path, previousPaths: file.previousPaths });
-    }
-    return { ...stage, change: { ...stage.change, files } };
-  });
+  const stages = artifact.manifest.stages.map((id) => artifact.stage(id));
+  const files = shownStageFiles(stages);
+  return stages.map((stage, index) => ({ ...stage, change: { ...stage.change, files: files[index] } }));
 }
 
 /** The revision range a diff is computed over. */
@@ -1218,7 +1205,8 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
   };
 }
 
-function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture): Wire.ImplementationData {
+function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
+  lineAnchorCache?: LineAnchorCache): Wire.ImplementationData {
   const artifact = readViewerArtifact(repoRoot);
   const { manifest } = artifact;
   const requirements = manifest.requirements.map((specificationId): Wire.Requirement =>
@@ -1287,7 +1275,7 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
     };
   });
 
-  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId, lineAnchorCache));
   return {
     implementationId: manifest.implementationId,
     reviewId: reviewId(repoRoot, manifest.implementationId),
@@ -1322,6 +1310,7 @@ export function createViewerDataSource(
 ) {
   const captureGit = options.gitCapture || gitCapture;
   const stageCache = new Map<string, StageRecord>();
+  const lineAnchorCache: LineAnchorCache = new Map();
   let cachedRevision = "";
   let cachedScript: string | undefined;
   let cachedData: ImplementationData | null = null;
@@ -1372,7 +1361,13 @@ export function createViewerDataSource(
         (stage) => stageRecord(stage).stats,
         snapshot,
         captureGit,
+        lineAnchorCache,
       ));
+      // Located lines are immutable facts of their inputs; keep a bounded number.
+      for (const oldest of lineAnchorCache.keys()) {
+        if (lineAnchorCache.size <= 4096) break;
+        lineAnchorCache.delete(oldest);
+      }
       cachedData = data;
       cachedScript = undefined;
       cachedRevision = snapshot.revision;
@@ -1491,9 +1486,10 @@ export function createImplementationDataScript(repoRoot: string) {
 /** Where a file or line thread's path now is, relative to its original stage head. */
 type TargetState = { state: "present" } | { state: "renamed"; path: string } | { state: "deleted" } | { state: "not-in-stage" };
 
-// Load open and resolved feedback threads from the local feedback store. A
-// thread anchor is stale when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevision: string }[], implementationId: string) {
+// Load open and resolved feedback threads from the local feedback store. A line
+// thread's anchor is stale when its line no longer has a row in the stage's
+// current diff; another thread's when its assigned or target stage has moved.
+function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementationId: string, lineAnchorCache?: LineAnchorCache) {
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), (): Thread[] => {
     requireImplementation(repoRoot, implementationId);
@@ -1504,6 +1500,18 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
     return manifest.threads.flatMap((id) => viewerThread(readStoredThread(path.join(feedbackRoot, "threads", `${id}.json`))) ?? []);
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  // Every line anchor is followed with one batch of Git reads.
+  const lineThreads = storedThreads.flatMap((thread) => {
+    const target = thread.target;
+    const stage = target.kind === "line" ? stageById.get(target.stageId) : undefined;
+    return target.kind === "line" && stage ? [{ thread, target, stage }] : [];
+  });
+  const currentLines = new Map(locateLineAnchors(repoRoot, lineThreads.map(({ target, stage }) => ({
+    anchor: target,
+    stage,
+    file: stage.files.find((file) => file.path === target.path),
+  })), { cache: lineAnchorCache }).map((line, index) => [lineThreads[index].thread.id, line]));
   return storedThreads.map((thread) => {
     const target = thread.target;
     const currentHead = target.stageId === undefined ? undefined : currentHeads.get(target.stageId);
@@ -1546,12 +1554,14 @@ function buildFeedbackThreads(repoRoot: string, stages: { id: string; headRevisi
       stageHead: thread.stageHead,
       createdAt: thread.createdAt,
       resolvedAt: thread.resolvedAt || null,
-      anchorStale:
-        currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
-        Boolean(
-          target.stageId &&
-            currentHeads.get(target.stageId) !== target.stageHead,
-        ),
+      ...(currentLines.has(thread.id) ? { currentLine: currentLines.get(thread.id) ?? null } : {}),
+      anchorStale: target.kind === "line"
+        ? (currentLines.get(thread.id) ?? null) === null
+        : currentHeads.get(thread.assignedStageId) !== thread.stageHead ||
+          Boolean(
+            target.stageId &&
+              currentHeads.get(target.stageId) !== target.stageHead,
+          ),
     };
   });
 }

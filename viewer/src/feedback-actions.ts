@@ -5,13 +5,13 @@ import { AGENT_COMMAND, agent, autoSendFeedback, requestReplyNotifications, send
 import * as api from "./api";
 import { app, data } from "./context";
 import { compose, draftSnapshots, rememberDraftSnapshot, replyEditId } from "./editor";
-import { artifactThreadById, lineKey } from "./lookups";
+import { artifactThreadById } from "./lookups";
 import { collapseThenRender } from "./navigation";
 import { adoptViewerSnapshot } from "./polling";
 import { render } from "./render";
 import { persist, state } from "./state";
 import { labelFor } from "./thread-models";
-import { artifactThreadsForElement, heldThreadCopies, localVisibleForElement, noteAt, pendingFeedback, pendingReplies, threadCollapsed, threadOps } from "./threads";
+import { artifactThreadsForElement, heldThreadCopies, localVisibleForElement, noteAt, pendingFeedback, pendingReplies, threadCollapsed, threadLineId, threadOps } from "./threads";
 import { errorMessage, failureOf } from "./narrow";
 import type { Note } from "./types";
 import { cssEsc } from "./util";
@@ -54,10 +54,8 @@ export async function threadAction(threadId: string, kind: ThreadActionKind): Pr
     // Resolving the last active thread/comment on a diff line should hide the
     // whole line-notes section, not leave a collapsed thread the reviewer must
     // dismiss by hand. Collapse the inline row and re-render.
-    if (kind === "resolve" && thread.target && thread.target.kind === "line") {
-      const lineId = lineKey(
-        thread.target.stageId, thread.target.side, thread.target.line, thread.target.path,
-      );
+    const lineId = kind === "resolve" ? threadLineId(thread) : null;
+    if (lineId) {
       const activeLeft =
         artifactThreadsForElement("line", lineId).some((t) => t.status !== "resolved") ||
         localVisibleForElement(lineId).length > 0;

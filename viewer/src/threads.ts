@@ -64,13 +64,22 @@ export function noteNodeId(note: NoteTarget): string | null {
   if (note.nodeId) return memberships.some((m) => m.nodeId === note.nodeId) ? note.nodeId : null;
   return memberships.length === 1 ? memberships[0].nodeId : null;
 }
+/** The line ID of the row a line thread is shown on: the row of the current
+ * diff where the line it was written about still stands unchanged. Without one
+ * the thread is shown at file level. */
+export function threadLineId(t: FeedbackThread): string | null {
+  const target = t.target;
+  if (target.kind !== "line" || typeof t.currentLine !== "number") return null;
+  const entry = currentFileEntry(target.stageId, target.path);
+  return entry && entry.file.path === target.path ? lineKey(target.stageId, target.side, t.currentLine, target.path) : null;
+}
 export function threadNote(t: FeedbackThread): ThreadNote {
   const target = t.target;
   const local = usableNotes().find((c) => c.threadId === t.id);
   return {
     kind: target.kind,
     id: target.kind === "file" ? fileKey(target.stageId, target.path)
-      : target.kind === "line" ? lineKey(target.stageId, target.side, target.line, target.path)
+      : target.kind === "line" ? threadLineId(t) ?? lineKey(target.stageId, target.side, target.line, target.path)
       : target.kind === "stage" ? target.stageId
       : target.kind === "insight" ? insightKey(target.stageId, target.collection, target.itemId) : target.nodeId,
     stageId: target.stageId || t.assignedStageId,
@@ -95,13 +104,11 @@ export function artifactThreadsForElement(kind: FeedbackTargetKind, id: string |
       return tk === "node" && t.target.nodeId === id && t.target.stageId === stageId;
     if (kind === "insight") return tk === "insight" && insightKey(t.target.stageId, t.target.collection, t.target.itemId) === id;
     const entry = tk === "file" || tk === "line" ? currentFileEntry(t.target.stageId, t.target.path) : null;
-    const renamedLine = tk === "line" && entry && entry.file.path !== t.target.path;
-    // A rename identifies the file, not the old line's new position. Keep
-    // immutable line anchors at file level until their location is reviewed.
-    if (kind === "file") return (tk === "file" || renamedLine) && entry?.id === id;
-    if (kind === "line")
-      return tk === "line" && !renamedLine &&
-        lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path) === id;
+    // A line thread is shown on the row of the line it was written about, and
+    // at file level once that line has no row, also after a rename.
+    const lineId = tk === "line" ? threadLineId(t) : null;
+    if (kind === "file") return (tk === "file" || tk === "line" && !lineId) && entry?.id === id;
+    if (kind === "line") return lineId !== null && lineId === id;
     return false;
   });
 }

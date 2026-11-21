@@ -13,7 +13,7 @@ import { errorMessage, failureOf } from "./narrow";
 import { render } from "./render";
 import { state } from "./state";
 import { lineListKey, lineThreadModel } from "./thread-models";
-import { artifactThreadsForElement, selectedThreadLists, usableNotes, visibleThreadCount } from "./threads";
+import { artifactThreadsForElement, selectedThreadLists, threadLineId, usableNotes, visibleThreadCount } from "./threads";
 import type { FileEntry, MembershipEntry, ViewerFile, ViewerStage } from "./types";
 import type { ComparisonInfoView, DiffBodyView, DiffContentView, DiffControlsView, DiffPanelView, DiffRowView, InlineInsightView, MarkdownPreviewView } from "./views/diff";
 import { highlightCode, langFor, type CodeToken } from "./views/highlight";
@@ -85,7 +85,10 @@ export function pushCodeRow(out: DiffRowView[], row: CodeRow, ctx: DiffContext |
 // by the new line they start on.
 export function diffContext(entry: FileEntry, nodeId: string, extra: Partial<DiffContext> = {}): DiffContext {
   const notedLines = new Set(usableNotes().filter((c) => c.kind === "line").map((c) => c.id));
-  for (const t of artifactThreads) if (t.target?.kind === "line") notedLines.add(lineKey(t.target.stageId, t.target.side, t.target.line, t.target.path));
+  for (const t of artifactThreads) {
+    const lineId = threadLineId(t);
+    if (lineId) notedLines.add(lineId);
+  }
   const insightsByLine = new Map<number, InlineInsightView[]>();
   for (const ins of entry.stage.insights) {
     const target = ins.codeTarget;

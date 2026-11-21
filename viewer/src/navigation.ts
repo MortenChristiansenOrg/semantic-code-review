@@ -4,10 +4,10 @@ import type { FeedbackTargetKind, FileMembership } from "../../scripts/src/share
 import { app } from "./context";
 import { setSpecificationOpen } from "./details";
 import { ensureFileDiff } from "./diffs";
-import { activeFileNodeId, fileApprovalKey, fileById, fileHasLine, fileKey, parseInsightKey, parseLineId } from "./lookups";
+import { activeFileNodeId, artifactThreads, fileApprovalKey, fileById, fileHasLine, fileKey, parseInsightKey, parseLineId } from "./lookups";
 import { render } from "./render";
 import { persist, state } from "./state";
-import { threadStateKey } from "./threads";
+import { threadLineId, threadStateKey } from "./threads";
 import type { FileEntry } from "./types";
 import { ANIM_EASE, afterAnim, cssEsc, motionReduced } from "./util";
 
@@ -36,6 +36,10 @@ interface LazyJump {
   id: string;
   fileId: string;
   membership: FileMembership | null | undefined;
+  /** The stage head the line ID was taken from. */
+  head: string;
+  /** The threads shown on that line then. */
+  threads: string[];
 }
 export let pendingLazyJump: LazyJump | null = null;
 /** The loaded jump whose scheduled frames may still open and scroll to its target. */
@@ -58,11 +62,16 @@ export function resumePendingLazyJump(): void {
   pendingLazyJump = null;
   resumingJump = pending;
   const parsed = parseLineId(pending.id);
-  const exact =
-    entry &&
-    parsed &&
-    Array.isArray(entry.file.lines) &&
-    fileHasLine(entry.file, parsed.side, parsed.line);
+  // A line number is only the same line in the diff it was taken from. After a
+  // live update moved the stage, the jump ends at the line only while a thread
+  // it was going to is still shown there, and otherwise at the file. Decided
+  // when it scrolls, as an update can land before.
+  const exact = () => {
+    const current = fileById.get(pending.fileId);
+    return Boolean(current && parsed && (current.stage.headRevision === pending.head ||
+      artifactThreads.some((t) => pending.threads.includes(t.id) && threadLineId(t) === pending.id)) &&
+      Array.isArray(current.file.lines) && fileHasLine(current.file, parsed.side, parsed.line));
+  };
   requestAnimationFrame(() => {
     if (resumingJump !== pending) return;
     if (pending.membership?.nodeId) {
@@ -74,7 +83,7 @@ export function resumePendingLazyJump(): void {
     requestAnimationFrame(() => {
       if (resumingJump !== pending) return;
       resumingJump = null;
-      const target = exact
+      const target = exact()
         ? app.querySelector(`[data-line-id="${cssEsc(pending.id)}"]`)
         : fileRowElement(pending.fileId, pending.membership?.nodeId);
       if (target)
@@ -136,7 +145,8 @@ export function jumpToElement(kind: FeedbackTargetKind, id: string, stageId?: st
       ? { entry: lineEntry, target: lineTarget } : null;
   if (waitForLazyLine) {
     const { entry, target } = waitForLazyLine;
-    pendingLazyJump = { id, fileId: entry.id, membership: lineMembership };
+    pendingLazyJump = { id, fileId: entry.id, membership: lineMembership, head: entry.stage.headRevision,
+      threads: artifactThreads.filter((t) => threadLineId(t) === id).map((t) => t.id) };
     state.fileView[entry.id] = "full";
     delete entry.file.lines;
     ensureFileDiff(entry, 0, true, target);
