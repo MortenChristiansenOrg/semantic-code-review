@@ -43,6 +43,8 @@ your current loop has ended; say so in one line instead of switching.
 
 The first wait starts a session, replacing any earlier listener for this review.
 Every result includes `session`; pass `--session <session>` to every later wait.
+Every wait repeats the `--project` and `--implementation-id` values you launched
+the viewer with.
 
 If the harness can run a command in the background and resume you when it
 finishes, run each wait that way with `--timeout 3600`, so the conversation

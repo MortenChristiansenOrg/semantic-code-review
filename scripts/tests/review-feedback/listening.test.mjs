@@ -177,6 +177,29 @@ test("a round another agent's session took over posts no more replies, and a sta
   assert.deepEqual(flowJson(repository).stages, []);
 });
 
+test("a round that retired before another agent took over posts no more replies, and its replaced wait skips validation", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "late");
+  const first = await waitAsync(repository, "--timeout", "5");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].releasingAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  const reissued = await waitAsync(repository, "--session", first.session, "--timeout", "5");
+  assert.notEqual(reissued.claim, first.claim);
+
+  const replacement = await waitAsync(repository, "--timeout", "5");
+  assert.deepEqual(threadIds(replacement), ["late"]);
+  for (const claim of [first.claim, reissued.claim]) {
+    repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "late", "--comment-id", `late-${claim}`, "--author", "agent", "--claim", claim, "--body", "Answered.");
+  }
+  // The replaced agent learns it was replaced even while the stack fails validation.
+  fs.writeFileSync(repository.feedbackPath("threads", "late.json"), "{");
+  assert.deepEqual(await waitAsync(repository, "--session", first.session, "--timeout", "2"),
+    { session: first.session, stopped: true, reason: "superseded" });
+});
+
 test("a first wait on a completed review starts no session and leaves a running round its threads", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");

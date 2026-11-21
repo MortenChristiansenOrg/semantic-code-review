@@ -199,7 +199,8 @@ export function touchAgent(state: AgentState, now: number, claimIds?: Iterable<s
 
 /** Starting to listen replaces any earlier session and returns the threads of every running round to the queue. */
 export function startSession(state: AgentState, now: number): AgentSession {
-  for (const claim of state.claims) claim.replaced = true;
+  // Every earlier round, running or retired, loses its threads to the new session.
+  for (const claim of [...state.claims, ...state.retiredClaims]) claim.replaced = true;
   endSession(state, now, "superseded");
   state.claims = [];
   const session = { id: randomUUID(), startedAt: iso(now), heartbeatAt: iso(now), feedbackAt: iso(now) };

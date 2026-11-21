@@ -49,7 +49,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
@@ -954,6 +954,12 @@ async function waitForFeedback(options: Options): Promise<void> {
     candidate = { ...candidate, feedbackDirectory: directory, feedbackExists: fs.existsSync(path.join(directory, "manifest.json")) };
   }
   const print = (value: Record<string, unknown>) => console.log(JSON.stringify(value));
+  // A session that ended, for example because another agent took over, stops before
+  // validating, which could otherwise fail on the other agent's work in progress.
+  const ended = (state: AgentState) => liveSession(state)?.id === requested ? null
+    : state.session?.id === requested ? state.session?.endReason || "stopped" : "superseded";
+  const endedFirst = requested ? updateAgentState(review, ended) : null;
+  if (endedFirst) { print({ session: requested, stopped: true, reason: endedFirst }); return; }
   // Continuing a session first checks the round just completed. A round still waiting
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
@@ -974,7 +980,7 @@ async function waitForFeedback(options: Options): Promise<void> {
       session.heartbeatAt = new Date(now).toISOString();
       return { session: session.id };
     }
-    return { stopped: state.session?.id === requested ? state.session.endReason || "stopped" : "superseded" };
+    return { stopped: ended(state) ?? "stopped" };
   });
   if (!start.session) { print({ session: requested ?? null, stopped: true, reason: start.stopped }); return; }
   const session = start.session;
