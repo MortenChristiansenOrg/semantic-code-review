@@ -2217,6 +2217,15 @@ interface PendingRestack {
   /** The stage that conflicted: its commit, cherry-picked onto parent in worktree. */
   conflict: { id: string; previousHead: string; stageCommit: string; parent: string };
   worktree: string;
+  /** The checkout sync detached so the restack could move its stage branch; --continue and --abort switch it back. */
+  checkout?: DetachedCheckout;
+}
+
+/** A worktree that had branch checked out at head and was detached so a restack could move the branch. */
+export interface DetachedCheckout {
+  worktree: string;
+  branch: string;
+  head: string;
 }
 
 function readPendingRestack(files: ArtifactFiles): PendingRestack | undefined {
@@ -2252,7 +2261,63 @@ function readPendingRestack(files: ArtifactFiles): PendingRestack | undefined {
     plans,
     conflict: { id: text(conflict, "id"), previousHead: sha(conflict, "previousHead"), stageCommit: sha(conflict, "stageCommit"), parent: sha(conflict, "parent") },
     worktree: text(record, "worktree"),
+    ...(record.checkout === undefined ? {} : { checkout: (() => {
+      const checkout = isRecord(record.checkout) ? record.checkout : invalid();
+      return { worktree: text(checkout, "worktree"), branch: text(checkout, "branch"), head: sha(checkout, "head") };
+    })() }),
   };
+}
+
+/** Switches a worktree the restack's caller detached back to its branch, once
+ * the restack completed or was discarded. Only a registered worktree of this
+ * repository that is still detached where it was left goes back, and only to
+ * one of the implementation's stage branches. Its notes go to stderr, so JSON
+ * output stays valid. */
+function restoreDetachedCheckout(root: string, checkout: DetachedCheckout, branchHead: string, stageBranches: ReadonlySet<string>): void {
+  const { worktree, branch, head } = checkout;
+  const leave = (reason: string) => console.error(`semantic-implementation: ${worktree} was left as it is, because ${reason}; check out ${branch} there if it is still wanted.`);
+  const real = (candidate: string) => {
+    let resolved = path.resolve(candidate);
+    try { resolved = fs.realpathSync.native(candidate); } catch { /* A missing path compares as written. */ }
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  if (!stageBranches.has(branch)) return leave(`${branch} is not a stage branch of the implementation`);
+  const registered = git(["worktree", "list", "--porcelain"], { cwd: root }).split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree ")).map((line) => real(line.slice("worktree ".length)));
+  if (!registered.includes(real(worktree))) return leave("it is no longer a worktree of this repository");
+  let current: string | undefined, detachedAt: string;
+  try {
+    // A stale registration's path may now hold another repository.
+    if (gitCommonDirectory(worktree) !== gitCommonDirectory(root)) return leave("it now belongs to another repository");
+    // A plain directory at a stale registration's path resolves to the checkout around it.
+    // Untrimmed: a directory name may end in a space.
+    if (real(gitRaw(["rev-parse", "--show-toplevel"], { cwd: worktree }).replace(/\r?\n$/, "")) !== real(worktree)) return leave("it is no longer a worktree root");
+    current = gitOptional(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree });
+    detachedAt = git(["rev-parse", "HEAD"], { cwd: worktree });
+  } catch {
+    return leave("it can no longer be read");
+  }
+  if (current !== undefined || detachedAt !== head) return leave(`it is no longer detached at ${head}`);
+  if (checkedOutBranches(root).has(branch)) return leave(`${branch} is checked out elsewhere`);
+  const now = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], { cwd: root });
+  if (now !== branchHead) return leave(now ? `${branch} moved` : `${branch} no longer exists`);
+  // An ignored local file the branch tracks is not overwritten; Git refuses instead.
+  try {
+    git(["switch", "--quiet", "--no-overwrite-ignore", branch], { cwd: worktree });
+  } catch (error) {
+    // A failing post-checkout hook reports failure after the switch happened.
+    if (gitOptional(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree }) !== `refs/heads/${branch}`) return leave(`switching failed: ${errorMessage(error)}`);
+    console.error(`semantic-implementation: switching ${worktree} to ${branch} reported: ${errorMessage(error)}`);
+  }
+  console.error(`Switched ${worktree} back to ${branch}.`);
+}
+
+/** The stage branches of the active artifact, or none when it cannot be read. */
+function artifactStageBranches(workspace: Workspace): Set<string> {
+  try {
+    const artifact = loadImplementation(workspace.root, workspace.snapshot, { includeWork: false });
+    return new Set(artifact.manifest.stages.map((id) => finalizedStage(artifact, id).change.branch));
+  } catch { return new Set(); }
 }
 
 function pendingRestackNote(pending: PendingRestack): string {
@@ -2469,6 +2534,8 @@ interface RestackRun {
   location: string;
   /** The resolution --continue resumed from: restored in the worktree when the restack cannot finish, so it is not lost. */
   resumed?: { parent: string; tree: string; stageCommit: string };
+  /** The checkout the caller detached for this restack. */
+  checkout?: DetachedCheckout;
 }
 
 /** Replays the stages from run.next up, bottom-up. A stage whose branch builds
@@ -2580,17 +2647,19 @@ function restack(workspace: Workspace, options: Options): void {
   }
 }
 
-/** Restacks every stage onto the current target branch head. */
-export function restackOntoTarget(root: string, base: string): RestackSummary {
+/** Restacks every stage onto the current target branch head. checkout names
+ * a stage branch the caller detached for it; a restack that stops at a
+ * conflict records it, so --continue and --abort switch the worktree back. */
+export function restackOntoTarget(root: string, base: string, checkout?: DetachedCheckout): RestackSummary {
   return withValidationContext(() => {
     const workspace = openWorkspace(root);
-    return withRestackLock(workspace, () => restackStages(workspace, { baseOption: base }));
+    return withRestackLock(workspace, () => restackStages(workspace, { baseOption: base, checkout }));
   });
 }
 
 function restackStages(
   workspace: Workspace,
-  { fromId, baseOption }: { fromId?: string; baseOption?: string },
+  { fromId, baseOption, checkout }: { fromId?: string; baseOption?: string; checkout?: DetachedCheckout },
 ): RestackSummary {
   assertCleanWorkingTree(workspace.root, "Restacking");
   const pending = readPendingRestack(workspace.snapshot);
@@ -2658,6 +2727,7 @@ function restackStages(
     parentHead: newBase,
     scratch: undefined,
     location: ScratchWorktree.location(workspace.root, artifact.manifest.implementationId),
+    ...(checkout ? { checkout } : {}),
   };
   for (const id of artifact.manifest.stages.slice(0, startIndex)) {
     const stage = finalizedStage(artifact, id);
@@ -2706,6 +2776,7 @@ function runRestack(
       plans: run.plans,
       conflict: error.conflict,
       worktree: run.location,
+      ...(run.checkout ? { checkout: run.checkout } : {}),
     };
     let recorded = false;
     try {
@@ -2883,8 +2954,15 @@ function continueRestack(workspace: Workspace): RestackSummary {
     scratch,
     location: pending.worktree,
     resumed: { parent: conflict.parent, tree, stageCommit: conflict.stageCommit },
+    ...(pending.checkout ? { checkout: pending.checkout } : {}),
   };
-  return runRestack(workspace, artifact, run, new Map(Object.entries(pending.refs)), heads, pending.startSnapshot);
+  const summary = runRestack(workspace, artifact, run, new Map(Object.entries(pending.refs)), heads, pending.startSnapshot);
+  if (pending.checkout) {
+    const moved = summary.stages.find(({ branch }) => branch === pending.checkout?.branch);
+    restoreDetachedCheckout(workspace.root, pending.checkout, moved?.nextHead ?? pending.checkout.head,
+      new Set(artifact.manifest.stages.map((id) => finalizedStage(artifact, id).change.branch)));
+  }
+  return summary;
 }
 
 /** Discards a pending restack and its worktree; no stage ref has moved. */
@@ -2895,6 +2973,7 @@ function abortRestack(workspace: Workspace): void {
   try { pending = readPendingRestack(workspace.snapshot); } catch (error) {
     console.error(`Warning: ${errorMessage(error)} It is removed anyway.`);
   }
+  const stageBranches = pending?.checkout ? artifactStageBranches(workspace) : new Set<string>();
   const implementationId = activeImplementationId(workspace.root, workspace.snapshot);
   const draft = new ArtifactDraft(workspace.snapshot);
   draft.remove(PENDING_RESTACK_FILE);
@@ -2911,6 +2990,7 @@ function abortRestack(workspace: Workspace): void {
     left = ` Its recorded worktree ${pending?.worktree} is not where restacks replay, so it was left alone.`;
   }
   console.log(`Discarded the restack${pending ? ` that stopped at stage ${pending.conflict.id}` : ""}; no stage refs were changed.${left}`);
+  if (pending?.checkout) restoreDetachedCheckout(workspace.root, pending.checkout, pending.checkout.head, stageBranches);
 }
 
 function changedPathNames(root: string, from: string, to: string): string[] {

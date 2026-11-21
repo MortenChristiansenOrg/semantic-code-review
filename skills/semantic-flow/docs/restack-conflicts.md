@@ -18,9 +18,11 @@ without asking permission for their internal operations. Apply
    checks there when they need no setup. Stage the complete resolution with
    `git add` or `git rm`. Do not commit, switch, or reset in that worktree.
 3. A branch the restack moves may not stay checked out: if a stage branch is
-   checked out in the artifact worktree, run `git switch --detach` there first
-   (`sync` already leaves it detached after a conflict), and restore the original checkout after the restack completes. Then run,
-   from the artifact worktree:
+   checked out in the artifact worktree, run `git switch --detach` there first,
+   and restore the original checkout after the restack completes. A stage
+   branch that `sync` or `feedback` detached after a conflict needs neither:
+   `--continue` switches the worktree back to it once the restack completes.
+   Then run, from the artifact worktree:
 
    ```text
    <semantic-flow> implementation restack --continue
@@ -43,5 +45,9 @@ its worktree stay while you await the answer.
 If `--continue` reports that a ref or the artifact changed since the restack
 began, inspect what changed instead of retrying. `<semantic-flow>
 implementation restack --abort` discards the pending restack and its worktree;
-no ref has moved, so start the restack again from the current state. Never move
-a stage ref with raw Git commands.
+no ref has moved, so start the restack again from the current state. It also
+switches back a stage branch that `sync` or `feedback` detached. If the
+artifact worktree is still detached after `--continue` or `--abort`, for
+example because either reports that it left the worktree as it is, check out
+the original branch there yourself. Never move a stage ref with raw Git
+commands.
