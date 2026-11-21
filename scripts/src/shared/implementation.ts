@@ -33,6 +33,8 @@ export interface Artifact {
   requirements: Map<string, Specification>;
   stages: Map<string, Stage>;
   workStages: Map<string, WorkStage>;
+  /** Stages `stage remove` took out of the stack, in their full form; never part of the stack. */
+  removedStages: Map<string, Stage>;
 }
 
 /** A finalized or working stage. */
@@ -48,6 +50,12 @@ export function stageBranchName(branchPrefix: string, stageId: string): string {
 /** Where a stage document is stored in the artifact. */
 export function stageFile(stage: EditableStage): string {
   return stage.$schema === STAGE_SCHEMA_ID ? `stages/${stage.id}.json` : `.work/stages/${stage.id}.json`;
+}
+
+/** Where the document of a removed stage is kept. It is stored in its full
+ * form, with the change it had when it was removed, since no stack derives it. */
+export function removedStageFile(stageId: string): string {
+  return `removed-stages/${stageId}.json`;
 }
 
 const compareOrdinal = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
@@ -329,6 +337,7 @@ export function loadImplementation(root: string, files: ArtifactFiles, { include
   };
   const requirementDocuments = manifest.requirements.map((id) => read("requirements", id, "specification"));
   const stageDocuments = manifest.stages.map((id) => read("stages", id, "stage"));
+  const removedDocuments = (manifest.removedStages ?? []).map(({ id }) => read("removed-stages", id, "removed stage"));
   const workDocuments = includeWork
     ? listJsonIds(files, ".work/stages").map((id) => {
       const file = `.work/stages/${id}.json`;
@@ -366,7 +375,9 @@ export function loadImplementation(root: string, files: ArtifactFiles, { include
       branch: stageBranchName(manifest.branchPrefix, id),
     }, label));
   }
-  return { manifest, requirements, stages, workStages };
+  const removedStages = new Map<string, Stage>();
+  for (const { id, label, value } of removedDocuments) removedStages.set(id, parseDocument(STAGE_SCHEMA_ID, value, label));
+  return { manifest, requirements, stages, workStages, removedStages };
 }
 
 /** The documents of an artifact, each stage with its derived change, as read
@@ -375,6 +386,8 @@ export interface UnvalidatedArtifact {
   manifest: JsonRecord;
   requirements: Map<string, unknown>;
   stages: Map<string, JsonRecord>;
+  /** The documents of removed stages that can be read, by ID. */
+  removedStages: Map<string, JsonRecord>;
 }
 
 const isFileId = (id: string) => id !== "" && id !== "." && id !== ".." && !/[\\/]/.test(id);
@@ -426,13 +439,21 @@ export function readUnvalidatedImplementation(root: string, files: ArtifactFiles
     });
     baseBranch = branch;
   }
-  return { manifest: { ...fields, stages: stack.map(({ id }) => id) }, requirements, stages };
+  const removedStages = new Map<string, JsonRecord>();
+  for (const entry of Array.isArray(fields.removedStages) ? fields.removedStages : []) {
+    const id = isRecord(entry) ? entry.id : undefined;
+    if (typeof id !== "string" || !isFileId(id) || !hasFile(files, removedStageFile(id))) continue;
+    const value = readArtifactJson(files, removedStageFile(id));
+    if (isRecord(value)) removedStages.set(id, value);
+  }
+  return { manifest: { ...fields, stages: stack.map(({ id }) => id) }, requirements, stages, removedStages };
 }
 
 // --- Full form ----------------------------------------------------------------
 
 /** The artifact's files in their full form, as publication and archives store
- * them: derived stage data is included and working stages are left out. */
+ * them: derived stage data is included, removed stages are kept, and working
+ * stages are left out. */
 export function fullFormFiles(artifact: Artifact, files: ArtifactFiles): ArtifactDraft {
   const draft = new ArtifactDraft(files);
   for (const file of files.list()) {
@@ -440,6 +461,7 @@ export function fullFormFiles(artifact: Artifact, files: ArtifactFiles): Artifac
   }
   draft.writeJson("manifest.json", artifact.manifest);
   for (const stage of artifact.stages.values()) draft.writeJson(stageFile(stage), stage);
+  for (const stage of artifact.removedStages.values()) draft.writeJson(removedStageFile(stage.id), stage);
   return draft;
 }
 

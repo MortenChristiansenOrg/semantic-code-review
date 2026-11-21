@@ -452,7 +452,7 @@ The command:
    preparing a cumulative branch is refused when every stage is empty. Commands
    that report on the stack count it as a finalized stage and name it as empty,
    and the viewer marks it as empty, with nothing to approve and no part in
-   review coverage.
+   review coverage. The agent removes it as described below.
 3. Moves all affected refs only after every replay succeeds. On a conflict it
    moves nothing and keeps the scratch worktree with normal Git conflict state:
    resolve and `git add` there, then run `restack --continue`, or discard the
@@ -470,6 +470,25 @@ when its rewritten diff no longer matches its node coverage.
 
 Default output is a one-line summary. Add `--json` when exact old and new
 revisions are needed.
+
+An empty stage would land as an empty commit under its title. Once no feedback
+thread on it is open, the agent removes it, in a feedback round, after a sync,
+or before preparing, and says so in its reply or closing line:
+
+```text
+<semantic-flow> implementation stage remove --id add-cancellation-policy
+```
+
+The stages above are rebuilt on the stage below with the same trees, authors
+and messages, so their diffs, approvals and threads are unaffected; the stage
+branch is deleted in the same transaction. The stage document, with its
+insights, validation and evidence, is kept under `removed-stages/` of the
+artifact, and its ID cannot be used again. Its resolved threads stay in the
+viewer's notes, marked “Stage removed”, and can no longer be replied to or
+reopened. `feedback --json`, `sync --json` and `status --json` list each empty
+stage with its unresolved threads in `emptyStageThreads`. A hosted review based
+on the removed stage branch needs its base changed to the new base the command
+reports.
 
 To bring the latest target changes into the implementation, ask the agent:
 

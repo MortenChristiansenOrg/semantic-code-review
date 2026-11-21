@@ -273,6 +273,12 @@ export interface Stage {
   empty?: true;
 }
 
+/** A stage `stage remove` took out of the stack. */
+export interface RemovedStage {
+  id: string;
+  title: string;
+}
+
 export interface AcceptanceCriterion {
   id: string;
   text: string;
@@ -388,6 +394,9 @@ export interface ImplementationData {
   baseRevision: string;
   requirements: Requirement[];
   stages: Stage[];
+  /** Stages removed from the stack because they changed nothing. Their resolved
+   * threads stay in `feedback`, read-only. Absent from older payloads. */
+  removedStages?: RemovedStage[];
   feedback: FeedbackThread[];
   /** Equals `ViewerSnapshot.revision` for the documents this payload was built from. */
   viewerRevision: string;

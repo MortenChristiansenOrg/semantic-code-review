@@ -69,7 +69,15 @@ Restore the original checkout after testing. Pending line feedback may remain
 stale; report its thread IDs without guessing new anchors, answering feedback,
 or resolving threads. Refreshed non-line anchors do not constitute approval.
 
-Report the target/upstream revisions, rewritten stages, checkout, validation
-results, and any remaining stale anchors. Stop after synchronization. Do not
+A stage the restack emptied appears in `emptyStageThreads`. When no thread on it
+is unresolved, remove it after testing and report the removal; otherwise keep it
+and report it as empty:
+
+```text
+<semantic-flow> implementation stage remove --id <stage-id> --json
+```
+
+Report the target/upstream revisions, rewritten stages, removed or empty stages,
+checkout, validation results, and any remaining stale anchors. Stop after synchronization. Do not
 continue implementation, approve, publish metadata, push, prepare, or merge
 unless the user separately requested those actions.

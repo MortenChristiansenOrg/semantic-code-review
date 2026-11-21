@@ -972,7 +972,8 @@ test("implementation export prints and writes the full form without changing the
   const before = Object.fromEntries(repository.artifact.list().map((file) => [file, repository.artifact.read(file)]));
 
   const exported = JSON.parse(repository.semantic("export"));
-  assert.deepEqual(Object.keys(exported), ["manifest", "requirements", "stages", "workingStages"]);
+  assert.deepEqual(Object.keys(exported), ["manifest", "requirements", "stages", "workingStages", "removedStages"]);
+  assert.deepEqual(exported.removedStages, {});
   assert.deepEqual(exported.manifest, { ...repository.artifact.readJson("manifest.json"), stages: ["implementation"] });
   assert.deepEqual(exported.requirements.story, repository.artifact.readJson("requirements/story.json"));
   assert.deepEqual(exported.stages.implementation, {

@@ -36,8 +36,13 @@ synchronization, `feedback --json` for feedback) to validate and refresh
 pending feedback anchors. If validation reports invalid node selectors, use
 `stage organize --finalized` for the affected stages before rerunning it. A
 stage whose changes the target or the stages below already contain stays as a
-marked empty stage; validation accepts it and stack preparation skips it.
-Report it.
+marked empty stage; validation accepts it and stack preparation skips it. When
+no thread on it is unresolved, remove it and report the removal; otherwise keep
+it and report it:
+
+```text
+<semantic-flow> implementation stage remove --id <stage-id> --json
+```
 
 If resolving requires a product or code-intent decision, ask about that
 behavior in plain language under `user-decisions.md`. The pending restack and

@@ -1058,6 +1058,32 @@ test('a review whose every stage is empty claims no approval', async ({ page }) 
   await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('0/0');
 });
 
+test('threads of a removed stage are labelled and read-only', async ({ page }) => {
+  const data = fixture();
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [
+    { ...thread('on-gone', 'resolved', { kind: 'stage', stageId: 'gone', label: 'Stage gone' }), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' },
+    { ...thread('fixed-in-gone', 'resolved'), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' },
+    { ...thread('kept', 'resolved'), assignedStageId: 'first', resolvedAt: '2026-09-08T11:00:00Z' },
+  ];
+  await mount(page, data);
+  await showNotes(page);
+  await page.locator('.notes-switch-btn[data-filter="resolved"]').click();
+  const resolved = page.locator('.notes-col-resolved');
+  for (const id of ['on-gone', 'fixed-in-gone']) {
+    const item = resolved.locator(`.tthread[data-thread-id="${id}"]`);
+    await item.locator('[data-action="toggle-thread-collapse"]').click();
+    await expect(item.locator('.tthread-removed')).toHaveText('Stage removed');
+    await expect(item.locator('.tthread-removed-note')).toContainText('Stage “Stage gone” changed nothing and was removed.');
+    await expect(item.locator('.tmsg')).toHaveText(/Feedback/);
+    await expect(item.locator('[data-action="thread-reopen"], [data-action="thread-reply"]')).toHaveCount(0);
+  }
+  const kept = resolved.locator('.tthread[data-thread-id="kept"]');
+  await kept.locator('[data-action="toggle-thread-collapse"]').click();
+  await expect(kept.locator('.tthread-removed')).toHaveCount(0);
+  await expect(kept.locator('[data-action="thread-reopen"]')).toHaveCount(1);
+});
+
 test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await mount(page);
