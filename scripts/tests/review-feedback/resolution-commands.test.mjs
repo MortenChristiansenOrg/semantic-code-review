@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import {
   beginStage,
@@ -638,4 +639,59 @@ test("a line thread stays on its line until the line changes, for the agent and 
   const stored = repository.readAbsoluteJson(repository.feedbackPath("threads/on-d.json"));
   assert.equal(stored.target.line, 4);
   assert.equal(stored.target.stageHead, written);
+});
+
+test("threads of a removed stage stay valid and read-only", (t) => {
+  const { repository, commits } = createImplementationWithStages(t, ["policy", "api"]);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "on-policy", "--comment-id", "on-policy-1", "--body", "Why policy?",
+    "--label", "Policy", "--target-kind", "stage", "--stage", "policy");
+  repository.feedback("thread", "add", "--id", "api-in-policy", "--comment-id", "api-in-policy-1", "--body", "Change api in policy.",
+    "--label", "API", "--target-kind", "node", "--stage", "api", "--node", "implementation-change", "--assigned-stage", "policy");
+  repository.feedback("thread", "add", "--id", "on-api", "--comment-id", "on-api-1", "--body", "Check api.",
+    "--label", "API", "--target-kind", "stage", "--stage", "api");
+  repository.feedback("thread", "resolve", "--id", "on-policy");
+  repository.feedback("thread", "resolve", "--id", "api-in-policy");
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", commits.get("policy"));
+  repository.semantic("restack", "--base", "main");
+  repository.semantic("stage", "remove", "--id", "policy");
+  // A resolved thread on a removed stage keeps its target and assignment, and a target on a remaining stage is still checked.
+  assert.match(repository.feedback("validate"), /Feedback validation passed: 3 thread\(s\)\./);
+
+  const threadFile = (id) => repository.feedbackPath("threads", `${id}.json`);
+  const stored = () => ["on-policy", "api-in-policy", "on-api"].map((id) => fs.readFileSync(threadFile(id), "utf8"));
+  const before = stored();
+  const readOnly = /stage policy was removed, so its threads are read-only/;
+  for (const id of ["on-policy", "api-in-policy"]) {
+    repository.expectFeedbackFailure(readOnly, "thread", "reply", "--id", id, "--comment-id", `${id}-2`, "--body", "More.");
+    repository.expectFeedbackFailure(readOnly, "thread", "reopen", "--id", id);
+  }
+  // A batch with one such reply writes nothing.
+  repository.expectFeedbackFailure(readOnly, "thread", "reply-batch", "--replies", JSON.stringify([
+    { id: "on-api", "comment-id": "on-api-2", body: "Done.", author: "agent" },
+    { id: "on-policy", "comment-id": "on-policy-2", body: "Done.", author: "agent" },
+  ]));
+  assert.deepEqual(stored(), before);
+  const partial = JSON.parse(repository.feedback("thread", "reply-batch", "--partial", "--replies", JSON.stringify([
+    { id: "on-policy", "comment-id": "on-policy-2", body: "Done.", author: "agent" },
+    { id: "on-api", "comment-id": "on-api-2", body: "Done.", author: "agent" },
+  ])));
+  assert.deepEqual(partial.accepted.map(({ id }) => id), ["on-api"]);
+  assert.deepEqual(partial.rejected.map(({ index }) => index), [0]);
+  assert.match(partial.rejected[0].error, readOnly);
+  assert.deepEqual(stored().slice(0, 2), before.slice(0, 2));
+  // No new thread can be put on it.
+  repository.expectFeedbackFailure("policy", "thread", "add", "--id", "late", "--comment-id", "late-1", "--body", "Late.",
+    "--label", "Policy", "--target-kind", "stage", "--stage", "policy");
+  repository.expectFeedbackFailure("valid assigned stage", "thread", "add", "--id", "late", "--comment-id", "late-1", "--body", "Late.",
+    "--label", "API", "--target-kind", "stage", "--stage", "api", "--assigned-stage", "policy");
+  // Only a resolved thread may stay on a removed stage.
+  const open = JSON.parse(before[0]);
+  delete open.resolvedAt;
+  open.status = "open";
+  fs.writeFileSync(threadFile("on-policy"), JSON.stringify(open));
+  repository.expectFeedbackFailure("Feedback thread on-policy is open on removed stage policy", "validate");
+  fs.writeFileSync(threadFile("on-policy"), before[0]);
+  repository.feedback("validate");
 });

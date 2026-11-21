@@ -74,6 +74,8 @@ export interface ThreadView {
   drafts: readonly ReplyDraftView[];
   /** The thread can be resolved, reopened and replied to. */
   actionable: boolean;
+  /** The title of the removed stage the thread belongs to; the thread is then read-only. Absent otherwise. */
+  removedStage?: string;
   /** A reply is being written to this thread somewhere on the page. */
   replying: boolean;
   /** Present where the reply being written is shown. */
@@ -157,6 +159,7 @@ function jumpButton(jump: JumpView, label: string): TemplateResult {
 }
 
 const JUMP = "Show what this thread is about";
+const REMOVED = "Stage removed · read-only";
 const DELETED = "This file no longer exists";
 
 function threadJump(jump: ThreadView["jump"]): TemplateResult | typeof nothing {
@@ -170,7 +173,7 @@ function threadJump(jump: ThreadView["jump"]): TemplateResult | typeof nothing {
 function headerTooltip(thread: ThreadView, clipped = false): string {
   const parts = [thread.collapsed ? "Expand thread" : "Collapse thread", thread.kindLabel,
     thread.title && (clipped || thread.title.tooltip !== thread.title.text) ? thread.title.tooltip : "",
-    thread.assignedStage ? `Assigned to stage: ${thread.assignedStage}` : "", thread.status,
+    thread.assignedStage ? `Assigned to stage: ${thread.assignedStage}` : "", thread.removedStage === undefined ? "" : REMOVED, thread.status,
     thread.jump === "deleted" ? DELETED : thread.jump ? JUMP : ""];
   return [...new Set(parts.filter(Boolean))].join(" · ");
 }
@@ -225,15 +228,18 @@ export function threadView(thread: ThreadView): TemplateResult {
           : html`<span class="tthread-title tthread-title-empty" aria-hidden="true"></span>`}
         ${thread.assignedStage ? html`<span class="tthread-stage">${thread.assignedStage}</span>` : nothing}
         ${thread.agentState ? html`<span class="tthread-agent is-${thread.agentState}">${AGENT_STATE[thread.agentState]}</span>` : nothing}
+        ${thread.removedStage === undefined ? nothing : html`<span class="tthread-removed">Stage removed</span>`}
         <span class="tthread-status-ic s-${thread.status}" aria-label=${thread.status}>${thread.status === "resolved" ? resolvedIcon : openIcon}</span>
         ${threadJump(thread.jump)}
       </div>
       <div class="tthread-body">
         <div class="tthread-body-inner">
+          ${thread.removedStage === undefined ? nothing
+            : html`<p class="tthread-removed-note">Stage “${thread.removedStage}” changed nothing and was removed. This conversation is kept for reference and can no longer be replied to or reopened.</p>`}
           ${thread.stale ? html`<p class="tthread-stale">${thread.stale}</p>` : nothing}
           <div class="tthread-msgs">${thread.messages.map(message)}${repeat(thread.drafts, (draft) => draft.id, (draft) => replyDraft(thread.id, draft))}</div>
           ${thread.error ? html`<p class="tthread-err">${thread.error}</p>` : nothing}
-          ${thread.actionable ? threadActions(thread) : nothing}
+          ${thread.actionable && thread.removedStage === undefined ? threadActions(thread) : nothing}
           ${thread.reply ? replyForm(thread.id, thread.reply) : nothing}
         </div>
       </div>

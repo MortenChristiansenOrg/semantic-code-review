@@ -41,7 +41,7 @@ import {
   type JsonRecord,
 } from "./shared/narrow.js";
 import { withValidationContext } from "./shared/validation-context.js";
-import { describeFinalizedStages } from "./shared/stage-report.js";
+import { describeFinalizedStages, stageThreads } from "./shared/stage-report.js";
 import {
   probeViewer,
   stopViewerAndWait,
@@ -350,6 +350,17 @@ async function checkImplementation(root: string): Promise<CapturedValidation & {
   return { ...captured, emptyStages };
 }
 
+/** An empty stage and the threads on it that are not resolved; with none, `stage remove` can remove it. */
+interface EmptyStageThreads {
+  stageId: string;
+  openThreadIds: string[];
+}
+
+/** The empty stages with their unresolved threads, read from the review's feedback. */
+function emptyStageThreads(feedbackRoot: string, emptyStages: readonly string[]): EmptyStageThreads[] {
+  return [...stageThreads(feedbackRoot, emptyStages)].map(([stageId, threads]) => ({ stageId, openThreadIds: threads.open }));
+}
+
 async function checkFeedback(root: string): Promise<CapturedValidation> {
   const { validateFeedbackAt } = await feedbackService();
   return captureValidation(() => validateFeedbackAt(root));
@@ -465,10 +476,16 @@ async function status(options: Options): Promise<void> {
   );
 
   const { emptyStages, ...implementationValidation } = artifactValidation;
+  let threadsOfEmptyStages: EmptyStageThreads[] | null = null;
+  if (emptyStages !== null && (!feedbackValidation || feedbackValidation.passed)) {
+    try { threadsOfEmptyStages = emptyStageThreads(feedbackRoot, emptyStages); } catch { /* Unknown; validation reports why. */ }
+  }
   const result = {
     artifact: candidate,
     /** The marked empty finalized stages; null when the artifact does not validate, so they are unknown. */
     emptyStages,
+    /** Each empty stage with its unresolved threads; null when either is unknown. */
+    emptyStageThreads: threadsOfEmptyStages,
     criteria: {
       total: allCriteria.length,
       covered: allCriteria.filter((criterion) =>
@@ -853,17 +870,19 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate): Promise<{
   };
 }
 
-async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<void> {
+/** Validates the implementation for a feedback command and returns its empty stages. */
+async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<string[]> {
   const artifactValidation = await checkImplementation(candidate.worktree);
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
+  return artifactValidation.emptyStages ?? [];
 }
 
 /** Claiming marks the returned threads as one round so no other run answers them. */
 async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
-  await validateArtifactForFeedback(candidate);
+  const emptyStages = await validateArtifactForFeedback(candidate);
 
   const worktreeStatus =
     git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
@@ -919,6 +938,8 @@ async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: Tar
     targetRestack,
     feedbackExists: candidate.feedbackExists,
     stages,
+    // Read after the round's threads were validated; an empty stage without any is removable.
+    emptyStageThreads: emptyStageThreads(feedbackRoot, emptyStages),
     ...(claim ? { claim: claimId, claimedElsewhere, responses } : {}),
   };
 }

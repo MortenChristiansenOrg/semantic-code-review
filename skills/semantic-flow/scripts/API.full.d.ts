@@ -316,6 +316,25 @@ export interface DiscardStageOptions {
  * @command implementation stage discard
  */
 export declare function discardStage(options: DiscardStageOptions): void;
+export interface RemoveStageOptions {
+    /** Emits the rebuilt stages, kept items, resolved threads and dependency changes as JSON. */
+    json?: true;
+    /** Finalized empty stage to remove. */
+    id: string;
+}
+/**
+ * Removes a finalized stage that changes nothing, such as one a restack or a
+ * correction emptied. The stages above it are rebuilt on the stage below with
+ * unchanged content, and its branch is deleted in the same transaction. Its
+ * document, with its insights and evidence, is kept under `removed-stages/`,
+ * and its ID cannot be reused. Refused while a thread on the stage is not
+ * resolved; its resolved threads stay readable but can no longer be replied to
+ * or reopened. Refused for the only stage, with a pending restack or a working
+ * stage, and while its branch is checked out in another worktree.
+ * @cli semantic-flow.mjs
+ * @command implementation stage remove
+ */
+export declare function removeStage(options: RemoveStageOptions): void;
 export interface RecordStageBatchOptions {
     /** Stage to update; omitted selects the active working stage. */
     stage?: string;

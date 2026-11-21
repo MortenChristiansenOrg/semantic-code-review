@@ -19,6 +19,21 @@ Publication readiness only considers criteria referenced by the finalized
 stages. Criteria in the requirement documents but outside those stage
 references are outside the review and must not block preparation.
 
+## Empty stages
+
+A cumulative branch would land each empty stage as an empty commit. Before
+preparing, run `<semantic-flow> status --json` and remove every stage listed in
+`emptyStageThreads` without open threads:
+
+```text
+<semantic-flow> implementation stage remove --id <stage-id> --json
+```
+
+Report each removal. The stages above get new heads with unchanged content; the
+helper below publishes metadata for them. A hosted review based on a removed
+stage branch needs its base changed to the branch the removal reports as the new
+base.
+
 ## Outputs
 
 If stack or cumulative-branch output is not specified and cannot be inferred,
