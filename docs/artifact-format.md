@@ -378,10 +378,11 @@ it, so landing is recorded before sharing. Pushing it sends the artifact, its
 evidence and the stage commits, but nothing reaches the target branch.
 
 Its short name, `semantic-review-archive/<implementation-id>`, differs from the
-short name of every ref under `refs/semantic-review/`, so Git resolves it to the
-tag alone. Stage, metadata and cumulative branches MUST NOT start with
-`semantic-review/` or `semantic-review-archive/`; the reference tooling refuses
-such a branch prefix or cumulative branch name.
+short name of every ref under `refs/semantic-review/`. Stage, metadata and
+cumulative branches MUST NOT start with `semantic-review/`,
+`semantic-review-archive/` or `refs/`; the reference tooling refuses such a
+branch prefix or cumulative branch name, and refuses to share an archive while
+a branch or ref of an older artifact has the tag's short name.
 
 ## Deliberate exclusions
 
