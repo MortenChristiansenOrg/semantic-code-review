@@ -1205,11 +1205,12 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
   };
 }
 
-/** Whether two commits have the same tree; false when either cannot be read. */
-function sameTree(root: string, left: string, right: string): boolean {
-  const trees = git(["rev-parse", `${left}^{tree}`, `${right}^{tree}`], { cwd: root, allowFailure: true });
-  const [first, second] = (trees ?? "").split(/\r?\n/);
-  return Boolean(first) && first === second;
+/** Whether a stage changes nothing: its head is one commit on its base that
+ * changes no file outside the artifact folder. Remote metadata is not trusted
+ * to say so; false when the commits cannot be read. */
+function changesNothing(root: string, base: string, head: string): boolean {
+  if (git(["rev-parse", "--verify", "--quiet", `${head}^`], { cwd: root, allowFailure: true }) !== base) return false;
+  return git(["diff", "--quiet", "--no-ext-diff", "--no-textconv", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
@@ -1279,9 +1280,8 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       nodes,
       files,
       insights: buildInsights(s, repoRoot),
-      // A stage changes nothing when its head has its base's tree; remote
-      // metadata is not trusted to say so.
-      ...(files.length === 0 && sameTree(repoRoot, base, head) ? { empty: true as const } : {}),
+      // Git, not the recorded file list, decides that a stage is empty.
+      ...(files.length === 0 && changesNothing(repoRoot, base, head) ? { empty: true as const } : {}),
     };
   });
 

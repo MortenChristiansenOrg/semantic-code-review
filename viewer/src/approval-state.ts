@@ -230,7 +230,7 @@ export function acceptanceStatus(ref: string): { key: "uncovered" | "approved" |
   const counted = stages.filter((x) => !x.s.empty);
   if (!counted.length) return { key: "uncovered", stages: [] };
   const allApproved = counted.every((x) => stageApproved(x.s));
-  return { key: allApproved ? "approved" : "pending", stages: stages.map((x) => x.i + 1) };
+  return { key: allApproved ? "approved" : "pending", stages: counted.map((x) => x.i + 1) };
 }
 
 /** The stages with something to approve: every stage but the empty ones. */
