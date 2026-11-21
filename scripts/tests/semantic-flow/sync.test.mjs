@@ -71,7 +71,10 @@ test("sync fetches the target upstream, restacks all stages, and refreshes feedb
   const stageThread = result.stages[0].threads.find((thread) => thread.id === "pending");
   assert.equal(stageThread.reanchored, true);
   assert.equal(stageThread.stale, false);
-  assert.equal(result.stages[0].threads.find((thread) => thread.id === "pending-line").stale, true);
+  // The restack gave the stage a new head without changing the line.
+  const lineThread = result.stages[0].threads.find((thread) => thread.id === "pending-line");
+  assert.equal(lineThread.stale, false);
+  assert.equal(lineThread.currentLine, 1);
   assert.deepEqual(repository.readAbsoluteJson(repository.feedbackPath("threads/pending-line.json")), lineBefore);
   const thread = repository.readAbsoluteJson(repository.feedbackPath("threads/pending.json"));
   assert.equal(thread.comments.length, 1);

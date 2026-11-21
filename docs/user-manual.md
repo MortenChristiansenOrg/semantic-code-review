@@ -421,9 +421,10 @@ In **Review queue**, add notes containing change instructions or questions.
 Notes remain editable browser-local drafts until sent. Sending creates open
 threads and records the responsible stage head. After a restack or correction,
 a line thread stays on the line it was written about, also when that line's
-number moved. Once that line changed or left the diff, the thread is shown at
-file level with its original line named, and says so, also after the agent
-replied.
+number moved. Once that line changed or left the diff, the thread is shown with
+the file's other threads, names its original line, and says so, also after the
+agent replied. A thread whose file left the stage's diff is listed in the
+notes panel.
 
 ## 8. Edit a lower stage and restack
 

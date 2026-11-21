@@ -1,5 +1,5 @@
 import { resolveCodeTarget } from "./shared/insight-targets.js";
-import { locateLineAnchors } from "./shared/line-anchors.js";
+import { locateLineAnchors, type LineAnchorCache } from "./shared/line-anchors.js";
 export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
  * Semantic Flow review viewer launcher.
@@ -1219,7 +1219,8 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
   };
 }
 
-function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture): Wire.ImplementationData {
+function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
+  lineAnchorCache?: LineAnchorCache): Wire.ImplementationData {
   const artifact = readViewerArtifact(repoRoot);
   const { manifest } = artifact;
   const requirements = manifest.requirements.map((specificationId): Wire.Requirement =>
@@ -1288,7 +1289,7 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
     };
   });
 
-  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId));
+  const feedback = withValidationContext(() => buildFeedbackThreads(repoRoot, stages, manifest.implementationId, lineAnchorCache));
   return {
     implementationId: manifest.implementationId,
     reviewId: reviewId(repoRoot, manifest.implementationId),
@@ -1323,6 +1324,7 @@ export function createViewerDataSource(
 ) {
   const captureGit = options.gitCapture || gitCapture;
   const stageCache = new Map<string, StageRecord>();
+  const lineAnchorCache: LineAnchorCache = new Map();
   let cachedRevision = "";
   let cachedScript: string | undefined;
   let cachedData: ImplementationData | null = null;
@@ -1373,7 +1375,13 @@ export function createViewerDataSource(
         (stage) => stageRecord(stage).stats,
         snapshot,
         captureGit,
+        lineAnchorCache,
       ));
+      // Located lines are immutable facts of their inputs; keep a bounded number.
+      for (const oldest of lineAnchorCache.keys()) {
+        if (lineAnchorCache.size <= 4096) break;
+        lineAnchorCache.delete(oldest);
+      }
       cachedData = data;
       cachedScript = undefined;
       cachedRevision = snapshot.revision;
@@ -1495,7 +1503,7 @@ type TargetState = { state: "present" } | { state: "renamed"; path: string } | {
 // Load open and resolved feedback threads from the local feedback store. A line
 // thread's anchor is stale when its line no longer has a row in the stage's
 // current diff; another thread's when its assigned or target stage has moved.
-function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementationId: string) {
+function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementationId: string, lineAnchorCache?: LineAnchorCache) {
   const feedbackRoot = feedbackDirectory(repoRoot, implementationId);
   const storedThreads = withReviewLock(reviewId(repoRoot, implementationId), (): Thread[] => {
     requireImplementation(repoRoot, implementationId);
@@ -1516,8 +1524,8 @@ function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementa
   const currentLines = new Map(locateLineAnchors(repoRoot, lineThreads.map(({ target, stage }) => ({
     anchor: target,
     stage,
-    previousPath: stage.files.find((file) => file.path === target.path)?.previousPath,
-  }))).map((line, index) => [lineThreads[index].thread.id, line]));
+    file: stage.files.find((file) => file.path === target.path),
+  })), { cache: lineAnchorCache }).map((line, index) => [lineThreads[index].thread.id, line]));
   return storedThreads.map((thread) => {
     const target = thread.target;
     const currentHead = target.stageId === undefined ? undefined : currentHeads.get(target.stageId);

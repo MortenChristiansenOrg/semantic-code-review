@@ -53,12 +53,13 @@ one line. Instead, the line is followed through Git's diff from the anchored
 snapshot to the stage's current diff: the new side from the target's
 `stageHead`, the old side from that commit's first parent, since a stage holds
 one commit on its base. Superseded heads stay reachable as parents of the
-artifact snapshot. A line thread is current while the same line stands
-unchanged at the same path and on the same side, and the current diff shows it
-there; its current line number may differ from the stored one. Otherwise the
-thread is stale: the line changed or was removed, the file moved, or the line
-is no longer shown on that side. The viewer and `feedback next --compact` give
-the same answer.
+artifact snapshot. Lines are compared as the viewer's diff shows them, with text
+conversion and the configured diff algorithm. A line thread is current while the
+same line stands unchanged at the same path and on the same side, and the
+current diff shows it there; its current line number may differ from the stored
+one. Otherwise the thread is stale: the line changed or was removed, the file
+moved or left the stage, its diff shows no lines, or the line is no longer shown
+on that side. The viewer and `feedback next --compact` give the same answer.
 
 ## Agent processing
 

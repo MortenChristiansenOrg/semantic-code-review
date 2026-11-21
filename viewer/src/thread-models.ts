@@ -37,12 +37,15 @@ export function threadTypeLabel(kind: string): string {
 }
 
 // Notes list: show only the filename for file targets, keep the full path on hover.
+// A line thread names the row it is shown on; at file level, its original line.
 export function threadTargetDisplay(t: FeedbackThread): { text: string; title: string } {
   const tgt = t.target;
   if ((tgt.kind === "file" || tgt.kind === "line") && tgt.path) {
     const name = splitPath(tgt.path).name;
-    const suffix = tgt.kind === "line" && tgt.line ? `:${tgt.line}` : "";
-    return { text: `${name}${suffix}`, title: `${tgt.path}${suffix}` };
+    const line = tgt.kind === "line" ? threadLineId(t) && t.currentLine || tgt.line : 0;
+    const suffix = line ? `:${line}` : "";
+    const moved = tgt.kind === "line" && line !== tgt.line ? ` (written on line ${tgt.line})` : "";
+    return { text: `${name}${suffix}`, title: `${tgt.path}${suffix}${moved}` };
   }
   const l = tgt.label || tgt.kind || "thread";
   return { text: l, title: l };
@@ -154,7 +157,7 @@ export function threadModel(t: FeedbackThread, withLabel?: boolean): ThreadView 
     staleMsg = `This file is no longer changed in this stage.`;
   // Shown whoever replied: the thread is no longer about a line of the current diff.
   else if (kind === "line" && !threadLineId(t))
-    staleMsg = "The line this feedback was written about changed after it was sent. The original line is shown here at file level.";
+    staleMsg = "The line this feedback was written about changed or left this diff after it was sent. The original line is shown here at file level.";
   else if (kind !== "line" && t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
     staleMsg = `Stage changed since this feedback was sent.`;
   if (withLabel && !ref && !staleMsg) staleMsg = "The original target is no longer available.";

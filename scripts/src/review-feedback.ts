@@ -804,7 +804,7 @@ function pendingFeedback(
   const currentLines = new Map(locateLineAnchors(paths.root, lineThreads.map(({ target, stage }) => ({
     anchor: target,
     stage: stage.change,
-    previousPath: stage.change.files.find((file) => file.path === target.path)?.previousPath,
+    file: stage.change.files.find((file) => file.path === target.path),
   }))).map((line, index) => [lineThreads[index].thread.id, line]));
   const groups: FeedbackGroup[] = [];
   const listed: Thread[] = [];
