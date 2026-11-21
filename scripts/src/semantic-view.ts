@@ -1209,8 +1209,10 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
  * changes no file outside the artifact folder. Remote metadata is not trusted
  * to say so; false when the commits cannot be read. */
 function changesNothing(root: string, base: string, head: string): boolean {
-  if (git(["rev-parse", "--verify", "--quiet", `${head}^`], { cwd: root, allowFailure: true }) !== base) return false;
-  return git(["diff", "--quiet", "--no-ext-diff", "--no-textconv", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
+  // Exactly one parent, the base: a merge can hide commits behind an unchanged tree.
+  const parents = git(["rev-list", "--parents", "--max-count=1", head], { cwd: root, allowFailure: true })?.split(" ");
+  if (parents?.length !== 2 || parents[1] !== base) return false;
+  return git(["diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
