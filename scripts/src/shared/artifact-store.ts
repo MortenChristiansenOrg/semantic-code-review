@@ -11,12 +11,15 @@
  * version that changes whenever the artifact does. A writer edits a draft on
  * top of the snapshot it read and commits the draft as a new snapshot, moving
  * the ref only if it still points at the snapshot that was read. */
+import { AsyncLocalStorage } from "node:async_hooks";
+import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.js";
-import { git, gitRaw } from "./git.js";
+import { git, gitEnvironment, gitRaw } from "./git.js";
+import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { jsonBytes, parseJsonDocument, removeFolder, replaceFile } from "./json.js";
 import { errorCode, errorMessage, isRecord } from "./narrow.js";
 
@@ -211,16 +214,60 @@ function assertDirectActiveRef(ref: string, symref: string): void {
   if (symref) fail(`${ref} is a symbolic ref to ${symref}, not an active artifact; remove it with git symbolic-ref --delete.`);
 }
 
-/** Every active implementation of the repository of root, read with one Git
- * process. A symbolic ref at an active ref's name fails every read: skipping it
- * would let selection fall back to another implementation. */
-export function listActiveImplementations(root: string): ActiveImplementation[] {
-  const output = gitRaw(["for-each-ref", "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)", ACTIVE_REF_PREFIX], { cwd: root });
+/** The active refs one unit of work, such as a viewer request, has read, by the
+ * worktree root they were read from. */
+export type ActiveRefReads = Map<string, readonly ActiveImplementation[]>;
+const activeRefReads = new AsyncLocalStorage<ActiveRefReads>();
+
+/** Runs work, and the asynchronous work it starts, reading the active refs of
+ * each worktree root at most once: later reads see what the first one read, as
+ * if all happened at that moment. reads holds what was read, so several calls
+ * can share it. Work that moves an active ref itself must not run in a scope. */
+export function readingActiveRefsOnce<T>(reads: ActiveRefReads, work: () => T): T {
+  return activeRefReads.run(reads, work);
+}
+
+const ACTIVE_REF_FORMAT = "--format=%(objectname)%09%(refname)%09%(parent)%09%(symref)";
+
+function parseActiveImplementations(output: string): ActiveImplementation[] {
   return output.split(/\r?\n/).filter(Boolean).flatMap((line) => {
     const [commit, ref, parents = "", symref = ""] = line.split("\t");
     assertDirectActiveRef(ref, symref);
     return [{ implementationId: ref.slice(ACTIVE_REF_PREFIX.length), ref, commit, supersededHeads: parents.split(" ").filter(Boolean) }];
   }).sort((left, right) => compareOrdinal(left.implementationId, right.implementationId));
+}
+
+const copyActives = (actives: readonly ActiveImplementation[]) =>
+  actives.map((active) => ({ ...active, supersededHeads: [...active.supersededHeads] }));
+
+/** Reads the active refs of root for the current readingActiveRefsOnce scope
+ * without blocking this thread, unless the scope read them already. A read that
+ * fails is left to the next synchronous one, which reports why. */
+export async function preloadActiveRefs(root: string): Promise<void> {
+  const reads = activeRefReads.getStore();
+  if (!reads || reads.has(root)) return;
+  const output = await new Promise<string | undefined>((resolve) => {
+    execFile("git", ["for-each-ref", ACTIVE_REF_FORMAT, ACTIVE_REF_PREFIX], {
+      cwd: root, env: gitEnvironment(), encoding: "utf8", windowsHide: true, maxBuffer: SUBPROCESS_MAX_BUFFER,
+    }, (error, stdout) => resolve(error ? undefined : stdout));
+  });
+  if (output === undefined || reads.has(root)) return;
+  let actives: ActiveImplementation[];
+  try { actives = parseActiveImplementations(output); } catch { return; }
+  reads.set(root, copyActives(actives));
+}
+
+/** Every active implementation of the repository of root, read with one Git
+ * process, or none inside readingActiveRefsOnce after the first. A symbolic ref
+ * at an active ref's name fails every read: skipping it would let selection
+ * fall back to another implementation. */
+export function listActiveImplementations(root: string): ActiveImplementation[] {
+  const reads = activeRefReads.getStore();
+  const read = reads?.get(root);
+  if (read) return copyActives(read);
+  const actives = parseActiveImplementations(gitRaw(["for-each-ref", ACTIVE_REF_FORMAT, ACTIVE_REF_PREFIX], { cwd: root }));
+  reads?.set(root, copyActives(actives));
+  return actives;
 }
 
 /** Names the implementation a process acts on once a command selected it.
@@ -820,12 +867,17 @@ class TreeFiles implements ArtifactFiles {
     const entry = this.entries.get(file);
     if (entry?.type !== "file") fail(`Cannot read ${this.describe(file)}: it is not a regular file.`);
     // Documents are read together on first use and kept. Any other file, such
-    // as captured evidence, can be large, so it is read alone and not kept.
+    // as captured evidence, can be large, so it is read alone and not kept;
+    // only the small review identity, read on every review check, is kept too.
     const isDocument = (name: string) => name === "manifest.json" ||
       /^(requirements|stages|\.work\/stages)\/[^/]+\.json$/.test(name);
     if (!isDocument(file)) {
+      const keep = file === "review.json";
+      const kept = keep ? this.#blobs.get(entry.oid) : undefined;
+      if (kept) return kept;
       const bytes = readBlobs(this.run, [entry.oid]).get(entry.oid);
       if (!bytes) fail(`Cannot read ${this.describe(file)}.`);
+      if (keep) this.#blobs.set(entry.oid, bytes);
       return bytes;
     }
     if (!this.#blobs.has(entry.oid)) {
