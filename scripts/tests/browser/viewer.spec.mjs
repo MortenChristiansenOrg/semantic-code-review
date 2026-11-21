@@ -5230,12 +5230,68 @@ test('Markdown titles show in the viewer tooltip, and a link names the titles of
   }).toPass();
   await shows(preview.getByText('Titled', { exact: true }), 'Link title');
   await shows(preview.getByRole('link').filter({ has: page.getByRole('img', { name: 'Logo' }) }), 'Outer title · Image title');
-  // A link without a usable target is no keyboard stop.
   await shows(preview.getByText('Script', { exact: true }), 'Target unavailable in this preview', 'hover');
   // A title that repeats the visible text adds nothing while the text shows in full.
   await page.mouse.move(0, 0);
   await preview.getByText('Same', { exact: true }).focus();
   await expect(tooltip).not.toHaveClass(/is-shown/);
+  expect(errors).toEqual([]);
+});
+
+test('the keyboard reaches every Markdown title outside a usable link, and untitled elements add no stop', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  const content = [
+    'Intro with [Usable](https://example.com/u) and **plain** text.',
+    '![Diagram](https://example.com/d.png "Image title") ![Plain](https://example.com/p.png)',
+    '[Script](javascript:alert(1)) [![Badge](https://example.com/b.png "Badge title")](javascript:alert(2))',
+    '<table title="Table title"><tbody><tr><td>Titled cell</td></tr></tbody></table>',
+    '<table><tbody><tr><td>Untitled cell</td></tr></tbody></table>',
+    '<ul><li><input type="checkbox" title="Checkbox title"> Task</li><li>Other task</li></ul>',
+  ].join('\n\n');
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.markdown-preview');
+  await expect(preview.getByText('Titled cell', { exact: true })).toBeVisible();
+  // Tab through the preview from the control before it, and list its stops.
+  await page.getByRole('button', { name: 'Preview', exact: true }).focus();
+  const stops = [];
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press('Tab');
+    const stop = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el?.closest('.markdown-preview')) return null;
+      return `${el.tagName.toLowerCase()} ${el.getAttribute('alt') || el.textContent.trim()}`.trim();
+    });
+    if (stop) stops.push(stop);
+    else if (stops.length) break;
+  }
+  expect(stops).toEqual(['a Usable', 'img Diagram', 'a Script', 'a', 'table Titled cell', 'li Task']);
+  const tooltip = page.locator('#review-tooltip');
+  const shows = (target, text) => expect(async () => {
+    await page.mouse.move(0, 0); await target.blur(); await target.focus();
+    await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
+    await expect(tooltip).toHaveText(text, { timeout: 1000 });
+    await expect(target).toHaveAttribute('aria-describedby', 'review-tooltip', { timeout: 1000 });
+  }).toPass();
+  await shows(preview.getByRole('img', { name: 'Diagram' }), 'Image title');
+  // A link without a usable target is still a disabled link; the parts it holds share its stop.
+  const script = preview.getByRole('link', { name: 'Script', exact: true });
+  await expect(script).toHaveAttribute('aria-disabled', 'true');
+  await shows(script, 'Target unavailable in this preview');
+  await shows(preview.getByRole('link', { name: 'Badge', exact: true }), 'Target unavailable in this preview · Badge title');
+  await expect(preview.getByRole('img', { name: 'Badge' })).not.toHaveAttribute('tabindex');
+  await shows(preview.getByRole('table').filter({ hasText: /^Titled cell$/ }), 'Table title');
+  // A disabled checkbox takes no focus, so its list item holds its title.
+  await shows(preview.getByRole('listitem').filter({ hasText: 'Task' }).first(), 'Checkbox title');
+  // Escape closes it as any tooltip, and focus stays.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(preview.getByRole('listitem').first()).toBeFocused();
+  await expect(preview.getByRole('listitem').first()).not.toHaveAttribute('aria-describedby');
+  // Only titled elements gained a stop.
+  await expect(preview.locator('[tabindex]')).toHaveCount(5);
   expect(errors).toEqual([]);
 });
 

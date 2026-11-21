@@ -60,15 +60,21 @@ window.renderMarkdownPreview = (source, resourceUrl) => {
   return template.innerHTML;
 };
 
+// Elements that take no keyboard focus here: checkboxes are always disabled.
+const UNFOCUSABLE = new Set(['INPUT', 'BR']);
+
 // The viewer shows titles in its own tooltip (see tooltips.ts). A link is the
 // keyboard stop for the hints of the parts it holds, such as an image, and also
 // names a part whose title repeats its text while the layout cuts that part off.
+// The parent of an element that takes no focus holds its hint the same way.
+// Every other element with a hint becomes a keyboard stop of its own, so the
+// keyboard reaches each hint the pointer does; elements without one get none.
 function showTitlesAsTooltips(root: DocumentFragment): void {
   const titled = [...root.querySelectorAll('[title]')];
-  // Per link, the hints of its parts that always show, and all of them.
+  // Per link or parent, the hints of its parts that always show, and all of them.
   const parts = new Map<Element, { shown: string[]; all: string[] }>();
   for (const element of titled) {
-    const owner = element.parentElement?.closest('a');
+    const owner = element.parentElement?.closest('a') || (UNFOCUSABLE.has(element.tagName) ? element.parentElement : null);
     const own = labelHint(element.getAttribute('title') || '', element.textContent || '');
     const hint = own.tooltip || own.clipped;
     if (!owner || !hint) continue;
@@ -85,5 +91,14 @@ function showTitlesAsTooltips(root: DocumentFragment): void {
     if (hint.tooltip) element.setAttribute('data-tooltip', hint.tooltip);
     if (hint.clipped || all.length > shown.length) element.setAttribute('data-tooltip-clipped', joinHintList([title, ...all]));
     if (hint.clipped) element.setAttribute('data-clippable', '');
+    const hinted = element.hasAttribute('data-tooltip') || element.hasAttribute('data-tooltip-clipped');
+    // A link's parts share its stop, and a focusable inside a link is invalid.
+    if (!hinted || UNFOCUSABLE.has(element.tagName) || element.parentElement?.closest('a')) continue;
+    if (element.tagName === 'A') {
+      if (element.hasAttribute('href')) continue;
+      // A link without a usable target stays a link, disabled but focusable.
+      element.setAttribute('role', 'link');
+    }
+    element.setAttribute('tabindex', '0');
   }
 }
