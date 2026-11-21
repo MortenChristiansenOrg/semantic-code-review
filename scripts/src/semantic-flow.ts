@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
-import { downloadRelease, listReleases, selectRelease, upgradeNotes } from "./shared/release-client.js";
+import { downloadRelease, listReleases, newestVersion, selectRelease, upgradeNotes } from "./shared/release-client.js";
 import { compareVersions, isPrerelease, parseVersion } from "./shared/release-version.js";
 import { skillFiles, unpackDistribution } from "./shared/distribution.js";
 import path from "node:path";
@@ -1772,14 +1772,18 @@ async function update(options: Options): Promise<void> {
   const previousVersion = readVersion(skillDirectory);
   parseVersion(previousVersion);
   const releases = await listReleases();
+  // Without --prerelease, a prerelease ahead of every normal release stays,
+  // whatever the state of the older releases.
+  if (!requested && !prerelease && isPrerelease(previousVersion)) {
+    const newest = newestVersion(releases);
+    if (newest === null || compareVersions(newest, previousVersion) < 0) {
+      console.log(`semantic-flow ${previousVersion} is a prerelease, newer than ${newest === null ? "every" : `the latest release ${newest}`}${newest === null ? " release" : ""}; nothing was changed. Run update --prerelease to get later prereleases. Installed at: ${skillDirectory}`);
+      return;
+    }
+  }
   const release = selectRelease(releases, { requested, prerelease });
   const targetVersion = release.tag_name.slice(1);
   const difference = compareVersions(targetVersion, previousVersion);
-  // Without --prerelease, a prerelease ahead of every normal release stays.
-  if (difference < 0 && !requested && !prerelease && isPrerelease(previousVersion)) {
-    console.log(`semantic-flow ${previousVersion} is a prerelease, newer than the latest release ${targetVersion}; nothing was changed. Run update --prerelease to get later prereleases. Installed at: ${skillDirectory}`);
-    return;
-  }
   if (difference < 0 && !allowDowngrade) fail(`Installed ${previousVersion} is newer than ${targetVersion}. Use --version with --allow-downgrade only for intentional recovery.`);
   const installedMetadata = path.join(skillDirectory, "RELEASE.json");
   if (difference === 0 && fs.existsSync(installedMetadata)) {

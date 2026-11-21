@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 import { ZipFile } from 'yazl';
 import { nextVersion, compareVersions, parseVersion, RELEASE_REPOSITORY, assetName, isPrerelease, normalVersion } from '../src/shared/release-version.ts';
 import { MINIMUM_NODE_MAJOR, sha256, skillFiles, unpackDistribution, validateDistribution } from '../src/shared/distribution.ts';
-import { selectRelease, upgradeNotes, githubBytes, listReleases } from '../src/shared/release-client.ts';
-import { validateNotes, releaseBody, smokeTestInstallation } from '../src/release.ts';
+import { selectRelease, upgradeNotes, githubBytes, listReleases, newestVersion } from '../src/shared/release-client.ts';
+import { validateNotes, releaseBody, smokeTestInstallation, bumpArguments } from '../src/release.ts';
 import { probeViewer, stopViewerAndWait } from '../src/shared/viewer-lifecycle.ts';
 import { viewerFetch, viewerKey } from './helpers/viewer-client.mjs';
 import { createRepository, scriptsDirectory, initializeImplementation } from './helpers/repository.mjs';
@@ -120,21 +120,16 @@ test('the release helper bumps through prereleases to their normal release', () 
   assert.equal(nextVersion('1.0.0-rc.2', 'feature', { stable: true }), '1.0.0');
   assert.equal(nextVersion('1.0.0-rc.2', 'fix'), '1.0.0');
   assert.throws(() => nextVersion('1.0.0', 'feature', { stable: true, prerelease: true }), /only applies before/);
+  assert.throws(() => nextVersion('0.15.0-rc.1', 'none', { stable: true, prerelease: true }), /no releasable/);
+  assert.throws(() => nextVersion('0.15.0', 'none', { stable: true }), /no releasable/);
 });
 
 test('the release helper command accepts --prerelease and --stable in either order', () => {
-  const sources = fileURLToPath(new URL('..', import.meta.url));
-  const run = (...args) => spawnSync(process.execPath, ['--import', 'tsx', 'src/release.ts', 'next', ...args], { cwd: sources, encoding: 'utf8' });
-  const current = JSON.parse(fs.readFileSync(path.join(sources, 'package.json'), 'utf8')).version;
-  const plain = run('feature', '--prerelease');
-  assert.equal(plain.status, 0, plain.stderr);
-  assert.equal(plain.stdout.trim(), nextVersion(current, 'feature', { prerelease: true }));
-  const both = run('feature', '--prerelease', '--stable');
-  assert.equal(both.status, 0, both.stderr);
-  assert.equal(both.stdout.trim(), nextVersion(current, 'feature', { prerelease: true, stable: true }));
-  assert.equal(run('feature', '--stable', '--prerelease').stdout, both.stdout);
-  assert.match(run('feature', '--prerelease', '--prerelease').stderr, /Usage/);
-  assert.match(run('feature', '--beta').stderr, /Usage/);
+  assert.deepEqual(bumpArguments(['feature']), { change: 'feature', stable: false, prerelease: false });
+  assert.deepEqual(bumpArguments(['feature', '--prerelease']), { change: 'feature', stable: false, prerelease: true });
+  assert.deepEqual(bumpArguments(['feature', '--prerelease', '--stable']), { change: 'feature', stable: true, prerelease: true });
+  assert.deepEqual(bumpArguments(['feature', '--stable', '--prerelease']), { change: 'feature', stable: true, prerelease: true });
+  for (const invalid of [[], ['feature', '--prerelease', '--prerelease'], ['feature', '--beta'], ['feature', '-p']]) assert.throws(() => bumpArguments(invalid), /Usage/);
 });
 
 test('release selection includes prereleases only on request or by explicit version', () => {
@@ -153,12 +148,21 @@ test('release selection includes prereleases only on request or by explicit vers
   const broken = [...versions, pre('0.15.0-rc.4', { assets: [] })];
   assert.throws(() => selectRelease(broken, { prerelease: true }), /missing/);
   assert.equal(selectRelease(broken).tag_name, 'v0.14.0');
-  // A release whose GitHub flag disagrees with its version is never installed.
-  const mismatched = [...versions, release('0.16.0', { prerelease: true }), release('0.17.0-rc.1')];
-  assert.equal(selectRelease(mismatched).tag_name, 'v0.14.0');
-  assert.equal(selectRelease(mismatched, { prerelease: true }).tag_name, 'v0.15.0-rc.2');
-  assert.throws(() => selectRelease(mismatched, { requested: '0.16.0' }), /marked as a GitHub prerelease, but its version is a normal release/);
-  assert.throws(() => selectRelease(mismatched, { requested: '0.17.0-rc.1' }), /not marked as a GitHub prerelease/);
+  assert.equal(newestVersion(versions), '0.14.0');
+  assert.equal(newestVersion(versions, true), '0.15.0-rc.2');
+  assert.equal(newestVersion([pre('0.15.0-rc.1')]), null);
+  // A release whose GitHub flag disagrees with its version is never installed, and
+  // when it is the newest on the chosen path, it is reported rather than skipped.
+  const flaggedNormal = [...versions, release('0.16.0', { prerelease: true })];
+  assert.equal(selectRelease(flaggedNormal).tag_name, 'v0.14.0', 'plain update ignores GitHub prereleases');
+  assert.throws(() => selectRelease(flaggedNormal, { prerelease: true }), /marked as a GitHub prerelease, but its version is a normal release/);
+  assert.throws(() => selectRelease(flaggedNormal, { requested: '0.16.0' }), /marked as a GitHub prerelease, but its version is a normal release/);
+  const unflaggedPrerelease = [...versions, release('0.17.0-rc.1')];
+  assert.throws(() => selectRelease(unflaggedPrerelease), /not marked as a GitHub prerelease/);
+  assert.throws(() => selectRelease(unflaggedPrerelease, { prerelease: true }), /not marked as a GitHub prerelease/);
+  assert.throws(() => selectRelease(unflaggedPrerelease, { requested: '0.17.0-rc.1' }), /not marked as a GitHub prerelease/);
+  assert.throws(() => selectRelease([...versions, release('0.18.0', { prerelease: null })]), /no valid prerelease flag/);
+  assert.doesNotMatch(upgradeNotes([...unflaggedPrerelease, release('0.18.0', { prerelease: null })], '0.13.0', '0.18.0'), /0.17.0-rc.1|0.18.0/);
 });
 
 test('update notes cover the releases on the path and skip prereleases a shown normal release covers', () => {
@@ -179,7 +183,11 @@ test('prerelease notes are validated like other notes and must say they are a pr
   validateNotes(notes, '0.15.0-rc.1');
   assert.equal(releaseBody(notes, '0.15.0-rc.1'), notes.split('\n').slice(2).join('\n'));
   assert.throws(() => validateNotes(notes, '0.15.0'), /matching version/);
-  assert.throws(() => validateNotes(notes.replace('A prerelease of 0.15.0.', 'A test version.'), '0.15.0-rc.1'), /say that this is a prerelease/);
+  const unsaid = notes.replace('A prerelease of 0.15.0.', 'A test version.');
+  assert.throws(() => validateNotes(unsaid, '0.15.0-rc.1'), /say that this is a prerelease/);
+  // A template comment or a later section does not count; the Overview must say it.
+  assert.throws(() => validateNotes(unsaid.replace('## Overview\nA test version.', '<!-- Say in the Overview that it is a prerelease. -->\n## Overview\nA test version.'), '0.15.0-rc.1'), /say that this is a prerelease/);
+  assert.throws(() => validateNotes(unsaid.replace('Releases are experimental.', 'Releases are experimental; this is a prerelease.'), '0.15.0-rc.1'), /say that this is a prerelease/);
 });
 
 test('published release body omits only the source title and retains every notes section', () => {
@@ -287,6 +295,11 @@ test('GitHub client paginates and reports network, auth, and size errors without
   let calls = 0;
   globalThis.fetch = async () => new Response(JSON.stringify(++calls === 1 ? Array.from({ length: 100 }, () => release('0.1.0')) : [release('0.2.0')]));
   assert.equal((await listReleases()).length, 101);
+  // Only GitHub's own booleans count: a missing draft flag is a draft and a malformed prerelease flag is none.
+  globalThis.fetch = async () => new Response(JSON.stringify([{ ...release('0.2.0'), draft: undefined }, { ...release('0.3.0'), prerelease: 'false' }]));
+  const [unknownDraft, malformed] = await listReleases();
+  assert.equal(unknownDraft.draft, true);
+  assert.equal(malformed.prerelease, null);
   globalThis.fetch = async () => new Response('no', { status: 403 });
   await assert.rejects(githubBytes(`${api}/releases`, 100), /HTTP 403/);
   globalThis.fetch = async () => { throw new Error('offline'); };
@@ -371,6 +384,15 @@ test('plain update leaves a prerelease ahead of every normal release and moves i
   assert.equal(unchanged.status, 0, unchanged.stderr);
   assert.match(unchanged.stdout, /0\.15\.0-rc\.2 is a prerelease, newer than the latest release 0\.14\.0; nothing was changed\. Run update --prerelease to get later prereleases\./);
   assert.equal(fs.readFileSync(path.join(ahead.installed, 'VERSION'), 'utf8'), '0.15.0-rc.2\n');
+  // Nothing is checked about older releases it will not install.
+  const brokenOlder = await updateFixture(t, { previous: '0.15.0-rc.2', releases: [release('0.14.0', { assets: [] }), pre('0.15.0-rc.2')] });
+  const kept = await brokenOlder.run();
+  assert.equal(kept.status, 0, kept.stderr);
+  assert.match(kept.stdout, /nothing was changed/);
+  const onlyPrereleases = await updateFixture(t, { previous: '0.15.0-rc.2', releases: [pre('0.15.0-rc.1'), pre('0.15.0-rc.2')] });
+  const none = await onlyPrereleases.run();
+  assert.equal(none.status, 0, none.stderr);
+  assert.match(none.stdout, /0\.15\.0-rc\.2 is a prerelease, newer than every release; nothing was changed/);
   // A normal installation newer than the latest release still fails.
   fs.writeFileSync(path.join(ahead.installed, 'VERSION'), '0.15.0\n');
   assert.match((await ahead.run()).stderr, /Installed 0.15.0 is newer than 0.14.0/);
@@ -610,6 +632,7 @@ test('publication marks a prerelease version as a GitHub prerelease and never as
   assert.ok(github.created[0].includes('--prerelease=true'), github.created[0].join(' '));
   assert.equal(github.state.prerelease, true);
   assert.ok(github.publishArgs.includes('--latest=false'), github.publishArgs.join(' '));
+  assert.ok(github.publishArgs.includes('--prerelease=true'), github.publishArgs.join(' '));
   await assert.rejects(publishRelease(artifact, notesFile, github.call), /already published/);
   // A retried draft gets the flag again.
   const retried = fakeGithub('0.15.0-rc.1', [], artifact);
@@ -630,6 +653,7 @@ test('publication never marks a normal version as a prerelease and makes it late
   assert.ok(github.created[0].includes('--prerelease=false'), github.created[0].join(' '));
   assert.equal(github.state.prerelease, false);
   assert.ok(github.publishArgs.includes('--latest=true'), github.publishArgs.join(' '));
+  assert.ok(github.publishArgs.includes('--prerelease=false'), github.publishArgs.join(' '));
   const stuck = fakeGithub('0.15.0', [], artifact);
   stuck.state = release('0.15.0', { draft: true, prerelease: true, body: 'stale' });
   const ignoring = fakeGithub('0.15.0', [], artifact, { ignoreFlag: true });

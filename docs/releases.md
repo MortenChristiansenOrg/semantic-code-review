@@ -38,14 +38,15 @@ version. A prerelease is less tested than a normal release; it lets users who
 ask for it try a version before everyone gets it.
 
 A normal release is published as a normal GitHub release, and a prerelease as a
-GitHub prerelease that is never marked latest. The updater installs only
-non-draft releases whose GitHub prerelease flag agrees with their version and
-ignores the others. Plain `update` chooses the highest normal release.
-`update --prerelease` chooses the highest of the normal releases and
-prereleases together, for that run only: nothing is stored, and the next plain
-`update` is back on normal releases. Both choose by version, regardless of
-publication date. A broken newest release on the chosen path is reported; the
-updater does not silently fall back to an older release. The publisher marks a
+GitHub prerelease that is never marked latest. Plain `update` chooses the
+highest version among the published releases not marked as GitHub prereleases,
+as before. `update --prerelease` chooses the highest of all published releases,
+for that run only: nothing is stored, and the next plain `update` is back on
+normal releases. Both choose by version, regardless of publication date, and
+ignore drafts and tags that are not release versions. The updater installs a
+release only when its GitHub prerelease flag agrees with its version. When the
+newest release on the chosen path disagrees or is otherwise broken, the updater
+reports it and does not silently fall back to an older release. The publisher marks a
 normal release latest only if no higher normal release exists, so a late
 maintenance release cannot move users backward.
 
@@ -273,8 +274,8 @@ describes everything since the last normal release.
   makes `0.15.0-rc.1` from `0.14.0`. Write `releases/0.15.0-rc.1.md`: its notes
   describe everything since the last normal release, say that it is a
   prerelease, less tested than a normal release, and how to get it
-  (`/semantic-flow update -p`). Validation requires the word “prerelease” in a
-  prerelease's notes. Validate, package, commit, push and tag `v0.15.0-rc.1` as
+  (`/semantic-flow update -p`). Validation requires the word “prerelease” in the
+  Overview of a prerelease's notes, outside HTML comments. Validate, package, commit, push and tag `v0.15.0-rc.1` as
   in steps 4–6. The Release workflow publishes it as a GitHub prerelease that is
   not latest, and refuses to publish it if GitHub does not mark it as one.
 - **Further prerelease.** `bump feature --prerelease` makes `0.15.0-rc.2` from
@@ -286,7 +287,7 @@ describes everything since the last normal release.
   never saw the prerelease notes. It is published as a normal release and
   becomes latest as usual.
 
-`none` stops as for any release. During `0.x`, a prerelease keeps its normal
+`none` stops as for any release, also with `--stable`. During `0.x`, a prerelease keeps its normal
 version whatever the change class. From 1.0 on, a change class that needs a
 larger increment than the prerelease's normal version already has over the last
 normal release moves the target to that increment and restarts the count:

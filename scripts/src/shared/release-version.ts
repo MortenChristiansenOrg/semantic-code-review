@@ -72,12 +72,12 @@ function increment(from: ParsedVersion, change: "breaking" | "feature" | "fix"):
 export function nextVersion(current: string, change: string, options: { stable?: boolean; prerelease?: boolean } = {}): string {
   const parsed = parseVersion(current);
   if (!isReleaseChange(change)) throw new Error("Choose breaking, feature, fix, or none.");
+  if (change === "none") throw new Error("There are no releasable changes.");
   let target: string;
   if (options.stable) {
     if (compareVersions(current, "1.0.0") >= 0) throw new Error("The explicit stable transition only applies before 1.0.0.");
     target = "1.0.0";
   } else {
-    if (change === "none") throw new Error("There are no releasable changes.");
     if (parsed.prerelease === null) target = increment(parsed, change);
     else {
       // The level of the increment the prerelease's normal version already has.

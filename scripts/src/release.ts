@@ -43,7 +43,8 @@ export function validateNotes(notes: string, version: string): void {
     if (!section || /\b(TODO|TBD)\b|<[^>]+>/.test(section)) throw new Error(`Write the ${heading} section before releasing.`);
   }
   if (version.startsWith("0.") && !/experimental/i.test(notes)) throw new Error("0.x notes must explain experimental compatibility.");
-  if (isPrerelease(version) && !/prerelease/i.test(notes)) throw new Error("Prerelease notes must say that this is a prerelease.");
+  const overview = notes.replace(/<!--[\s\S]*?-->/g, "").split("## Overview\n")[1]?.split(/\n## /)[0] ?? "";
+  if (isPrerelease(version) && !/prerelease/i.test(overview)) throw new Error("The Overview of prerelease notes must say that this is a prerelease.");
 }
 
 // Keep the version/date in standalone source notes; GitHub supplies the title.
@@ -148,7 +149,7 @@ export async function publishRelease(
     const draft = parseJson(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "body,isDraft,isPrerelease"));
     if (!isRecord(draft) || !draft.isDraft || draft.body !== body) throw new Error("Draft release notes do not match the reviewed changelog.");
     if (draft.isPrerelease !== prerelease) throw new Error(`The draft is ${prerelease ? "not " : ""}marked as a prerelease, but its version is ${prerelease ? "a prerelease" : "a normal release"}.`);
-    github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--draft=false", `--latest=${!newer && !prerelease}`);
+    github("release", "edit", tag, "--repo", RELEASE_REPOSITORY, "--draft=false", `--prerelease=${prerelease}`, `--latest=${!newer && !prerelease}`);
     const published = parseJson(github("release", "view", tag, "--repo", RELEASE_REPOSITORY, "--json", "isDraft,isPrerelease,url"));
     const url = stringField(published, "url");
     if (!isRecord(published) || published.isDraft || published.isPrerelease !== prerelease) throw new Error("Release did not become eligible for updates.");
@@ -157,15 +158,21 @@ export async function publishRelease(
   } finally { fs.rmSync(downloaded, { recursive: true, force: true }); }
 }
 
+/** The change and options of `release next|bump <change> [--stable] [--prerelease]`, in any order of the options. */
+export function bumpArguments(args: string[]): { change: string; stable: boolean; prerelease: boolean } {
+  const [change, ...flags] = args;
+  if (!change || flags.some((flag) => flag !== "--stable" && flag !== "--prerelease") || new Set(flags).size !== flags.length) {
+    throw new Error("Usage: release next|bump breaking|feature|fix|none [--stable] [--prerelease]");
+  }
+  return { change, stable: flags.includes("--stable"), prerelease: flags.includes("--prerelease") };
+}
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
   if (command === "next" || command === "bump") {
-    const [change, ...flags] = args;
-    if (flags.some((flag) => flag !== "--stable" && flag !== "--prerelease") || new Set(flags).size !== flags.length) {
-      throw new Error("Usage: release next|bump breaking|feature|fix|none [--stable] [--prerelease]");
-    }
+    const { change, stable, prerelease } = bumpArguments(args);
     const pkg = jsonObject(manifestFile);
-    const next = nextVersion(versionOf(pkg), change, { stable: flags.includes("--stable"), prerelease: flags.includes("--prerelease") });
+    const next = nextVersion(versionOf(pkg), change, { stable, prerelease });
     if (command === "bump") {
       if (git("tag", "--list", `v${next}`)) throw new Error(`Tag v${next} already exists.`);
       const lockFile = path.join(root, "scripts/package-lock.json"), lock = jsonObject(lockFile);
