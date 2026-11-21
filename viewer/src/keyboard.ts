@@ -4,7 +4,7 @@ import { closeReply, compose, replyTo, setCompose } from "./editor";
 import { toggleThreadCollapse } from "./feedback-actions";
 import { openFileSearch } from "./file-search-dialog";
 import { closeCinema, toggleCinema } from "./navigation";
-import { forceHidePop, popOwner } from "./popover";
+import { dismissPop, popOwner } from "./popover";
 import { render } from "./render";
 import { persist, reviewDeleted, state } from "./state";
 
@@ -28,7 +28,7 @@ export function installKeyboard(): void {
     if (e.key === "Escape") clearFileDropTarget();
     // Let the topmost native dialog handle Escape without touching a background draft.
     if (e.key === "Escape" && document.querySelector("dialog[open]")) return;
-    if (e.key === "Escape" && popOwner) { forceHidePop(); return; }
+    if (e.key === "Escape" && popOwner) { dismissPop(); return; }
     if ((e.key === "Enter" || e.key === " ") && e.target instanceof HTMLElement && e.target.matches('[data-action="open-file"]')) {
       e.preventDefault(); toggleCinema(e.target.dataset.id, e.target.dataset.nodeId); return;
     }

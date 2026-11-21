@@ -5221,7 +5221,7 @@ test('Markdown titles show in the viewer tooltip, and a link names the titles of
   await expect(preview.getByText('Titled', { exact: true })).toBeVisible();
   await expect(preview.locator('[title]')).toHaveCount(0);
   const tooltip = page.locator('#review-tooltip');
-  // Every render closes the tooltip, so focus or hover again if a late one, such as a loaded diff, closed it.
+  // A render closes a tooltip the pointer opened, so hover again if a late one, such as a loaded diff, closed it.
   const shows = (target, text, by = 'focus') => expect(async () => {
     await page.mouse.move(0, 0); await target.blur(); await target[by]();
     await expect(tooltip).toHaveClass(/is-shown/, { timeout: 1000 });
@@ -5230,12 +5230,122 @@ test('Markdown titles show in the viewer tooltip, and a link names the titles of
   }).toPass();
   await shows(preview.getByText('Titled', { exact: true }), 'Link title');
   await shows(preview.getByRole('link').filter({ has: page.getByRole('img', { name: 'Logo' }) }), 'Outer title · Image title');
-  // A link without a usable target is no keyboard stop.
   await shows(preview.getByText('Script', { exact: true }), 'Target unavailable in this preview', 'hover');
   // A title that repeats the visible text adds nothing while the text shows in full.
   await page.mouse.move(0, 0);
   await preview.getByText('Same', { exact: true }).focus();
   await expect(tooltip).not.toHaveClass(/is-shown/);
+  expect(errors).toEqual([]);
+});
+
+test('the keyboard reaches every Markdown title outside a usable link, and untitled elements add no stop', async ({ page }) => {
+  const data = fixture(); data.stages[0].files[0].path = 'docs/README.md';
+  const errors = await mount(page, data);
+  // At this width the table in the last link scrolls.
+  await page.setViewportSize({ width: 480, height: 900 });
+  const cells = Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('');
+  const content = [
+    'Intro with [Usable](https://example.com/u) and **plain** text.',
+    '<a href="https://example.com/c">Open <img src="https://example.com/c.png" title="Chart"></a>',
+    '![Diagram](https://example.com/d.png "Image title") ![Plain](https://example.com/p.png)',
+    '[Script](javascript:alert(1)) [![Badge](https://example.com/b.png "Badge title")](javascript:alert(2))',
+    '<a title="Download the guide">Guide</a> <img alt="Broken" title="Architecture overview">',
+    '<a title="Download"><img alt="" src="https://example.com/icon.png"></a> <img src="https://example.com/s.png" title="Standalone">',
+    '<table title="Table title"><tbody><tr><td>Titled cell</td></tr></tbody></table>',
+    '<table><tbody><tr><td>Untitled cell</td></tr></tbody></table>',
+    '<ul><li><input type="checkbox" title="Checkbox title"> Task</li><li>Other task</li></ul>',
+    '<input type="checkbox" title="Task details">',
+    '<br title="Section break">',
+    `<a title="Wide">\n<table><tbody><tr>${cells}</tr></tbody></table>\n</a>`,
+  ].join('\n\n');
+  await page.route('**/api/file-content*', (route) => route.fulfill({ json: { ok: true, content, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const preview = page.locator('.markdown-preview');
+  await expect(preview.getByText('Titled cell', { exact: true })).toBeVisible();
+  expect(await preview.locator('a table').evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+  // Tab through the preview from the control before it, and list each stop with what describes it then.
+  await page.getByRole('button', { name: 'Preview', exact: true }).focus();
+  const stops = [];
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press('Tab');
+    const stop = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el?.closest('.markdown-preview')) return null;
+      const label = el.getAttribute('aria-label') || el.getAttribute('alt') || el.textContent.trim().slice(0, 12);
+      // The description: the text of each element it names, without the parts hidden from it.
+      const description = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean).map((id) => {
+        const copy = document.getElementById(id).cloneNode(true);
+        copy.querySelectorAll('[aria-hidden="true"]').forEach((hidden) => hidden.remove());
+        return copy.textContent.trim();
+      }).join(' ');
+      const shown = document.getElementById('review-tooltip')?.classList.contains('is-shown') ?? false;
+      return [`${el.tagName.toLowerCase()} ${label}`.trim(), description, shown];
+    });
+    if (!stop) { if (stops.length) break; continue; }
+    // The browser describes the stop the same way.
+    await expect(page.locator(':focus')).toHaveAccessibleDescription(stop[1]);
+    stops.push(stop);
+  }
+  const unavailable = 'Target unavailable in this preview';
+  expect(stops).toEqual([
+    ['a Usable', '', false],
+    // A usable link is its image's stop, and is described by the image's title.
+    ['a Open', 'Chart', true],
+    ['img Diagram', 'Image title', true],
+    ['a Script', unavailable, true],
+    ['a', `${unavailable} · Badge title`, true],
+    // An authored title stays readable beside the unavailable target.
+    ['a Guide', `Download the guide · ${unavailable}`, true],
+    ['img Broken', `Architecture overview · ${unavailable}`, true],
+    // A title that was the only name names the element still.
+    ['a Download', `Download · ${unavailable}`, true],
+    ['img Standalone', 'Standalone', true],
+    ['table Titled cell', 'Table title', true],
+    ['li Task', 'Checkbox title', true],
+    // A checkbox or line break on its own line gets a holder for its title.
+    ['span', 'Task details', true],
+    ['span', 'Section break', true],
+    // The table scrolling inside the link adds no stop of its own.
+    ['a c0c1c2c3c4c5', `Wide · ${unavailable}`, true],
+  ]);
+  await expect(preview.getByRole('link', { name: 'Download', exact: true })).toHaveAccessibleName('Download');
+  await expect(preview.getByRole('img', { name: 'Standalone', exact: true })).toHaveAccessibleName('Standalone');
+  // An image inside a link keeps the name its title gave it.
+  await expect(preview.locator('a[href="https://example.com/c"] img')).toHaveAccessibleName('Chart');
+  await expect(preview.locator('[title]')).toHaveCount(0);
+  const tooltip = page.locator('#review-tooltip');
+  const trigger = preview.getByRole('table').filter({ hasText: /^Titled cell$/ });
+  await trigger.focus();
+  await expect(tooltip).toHaveText('Table title');
+  // A live update keeps the tooltip open on what has focus.
+  data.stages[1].title = 'Stage renamed'; data.viewerRevision = 'renamed';
+  await expect(page.getByText('Stage renamed').first()).toBeAttached();
+  await expect(trigger).toBeFocused();
+  await expect(tooltip).toHaveClass(/is-shown/);
+  await expect(tooltip).toHaveText('Table title');
+  await expect(trigger).toHaveAttribute('aria-describedby', 'review-tooltip');
+  // The pointer covers it only while over another hint.
+  const diagram = preview.getByRole('img', { name: 'Diagram' });
+  await diagram.scrollIntoViewIfNeeded(); await diagram.hover();
+  await expect(tooltip).toHaveText('Image title');
+  await page.mouse.move(0, 0);
+  await expect(tooltip).toHaveText('Table title');
+  await expect(tooltip).toHaveClass(/is-shown/);
+  await expect(trigger).toHaveAttribute('aria-describedby', 'review-tooltip');
+  // Escape closes it as any tooltip, focus stays, and neither the pointer nor a live update opens it again.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  await expect(trigger).toBeFocused();
+  await expect(trigger).not.toHaveAttribute('aria-describedby');
+  await diagram.hover(); await expect(tooltip).toHaveText('Image title');
+  await page.mouse.move(0, 0);
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  data.stages[1].title = 'Stage renamed again'; data.viewerRevision = 'renamed-again';
+  await expect(page.getByText('Stage renamed again').first()).toBeAttached();
+  await expect(tooltip).not.toHaveClass(/is-shown/);
+  // Only titled elements gained a stop.
+  await expect(preview.locator('[tabindex="0"]')).toHaveCount(12);
   expect(errors).toEqual([]);
 });
 

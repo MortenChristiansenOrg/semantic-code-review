@@ -8,7 +8,7 @@ import { forgetRemovedInsights, setRenderingPage } from "./insight-preview";
 import { fadePendingHighlight, resumePendingLazyJump } from "./navigation";
 import { agentBarModel, coverageModel, notesPanelModel, storyModel, topbarModel } from "./page-model";
 import { refreshNotice } from "./polling";
-import { forceHidePop } from "./popover";
+import { keepFocusedPop } from "./popover";
 import { captureFileScrolls, captureFocus, restoreFileScrolls, restoreFocus } from "./render-steps";
 import { reviewsDialog, reviewsOpen, setReviewsOpen, updateReviewList } from "./saved-reviews";
 import { refreshDiffSelection } from "./selection";
@@ -23,14 +23,12 @@ export const baseTitle = document.title;
 
 /* ---- render ----------------------------------------------------------- */
 export function render(): void {
-  // A render may move, replace or change what the open tooltip describes,
-  // so it closes; pointer or focus opens it again on what is there now.
-  forceHidePop();
   const focus = captureFocus(), scrolls = captureFileScrolls();
   renderView();
   restoreFileScrolls(scrolls);
   document.body.classList.toggle("no-scroll", state.notesOpen);
   restoreFocus(focus);
+  keepFocusedPop();
   loadOpenDiffs();
   resumePendingLazyJump();
 }

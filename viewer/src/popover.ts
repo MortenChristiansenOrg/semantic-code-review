@@ -106,9 +106,46 @@ export function showPop(btn: HTMLElement): void {
     markKeyScrollable();
   });
 }
+// The element the reviewer closed the tooltip of with Escape while it had focus.
+let popDismissed: Element | null = null;
+/**
+ * What has keyboard focus and a hint to show, which keeps its tooltip open
+ * until Escape or leaving it closes it (WCAG 1.4.13): the pointer only covers
+ * it for a while, and a render shows it again. Focus a click left behind
+ * shows no such tooltip once the pointer leaves.
+ */
+export function focusedPopTarget(): HTMLElement | null {
+  const focused = document.activeElement;
+  if (!focused || focused === document.body || focused === popDismissed || !focused.matches(":focus-visible")) return null;
+  return tooltipTarget(focused);
+}
+/** Closes the tooltip, also when it is on what has focus, until focus moves. */
+export function dismissPop(): void {
+  popDismissed = document.activeElement;
+  forceHidePop();
+}
+/**
+ * After a render, which may move, replace or change what the tooltip
+ * describes: the tooltip on what has focus stays open, with its hint as it is
+ * now, and on the element that replaced it; any other tooltip closes, and
+ * the pointer opens it again on what is there now.
+ */
+export function keepFocusedPop(): void {
+  const target = focusedPopTarget();
+  if (!target || popSticky) { forceHidePop(); return; }
+  if (popOwner !== target || !popEl?.classList.contains("is-shown")) { showPop(target); return; }
+  const pop = popEl;
+  // Filling resets the tooltip's classes, so it is shown again where it was read to.
+  keepPopScroll(() => { fillPop(target); pop.classList.add("is-shown"); });
+  positionPop(target);
+  markKeyScrollable();
+}
 export function scheduleHide(): void { clearTimeout(popTimer); popTimer = setTimeout(hidePop, 130); }
 export function hidePop(): void {
   if (popSticky) return;
+  // The pointer leaving shows the tooltip of what has focus again.
+  const focused = focusedPopTarget();
+  if (focused) { showPop(focused); return; }
   if (popEl) popEl.classList.remove("is-shown", "is-above");
   if (popHint) popHint.textContent = "";
   clearPopDescription();
@@ -173,10 +210,18 @@ export function scrollPopFromKey(e: KeyboardEvent): void {
 /** Opens the tooltip or popover for what the pointer or focus is on. */
 export function installPopover(): void {
   document.addEventListener("keydown", scrollPopFromKey);
+  // Where the pointer last was, to tell its moves from content scrolling under it.
+  let pointerAt = "";
+  document.addEventListener("pointermove", (e) => { pointerAt = `${e.clientX},${e.clientY}`; });
   document.addEventListener("pointerover", (e) => {
+    const at = `${e.clientX},${e.clientY}`, moved = at !== pointerAt;
+    pointerAt = at;
     const b = tooltipTarget(e.target);
     if (!b) return;
     if (popSticky && popOwner !== b) return;
+    // Content scrolling under a pointer at rest, as focus moving does, covers
+    // no tooltip on what has focus.
+    if (!moved && popOwner && popOwner !== b && popOwner === focusedPopTarget()) return;
     showPop(b);
   });
   document.addEventListener("pointerout", (e) => {
@@ -184,6 +229,7 @@ export function installPopover(): void {
     if (b && !(e.relatedTarget instanceof Node && b.contains(e.relatedTarget)) && !popSticky) scheduleHide();
   });
   document.addEventListener("focusin", (e) => {
+    if (e.target !== popDismissed) popDismissed = null;
     const b = tooltipTarget(e.target);
     if (b) showPop(b);
     markKeyScrollable();
@@ -197,7 +243,8 @@ export function installPopover(): void {
     const b = e.target instanceof Element ? e.target.closest(".tag-face[data-tagpop]") : null;
     if (b instanceof HTMLElement) {
       e.preventDefault();
-      if (popSticky && popOwner === b) { popSticky = false; hidePop(); }
+      // Closed on purpose, it stays closed while focus stays on it.
+      if (popSticky && popOwner === b) dismissPop();
       else { popSticky = true; showPop(b); }
       return;
     }
