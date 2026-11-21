@@ -43,7 +43,8 @@ export function validateNotes(notes: string, version: string): void {
     if (!section || /\b(TODO|TBD)\b|<[^>]+>/.test(section)) throw new Error(`Write the ${heading} section before releasing.`);
   }
   if (version.startsWith("0.") && !/experimental/i.test(notes)) throw new Error("0.x notes must explain experimental compatibility.");
-  const overview = notes.replace(/<!--[\s\S]*?-->/g, "").split("## Overview\n")[1]?.split(/\n## /)[0] ?? "";
+  // Only visible text counts: not HTML comments and not link destinations.
+  const overview = (notes.replace(/<!--[\s\S]*?-->/g, "").split("## Overview\n")[1]?.split(/\n## /)[0] ?? "").replace(/\]\([^)]*\)/g, "]");
   if (isPrerelease(version) && !/prerelease/i.test(overview)) throw new Error("The Overview of prerelease notes must say that this is a prerelease.");
 }
 

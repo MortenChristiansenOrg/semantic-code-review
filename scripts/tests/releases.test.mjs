@@ -187,6 +187,8 @@ test('prerelease notes are validated like other notes and must say they are a pr
   assert.throws(() => validateNotes(unsaid, '0.15.0-rc.1'), /say that this is a prerelease/);
   // A template comment or a later section does not count; the Overview must say it.
   assert.throws(() => validateNotes(unsaid.replace('## Overview\nA test version.', '<!-- Say in the Overview that it is a prerelease. -->\n## Overview\nA test version.'), '0.15.0-rc.1'), /say that this is a prerelease/);
+  assert.throws(() => validateNotes(unsaid.replace('A test version.', 'A test version. [Details](https://example.invalid/prerelease)'), '0.15.0-rc.1'), /say that this is a prerelease/);
+  validateNotes(notes.replace('A prerelease of 0.15.0.', 'A [prerelease](https://example.invalid/notes) of 0.15.0.'), '0.15.0-rc.1');
   assert.throws(() => validateNotes(unsaid.replace('Releases are experimental.', 'Releases are experimental; this is a prerelease.'), '0.15.0-rc.1'), /say that this is a prerelease/);
 });
 
