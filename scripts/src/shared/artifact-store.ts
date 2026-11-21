@@ -200,6 +200,16 @@ export const archiveRef = (implementationId: string) => `${ARCHIVE_REF_PREFIX}${
  * resolves `semantic-review-archive/<id>` to the tag alone. */
 export const ARCHIVE_TAG_PREFIX = "refs/tags/semantic-review-archive/";
 export const archiveTag = (implementationId: string) => `${ARCHIVE_TAG_PREFIX}${implementationId}`;
+/** The Git arguments that list the active and archive refs of an implementation,
+ * for archivedByRefs to read. */
+export const archiveStateArguments = (implementationId: string) =>
+  ["for-each-ref", "--format=%(refname)", activeRef(implementationId), archiveRef(implementationId)];
+/** Whether the output of archiveStateArguments shows the implementation archived:
+ * its archive ref exists and its active ref is gone. */
+export function archivedByRefs(output: string, implementationId: string): boolean {
+  const refs = new Set(output.split(/\r?\n/));
+  return refs.has(archiveRef(implementationId)) && !refs.has(activeRef(implementationId));
+}
 
 /** An active implementation, as its ref names it. */
 export interface ActiveImplementation {
@@ -270,6 +280,14 @@ export function listActiveImplementations(root: string): ActiveImplementation[] 
   const actives = parseActiveImplementations(gitRaw(["for-each-ref", ACTIVE_REF_FORMAT, ACTIVE_REF_PREFIX], { cwd: root }));
   reads?.set(root, copyActives(actives));
   return actives;
+}
+
+/** Whether the implementation's active ref exists, read from Git now, never
+ * from a readingActiveRefsOnce scope: a scope's read may predate an archive
+ * that removed the ref since. */
+export function implementationActive(root: string, implementationId: string): boolean {
+  const ref = activeRef(implementationId);
+  return gitRaw(["for-each-ref", "--format=%(refname)", ref], { cwd: root }).split(/\r?\n/).includes(ref);
 }
 
 /** Names the implementation a process acts on once a command selected it.

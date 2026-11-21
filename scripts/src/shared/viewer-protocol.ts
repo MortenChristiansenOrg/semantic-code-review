@@ -30,6 +30,9 @@ export interface ApiFailure {
   /** Set on the review-scope gate and on `/api/review-state` failures when the
    * review session was deleted or replaced. */
   reviewUnavailable?: boolean;
+  /** Set on the review-scope gate when the review's implementation was archived:
+   * its review data remains, but the viewer no longer serves it. */
+  implementationArchived?: boolean;
   /** Set when the request lacked a valid key, read token or launch code: the
    * page needs a fresh link. */
   keyRequired?: boolean;
@@ -400,6 +403,8 @@ export interface UnavailableImplementationData {
   feedback: [];
   baseRevision: "";
   targetBranch: "";
+  /** Set when the review's implementation was archived, which ends its review. */
+  implementationArchived?: true;
 }
 
 /* ---- persisted review state ----------------------------------------------- */
@@ -811,6 +816,8 @@ export interface ReviewSummary extends ReviewIdentity {
   available: boolean;
   /** Empty when available. */
   unavailableReason: string;
+  /** Whether the review's implementation was archived, which ends the review. */
+  archived: boolean;
 }
 
 /** GET `/api/reviews` response, newest first. */

@@ -1,13 +1,14 @@
 /** User-local review storage. All writes hold a per-review lock and replace one
  * document atomically; private data is never placed in implementation branches. */
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { jsonBytes, parseJson, replaceFile } from "./json.js";
-import { activeImplementationId, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readActiveArtifactInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
-import { gitRaw } from "./git.js";
+import { activeImplementationId, archivedByRefs, archiveStateArguments, ArtifactDraft, hasFile, readArtifact, readArtifactDirectory, readArtifactJson, readActiveArtifactInGitDirectory, replaceArtifactFileInGitDirectory, type ArtifactFiles, type ArtifactSnapshot } from "./artifact-store.js";
+import { gitEnvironment, gitRaw } from "./git.js";
 import { managedCheckoutGit, recoverRemoteProjection } from "./remote-review.js";
 import { errorCode, isRecord, numberField, stringField, type JsonRecord } from "./narrow.js";
 import type { ReviewStateChange, ReviewStateValue, StoredReviewState } from "./viewer-protocol.js";
@@ -203,6 +204,39 @@ function gitCommonDirectoryOf(root: string): string | undefined {
   // A worktree root always holds .git; without it Git would search the parents.
   if (!fs.existsSync(path.join(root, ".git"))) return undefined;
   try { return gitCommonDirectory(root); } catch { return undefined; }
+}
+/** Where Git reads a local review's repository: its recorded Git common
+ * directory, or else the recorded worktree. None for a remote review, or when
+ * neither exists. */
+function reviewGitLocation(record: ReviewRecord): { args: string[]; cwd: string } | undefined {
+  if (record.remote) return undefined;
+  if (record.gitCommonDir !== undefined && fs.existsSync(record.gitCommonDir)) return { args: [`--git-dir=${record.gitCommonDir}`], cwd: record.gitCommonDir };
+  // A worktree root always holds .git; without it Git would search the parents.
+  return fs.existsSync(path.join(record.repositoryRoot, ".git")) ? { args: [], cwd: record.repositoryRoot } : undefined;
+}
+/** Whether the implementation of a local review was archived: its repository
+ * holds the implementation's archive ref and no active ref. False for a remote
+ * review, and when the repository cannot be read. */
+export function reviewImplementationArchived(record: ReviewRecord): boolean {
+  const location = reviewGitLocation(record);
+  if (!location) return false;
+  try { return archivedByRefs(gitRaw([...location.args, ...archiveStateArguments(record.implementationId)], { cwd: location.cwd }), record.implementationId); }
+  catch { return false; }
+}
+/** Refuses to change a review whose implementation was archived, which ended
+ * it. Called under the review lock: archiving removes the active ref under the
+ * same lock, so no change lands after it. */
+function assertImplementationNotArchived(record: ReviewRecord): void {
+  if (reviewImplementationArchived(record)) throw new Error(`Implementation ${record.implementationId} was archived, which ended its review.`);
+}
+/** reviewImplementationArchived without blocking this thread. */
+export function readReviewImplementationArchived(record: ReviewRecord): Promise<boolean> {
+  const location = reviewGitLocation(record);
+  if (!location) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    execFile("git", [...location.args, ...archiveStateArguments(record.implementationId)], { cwd: location.cwd, env: gitEnvironment(), encoding: "utf8", windowsHide: true },
+      (error, stdout) => resolve(!error && archivedByRefs(stdout, record.implementationId)));
+  });
 }
 const reviewsDirectory = () => path.join(reviewHome(), "reviews");
 /** Folders of committed deletions, which cleanup removes without a lock. */
@@ -746,6 +780,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("This review session was replaced. Reopen the review.");
+    assertImplementationNotArchived(record);
     const previousActivity = structuredClone(reviewActivity(record.state));
     const previousSnapshots = approvalSnapshotIds(record.state);
     const previousAttachments = attachmentIds(record.state);
@@ -843,6 +878,7 @@ export function setReviewCompleted(id: string, generation: string, completed: bo
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
+    assertImplementationNotArchived(record);
     if (Boolean(record.completedAt) === completed) return record;
     if (record.completedAt !== expectedCompletedAt) throw new Error("The review lifecycle changed in another tab. Refresh the review list.");
     record.updatedAt = new Date().toISOString();

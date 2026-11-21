@@ -7,13 +7,35 @@ import { data } from "./context";
 import { activeFileNodeId, approvalEntry, fileApprovalKey, fileBaseRevision, flatFiles, nodeFileList, stageById, stageFileApprovals, stageOf } from "./lookups";
 import { errorMessage, failureOf, isRecord } from "./narrow";
 import { render } from "./render";
-import { persist, persistedState, reviewDeleted, saveError, saveState, saveTimer, state } from "./state";
+import { markReviewEnded } from "./saved-reviews";
+import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state } from "./state";
 import type { MembershipEntry, ViewerFile, ViewerStage } from "./types";
 
 /** Approval changes in progress, by approval ID. */
 export const approvalOps = new Map<string, Promise<void>>();
 
 export const approvalErrors = new Map<string, string>();
+/** Approvals the end of the review cut off before they were saved, by approval ID:
+ * what each approved, which the notice of the ended review lists. */
+export const approvalsNotSaved = new Map<string, string>();
+/** Thrown when the review ended before an approval was saved. */
+class ApprovalCutOff extends Error {}
+/** What each approval change not saved when another tab or session ended the
+ * review changed: those the end cut off while they were made, and those made
+ * but not saved yet, such as stage approvals and removals, which only schedule
+ * a save that the end cancels. */
+export function unsavedApprovalChanges(): string[] {
+  const labels = new Map(approvalsNotSaved);
+  if (!endedElsewhere) return [...labels.values()];
+  const saved = isRecord(persistedState.approvals) ? persistedState.approvals : {};
+  for (const id of new Set([...Object.keys(saved), ...Object.keys(state.approvals)])) {
+    if (labels.has(id) || JSON.stringify(saved[id]) === JSON.stringify(state.approvals[id])) continue;
+    // A record moved on from a file's previous path names nothing shown.
+    const label = approvalEntry(id)?.file.path ?? stageById.get(id)?.title;
+    if (label) labels.set(id, Object.hasOwn(state.approvals, id) ? label : `${label} (approval removed)`);
+  }
+  return [...labels.values()];
+}
 
 /* ---- helpers ---------------------------------------------------------- */
 /* File approvals are scoped to a node and observe the complete file plus its ownership.
@@ -56,8 +78,14 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
       if (entry && !remove) {
         const response = await api.captureApprovalSnapshot(approvalEndpoint(entry));
         const retained = await response.json();
-        if (!response.ok || !retained.ok) throw new Error(failureOf(retained).error || "Could not retain approved content.");
+        if (!response.ok || !retained.ok) {
+          const failure = failureOf(retained), end = reviewEndOf(failure);
+          if (end) { markReviewEnded(end, true); throw new ApprovalCutOff(); }
+          throw new Error(failure.error || "Could not retain approved content.");
+        }
         snapshotId = retained.snapshotId;
+        // The review ended while the content was retained; nothing saves it now.
+        if (reviewEnded) throw new ApprovalCutOff();
       }
       if (previousId) delete state.approvals[previousId];
       if (remove) delete state.approvals[id];
@@ -73,19 +101,25 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
       if (entry && !remove) {
         // An older save may already be in flight. Wait until this approval
         // is stored before collapsing its diff; a failed save leaves it open.
+        const stored = () => JSON.stringify(storedApproval(id)) === JSON.stringify(state.approvals[id]);
         do {
           clearTimeout(saveTimer);
           await saveState();
+          // A review that ended saves nothing more.
+          if (reviewEnded && !stored()) throw new ApprovalCutOff();
           if (saveError) throw new Error(saveError);
-          // A deleted review saves nothing more; leave the diff open.
-          if (reviewDeleted) return;
-        } while (JSON.stringify(storedApproval(id)) !== JSON.stringify(state.approvals[id]));
+        } while (!stored());
+        // A review that ended after the save shows no diff to collapse.
+        if (reviewEnded) return;
         if (activeFileNodeId(entry.id) === entry.nodeId) {
           delete state.activeFiles[entry.id];
           persist();
         }
       }
-    } catch (error) { approvalErrors.set(id, `${entry?.file.path || id}: ${errorMessage(error)}`); }
+    } catch (error) {
+      if (error instanceof ApprovalCutOff || reviewEnded) approvalsNotSaved.set(id, entry?.file.path || stage?.title || id);
+      else approvalErrors.set(id, `${entry?.file.path || id}: ${errorMessage(error)}`);
+    }
     finally { approvalOps.delete(id); reconcileApprovals(); render(); }
   });
   approvalOps.set(id, operation); render();

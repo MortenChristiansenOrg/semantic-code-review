@@ -10,8 +10,8 @@ import { exportWorking } from "./feedback-actions";
 import { rebuildFileSearchIndex, refreshFileSearch } from "./file-search-dialog";
 import { allAcceptance, artifactThreads, fileBaseRevision, fileById, fileByPreviousId, fileKey, flatFiles, nodeTitleById, requirements, stageById, stageNumberById } from "./lookups";
 import { render } from "./render";
-import { markReviewDeleted } from "./saved-reviews";
-import { flushReviewState, reviewDeleted, state } from "./state";
+import { markReviewEnded } from "./saved-reviews";
+import { flushReviewState, reviewEnded, reviewEndOf, state } from "./state";
 import { errorMessage, failureOf } from "./narrow";
 import { threadOps, usableNotes } from "./threads";
 
@@ -45,7 +45,7 @@ export const codeSelected = (): boolean => Boolean(window.getSelection()?.toStri
 export const diffRevisions = (implementation: ImplementationData): string => JSON.stringify((implementation.stages || []).map((stage) =>
   [stage.id, stage.baseRevision, stage.headRevision, (stage.files || []).map((file) => [file.path, file.baseRevision || null])]));
 export async function pollViewerRevision(): Promise<void> {
-  if (reviewDeleted || polling) return;
+  if (reviewEnded || polling) return;
   // Hidden tabs keep checking slowly while an agent listens or works, so a finished round can notify.
   if (document.hidden && (!(agent?.working || agent?.listening) || Date.now() - lastHiddenPoll < 5000)) return;
   if (document.hidden) lastHiddenPoll = Date.now();
@@ -54,7 +54,8 @@ export async function pollViewerRevision(): Promise<void> {
     const response = await api.getRevision();
     if (!response.ok) {
       const failure = await response.json();
-      if (failureOf(failure).reviewUnavailable) markReviewDeleted(true);
+      const end = reviewEndOf(failureOf(failure));
+      if (end) markReviewEnded(end, true);
       return;
     }
     const snapshot = await response.json();

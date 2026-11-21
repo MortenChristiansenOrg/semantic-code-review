@@ -19,9 +19,9 @@ import { errorMessage, failureOf } from "./narrow";
 import { pollViewerRevision } from "./polling";
 import { installPopover } from "./popover";
 import { render } from "./render";
-import { initSavedReviews, refreshReviews } from "./saved-reviews";
+import { initSavedReviews, markReviewEnded, refreshReviews } from "./saved-reviews";
 import { installSelection } from "./selection";
-import { initState, installUnloadGuard, persist, reviewDeleted, state, type SavedReview } from "./state";
+import { initState, installUnloadGuard, persist, reviewEnded, reviewEndOf, state, type ReviewEnd, type SavedReview } from "./state";
 import { installHeldThreadLists, usableNotes } from "./threads";
 import { installUnreadReplies } from "./unread-replies";
 import { cssEsc } from "./util";
@@ -36,23 +36,33 @@ async function startApp(): Promise<boolean> {
   const requestReviewId = window.SEMANTIC_REVIEW_CONTEXT?.reviewId || data.reviewId;
   const requestGeneration = window.SEMANTIC_REVIEW_CONTEXT?.generation;
   api.configureApi({ reviewId: requestReviewId, generation: requestGeneration });
-  let unavailable = false;
+  let ended: ReviewEnd | null = null;
   let saved: SavedReview;
   try {
     const response = await api.getReviewState();
     const body = await response.json();
     if (!response.ok || !body.ok) {
       const failure = failureOf(body);
-      if (failure.reviewUnavailable) { unavailable = true; saved = { reviewId: requestReviewId, generation: requestGeneration ?? "", state: {}, stateRevision: 0 }; }
+      if (failure.reviewUnavailable) { ended = "deleted"; saved = { reviewId: requestReviewId, generation: requestGeneration ?? "", state: {}, stateRevision: 0 }; }
       else throw new Error(failure.error || "Review data could not be loaded.");
-    } else saved = body;
+    } else {
+      saved = body;
+      // The server said when the page loaded that the implementation was archived.
+      const loaded = window.SEMANTIC_IMPLEMENTATION;
+      if ("implementationArchived" in loaded && loaded.implementationArchived) ended = "archived";
+    }
   } catch (error) {
     app.textContent = `${errorMessage(error)} Reload to retry.`;
     return false;
   }
   rebuildFileSearchIndex();
-  initState(saved, unavailable);
+  initState(saved, ended);
   initSavedReviews();
+  // Any refused request may be the first to say that the review ended.
+  api.onReviewEnd((failure) => {
+    const end = reviewEndOf(failure);
+    if (end) markReviewEnded(end, true);
+  });
   initEditor();
   // Handlers of one event run in the order they are added.
   installUnloadGuard();
@@ -69,7 +79,7 @@ async function startApp(): Promise<boolean> {
 
   const drafts: Draft[] = compose ? [...usableNotes(), compose] : usableNotes();
   const legacyDrafts = drafts.filter(note => note.kind === "line" && !("exported" in note && note.exported) && note.snapshot && !note.snapshot.fileRevision);
-  if (legacyDrafts.length && !reviewDeleted) {
+  if (legacyDrafts.length && !reviewEnded) {
     try {
       const response = await api.resolveDraftSnapshots({ notes: legacyDrafts });
       const result = await response.json();
@@ -84,7 +94,7 @@ async function startApp(): Promise<boolean> {
   }
   // Replies that existed before unread tracking are treated as read. A timestamp
   // always persists, unlike an empty object, so later replies stay unread.
-  if (!data.remote && !reviewDeleted && typeof state.repliesSeenThrough !== "string") {
+  if (!data.remote && !reviewEnded && typeof state.repliesSeenThrough !== "string") {
     state.repliesSeenThrough = artifactThreads.flatMap((thread) => (thread.comments || []).filter((comment) => comment.author === "agent"))
       .map((comment) => String(comment.createdAt || "")).sort().at(-1) || "";
     persist();
@@ -105,7 +115,7 @@ async function startApp(): Promise<boolean> {
     const node = app.querySelector(`.stage[data-stage="${cssEsc(recoveredStage.id)}"] details[data-node="${cssEsc(compose.nodeId)}"]`);
     if (node instanceof HTMLDetailsElement) node.open = true;
   }
-  if (reviewDeleted) void refreshReviews();
+  if (reviewEnded) void refreshReviews();
   window.setInterval(pollViewerRevision, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollViewerRevision(); });
   void pollViewerRevision();

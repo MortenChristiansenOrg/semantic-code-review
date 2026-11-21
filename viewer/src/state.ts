@@ -1,18 +1,27 @@
 // The review state: what the reviewer has approved, opened and written, saved
 // to the review server as changes to the state it last saved.
-import type { ReviewStateChange, ReviewStateValue, ReviewTarget, StoredReviewState } from "../../scripts/src/shared/viewer-protocol";
+import type { ApiFailure, ReviewStateChange, ReviewStateValue, ReviewTarget, StoredReviewState } from "../../scripts/src/shared/viewer-protocol";
 import * as api from "./api";
 import { approvalOps } from "./approval-state";
 import { uploadOps } from "./attachments";
 import { captureEditor } from "./editor";
 import { exportState } from "./feedback-actions";
 import { errorMessage, failureOf, isRecord, type UnknownRecord } from "./narrow";
-import { markReviewDeleted } from "./saved-reviews";
+import { endedReviewText, markReviewEnded, updateReviewList } from "./saved-reviews";
 import { readState } from "./stored-state";
 import type { ViewerState } from "./types";
 
-export let reviewDeleted = false;
-export let deletedElsewhere = false;
+/** Why the page's review ended: its data was deleted, or its implementation archived. */
+export type ReviewEnd = "deleted" | "archived";
+/** Set once the review ended; the page then saves and polls nothing more. */
+export let reviewEnded: ReviewEnd | null = null;
+/** Whether another tab or session ended the review, before this page loaded or
+ * while it showed the review, so the page offers its unsent text for copying. */
+export let endedElsewhere = false;
+/** How a failure says the review ended, if it does. */
+export function reviewEndOf(failure: Partial<ApiFailure>): ReviewEnd | null {
+  return failure.reviewUnavailable ? "deleted" : failure.implementationArchived ? "archived" : null;
+}
 
 /** The review whose state the page saves, as the server last sent it. */
 export interface SavedReview extends ReviewTarget {
@@ -34,17 +43,18 @@ export let saveOperation: Promise<void> | null = null;
 /* ---- state ------------------------------------------------------------ */
 export let state: ViewerState;
 
-/** Starts the page's state from the saved review; `deleted` when it no longer exists. */
-export function initState(saved: SavedReview, deleted: boolean): void {
+/** Starts the page's state from the saved review; `ended` when the review already ended. */
+export function initState(saved: SavedReview, ended: ReviewEnd | null): void {
   savedReview = saved;
-  reviewDeleted = deleted;
+  reviewEnded = ended;
+  endedElsewhere = ended !== null;
   persistedState = structuredClone(savedReview.state);
   persistedRevision = savedReview.stateRevision;
   state = load();
 }
-/** Marks the review deleted, `external` when another tab or session deleted it. */
-export function setReviewDeleted(external: boolean): void { reviewDeleted = true; deletedElsewhere = external; }
-/** Stops saving once the review is gone. */
+/** Marks the review ended, `external` when another tab or session ended it. */
+export function setReviewEnded(end: ReviewEnd, external: boolean): void { reviewEnded = end; endedElsewhere = external; }
+/** Stops saving once the review ended. */
 export function stopSaving(): void { clearTimeout(saveTimer); saveError = ""; showSaveStatus(); }
 
 export function load(): ViewerState {
@@ -77,7 +87,7 @@ export function scheduleSave(delay = 0): void {
   }, Math.max(delay, commentSaveNotBefore - Date.now()));
 }
 export function persist(commentInput = false): void {
-  if (reviewDeleted) return;
+  if (reviewEnded) return;
   captureEditor();
   if (commentInput) commentSaveNotBefore = Date.now() + 300;
   scheduleSave(50);
@@ -116,7 +126,8 @@ async function sendChanges({ saveId, changes }: StateSave): Promise<SaveOutcome>
     if (response.ok && payload.ok) { persistedRevision = payload.stateRevision; return "saved"; }
     if (payload.ok === false) {
       const failure = failureOf(payload);
-      if (failure.reviewUnavailable) markReviewDeleted(true);
+      const end = reviewEndOf(failure);
+      if (end) markReviewEnded(end, true);
       saveError = failure.error || "Save failed. Make another edit to retry.";
       return "rejected";
     }
@@ -179,7 +190,8 @@ async function resolveUnknownSave({ saveId, changes }: StateSave): Promise<"reso
     const body = await response.json();
     if (!response.ok || !body.ok) {
       const failure = failureOf(body);
-      if (failure.reviewUnavailable) markReviewDeleted(true);
+      const end = reviewEndOf(failure);
+      if (end) markReviewEnded(end, true);
       saveError = failure.error || "Save failed. Make another edit to retry.";
       return "unknown";
     }
@@ -200,7 +212,7 @@ async function resolveUnknownSave({ saveId, changes }: StateSave): Promise<"reso
   } catch (error) { saveError = errorMessage(error); return "unknown"; }
 }
 export async function writeState(): Promise<void> {
-  if (reviewDeleted) return;
+  if (reviewEnded) return;
   captureEditor();
   if (changedElsewhere) return;
   // With nothing left to save and every earlier save's outcome known, an earlier failure no longer applies.
@@ -212,6 +224,8 @@ export async function writeState(): Promise<void> {
     if (unresolvedSave) {
       if (await resolveUnknownSave(unresolvedSave) !== "resolved") return;
       unresolvedSave = null;
+      // The review may have ended while the server's state was read.
+      if (reviewEnded) return;
     }
     const next = storedState();
     const changes = stateChanges(persistedState, next);
@@ -223,20 +237,29 @@ export async function writeState(): Promise<void> {
       persistedState = next;
     }
     saveError = "";
-  } finally { savingState = false; showSaveStatus(); }
+  } finally {
+    savingState = false; showSaveStatus();
+    // A save that lands after the review ended changes what the notice lists as not saved.
+    if (reviewEnded) updateReviewList();
+  }
   if (stateChanges(persistedState, storedState()).length) scheduleSave();
 }
 export async function flushReviewState(): Promise<void> {
-  if (reviewDeleted) return;
+  if (reviewEnded) return;
+  /** Refuses once another tab or session ended the review while this flush
+   * waited: the changes it waited for were not saved, and the page keeps saying so. */
+  const assertNotEnded = () => {
+    if (reviewEnded) throw new Error(reviewEnded === "archived" ? "The implementation was archived before the review's changes were saved." : "The review was deleted before its changes were saved.");
+  };
   await Promise.all([...uploadOps, ...approvalOps.values()]);
+  assertNotEnded();
   clearTimeout(saveTimer);
   await saveState();
   if (saveError) throw new Error(saveError);
   captureEditor();
   while (uploadOps.size || approvalOps.size || stateChanges(persistedState, storedState()).length) {
     await Promise.all([...uploadOps, ...approvalOps.values()]);
-    // Another tab or session deleted the review while this flush waited.
-    if (reviewDeleted) throw new Error("The review was deleted before its changes were saved.");
+    assertNotEnded();
     await saveState();
     if (saveError) throw new Error(saveError);
     captureEditor();
@@ -244,10 +267,14 @@ export async function flushReviewState(): Promise<void> {
   clearTimeout(saveTimer);
 }
 
-/** Warns before leaving while review changes are not saved. */
+/** Warns before leaving while review changes are not saved, or, once the
+ * review ended, while the page offers unsent text that leaving would discard. */
 export function installUnloadGuard(): void {
   window.addEventListener("beforeunload", (event) => {
-    if (reviewDeleted) return;
+    if (reviewEnded) {
+      if (endedReviewText()) { event.preventDefault(); event.returnValue = ""; }
+      return;
+    }
     captureEditor();
     if (uploadOps.size || approvalOps.size || savingState || saveError || unresolvedSave || changedElsewhere || exportState.phase === "working" || saveTimer && stateChanges(persistedState, storedState()).length) { event.preventDefault(); event.returnValue = ""; }
   });

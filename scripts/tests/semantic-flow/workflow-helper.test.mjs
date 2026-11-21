@@ -1020,3 +1020,29 @@ test('a viewer-triggered feedback init cannot recreate data deleted after its in
   assert.equal(fs.existsSync(module.reviewDirectory(id)), false);
   repository.feedback('init'); assert.notEqual(module.readReview(id).generation, review.generation);
 });
+
+
+test('a viewer feedback write that read the active refs before an archive does not change feedback after it', async (t) => {
+  const { repository } = createImplementationWithStages(t); repository.feedback('init');
+  repository.feedback('thread', 'add', '--id', 'routing', '--comment-id', 'routing-comment', '--body', 'Check the routing.',
+    '--label', 'Implementation', '--target-kind', 'stage', '--stage', 'implementation');
+  repository.feedback('thread', 'resolve', '--id', 'routing');
+  const module = await import('../../src/semantic-view.ts');
+  const { reviewFeedback } = await import('../../src/review-feedback.ts');
+  const { activeRef, preloadActiveRefs, readingActiveRefsOnce } = await import('../../src/shared/artifact-store.ts');
+  const { implementationId } = repository.artifact.readJson('manifest.json');
+  const id = module.reviewId(repository.root, implementationId), context = module.captureReviewContext(id);
+  const threadFile = path.join(module.reviewDirectory(id), 'feedback', 'threads', 'routing.json');
+  const before = fs.readFileSync(threadFile, 'utf8');
+  // A viewer request reads the active refs once; archiving then removes the
+  // active ref while the request waits for the review lock.
+  await readingActiveRefsOnce(new Map(), async () => {
+    await preloadActiveRefs(repository.root);
+    const feedback = reviewFeedback(repository.root, context);
+    const removed = spawnSync('git', ['update-ref', '-d', activeRef(implementationId)], { cwd: repository.root, encoding: 'utf8' });
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.throws(() => feedback.replyToThreads([{ id: 'routing', 'comment-id': 'late-reply', body: 'One more thing.' }]), /no longer active/);
+    assert.throws(() => feedback.reopenThread('routing'), /no longer active/);
+  });
+  assert.equal(fs.readFileSync(threadFile, 'utf8'), before);
+});

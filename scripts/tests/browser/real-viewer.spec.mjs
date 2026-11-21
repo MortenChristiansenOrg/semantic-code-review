@@ -30,7 +30,7 @@ function reservePort() {
 }
 
 let home, env;
-const reviews = { a: { id: 'review-a', title: 'Review A' }, b: { id: 'review-b', title: 'Review B' } };
+const reviews = { a: { id: 'review-a', title: 'Review A' }, b: { id: 'review-b', title: 'Review B' }, c: { id: 'review-c', title: 'Review C' } };
 
 /** The viewer's record, as the CLI stores it. */
 function record(review) {
@@ -239,6 +239,26 @@ test('a page whose viewer restarted asks for a fresh link, and a fresh link in t
   await expect(page.getByRole('heading', { name: 'Review A', exact: true })).toBeVisible();
   await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
   expect(page.url()).toBe(reviews.a.base);
+  expect(await violations(page)).toEqual([]);
+  expect(errors).toEqual([]);
+  await context.close();
+});
+
+test('archiving the implementation tells its open page and lists its review as archived', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  await page.goto(await freshLaunchUrl(reviews.c));
+  await expect(page.getByRole('heading', { name: 'Review C', exact: true })).toBeVisible();
+  const { id } = record(reviews.c);
+  const archived = spawnSync(process.execPath, [flowCli, 'archive', '--json'], { cwd: reviews.c.root, encoding: 'utf8', env, timeout: 60_000 });
+  expect(archived.status, archived.stderr).toBe(0);
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.ended-review')).toContainText('review-c');
+  const entry = page.locator(`[data-review="${id}"]`);
+  await expect(entry).toContainText('Archived · Current');
+  await expect(entry.getByRole('button', { name: 'Open review', exact: true })).toBeDisabled();
+  // Other reviews stay listed and can be opened.
+  await expect(page.locator(`[data-review="${record(reviews.a).id}"]`).getByRole('button', { name: 'Open review', exact: true })).toBeEnabled();
+  await expect(page.locator('#fresh-link-notice')).toHaveCount(0);
   expect(await violations(page)).toEqual([]);
   expect(errors).toEqual([]);
   await context.close();

@@ -6,14 +6,14 @@ import { openFileSearch } from "./file-search-dialog";
 import { closeCinema, toggleCinema } from "./navigation";
 import { dismissPop, popOwner } from "./popover";
 import { render } from "./render";
-import { persist, reviewDeleted, state } from "./state";
+import { persist, reviewEnded, state } from "./state";
 
 
 /** Handles the page's keyboard shortcuts. */
 export function installKeyboard(): void {
   document.addEventListener("keydown", (e) => {
     if (e.key.toLowerCase() === "t" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey &&
-        !e.defaultPrevented && !e.isComposing && !e.repeat && !reviewDeleted &&
+        !e.defaultPrevented && !e.isComposing && !e.repeat && !reviewEnded &&
         !document.querySelector("dialog[open]") && e.target instanceof Element &&
         !(e.target instanceof HTMLElement && e.target.isContentEditable) && !e.target.closest('input, textarea, select, [role="textbox"], [role="combobox"]')) {
       e.preventDefault();

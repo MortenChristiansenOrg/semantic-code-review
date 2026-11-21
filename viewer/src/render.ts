@@ -13,7 +13,7 @@ import { captureFileScrolls, captureFocus, restoreFileScrolls, restoreFocus } fr
 import { reviewsDialog, reviewsOpen, setReviewsOpen, updateReviewList } from "./saved-reviews";
 import { refreshDiffSelection } from "./selection";
 import { hasSelectionHits } from "./selection-hits";
-import { reviewDeleted, state } from "./state";
+import { reviewEnded, state } from "./state";
 import { beginThreadLists, endThreadLists } from "./threads";
 import { observeUnreadReplies, unreadReplyCount } from "./unread-replies";
 import { renderPage, type PageView } from "./views/page";
@@ -33,7 +33,7 @@ export function render(): void {
   resumePendingLazyJump();
 }
 export function renderView(): void {
-  if (reviewDeleted) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
+  if (reviewEnded) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
   beginThreadLists();
   const model: PageView = {
     topbar: topbarModel(),
