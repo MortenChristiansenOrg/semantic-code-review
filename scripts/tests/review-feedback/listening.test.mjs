@@ -194,10 +194,22 @@ test("a round that retired before another agent took over posts no more replies,
   for (const claim of [first.claim, reissued.claim]) {
     repository.expectFeedbackFailure("was replaced", "thread", "reply", "--id", "late", "--comment-id", `late-${claim}`, "--author", "agent", "--claim", claim, "--body", "Answered.");
   }
-  // The replaced agent learns it was replaced even while the stack fails validation.
+  // The replaced agent learns it was replaced even while the feedback fails validation.
   fs.writeFileSync(repository.feedbackPath("threads", "late.json"), "{");
   assert.deepEqual(await waitAsync(repository, "--session", first.session, "--timeout", "2"),
     { session: first.session, stopped: true, reason: "superseded" });
+});
+
+test("a listener that takes no thread from a retired round leaves that round's replies accepted", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "done");
+  const standalone = flowJson(repository);
+  repository.feedback("thread", "reply", "--id", "done", "--comment-id", "answer", "--author", "agent", "--claim", standalone.claim, "--body", "Done.");
+  const listener = await waitAsync(repository, "--timeout", "1");
+  assert.deepEqual(listener, { session: listener.session, timedOut: true });
+  repository.feedback("thread", "reply", "--id", "done", "--comment-id", "addendum", "--author", "agent", "--claim", standalone.claim, "--body", "One more note.");
+  assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads", "done.json")).comments.at(-1).respondsTo, "done-note");
 });
 
 test("a first wait on a completed review starts no session and leaves a running round its threads", async (t) => {

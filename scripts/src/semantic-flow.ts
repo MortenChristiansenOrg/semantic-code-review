@@ -963,13 +963,20 @@ async function waitForFeedback(options: Options): Promise<void> {
   // Continuing a session first checks the round just completed. A round still waiting
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
-    await validateArtifactForFeedback(candidate);
-    if (candidate.feedbackExists) {
-      const feedbackValidation = await checkFeedback(candidate.worktree);
-      if (!feedbackValidation.passed) {
-        if (feedbackValidation.output) console.error(feedbackValidation.output);
-        fail("Feedback validation failed.");
+    try {
+      await validateArtifactForFeedback(candidate);
+      if (candidate.feedbackExists) {
+        const feedbackValidation = await checkFeedback(candidate.worktree);
+        if (!feedbackValidation.passed) {
+          if (feedbackValidation.output) console.error(feedbackValidation.output);
+          fail("Feedback validation failed.");
+        }
       }
+    } catch (error) {
+      // Another agent may have taken over while this wait validated its work in progress.
+      const endedSince = updateAgentState(review, ended);
+      if (endedSince) { print({ session: requested, stopped: true, reason: endedSince }); return; }
+      throw error;
     }
   }
   const start = updateAgentState(review, (state, now) => {
