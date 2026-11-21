@@ -167,14 +167,14 @@ for every other author of the folded commits.
 `files` is derived from:
 
 ```text
-git --no-replace-objects -c core.attributesFile=<null device> \
+git --no-replace-objects -c core.attributesFile=/dev/null -c diff.default.binary=auto \
   diff-tree -r -z --name-status --ignore-submodules=none --find-renames=50% -l1000 \
   <baseRevision> <headRevision> --
 ```
 
 run with `GIT_ATTR_SOURCE` set to the empty tree and `GIT_ATTR_NOSYSTEM=1`, so
 that the inventory does not depend on Git configuration, replacement refs or
-attributes. `1000` is the rename limit of this format (Git's default since
+attributes (Git reads `/dev/null` as the null device on every platform). `1000` is the rename limit of this format (Git's default since
 2.33). Git before 2.41 ignores `GIT_ATTR_SOURCE` and still reads the worktree's
 `.gitattributes`, and every Git version reads `$GIT_DIR/info/attributes`.
 
