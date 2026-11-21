@@ -5,7 +5,7 @@ import { compose, replyDraft, replyTo } from "./editor";
 import { errorMessage, failureOf } from "./narrow";
 import { forceHidePop } from "./popover";
 import { render } from "./render";
-import { approvalsNotSaved } from "./approval-state";
+import { unsavedApprovalChanges } from "./approval-state";
 import { data } from "./context";
 import { endedElsewhere, flushReviewState, reviewEnded, savedReview, setReviewEnded, state, stopSaving, type ReviewEnd } from "./state";
 import { pendingReplies, usableNotes } from "./threads";
@@ -22,13 +22,18 @@ export let reviewListBusy = false;
 
 /** Ends the page's review: its data was deleted, or its implementation archived. */
 export function markReviewEnded(end: ReviewEnd, external = false): void {
+  // Each request the end refuses may say so; a deletion outlasts an archive.
+  if (reviewEnded === end || reviewEnded === "deleted") return;
   const fileSearch = document.querySelector(".file-search[open]");
   if (fileSearch instanceof HTMLDialogElement) fileSearch.close();
   setReviewEnded(end, external); reviewsOpen = true;
   stopSaving(); render(); void refreshReviews();
   // Screen readers learn of the end from its notice, even when the saved
   // reviews were already open. A deletion this page made keeps its own focus.
-  if (external) focusable(reviewsDialog?.querySelector(".ended-review h1"))?.focus({ preventScroll: true });
+  // The heading is scrolled into view, as the saved reviews may be scrolled down.
+  const heading = external ? focusable(reviewsDialog?.querySelector(".ended-review h1")) : null;
+  heading?.focus({ preventScroll: true });
+  heading?.scrollIntoView({ block: "nearest" });
 }
 // Unsent text the reviewer can copy after another tab or session ended this review.
 export function endedReviewText(): string {
@@ -99,7 +104,7 @@ export const isCurrentReview = (review: ReviewSummary): boolean => reviewEnded !
 const reviewStatus = (review: ReviewSummary): string => review.archived ? "Archived" : review.completedAt ? "Completed" : "Active";
 export function reviewsPanelModel(): ReviewsPanelView {
   return {
-    ended: reviewEnded ? { reason: reviewEnded, implementationId: data.implementationId, text: endedReviewText(), approvalsNotSaved: [...approvalsNotSaved.values()] } : null,
+    ended: reviewEnded ? { reason: reviewEnded, implementationId: data.implementationId, text: endedReviewText(), approvalsNotSaved: unsavedApprovalChanges() } : null,
     busy: reviewListBusy, error: reviewListError,
     reviews: reviewList.map((review) => ({
       id: review.id, title: review.title, remote: Boolean(review.remote), current: isCurrentReview(review),

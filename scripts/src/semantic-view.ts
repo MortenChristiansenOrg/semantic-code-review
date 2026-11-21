@@ -2043,15 +2043,16 @@ interface FeedbackRequestContext {
   repoRoot: string;
   jobs: RequestJobs<ViewerJobs>;
   port: number;
+  /** Answers a failed request, saying whether the implementation was archived. */
+  failure: (status: number, error: unknown) => Promise<void>;
+  /** What a failure adds when the implementation was archived. */
+  archiveNotice: () => Promise<Pick<Wire.ApiFailure, "implementationArchived">>;
 }
 
 async function handleFeedbackExport(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext) {
   try {
     if (!isTrustedRequest(request, context.port)) {
-      sendJson<Wire.ApiFailure>(response, 403, {
-        ok: false,
-        error: "Feedback export requires a same-origin application/json request.",
-      });
+      await context.failure(403, new Error("Feedback export requires a same-origin application/json request."));
       return;
     }
     const raw = await readRequestBody(request);
@@ -2059,27 +2060,24 @@ async function handleFeedbackExport(request: http.IncomingMessage, response: htt
     try {
       payload = parseJson(raw || "{}");
     } catch {
-      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
+      await context.failure(400, new Error("Request body must be JSON."));
       return;
     }
     if (!isRecord(payload)) {
-      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be a JSON object." });
+      await context.failure(400, new Error("Request body must be a JSON object."));
       return;
     }
     const received = parseFeedbackExport(payload);
     if (received.implementationId !== await context.jobs.call("reviewedImplementationId")) {
-      sendJson<Wire.ApiFailure>(response, 409, {
-        ok: false,
-        error: "This viewer is showing a different implementation than the one being exported.",
-      });
+      await context.failure(409, new Error("This viewer is showing a different implementation than the one being exported."));
       return;
     }
     const result = await context.jobs.call("sendFeedback", received);
     const snapshot = await context.jobs.call("snapshot", true);
     if (result.ok) sendJson<Wire.FeedbackExportResponse>(response, 200, { ...result, ...snapshot });
-    else sendJson<Wire.FeedbackExportResponse>(response, 422, { ...result, ...snapshot });
+    else sendJson<Wire.FeedbackExportResponse>(response, 422, { ...result, ...snapshot, ...await context.archiveNotice() });
   } catch (error) {
-    sendJson<Wire.ApiFailure>(response, 500, { ok: false, error: cliErrorMessage(error) });
+    await context.failure(500, error);
   }
 }
 
@@ -2106,10 +2104,7 @@ export function readFeedbackThread(repoRoot: string, threadId: string): Thread |
 async function handleThreadAction(request: http.IncomingMessage, response: http.ServerResponse, context: FeedbackRequestContext & { implementationId: string }, action: string) {
   try {
     if (!isTrustedRequest(request, context.port)) {
-      sendJson<Wire.ApiFailure>(response, 403, {
-        ok: false,
-        error: "Thread actions require a same-origin application/json request.",
-      });
+      await context.failure(403, new Error("Thread actions require a same-origin application/json request."));
       return;
     }
     const raw = await readRequestBody(request);
@@ -2117,21 +2112,18 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
     try {
       payload = parseJson(raw || "{}");
     } catch {
-      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "Request body must be JSON." });
+      await context.failure(400, new Error("Request body must be JSON."));
       return;
     }
     const currentImplementationId = await context.jobs.call("reviewedImplementationId");
     const input = isRecord(payload) ? parseThreadAction(payload) : undefined;
     if (!input || input.implementationId !== context.implementationId || input.implementationId !== currentImplementationId) {
-      sendJson<Wire.ApiFailure>(response, 409, {
-        ok: false,
-        error: "This viewer is showing a different implementation than the one being edited.",
-      });
+      await context.failure(409, new Error("This viewer is showing a different implementation than the one being edited."));
       return;
     }
     const { threadId } = input;
     if (!threadId) {
-      sendJson<Wire.ApiFailure>(response, 400, { ok: false, error: "A threadId is required." });
+      await context.failure(400, new Error("A threadId is required."));
       return;
     }
     try {
@@ -2148,7 +2140,7 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
         await context.jobs.call("setThreadStatus", context.implementationId, threadId, "open");
       }
     } catch (error) {
-      sendJson<Wire.ApiFailure>(response, 422, { ok: false, error: cliErrorMessage(error) });
+      await context.failure(422, error);
       return;
     }
     const thread = await context.jobs.call("feedbackThread", threadId);
@@ -2165,7 +2157,7 @@ async function handleThreadAction(request: http.IncomingMessage, response: http.
       ...await context.jobs.call("snapshot", true),
     });
   } catch (error) {
-    sendJson<Wire.ApiFailure>(response, 500, { ok: false, error: cliErrorMessage(error) });
+    await context.failure(500, error);
   }
 }
 
@@ -2275,12 +2267,14 @@ export function reviewRetirementCheck(context: ReviewContext) {
   };
 }
 /** How long a viewer whose implementation was archived runs on after the last
- * request of a page, so that open pages, which learn it from their requests,
- * can still tell. SEMANTIC_VIEW_ARCHIVED_IDLE_MS shortens it for tests. */
+ * request of a page arrived, so that open pages, which learn it from their
+ * requests, can still tell. SEMANTIC_VIEW_ARCHIVED_IDLE_MS shortens it for tests. */
 function archivedViewerIdleMs(): number {
   const configured = Number(process.env.SEMANTIC_VIEW_ARCHIVED_IDLE_MS);
   return Number.isSafeInteger(configured) && configured > 0 ? configured : 10 * 60_000;
 }
+/** How long a stopping archived viewer lets requests in progress finish. */
+const ARCHIVED_STOP_LIMIT_MS = 30_000;
 interface ViewerServerOptions {
   viewerDir: string;
   port: number;
@@ -2305,35 +2299,28 @@ function serveViewer({
   const review = assertReviewContext(context);
   let server: http.Server | null = null;
   // Archiving ends the review: pages are told, and the viewer stops once no
-  // page has used it for archivedViewerIdleMs. Only requests that pass the host
-  // and access checks use it, and each one does until it ends.
-  let archivedAt: number | undefined, lastRequestAt = Date.now(), requestsInFlight = 0;
+  // page has made a request for archivedViewerIdleMs. Only requests that pass
+  // the host and access checks count, when they arrive.
+  let archivedAt: number | undefined, lastRequestAt = Date.now();
   /** Whether the implementation was archived; once it was, it stays so. */
   const archived = async () => {
     if (archivedAt === undefined && await readReviewImplementationArchived(review)) archivedAt = Date.now();
     return archivedAt !== undefined;
   };
-  /** Stops listening, lets requests in flight finish for up to graceMs, then
-   * ends the process. */
-  const exit = (graceMs: number) => {
-    const done = () => process.exit(0);
-    const closing = server;
-    if (!closing) { done(); return; }
-    closing.close(done);
-    // A connection kept alive between requests would hold the server open.
-    closing.closeIdleConnections();
-    setInterval(() => closing.closeIdleConnections(), 100).unref();
-    setTimeout(done, graceMs).unref();
-  };
   /** Ends a viewer whose implementation was archived, releasing its record first
-   * so no launch looks for it on its port. */
+   * so no launch looks for it on its port. Requests in progress may finish, for
+   * up to ARCHIVED_STOP_LIMIT_MS. */
   const stopArchived = () => {
     try {
       const recorded = readReview(context.reviewId).viewer;
       if (recorded?.processId === process.pid && recorded.port === port) recordViewer(context.reviewId, context.generation, undefined, recorded);
     } catch { /* A deleted or replaced review records no viewer of this one. */ }
-    // No request was in flight; one that arrived since may finish.
-    exit(30_000);
+    const done = () => process.exit(0);
+    if (!server) { done(); return; }
+    server.close(done);
+    // A connection kept alive between requests would hold the server open.
+    server.closeIdleConnections();
+    setTimeout(done, ARCHIVED_STOP_LIMIT_MS).unref();
   };
   let management: ManagementWorker | null = null;
   const manage = (): ManagementWorker => {
@@ -2353,13 +2340,8 @@ function serveViewer({
     response.end(text);
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
-    let used = false;
-    /** Counts the request, once it passed the host and access checks, as use of the viewer until it ends. */
-    const use = () => {
-      if (used) return;
-      used = true; requestsInFlight += 1; lastRequestAt = Date.now();
-      response.once("close", () => { requestsInFlight -= 1; lastRequestAt = Date.now(); });
-    };
+    /** Counts the request, once it passed the host and access checks, as use of the viewer. */
+    const use = () => { lastRequestAt = Date.now(); };
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // The request's jobs read the active refs once, in the worker, so checking
     // its review neither runs Git again nor holds up this thread.
@@ -2380,15 +2362,20 @@ function serveViewer({
     catch { plain(response, 400, "Bad request."); return; }
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const param = (key: string) => url.searchParams.get(key);
-    const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable" | "implementationArchived"> = {}) =>
-      sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra });
+    // Requests of the review, as opposed to the viewer's own and the page's start.
+    const reviewRoute = pathname.startsWith("/api/") && !UNSCOPED_ROUTES.has(pathname);
+    /** What a failed request of the review adds when its implementation was archived. */
+    const archiveNotice = async (): Promise<Pick<Wire.ApiFailure, "implementationArchived">> =>
+      reviewRoute && !reviewSessionUnavailable(context) && await archived() ? { implementationArchived: true } : {};
+    /** Answers a failed request. A request of the review also says when its
+     * implementation was archived, which may have refused it, so every refusal
+     * ends the page's review, whatever step the archive overtook. */
+    const failure = async (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) => {
+      sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra, ...extra.reviewUnavailable ? {} : await archiveNotice() });
+    };
     /** Answers a request whose review check failed, saying whether the review was
      * deleted or replaced, or else whether its implementation was archived. */
-    const refuse = async (error: unknown) => {
-      const unavailable = reviewSessionUnavailable(context);
-      const ended = !unavailable && await archived();
-      failure(409, retiredReason(error), { reviewUnavailable: unavailable, ...(ended ? { implementationArchived: true } : {}) });
-    };
+    const refuse = (error: unknown) => failure(409, retiredReason(error), { reviewUnavailable: reviewSessionUnavailable(context) });
 
     if (pathname.startsWith("/api/")) {
       if (!ownApiCaller(request, port)) {
@@ -2693,8 +2680,12 @@ function serveViewer({
         return;
       }
       sendJson<Wire.ShutdownResponse>(response, 200, { ok: true });
-      // Requests in flight may finish within the five seconds `review --stop` waits.
-      setTimeout(() => exit(3000), 50);
+      setTimeout(() => {
+        const done = () => process.exit(0);
+        if (server) server.close(done);
+        else done();
+        setTimeout(done, 500).unref();
+      }, 50);
       return;
     }
 
@@ -2703,6 +2694,8 @@ function serveViewer({
         repoRoot,
         jobs,
         port,
+        failure,
+        archiveNotice,
       });
       return;
     }
@@ -2715,7 +2708,7 @@ function serveViewer({
       handleThreadAction(
         request,
         response,
-        { repoRoot, port, implementationId, jobs },
+        { repoRoot, port, implementationId, jobs, failure, archiveNotice },
         action,
       );
       return;
@@ -2758,7 +2751,7 @@ function serveViewer({
         if (checking) return;
         checking = true;
         try {
-          if (!await archived() || requestsInFlight || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
+          if (!await archived() || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
           clearInterval(archiveCheck); stopArchived();
         } finally { checking = false; }
       }, Math.min(60_000, idle));

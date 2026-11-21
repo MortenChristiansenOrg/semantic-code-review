@@ -619,14 +619,15 @@ removes the active artifact. Stage and metadata branches are kept.
 
 Archiving ends the implementation's review. An open viewer page says that the
 implementation was archived, offers its unsent text for copying, lists any
-approval that was not saved, and stops checking for updates and saving. It
-still asks before you leave it while it shows unsent text. A page loaded or
-reloaded while the viewer runs shows the same. Feedback the page sends after
-the archive is refused. The review list shows the review as archived; its data
-stays until you delete it. The viewer stops by itself, releasing its port, once
-no page has used it for ten minutes; requests in progress finish first. A tab
-that stayed in the background until then cannot learn of the archive and asks
-for a fresh link instead.
+approval change that was not saved, and stops checking for updates and saving.
+It still asks before you leave it while it shows unsent text. A page loaded or
+reloaded while the viewer runs shows the same. Feedback and other changes the
+page sends after the archive are refused, and the refusal shows the same. The
+review list shows the review as archived; its data stays until you delete it.
+The viewer stops by itself, releasing its port, once no page has made a request
+for ten minutes, checked each minute. Requests in progress then get up to 30
+seconds to finish. A tab that stayed in the background until then cannot learn
+of the archive and asks for a fresh link instead.
 
 Landing is found when the target branch contains the final stage head, as after
 a fast-forward or merge. After a squash or rebase merge it is unknown unless you

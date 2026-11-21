@@ -6,6 +6,7 @@
 import { currentAccess, loseAccess, type Access } from "./access";
 import type {
   AgentControlResponse,
+  ApiFailure,
   AgentRespondRequest,
   ApprovalComparisonRequest,
   ApprovalComparisonResponse,
@@ -147,6 +148,25 @@ function apiUrl(path: string, query: Query = {}): URL {
   return scoped(url);
 }
 
+/** Told of each refusal that says the review ended. */
+let reviewEndListener: ((failure: Partial<ApiFailure>) => void) | undefined;
+/** Tells listener of every refusal that says the review's data was deleted or
+ * its implementation archived, whatever request it answered, before the
+ * request's caller sees it. */
+export function onReviewEnd(listener: (failure: Partial<ApiFailure>) => void): void { reviewEndListener = listener; }
+/** Tells the listener when a refusal says the review ended. */
+async function noteReviewEnd(response: Response): Promise<void> {
+  if (response.ok || !reviewEndListener) return;
+  let body: unknown;
+  try { body = await response.clone().json(); } catch { return; }
+  if (!body || typeof body !== "object") return;
+  const failure = {
+    reviewUnavailable: "reviewUnavailable" in body && body.reviewUnavailable === true,
+    implementationArchived: "implementationArchived" in body && body.implementationArchived === true,
+  };
+  if (failure.reviewUnavailable || failure.implementationArchived) reviewEndListener(failure);
+}
+
 /** Issues one request with the page's key. Nothing else in the page calls fetch,
  * except the launch code exchange below. */
 async function request(input: string, init: RequestInit = {}): Promise<Response> {
@@ -161,6 +181,7 @@ async function request(input: string, init: RequestInit = {}): Promise<Response>
   // A late answer under an older key says nothing about the current one.
   if (current.key === currentAccess()?.key) outageSince = 0;
   if (await keyRefused(response)) loseAccess(current);
+  await noteReviewEnd(response);
   return response;
 }
 

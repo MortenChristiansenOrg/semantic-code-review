@@ -1639,12 +1639,70 @@ test('an approval whose content is retained after the archive notice is listed a
   await expect(heading).toBeVisible();
   await expect(heading).toBeFocused();
   release();
-  await expect(page.locator('.ended-review')).toContainText('These approvals were not saved:');
+  await expect(page.locator('.ended-review')).toContainText('These approval changes were not saved:');
   await expect(page.locator('.ended-review li')).toHaveText([data.stages[0].files[0].path]);
   await expect(heading).toBeFocused();
   expect(saved).toEqual([]);
   // Only unsent text makes leaving ask.
   expect(await warnsBeforeLeaving(page)).toBe(false);
+});
+
+/** Holds the page's next saves of review state until released, then refuses
+ * them as the server does once the implementation was archived. */
+async function holdSavesUntilArchived(page) {
+  let release;
+  const released = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/review-state?*', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    await released; return route.fulfill(archivedRefusal);
+  });
+  return release;
+}
+
+test('a stage approval whose save the archive cancels is listed as not saved', async ({ page }) => {
+  await mount(page);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]'), two = page.locator('details[data-node="first-two"]');
+  await one.locator('summary').click(); await two.locator('summary').click();
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await saveAction(page, () => two.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-two')]);
+  let archived = false;
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  const release = await holdSavesUntilArchived(page);
+  // A stage approval only schedules its save, which the archive overtakes.
+  const sent = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await page.locator('.stage[data-stage="first"] .stage-approve .approve').click();
+  await sent;
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  release();
+  await expect(page.locator('.ended-review li')).toHaveText(['Stage first']);
+});
+
+test('an approval removal whose save the archive refuses is listed as not saved', async ({ page }) => {
+  await mount(page);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]');
+  await one.locator('summary').click();
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  const release = await holdSavesUntilArchived(page);
+  const sent = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await one.locator('.mini-approve').click();
+  await sent;
+  // The refused save alone tells the page that the implementation was archived.
+  release();
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  await expect(page.locator('.ended-review li')).toHaveText(['shared.js (approval removed)']);
+});
+
+test('a thread action the archive refuses ends the review at once', async ({ page }) => {
+  const data = fixture();
+  data.feedback = [thread('refused')];
+  await mount(page, data, { openThreads: { first: true } });
+  // Polls still succeed, so only the refusal can tell.
+  await page.route((url) => url.pathname === '/api/feedback/resolve', (route) => route.fulfill({ status: 422, json: { ...archivedRefusal.json } }));
+  await page.locator('.stage [data-action="thread-resolve"]').click();
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
 });
 
 test('a page loaded after the archive starts archived, even before any poll', async ({ page }) => {

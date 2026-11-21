@@ -35,8 +35,8 @@ hold it, stores the archive under `refs/semantic-review/archive/<implementation-
 with a landing record, and removes the active artifact. It does not delete
 stage branches, metadata branches, feedback history, remote refs, or worktrees.
 Branch cleanup is a separate explicit operation. An open viewer of the
-implementation tells its pages that it was archived and stops by itself; do not
-stop it.
+implementation tells its pages that it was archived and stops by itself once
+no page has made a request for ten minutes; do not stop it.
 
 Report the landing outcome: found by ancestry, supplied, or unknown. When it is
 unknown and the output suggests a matching commit or range, show it to the user

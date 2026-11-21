@@ -3612,12 +3612,16 @@ function archiveImplementation(
   // stage branches must still hold the archived heads.
   const stageChecks = [...artifact.stages.values()].map(({ change }): RefUpdate =>
     ({ ref: `refs/heads/${change.branch}`, next: change.headRevision, previous: change.headRevision }));
-  removeArtifact(workspace.root, workspace.snapshot, [
+  // Feedback writes check under the review lock that the implementation is
+  // still active, so removing it under the same lock never overtakes one of
+  // them. The lock is reentrant: the `archive` workflow already holds it while
+  // it checks that every thread is resolved.
+  withReviewLock(reviewId(workspace.root, implementationId), () => removeArtifact(workspace.root, workspace.snapshot, [
     ...stageChecks,
     publication.update ?? publication.verify ?? fail("The publication has no metadata ref."),
     { ref, next: commit, previous: ZERO_OID },
     { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
-  ]);
+  ]));
   const suggestion = landing.outcome === "unknown" ? suggestedLanding(workspace.root, subject) : null;
   if (!quiet) {
     if (publication.update) console.log(`Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`);

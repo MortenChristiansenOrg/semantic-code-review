@@ -19,9 +19,9 @@ import { errorMessage, failureOf } from "./narrow";
 import { pollViewerRevision } from "./polling";
 import { installPopover } from "./popover";
 import { render } from "./render";
-import { initSavedReviews, refreshReviews } from "./saved-reviews";
+import { initSavedReviews, markReviewEnded, refreshReviews } from "./saved-reviews";
 import { installSelection } from "./selection";
-import { initState, installUnloadGuard, persist, reviewEnded, state, type ReviewEnd, type SavedReview } from "./state";
+import { initState, installUnloadGuard, persist, reviewEnded, reviewEndOf, state, type ReviewEnd, type SavedReview } from "./state";
 import { installHeldThreadLists, usableNotes } from "./threads";
 import { installUnreadReplies } from "./unread-replies";
 import { cssEsc } from "./util";
@@ -58,6 +58,11 @@ async function startApp(): Promise<boolean> {
   rebuildFileSearchIndex();
   initState(saved, ended);
   initSavedReviews();
+  // Any refused request may be the first to say that the review ended.
+  api.onReviewEnd((failure) => {
+    const end = reviewEndOf(failure);
+    if (end) markReviewEnded(end, true);
+  });
   initEditor();
   // Handlers of one event run in the order they are added.
   installUnloadGuard();

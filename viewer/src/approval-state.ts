@@ -8,7 +8,7 @@ import { activeFileNodeId, approvalEntry, fileApprovalKey, fileBaseRevision, fla
 import { errorMessage, failureOf, isRecord } from "./narrow";
 import { render } from "./render";
 import { markReviewEnded } from "./saved-reviews";
-import { persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state } from "./state";
+import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state } from "./state";
 import type { MembershipEntry, ViewerFile, ViewerStage } from "./types";
 
 /** Approval changes in progress, by approval ID. */
@@ -20,6 +20,22 @@ export const approvalErrors = new Map<string, string>();
 export const approvalsNotSaved = new Map<string, string>();
 /** Thrown when the review ended before an approval was saved. */
 class ApprovalCutOff extends Error {}
+/** What each approval change not saved when another tab or session ended the
+ * review changed: those the end cut off while they were made, and those made
+ * but not saved yet, such as stage approvals and removals, which only schedule
+ * a save that the end cancels. */
+export function unsavedApprovalChanges(): string[] {
+  const labels = new Map(approvalsNotSaved);
+  if (!endedElsewhere) return [...labels.values()];
+  const saved = isRecord(persistedState.approvals) ? persistedState.approvals : {};
+  for (const id of new Set([...Object.keys(saved), ...Object.keys(state.approvals)])) {
+    if (labels.has(id) || JSON.stringify(saved[id]) === JSON.stringify(state.approvals[id])) continue;
+    // A record moved on from a file's previous path names nothing shown.
+    const label = approvalEntry(id)?.file.path ?? stageById.get(id)?.title;
+    if (label) labels.set(id, Object.hasOwn(state.approvals, id) ? label : `${label} (approval removed)`);
+  }
+  return [...labels.values()];
+}
 
 /* ---- helpers ---------------------------------------------------------- */
 /* File approvals are scoped to a node and observe the complete file plus its ownership.

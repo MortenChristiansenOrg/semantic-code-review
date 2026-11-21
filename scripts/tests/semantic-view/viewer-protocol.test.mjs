@@ -346,11 +346,11 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
 test("a viewer of an archived implementation tells its pages, lists the review as archived, and stops once unused", async (t) => {
   const viewer = viewerCleanup(t);
   const repository = createReviewRepository(t);
-  // A short idle period, so the viewer stops soon after the last request. It
-  // runs from the end of a request, so a slow one, such as the first that
-  // starts the management worker, never cuts itself off.
+  // A short idle period, so the viewer stops soon after the last request
+  // arrives, yet long enough for the requests below to arrive within it, even
+  // the first that starts the management worker.
   await startViewer(viewer, repository, { SEMANTIC_VIEW_ARCHIVED_IDLE_MS: "5000" });
-  const { captured, capture, get, target } = await client(viewer.url);
+  const { captured, capture, get, post, target } = await client(viewer.url);
   await get("RevisionResponse", "api/revision");
   repository.flow("archive", "--json");
 
@@ -366,6 +366,9 @@ test("a viewer of an archived implementation tells its pages, lists the review a
   const listed = reviews.find((review) => review.id === target.reviewId);
   assert.equal(listed.archived, true);
   assert.equal(listed.available, false);
+  // Any refusal of a request of the review says so, not only the review check's.
+  const invalid = await post("ApiFailure", "api/reviews/completion", { ...target, completed: "maybe" }, 409);
+  assert.equal(invalid.implementationArchived, true);
   assert.deepEqual(protocolErrors(captured), []);
 
   // Requests the viewer refuses do not keep it running.

@@ -29,7 +29,7 @@ export interface EndedReviewView {
   implementationId: string;
   /** Unsent text to copy, if any. */
   text: string;
-  /** What each approval the end cut off before it was saved approved. */
+  /** What each approval change that was not saved changed. */
   approvalsNotSaved: readonly string[];
 }
 
@@ -46,7 +46,7 @@ function endedReview(view: EndedReviewView): TemplateResult {
     ? html`<h1 tabindex="-1">Implementation archived</h1><p>Implementation <code>${view.implementationId}</code> was archived, which ends its review. Its review data is kept, but this page no longer updates or saves changes. This viewer stops after ten minutes without use; after that, run review again to open another saved review.</p>`
     : html`<h1 tabindex="-1">Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in a worktree of the repository to start a fresh session.</p>`;
   return html`<section class="ended-review" data-end=${view.reason}>${notice}
-      ${view.approvalsNotSaved.length ? html`<p class="approvals-not-saved">These approvals were not saved:</p><ul>${view.approvalsNotSaved.map((label) => html`<li><code>${label}</code></li>`)}</ul>` : nothing}
+      ${view.approvalsNotSaved.length ? html`<p class="approvals-not-saved">These approval changes were not saved:</p><ul>${view.approvalsNotSaved.map((label) => html`<li><code>${label}</code></li>`)}</ul>` : nothing}
       ${view.text ? html`<label>Copy any unsent text you want to keep<textarea readonly rows="6" .value=${view.text}></textarea></label>` : nothing}</section>`;
 }
 

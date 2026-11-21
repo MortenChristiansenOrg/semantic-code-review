@@ -231,9 +231,11 @@ test("the jobs after a request body share one read of the active refs", async (t
   // One read checks the review before the body, one serves the jobs after it.
   // The feedback change reads only its implementation's active ref again, under
   // the review lock, as an archive may have removed it since.
-  const recheck = `refs/semantic-review/active/${implementationId}`;
-  const rechecking = (line) => line.trimEnd().endsWith(` ${recheck}`);
-  const [checks, rechecks] = [reads.filter((line) => !rechecking(line)), reads.filter(rechecking)];
+  // Its failure reads whether the implementation was archived, which may have refused it.
+  const recheck = `refs/semantic-review/active/${implementationId}`, archive = `refs/semantic-review/archive/${implementationId}`;
+  const rechecking = (line) => line.trimEnd().endsWith(` ${recheck}`), archiveChecking = (line) => line.trimEnd().endsWith(` ${archive}`);
+  const checks = reads.filter((line) => !rechecking(line) && !archiveChecking(line));
   assert.equal(checks.length, 2, reads.join("\n"));
-  assert.equal(rechecks.length, 1, reads.join("\n"));
+  assert.equal(reads.filter(rechecking).length, 1, reads.join("\n"));
+  assert.equal(reads.filter(archiveChecking).length, 1, reads.join("\n"));
 });
