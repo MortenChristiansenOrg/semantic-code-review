@@ -309,7 +309,8 @@ export function selectImplementation(implementationId: string | undefined): void
   else process.env[SELECTION_VARIABLE] = implementationId;
 }
 
-const selectedImplementation = (): string | undefined => process.env[SELECTION_VARIABLE] || undefined;
+/** The implementation the process inherited a selection of, if any. */
+export const selectedImplementation = (): string | undefined => process.env[SELECTION_VARIABLE] || undefined;
 
 function worktreeSelectionFile(root: string): string {
   return path.resolve(root, gitRaw(["rev-parse", "--git-path", WORKTREE_SELECTION], { cwd: root }));
@@ -384,6 +385,12 @@ function chooseActive(root: string, actives: ActiveImplementation[], implementat
   const claimed = claimedImplementation(root, actives);
   if (claimed) return claimed;
   fail(`Several semantic implementations are active in this repository: ${actives.map((active) => active.implementationId).join(", ")}. Run the command in the worktree of the one you mean, with one of its stage branches checked out.`);
+}
+
+/** The implementation the worktree at root works on by itself, regardless of
+ * an inherited selection: the one it has claimed, or the only active one. */
+export function ownImplementationId(root: string): string | undefined {
+  return chooseActive(root, listActiveImplementations(root), undefined)?.implementationId;
 }
 
 /** Fails when root holds an untracked artifact folder from an earlier version. */
