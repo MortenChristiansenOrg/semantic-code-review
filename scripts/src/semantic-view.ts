@@ -55,7 +55,7 @@ import { evidenceMediaTypeMatches, evidenceRange, resolveEvidenceFile, sha256Hex
 import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
-import { refreshRemoteReview } from "./shared/remote-review.js";
+import { prepareRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
 import { agentStatus, liveSession, markSending, readAgentState, respondToRequest, updateAgentState } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
@@ -2185,18 +2185,32 @@ export function registeredReviews(): Wire.ReviewSummary[] {
   removeOrphanedReviews();
   return listReviews().map((record) => {
     let unavailableReason = "";
-    try { captureReviewContext(record.id); } catch (error) { unavailableReason = cliErrorMessage(error); }
+    // Listing doesn't make a remote review's projection again; opening it does.
+    try { captureReviewContext(record.id, "unbuilt"); } catch (error) { unavailableReason = cliErrorMessage(error); }
     const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
     return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
   }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
-/** Reopen using a registry identity, with no caller-supplied path or command. */
-export async function openRegisteredReview(id: string, generation: string): Promise<string> {
+/** Makes a registered review ready to open and checks it, returning the context
+ * to open it with. Preparing a remote review may fetch its branch, so the
+ * viewer runs this in its management worker, not on the thread serving requests. */
+export function prepareRegisteredReview(id: string, generation: string): ReviewContext {
+  prepareRemoteReview(id, generation);
   const context = captureReviewContext(id);
   if (context.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
+  return context;
+}
+
+/** Reopen a review that prepareRegisteredReview made ready, using its registry
+ * identity, with no caller-supplied path or command. The startup timeout
+ * counts from the launch, once preparing has finished. */
+export async function openRegisteredReview(context: ReviewContext): Promise<string> {
+  const id = context.reviewId;
+  // Only the identity is checked again here, on the thread serving requests: the
+  // viewer it starts reads the review, and makes its projection, itself.
   const child = spawnReviewCommand(context, process.execPath, [fileURLToPath(import.meta.url), "viewer", "serve", context.repositoryRoot, "--review", context.reviewId, "--generation", context.generation], {
-    detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" },
+    detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"], environment: { SEMANTIC_VIEW_NO_OPEN: "1" }, artifactCheck: "skip",
   });
   try {
     return await new Promise<string>((resolve, reject) => {
@@ -2343,7 +2357,8 @@ function serveViewer({
       if (scope.review !== context.reviewId || scope.generation !== context.generation) {
         sendJson<Wire.ApiFailure>(response, 409, { ok: false, error: "This request belongs to another review." }); return;
       }
-      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state") await jobs.call("checkReview"); }
+      // Fetching updates checks only the review's identity, as it makes the projection again.
+      try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state" && pathname !== "/api/remote/refresh") await jobs.call("checkReview"); }
       catch (error) { refuse(error); return; }
     }
 
@@ -2478,7 +2493,8 @@ function serveViewer({
         if (!isTrustedRequest(request, port)) throw new Error("Opening a review requires a same-origin request.");
         // Identities of another type fail the registry's own identity checks.
         const target: Wire.ReviewOpenRequest = parseReviewTarget(await readRequestFields(request));
-        sendJson<Wire.ReviewOpenResponse>(response, 200, { ok: true, url: await openRegisteredReview(target.reviewId, target.generation) });
+        const prepared = await manage().call("prepareOpen", target);
+        sendJson<Wire.ReviewOpenResponse>(response, 200, { ok: true, url: await openRegisteredReview(prepared) });
       } catch (error) { failure(409, error); }
       return;
     }
@@ -2818,12 +2834,14 @@ function parseWorkerContext(value: unknown): ReviewContext {
 }
 
 // Management survives retirement of the launching review. Every job uses
-// its explicitly selected target; no repository command is allowed here.
+// its explicitly selected target; no repository command is allowed here
+// beyond checking a review and fetching a remote review's branch to open it.
 const managementJobs = {
   inspectStorage: ({ reviewId, generation }: Wire.ReviewTarget): Wire.ReviewStorage => inspectReviewStorage(reviewId, generation),
   deleteStorage: ({ reviewId, generation, fingerprint }: Wire.ReviewStorageActionRequest) => deleteReviewData(reviewId, generation, fingerprint),
   cleanStorage: ({ reviewId, generation, fingerprint }: Wire.ReviewStorageActionRequest) => cleanUnusedReviewFiles(reviewId, generation, fingerprint),
   listReviews: (): Wire.ReviewSummary[] => registeredReviews(),
+  prepareOpen: ({ reviewId, generation }: Wire.ReviewTarget): ReviewContext => prepareRegisteredReview(reviewId, generation),
   setCompleted: ({ reviewId, generation, completed, expectedCompletedAt }: Wire.ReviewCompletionRequest) => {
     setReviewCompleted(reviewId, generation, completed, expectedCompletedAt);
   },
@@ -2870,7 +2888,13 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
     },
     implementation: (): Wire.ImplementationData => { review(); return source.implementationData(); },
     evidenceFile: (query: QueryText<Wire.EvidenceQuery>) => { review(); return source.evidenceFile(query.stage, query.item, query.index); },
-    refreshRemote: (implementationId: string) => { implementation(implementationId); refreshRemoteReview(context.reviewId, context.generation); },
+    // The refresh makes the projection again, so it needs the review only, not a
+    // readable projection: an interrupted refresh may have left none.
+    refreshRemote: (implementationId: string) => {
+      assertReviewContext(context, "skip");
+      if (implementationId !== context.implementationId) throw new Error("The active implementation changed; reopen the viewer.");
+      refreshRemoteReview(context.reviewId, context.generation);
+    },
     resolveDraftSnapshots: (implementationId: string, fields: JsonRecord): (Wire.DraftSnapshot | null)[] => {
       implementation(implementationId);
       const notes = parseDraftSnapshotNotes(fields);

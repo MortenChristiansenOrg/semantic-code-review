@@ -5,7 +5,15 @@ import path from "node:path";
 
 export const KEY_HEADER = "x-semantic-flow-key";
 
-/** The key of the viewer recorded on `port`, or undefined. */
+/** Whether a process is running. */
+function running(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code === "EPERM"; }
+}
+
+/** The key of the running viewer recorded on `port`, or undefined. A stopped
+ * viewer's record may still name the port, which a later viewer reuses, so
+ * only a record whose viewer process still runs counts. */
 export function viewerKey(port, home = process.env.SEMANTIC_FLOW_HOME) {
   const reviews = path.join(home, "reviews");
   let names = [];
@@ -13,7 +21,7 @@ export function viewerKey(port, home = process.env.SEMANTIC_FLOW_HOME) {
   for (const name of names) {
     try {
       const record = JSON.parse(fs.readFileSync(path.join(reviews, name, "review.json"), "utf8"));
-      if (record.viewer?.port === Number(port) && record.viewer.key) return record.viewer.key;
+      if (record.viewer?.port === Number(port) && record.viewer.key && running(record.viewer.processId)) return record.viewer.key;
     } catch { /* Not a review. */ }
   }
   return undefined;

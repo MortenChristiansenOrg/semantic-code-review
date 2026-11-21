@@ -74,5 +74,10 @@ they can be separated. In commit-based reviews, the newest occurrence of
 a file can compare against its latest saved approval from an earlier commit.
 Unchanged file content retains its approval when
 the base and ownership are unchanged. Refresh failures keep the previous
-snapshot available. Notes and approvals on removed commit stages remain saved
-but those stages no longer appear in the current branch's history.
+snapshot available. A refresh that was interrupted, for example because the
+viewer was stopped, may already have checked out the fetched revision; the
+review then shows that revision when it is next opened or refreshed. Where
+that revision cannot be shown again from the review's own copy of the
+repository, opening the review fetches the branch, as **Refresh branch** does.
+Notes and approvals on removed commit stages remain saved but those stages no
+longer appear in the current branch's history.

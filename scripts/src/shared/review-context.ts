@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawn, type SpawnOptions } from "node:child_process";
-import { readReview, readReviewArtifact, reviewId, reviewHome, type ReviewRecord } from "./review-store.js";
+import { readReview, readReviewArtifact, remoteProjectionStale, reviewId, reviewHome, type ReviewRecord } from "./review-store.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { activeImplementationId } from "./artifact-store.js";
 import { errorCode } from "./narrow.js";
@@ -22,13 +22,20 @@ export function reviewEnvironment(): NodeJS.ProcessEnv {
 /** Removes Git's repository-local variables from this process, so commands that
  * run in-process target their explicit worktree. */
 export const isolateReviewEnvironment = isolateGitEnvironment;
-export function captureReviewContext(id: string): ReviewContext {
+/** How a review check treats the review's artifact. "read" reads it, first
+ * making a remote review's projection again where an interrupted refresh left
+ * it unusable; "unbuilt" reads it as it is and accepts a projection such a
+ * refresh left missing without making it, which opening the review does; "skip"
+ * reads no artifact and checks only the review's identity, for a refresh that
+ * makes the projection anyway. */
+export type ArtifactCheck = "read" | "unbuilt" | "skip";
+export function captureReviewContext(id: string, artifactCheck: ArtifactCheck = "read"): ReviewContext {
   const review = readReview(id);
   const context = Object.freeze({ reviewId: id, generation: review.generation, repositoryRoot: review.repositoryRoot, implementationId: review.implementationId });
-  assertReviewContext(context);
+  assertReviewContext(context, artifactCheck);
   return context;
 }
-export function assertReviewContext(context: ReviewContext): ReviewRecord {
+export function assertReviewContext(context: ReviewContext, artifactCheck: ArtifactCheck = "read"): ReviewRecord {
   const review = readReview(context.reviewId);
   if (review.generation !== context.generation || review.repositoryRoot !== context.repositoryRoot || review.implementationId !== context.implementationId) throw new Error("This review session changed or was deleted. Reopen the review.");
   try {
@@ -36,7 +43,10 @@ export function assertReviewContext(context: ReviewContext): ReviewRecord {
     if (!fs.existsSync(path.join(context.repositoryRoot, ".git"))) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     // The implementation's artifact names its review; a deleted review's ID was replaced there.
     if (reviewId(context.repositoryRoot, context.implementationId) !== context.reviewId) throw Object.assign(new Error("The implementation has another review now. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
-    const artifact = readReviewArtifact(context.repositoryRoot, context.implementationId);
+    if (artifactCheck === "skip") return review;
+    const artifact = readReviewArtifact(context.repositoryRoot, context.implementationId, { rebuild: artifactCheck === "read" });
+    // Opening makes a projection that an interrupted refresh left missing.
+    if (!artifact && artifactCheck === "unbuilt" && remoteProjectionStale(context.repositoryRoot)) return review;
     if (!artifact) throw Object.assign(new Error("The review worktree or implementation is unavailable."), { code: "REVIEW_TARGET_UNAVAILABLE" });
     if (activeImplementationId(context.repositoryRoot, artifact.files) !== context.implementationId) throw Object.assign(new Error("The active implementation changed. Reopen the review."), { code: "REVIEW_TARGET_UNAVAILABLE" });
   } catch (error) {
@@ -63,8 +73,9 @@ export function runReviewCommand(context: ReviewContext, executable: string, arg
 }
 
 /** Asynchronous counterpart for launching another registered review service. */
-export function spawnReviewCommand(context: ReviewContext, executable: string, args: string[], options: Pick<SpawnOptions, "detached" | "stdio"> & { environment?: NodeJS.ProcessEnv } = {}) {
-  assertReviewContext(context);
+export function spawnReviewCommand(context: ReviewContext, executable: string, args: string[],
+  options: Pick<SpawnOptions, "detached" | "stdio"> & { environment?: NodeJS.ProcessEnv; artifactCheck?: ArtifactCheck } = {}) {
+  assertReviewContext(context, options.artifactCheck);
   return spawn(executable, args, {
     cwd: context.repositoryRoot, detached: options.detached, stdio: options.stdio, windowsHide: true,
     env: { ...reviewEnvironment(), ...options.environment, SEMANTIC_FLOW_HOME: reviewHome() },

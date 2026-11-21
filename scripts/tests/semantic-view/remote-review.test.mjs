@@ -7,8 +7,10 @@ import test from 'node:test';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { remoteIdentity } from '../../src/shared/remote-review.ts';
 import { replaceArtifactDirectory } from '../../src/shared/artifact-store.ts';
+import { readReviewArtifact } from '../../src/shared/review-store.ts';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { viewerFetch } from '../helpers/viewer-client.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
@@ -152,6 +154,236 @@ test('refresh preserves notes and approved snapshots through appends, force-push
   assert.equal(dataFor(review).stages[0].headRevision, readReview(review.id).remote.headRevision);
 });
 
+/** Leaves a remote review as a refresh to the author's new commit leaves it
+ * when it stops: after checking the commit out ("checkout"), or between moving
+ * the previous projection aside and moving the new one, staged incompletely
+ * here, in ("moved"). Returns the commit checked out. */
+function interruptRefresh(author, review, { contents = 'updated\n', at = 'moved' } = {}) {
+  author.git('switch', 'feature'); author.commitFile('code.txt', contents, 'Update code'); author.git('switch', 'main');
+  const git = (...args) => execFileSync('git', args, { cwd: review.repositoryRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('fetch', '--prune', '--no-tags', 'origin', '+refs/heads/*:refs/remotes/origin/*');
+  git('checkout', '--force', '--detach', 'refs/remotes/origin/feature');
+  if (at === 'moved') {
+    const projection = path.join(reviewDirectory(review.id), 'artifact');
+    fs.renameSync(projection, `${projection}.previous`);
+    fs.mkdirSync(path.join(`${projection}.next`, 'stages'), { recursive: true });
+    fs.writeFileSync(path.join(`${projection}.next`, 'stages', 'partial.json'), '{');
+  }
+  return git('rev-parse', 'HEAD');
+}
+/** Asserts that the review shows exactly the projection of its checkout. */
+function showsCheckout(review, head, stages) {
+  const data = dataFor(review);
+  assert.equal(data.stages.length, stages);
+  assert.equal(data.stages.at(-1).headRevision, head);
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: review.repositoryRoot, encoding: 'utf8' }).trim(), head);
+  assert.equal(readReview(review.id).remote.headRevision, head);
+  assert.deepEqual(fs.readdirSync(reviewDirectory(review.id)).filter((name) => name.startsWith('artifact')), ['artifact']);
+}
+
+for (const at of ['moved', 'checkout']) {
+  test(`a remote review whose refresh was interrupted after ${at === 'moved' ? 'moving its projection aside' : 'checking out'} is shown for its checkout when reopened`, (t) => {
+    const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+    patchReviewState(review.id, review.generation, [change(['notes'], 'Kept')]);
+    const head = interruptRefresh(author, review, { at });
+    const reopened = startRemoteReview(source.root, 'feature');
+    assert.equal(reopened.id, review.id);
+    assert.equal(reopened.generation, review.generation);
+    assert.equal(reopened.remote.headRevision, head);
+    assert.equal(reopened.state.notes, 'Kept');
+    showsCheckout(review, head, 2);
+  });
+}
+
+test('a remote review whose record was not updated after a refresh records its checkout again', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  author.git('switch', 'feature'); const head = author.commitFile('code.txt', 'updated\n', 'Update code'); author.git('switch', 'main');
+  refreshRemoteReview(review.id, review.generation);
+  const file = path.join(reviewDirectory(review.id), 'review.json'), record = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...record, remote: { ...record.remote, headRevision: review.remote.headRevision } }));
+  assert.equal(captureReviewContext(review.id).implementationId, review.implementationId);
+  showsCheckout(review, head, 2);
+});
+
+test('a remote review whose refresh was interrupted is listed as it is and rebuilt when used', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const head = interruptRefresh(author, review);
+  const listed = registeredReviews().find((entry) => entry.id === review.id);
+  assert.equal(listed.available, true, listed.unavailableReason);
+  assert.equal(fs.existsSync(path.join(reviewDirectory(review.id), 'artifact')), false, 'Listing made the projection again.');
+  // Each viewer request first checks the review it serves.
+  assert.equal(captureReviewContext(review.id).implementationId, review.implementationId);
+  showsCheckout(review, head, 2);
+});
+
+test('fetching updates repairs a remote review whose refresh was interrupted where its checkout cannot', async (t) => {
+  const { author, source } = setup(t);
+  const result = spawnSync(process.execPath, [flowCli, 'review', '--branch', 'feature', '--project', source.root], {
+    cwd: source.root, encoding: 'utf8', env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: '1' }, timeout: 30_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const url = /http:\/\/127\.0\.0\.1:\d+\//.exec(result.stdout)?.[0]; assert.ok(url, result.stdout);
+  const identity = await (await viewerFetch(url + 'api/whoami')).json();
+  t.after(async () => {
+    await viewerFetch(url + 'api/shutdown', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { process.kill(identity.processId, 0); }
+      catch (error) { if (error.code === 'ESRCH') return; throw error; }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.fail('The remote review viewer did not exit.');
+  });
+  const query = `?review=${identity.reviewId}&generation=${identity.generation}`;
+  const review = readReview(identity.reviewId);
+  interruptRefresh(author, review);
+  // Without the target branch the checkout holds too little to show the review again.
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: review.repositoryRoot });
+  assert.equal((await viewerFetch(url + 'api/implementation' + query)).status, 409);
+  author.git('switch', 'feature'); const latest = author.commitFile('code.txt', 'latest\n', 'Latest code'); author.git('switch', 'main');
+  const refreshed = await viewerFetch(url + 'api/remote/refresh' + query, { method: 'POST', headers: { origin: new URL(url).origin, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(refreshed.status, 200, await refreshed.text());
+  const implementation = await viewerFetch(url + 'api/implementation' + query);
+  assert.equal(implementation.status, 200, await implementation.clone().text());
+  assert.equal((await implementation.json()).implementation.stages.at(-1).headRevision, latest);
+  showsCheckout(review, latest, 3);
+});
+
+test('reopening fetches a remote review whose refresh was interrupted where its checkout cannot show it again', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  interruptRefresh(author, review);
+  execFileSync('git', ['update-ref', '-d', 'refs/remotes/origin/main'], { cwd: review.repositoryRoot });
+  author.git('switch', 'feature'); const latest = author.commitFile('code.txt', 'latest\n', 'Latest code'); author.git('switch', 'main');
+  assert.equal(startRemoteReview(source.root, 'feature').remote.headRevision, latest);
+  showsCheckout(review, latest, 3);
+});
+
+test('a remote review whose checkout lost its repository never uses a repository around it', (t) => {
+  const { author, source } = setup(t), enclosing = createRepository(t, 'enclosing-');
+  enclosing.commitFile('tracked.txt', 'committed\n', 'Tracked file');
+  enclosing.write('tracked.txt', 'uncommitted\n');
+  const branch = enclosing.git('symbolic-ref', 'HEAD'), commit = enclosing.git('rev-parse', 'HEAD');
+  // With a target branch there, the enclosing repository could be reviewed in the checkout's place.
+  enclosing.git('update-ref', 'refs/remotes/origin/main', commit);
+  const home = process.env.SEMANTIC_FLOW_HOME;
+  process.env.SEMANTIC_FLOW_HOME = enclosing.path('review-home');
+  t.after(() => { process.env.SEMANTIC_FLOW_HOME = home; });
+  const review = startRemoteReview(source.root, 'feature');
+  interruptRefresh(author, review);
+  fs.rmSync(path.join(review.repositoryRoot, '.git'), { recursive: true, force: true });
+  startRemoteReview(source.root, 'feature');
+  assert.throws(() => captureReviewContext(review.id), /unavailable/);
+  assert.throws(() => refreshRemoteReview(review.id, review.generation));
+  assert.equal(enclosing.git('symbolic-ref', 'HEAD'), branch);
+  assert.equal(enclosing.git('rev-parse', 'HEAD'), commit);
+  assert.equal(fs.readFileSync(enclosing.path('tracked.txt'), 'utf8'), 'uncommitted\n');
+  assert.equal(enclosing.git('for-each-ref', '--format=%(refname)', 'refs/remotes'), 'refs/remotes/origin/main');
+});
+
+/** Whether the installed Git can keep refs in reftable and convert a repository to it. */
+function reftableMigration() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reftable-'));
+  try {
+    execFileSync('git', ['init', '-q', directory], { stdio: 'ignore' });
+    execFileSync('git', ['refs', 'migrate', '--ref-format=reftable'], { cwd: directory, stdio: 'ignore' });
+    return execFileSync('git', ['rev-parse', '--show-ref-format'], { cwd: directory, encoding: 'utf8' }).trim() === 'reftable';
+  } catch { return false; } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+}
+const reftable = reftableMigration();
+
+test('a new remote review keeps its checkout refs as files where Git defaults to reftable', { skip: !reftable && 'Git cannot keep refs in reftable' }, (t) => {
+  const { source } = setup(t), previous = process.env.GIT_DEFAULT_REF_FORMAT;
+  process.env.GIT_DEFAULT_REF_FORMAT = 'reftable';
+  t.after(() => { if (previous === undefined) delete process.env.GIT_DEFAULT_REF_FORMAT; else process.env.GIT_DEFAULT_REF_FORMAT = previous; });
+  const review = startRemoteReview(source.root, 'feature');
+  assert.equal(execFileSync('git', ['rev-parse', '--show-ref-format'], { cwd: review.repositoryRoot, encoding: 'utf8' }).trim(), 'files');
+});
+
+for (const layout of ['gitfile', 'reftable']) {
+  test(`a remote review whose checkout's HEAD file names no revision (${layout}) is shown for its checkout after an interrupted refresh`, { skip: layout === 'reftable' && !reftable && 'Git cannot keep refs in reftable' }, (t) => {
+    const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+    const gitDirectory = path.join(review.repositoryRoot, '.git');
+    if (layout === 'gitfile') {
+      // The repository lives elsewhere, and the checkout's .git file names it.
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-git-'));
+      t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+      fs.cpSync(gitDirectory, elsewhere, { recursive: true });
+      fs.rmSync(gitDirectory, { recursive: true, force: true });
+      fs.writeFileSync(gitDirectory, `gitdir: ${elsewhere}\n`);
+    } else execFileSync('git', ['refs', 'migrate', '--ref-format=reftable'], { cwd: review.repositoryRoot, stdio: 'ignore' });
+    const head = interruptRefresh(author, review, { at: 'checkout' });
+    showsCheckout(review, head, 2);
+  });
+}
+
+test('reading a remote review while a refresh replaces its projection always finds a complete projection', async (t) => {
+  const { source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  const module = (file) => JSON.stringify(new URL(`../../src/shared/${file}`, import.meta.url).href);
+  // Each cycle moves the projection aside and back under the review's lock, as a
+  // refresh replaces it. Both sides count from the writer's start.
+  const writer = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    import { withReviewLock, projectionDirectory } from ${module('review-store.ts')};
+    import { replaceFile } from ${module('json.ts')};
+    const [id] = process.argv.slice(1);
+    const directory = projectionDirectory(id), aside = directory + '.previous';
+    const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    process.stdout.write('ready\\n');
+    const until = Date.now() + 1500;
+    let cycles = 0;
+    while (Date.now() < until) {
+      withReviewLock(id, () => { replaceFile(directory, aside); sleep(2); replaceFile(aside, directory); });
+      cycles++;
+      sleep(3);
+    }
+    process.stdout.write('cycles ' + cycles + '\\n');
+  `, review.id], { cwd: fileURLToPath(new URL('../..', import.meta.url)), stdio: ['ignore', 'pipe', 'inherit'] });
+  t.after(() => writer.kill());
+  const exited = new Promise((resolve) => writer.on('exit', resolve));
+  let output = '';
+  await new Promise((resolve, reject) => {
+    writer.stdout.on('data', (chunk) => { output += chunk; if (output.includes('ready')) resolve(); });
+    writer.on('exit', () => reject(new Error('The writer exited before starting.')));
+  });
+  const until = Date.now() + 1500;
+  let reads = 0;
+  while (Date.now() < until) {
+    for (const rebuild of [true, false]) {
+      const found = readReviewArtifact(review.repositoryRoot, undefined, { rebuild });
+      assert.ok(found?.projection, `Read ${reads} found no projection.`);
+      reads++;
+    }
+  }
+  assert.equal(await exited, 0);
+  assert.ok(reads > 0, 'No read ran while the writer replaced the projection.');
+  assert.ok(Number(/cycles (\d+)/.exec(output)?.[1]) > 0, `The writer replaced no projection: ${output}`);
+  assert.equal(dataFor(review).stages.length, 1);
+});
+
+test('reopening fetches a remote review whose interrupted refresh left no projection and no revision checked out', (t) => {
+  const { author, source } = setup(t), review = startRemoteReview(source.root, 'feature');
+  interruptRefresh(author, review);
+  // An unborn branch: the checkout names no revision to show the review again for.
+  fs.writeFileSync(path.join(review.repositoryRoot, '.git', 'HEAD'), 'ref: refs/heads/unborn\n');
+  assert.equal(readReviewArtifact(review.repositoryRoot), undefined);
+  author.git('switch', 'feature'); const latest = author.commitFile('code.txt', 'latest\n', 'Latest code'); author.git('switch', 'main');
+  assert.equal(startRemoteReview(source.root, 'feature').remote.headRevision, latest);
+  showsCheckout(review, latest, 3);
+});
+
+test('a projection kept inside a checkout that lost its repository is not moved by a repository around it', (t) => {
+  const { source } = setup(t), enclosing = createRepository(t, 'enclosing-');
+  enclosing.commitFile('tracked.txt', 'committed\n', 'Tracked file');
+  const home = process.env.SEMANTIC_FLOW_HOME;
+  process.env.SEMANTIC_FLOW_HOME = enclosing.path('review-home');
+  t.after(() => { process.env.SEMANTIC_FLOW_HOME = home; });
+  const review = startRemoteReview(source.root, 'feature');
+  const projection = path.join(reviewDirectory(review.id), 'artifact'), legacy = path.join(review.repositoryRoot, '.semantic-review');
+  fs.renameSync(projection, legacy);
+  fs.rmSync(path.join(review.repositoryRoot, '.git'), { recursive: true, force: true });
+  assert.equal(readReviewArtifact(review.repositoryRoot), undefined);
+  assert.ok(fs.existsSync(path.join(legacy, 'manifest.json')));
+  assert.equal(fs.existsSync(projection), false);
+});
+
 test('remote feedback is rejected in store, export, and CLI while personal notes save', (t) => {
   const { source } = setup(t), review = startRemoteReview(source.root, 'feature'), context = captureReviewContext(review.id);
   assert.throws(() => patchReviewState(review.id, review.generation, [change(['comments'], [{ mode: 'feedback', body: 'Send' }])]), /personal notes only/);
@@ -236,7 +468,9 @@ test('review --branch enforces read-only mode and authoritative approval lineage
   const feedback = await viewerFetch(url + 'api/feedback/export' + query, { method: 'POST', headers: { origin: new URL(url).origin, "content-type": "application/json" }, body: '{}' });
   assert.equal(feedback.status, 403);
   const post = (route, body) => viewerFetch(url + route + query, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const implementation = (await (await viewerFetch(url + 'api/implementation' + query)).json()).implementation;
+  const implementationResponse = await viewerFetch(url + 'api/implementation' + query);
+  assert.equal(implementationResponse.status, 200, await implementationResponse.clone().text());
+  const implementation = (await implementationResponse.json()).implementation;
   const docStage = implementation.stages.find(stage => stage.files.some(file => file.path === 'docs/README.md'));
   const docFile = docStage.files.find(file => file.path === 'docs/README.md');
   const contentUrl = new URL(url + 'api/file-content' + query);
