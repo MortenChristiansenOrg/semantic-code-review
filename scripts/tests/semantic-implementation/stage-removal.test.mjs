@@ -358,7 +358,9 @@ const gitPath = (repository, worktree, state) =>
 
 test("stage remove refuses while another worktree has a Git operation in progress on a branch it moves", (t) => {
   const repository = emptiedPolicy(t);
-  const other = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-operation-"));
+  // Git names worktrees by their real path, such as /private/var rather than /var on macOS.
+  const created = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-operation-"));
+  const other = process.platform === "win32" ? created : fs.realpathSync(created);
   t.after(() => fs.rmSync(other, { recursive: true, force: true }));
   // A stopped multi-commit cherry-pick on the stage branch above the removed one.
   const above = path.join(other, "above");
