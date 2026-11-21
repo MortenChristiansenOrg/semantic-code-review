@@ -3,7 +3,7 @@ import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { controlAgent, feedbackDirectory, sendFeedback, buildFeedbackTargetData } from "../../src/semantic-view.ts";
+import { controlAgent, feedbackDirectory, readReview, sendFeedback, setReviewCompleted, buildFeedbackTargetData } from "../../src/semantic-view.ts";
 import { createImplementationWithStages, flowCli } from "../helpers/repository.mjs";
 
 function addThread(repository, id) {
@@ -175,6 +175,21 @@ test("a round another agent's session took over posts no more replies, and a sta
   repository.feedback("thread", "reply", "--id", "solo", "--comment-id", "solo-answer", "--author", "agent", "--claim", replacement.claim, "--body", "Done.");
   assert.equal(agentState(repository).lastRound.id, replacement.claim);
   assert.deepEqual(flowJson(repository).stages, []);
+});
+
+test("a first wait on a completed review starts no session and leaves a running round its threads", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "finishing");
+  const standalone = flowJson(repository);
+  assert.deepEqual(threadIds(standalone), ["finishing"]);
+  const { reviewId } = reviewContext(repository);
+  setReviewCompleted(reviewId, readReview(reviewId).generation, true, null);
+
+  assert.deepEqual(await waitAsync(repository, "--timeout", "5"), { session: null, stopped: true, reason: "completed" });
+  assert.equal(agentState(repository).session, null);
+  repository.feedback("thread", "reply", "--id", "finishing", "--comment-id", "finished", "--author", "agent", "--claim", standalone.claim, "--body", "Done.");
+  assert.equal(agentState(repository).lastRound.id, standalone.claim);
 });
 
 test("a wait started alongside the round's replies does not reissue the round", async (t) => {

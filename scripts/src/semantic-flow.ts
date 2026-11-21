@@ -967,7 +967,8 @@ async function waitForFeedback(options: Options): Promise<void> {
     }
   }
   const start = updateAgentState(review, (state, now) => {
-    if (!requested) return { session: startSession(state, now).id };
+    // A completed review starts no session, so it takes over no other agent's round.
+    if (!requested) return readReview(review).completedAt ? { stopped: "completed" } : { session: startSession(state, now).id };
     const session = liveSession(state);
     if (session?.id === requested) {
       session.heartbeatAt = new Date(now).toISOString();
@@ -975,7 +976,7 @@ async function waitForFeedback(options: Options): Promise<void> {
     }
     return { stopped: state.session?.id === requested ? state.session.endReason || "stopped" : "superseded" };
   });
-  if (!start.session) { print({ session: requested, stopped: true, reason: start.stopped }); return; }
+  if (!start.session) { print({ session: requested ?? null, stopped: true, reason: start.stopped }); return; }
   const session = start.session;
   const deadline = Date.now() + seconds * 1000;
   let heartbeat = Date.now();

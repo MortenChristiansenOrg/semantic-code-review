@@ -1,7 +1,7 @@
 # Feedback command
 
 Use after a reviewer has sent feedback for the implementation agent to
-address, for one round without listening. While `/semantic-flow review`
+address, without listening for more afterwards. While `/semantic-flow review`
 listens, every round follows this procedure; its wait returns each round in
 place of the preflight below.
 

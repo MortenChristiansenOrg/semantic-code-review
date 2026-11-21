@@ -29,9 +29,11 @@ inspect, validation, HTTP probe, or shell backgrounding command. If it fails,
 for example because the implementation was archived, report the error in one
 line and stop without waiting.
 
-If you are already listening in this conversation, the reviewer only wants the
-viewer back: run the command, then continue your loop with the same session.
-Never start a second wait without `--session` beside it.
+If you are already listening to this same review in this conversation, the
+reviewer only wants the viewer back: run the command, then continue your loop
+with the same session. Never start a second wait without `--session` beside it.
+A request for another implementation or project starts its own listening once
+your current loop has ended; say so in one line instead of switching.
 
 ## Listen
 
@@ -54,8 +56,8 @@ harness's command limit; the default 540 seconds suits common limits.
 | `timedOut: true` | Wait again immediately. |
 | `stopped: true` | End the loop with one short line in the chat. `reason` is `stopped` (the reviewer pressed Stop agent), `completed` (the review is marked complete), `idle` (two hours without feedback), or `superseded` (another agent started listening). |
 
-When the first wait already returns `completed`, say that the review is marked
-complete, so nothing listens, and that **Reopen review** in Saved reviews
+When the first wait already returns `completed`, it started no session. Say that
+the review is marked complete, so nothing listens, and that **Reopen review** in Saved reviews
 followed by `/semantic-flow review` resumes listening.
 
 Never end the loop on your own and never ask whether to continue. Waiting again

@@ -565,10 +565,12 @@ a decision that is not about one thread, its question appears at the top of the
 viewer. When no agent listens, the viewer names `/semantic-flow review` to start
 one.
 
-To stop listening, press **Stop agent** in the viewer. Listening also ends when
-you mark the review complete or after two hours without feedback, each once the
-current round is finished, and when another agent starts listening to the same
-review, which takes over its threads at once. A completed
+To stop listening, press **Stop agent** in the viewer; it takes effect once the
+current round is finished. Listening also ends when you mark the review complete
+or after two hours without feedback, both once the current round is finished or
+at once while the agent waits for your answer to its question, and when another
+agent starts listening to the same review, which takes over its threads at once.
+A completed
 review starts no listening: choose **Reopen review** in Saved reviews first.
 Running `/semantic-flow review` again in the same conversation reopens the
 viewer and keeps the agent's existing session.
