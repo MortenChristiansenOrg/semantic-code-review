@@ -617,6 +617,12 @@ the artifact if the metadata branch does not hold it yet, stores it under
 `refs/semantic-review/archive/<implementation-id>` with a landing record, and
 removes the active artifact. Stage and metadata branches are kept.
 
+Archiving ends the implementation's review. An open viewer page says that the
+implementation was archived, offers its unsent text for copying, and stops
+checking for updates and saving. The review list shows the review as archived;
+its data stays until you delete it. The viewer stops by itself, releasing its
+port, once no page has used it for ten minutes.
+
 Landing is found when the target branch contains the final stage head, as after
 a fast-forward or merge. After a squash or rebase merge it is unknown unless you
 name the landing commit or range with `--landed`; the command may suggest a

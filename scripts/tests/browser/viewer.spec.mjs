@@ -1547,9 +1547,46 @@ test('a review deleted in another tab preserves unsent text for copying and reje
     await fetch('/api/reviews/delete' + query, { method: 'POST', body: JSON.stringify({ ...input, fingerprint: result.storage.fingerprint }) });
   });
   await expect(page.getByRole('heading', { name: 'Review data deleted' })).toBeVisible();
-  await expect(page.locator('.deleted-review textarea')).toHaveValue('Keep this unsent explanation');
-  await expect(page.locator('.deleted-review textarea')).toHaveAttribute('readonly', '');
+  await expect(page.locator('.ended-review textarea')).toHaveValue('Keep this unsent explanation');
+  await expect(page.locator('.ended-review textarea')).toHaveAttribute('readonly', '');
   expect(await page.evaluate(async () => (await fetch('/api/review-state?review=browser-review&generation=test')).status)).toBe(409);
+});
+
+
+test('a page whose implementation was archived says so, keeps unsent text for copying, and stops polling', async ({ page }) => {
+  await mount(page); await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await saveAction(page, () => page.locator('textarea[name="nc-body"]').fill('Keep this unsent explanation'), (state) => state.editor?.compose?.body === 'Keep this unsent explanation');
+  let archived = false;
+  const requests = [];
+  page.on('request', (request) => {
+    const { pathname } = new URL(request.url());
+    if (archived && (pathname === '/api/revision' || (pathname === '/api/review-state' && request.method() === 'POST'))) requests.push(pathname);
+  });
+  // The server refuses the archived implementation's requests, and lists its review as archived.
+  await page.route('**/api/revision?*', (route) => archived
+    ? route.fulfill({ status: 409, json: { ok: false, error: 'Implementation browser-review is no longer active, so its review is unavailable.', reviewUnavailable: false, implementationArchived: true } })
+    : route.fallback());
+  await page.route('**/api/reviews?*', (route) => route.fulfill({ json: { ok: true, reviews: [{ id: 'browser-review', generation: 'test', title: 'Review fixes', implementationId: 'browser-review', repositoryRoot: '/repos/browser-review',
+    createdAt: '2026-09-11T09:00:00Z', updatedAt: '2026-09-11T10:00:00Z', completedAt: null, available: !archived, unavailableReason: archived ? 'Implementation browser-review was archived.' : '', archived }] } }));
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  await expect(page.locator('.ended-review')).toContainText('browser-review');
+  await expect(page.getByRole('heading', { name: 'Review data deleted' })).toHaveCount(0);
+  await expect(page.locator('.ended-review textarea')).toHaveValue('Keep this unsent explanation');
+  await expect(page.locator('.stage')).toHaveCount(0);
+  const entry = page.locator('[data-review="browser-review"]');
+  await expect(entry).toContainText('Archived · Current');
+  await expect(entry).not.toContainText('Active');
+  await expect(entry.locator('.review-unavailable')).toHaveCount(0);
+  await expect(entry.getByRole('button', { name: 'Open review', exact: true })).toBeDisabled();
+  await expect(entry.getByRole('button', { name: 'Mark complete', exact: true })).toHaveCount(0);
+  // The list stays open: an ended review has no page to return to.
+  await expect(page.locator('#review-list [data-action="toggle-reviews"]')).toHaveCount(0);
+  // One refused poll ended the review; the page polls and saves nothing more.
+  const seen = requests.length;
+  expect(seen).toBe(1);
+  await page.waitForTimeout(2500);
+  expect(requests).toHaveLength(seen);
 });
 
 

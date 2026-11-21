@@ -23,7 +23,8 @@ the invoking branch, then starts the bundled viewer as a detached background
 process. It reports the local URL only after the server is listening and then
 exits; do not run a separate inspect, validation, HTTP probe, or shell
 backgrounding command. The detached viewer remains running after the agent turn
-or terminal command completes.
+or terminal command completes. Once the implementation is archived, the viewer
+tells its open pages and stops by itself after ten minutes without use.
 
 The viewer renders stages, change nodes, project-grouped files, linked insights,
 full-context diffs, and feedback threads. A user can add and edit draft notes

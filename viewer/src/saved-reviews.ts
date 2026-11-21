@@ -5,28 +5,30 @@ import { compose, replyDraft, replyTo } from "./editor";
 import { errorMessage, failureOf } from "./narrow";
 import { forceHidePop } from "./popover";
 import { render } from "./render";
-import { deletedElsewhere, flushReviewState, reviewDeleted, savedReview, setReviewDeleted, state, stopSaving } from "./state";
+import { data } from "./context";
+import { endedElsewhere, flushReviewState, reviewEnded, savedReview, setReviewEnded, state, stopSaving, type ReviewEnd } from "./state";
 import { pendingReplies, usableNotes } from "./threads";
 import { cssEsc, focusable, reduced, storageSize } from "./util";
 import { reviewCleanupView, reviewsPanelView, type ReviewsPanelView } from "./views/reviews";
 import { render as renderLit } from "lit-html";
 
 export let reviewsOpen = false;
-/** A deleted review starts with the saved reviews open. */
-export function initSavedReviews(): void { reviewsOpen = reviewDeleted; }
+/** A review that ended starts with the saved reviews open. */
+export function initSavedReviews(): void { reviewsOpen = Boolean(reviewEnded); }
 export let reviewList: ReviewSummary[] = [];
 export let reviewListError = "";
 export let reviewListBusy = false;
 
-export function markReviewDeleted(external = false): void {
+/** Ends the page's review: its data was deleted, or its implementation archived. */
+export function markReviewEnded(end: ReviewEnd, external = false): void {
   const fileSearch = document.querySelector(".file-search[open]");
   if (fileSearch instanceof HTMLDialogElement) fileSearch.close();
-  setReviewDeleted(external); reviewsOpen = true;
+  setReviewEnded(end, external); reviewsOpen = true;
   stopSaving(); render(); void refreshReviews();
 }
-// Unsent text the reviewer can copy after another tab deleted this review.
-export function deletedReviewText(): string {
-  return deletedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...usableNotes().filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
+// Unsent text the reviewer can copy after another tab or session ended this review.
+export function endedReviewText(): string {
+  return endedElsewhere ? [...new Set([compose?.body, replyTo ? replyDraft : "", ...usableNotes().filter((note) => !note.exported).map((note) => note.body), ...pendingReplies().map((reply) => reply.body)].filter(Boolean))].join("\n\n") : "";
 }
 
 export async function manageReviewData(id: string | undefined): Promise<void> {
@@ -39,7 +41,7 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
   function paint() {
     renderLit(reviewCleanupView({
       title: review.title, location: review.repositoryRoot, id: review.id,
-      status: review.completedAt ? "Completed" : "Active",
+      status: reviewStatus(review),
       storage: storage && {
         directory: storage.storageDirectory, size: storageSize(storage.bytes),
         categories: storage.categories.map((item) => ({ label: item.label, size: storageSize(item.bytes), detail: item.detail })),
@@ -70,7 +72,7 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
         if (action === "delete") {
           const response = await api.deleteReviewData(request);
           const result = await response.json(); if (!response.ok || !result.ok) throw new Error(failureOf(result).error || "Could not clean review data.");
-          if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && !reviewDeleted) markReviewDeleted();
+          if (result.deleted && id === savedReview.reviewId && target.generation === savedReview.generation && reviewEnded !== "deleted") markReviewEnded("deleted");
           dialog.close(); await refreshReviews(true); return;
         } else {
           const response = await api.cleanUnusedReviewData(request);
@@ -87,26 +89,31 @@ export async function manageReviewData(id: string | undefined): Promise<void> {
   catch (failure) { error = errorMessage(failure); }
   finally { busy = false; paint(); }
 }
-export const isCurrentReview = (review: ReviewSummary): boolean => !reviewDeleted && review.id === savedReview.reviewId && review.generation === savedReview.generation;
+/** The review shown on this page; one whose data was deleted is none. */
+export const isCurrentReview = (review: ReviewSummary): boolean => reviewEnded !== "deleted" && review.id === savedReview.reviewId && review.generation === savedReview.generation;
+/** A review's lifecycle status: archiving its implementation ends it, as completing it does. */
+const reviewStatus = (review: ReviewSummary): string => review.archived ? "Archived" : review.completedAt ? "Completed" : "Active";
 export function reviewsPanelModel(): ReviewsPanelView {
   return {
-    deleted: reviewDeleted ? { text: deletedReviewText() } : null,
+    ended: reviewEnded ? { reason: reviewEnded, implementationId: data.implementationId, text: endedReviewText() } : null,
     busy: reviewListBusy, error: reviewListError,
     reviews: reviewList.map((review) => ({
       id: review.id, title: review.title, remote: Boolean(review.remote), current: isCurrentReview(review),
-      status: review.completedAt ? "Completed" : "Active",
+      status: reviewStatus(review),
       subject: review.remote ? `${review.remote.remoteName}/${review.remote.branch}` : review.implementationId,
       location: review.remote?.sourceRoot || review.repositoryRoot,
       updatedAt: review.updatedAt, updatedText: new Date(review.updatedAt).toLocaleString(),
-      unavailable: review.available ? null : String(review.unavailableReason ?? ""),
+      // The status says why an archived review cannot be opened.
+      unavailable: review.available || review.archived ? null : String(review.unavailableReason ?? ""),
       canOpen: Boolean(review.available) && !isCurrentReview(review),
       completed: Boolean(review.completedAt),
+      archived: Boolean(review.archived),
     })),
   };
 }
 export let reviewsDialog: HTMLDialogElement | null = null, reviewsCloseTimer: number | undefined;
 export function setReviewsOpen(open: boolean): void {
-  if (!open && reviewDeleted) return;
+  if (!open && reviewEnded) return;
   clearTimeout(reviewsCloseTimer);
   reviewsOpen = open;
   document.querySelector('.topbar [data-action="toggle-reviews"]')?.setAttribute("aria-expanded", String(open));
@@ -134,7 +141,7 @@ export function setReviewsOpen(open: boolean): void {
     dialog.classList.add("is-closing");
     reviewsCloseTimer = setTimeout(() => {
       dialog.close(); dialog.remove(); reviewsDialog = null;
-      if (!reviewDeleted) focusable(document.querySelector('.topbar [data-action="toggle-reviews"]'))?.focus({ preventScroll: true });
+      if (!reviewEnded) focusable(document.querySelector('.topbar [data-action="toggle-reviews"]'))?.focus({ preventScroll: true });
     }, reduced() ? 0 : 180);
   }
 }

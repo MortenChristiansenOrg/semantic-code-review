@@ -61,10 +61,10 @@ function viewerCleanup(t) {
 
 /** Launches the review of a repository into `viewer`. The launcher may fall back to
  * another port than the requested one, so the URL is the one it reports. */
-async function startViewer(viewer, repository) {
+async function startViewer(viewer, repository, env = {}) {
   const launch = spawnSync(process.execPath, [flowCli, "review"], {
     cwd: repository.root, encoding: "utf8", timeout: 30_000,
-    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(await reservePort()) },
+    env: { ...process.env, SEMANTIC_VIEW_NO_OPEN: "1", SEMANTIC_VIEW_PORT: String(await reservePort()), ...env },
   });
   viewer.pid = Number(/\(PID (\d+)\)/.exec(launch.stdout)?.[1]) || undefined;
   const printed = /^Semantic review viewer: (\S+)$/m.exec(launch.stdout)?.[1];
@@ -341,6 +341,33 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   assert.equal(call.evidence.kind, "other");
   assert.equal(call.evidence.inline, "transcript <ok>");
   assert.deepEqual(protocolErrors(captured), []);
+});
+
+test("a viewer of an archived implementation tells its pages, lists the review as archived, and stops once unused", async (t) => {
+  const viewer = viewerCleanup(t);
+  const repository = createReviewRepository(t);
+  // A short idle period, so the viewer stops soon after the last request.
+  await startViewer(viewer, repository, { SEMANTIC_VIEW_ARCHIVED_IDLE_MS: "1000" });
+  const { captured, get, target } = await client(viewer.url);
+  await get("RevisionResponse", "api/revision");
+  repository.flow("archive", "--json");
+
+  const refused = await get("ApiFailure", "api/revision", 409);
+  assert.equal(refused.implementationArchived, true);
+  assert.equal(refused.reviewUnavailable, false);
+  // The review data remains, and the review list says the review ended.
+  await get("ReviewStateResponse", "api/review-state");
+  const { reviews } = await get("ReviewsResponse", "api/reviews");
+  const listed = reviews.find((review) => review.id === target.reviewId);
+  assert.equal(listed.archived, true);
+  assert.equal(listed.available, false);
+  assert.deepEqual(protocolErrors(captured), []);
+
+  for (let attempt = 0; attempt < 600 && !exited(viewer.pid); attempt++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(exited(viewer.pid), "The viewer of the archived implementation kept running.");
+  // Its record no longer names it, so nothing looks for it on its port.
+  const record = JSON.parse(fs.readFileSync(path.join(process.env.SEMANTIC_FLOW_HOME, "reviews", target.reviewId, "review.json"), "utf8"));
+  assert.equal(record.viewer, undefined);
 });
 
 test("stopping a viewer that already exited sends nothing to its port", async (t) => {

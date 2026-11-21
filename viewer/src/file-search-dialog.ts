@@ -4,7 +4,7 @@ import type { ChangeNode } from "../../scripts/src/shared/viewer-protocol";
 import { app, data } from "./context";
 import { fileApprovalKey, fileKey, nodeFileList, stageNumberById } from "./lookups";
 import { fileRowElement, jumpToElement } from "./navigation";
-import { reviewDeleted, state } from "./state";
+import { reviewEnded, state } from "./state";
 import type { ViewerFile, ViewerStage } from "./types";
 import { focusable, kindGlyph, kindLabel, splitPath } from "./util";
 import { fileSearchView, type FileSearchNodeView, type FileSearchOptionView, type FileSearchStageView } from "./views/file-search";
@@ -53,7 +53,7 @@ interface StageGroup extends FileSearchStageView {
 }
 
 export function openFileSearch(path = "", origin: { stageId: string; nodeId: string | undefined } | null = null): void {
-  if (reviewDeleted || document.querySelector("dialog[open]")) return;
+  if (reviewEnded || document.querySelector("dialog[open]")) return;
   const opener = document.activeElement;
   const session = ++fileSearchSession;
   const dialog = document.createElement("dialog");

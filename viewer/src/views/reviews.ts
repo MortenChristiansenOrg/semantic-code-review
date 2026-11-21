@@ -1,4 +1,4 @@
-// The saved reviews panel, the notice for a deleted review, and the review
+// The saved reviews panel, the notice for a review that ended, and the review
 // data dialog that previews and cleans a review's local storage.
 import { html, nothing, type TemplateResult } from "lit-html";
 import { repeat } from "lit-html/directives/repeat.js";
@@ -18,18 +18,32 @@ export interface ReviewItemView {
   unavailable: string | null;
   canOpen: boolean;
   completed: boolean;
+  /** Archiving the implementation ended the review, which completion no longer changes. */
+  archived: boolean;
+}
+
+/** The notice of a review that ended while the page showed it. */
+export interface EndedReviewView {
+  /** Whether the review's data was deleted or its implementation archived. */
+  reason: "deleted" | "archived";
+  implementationId: string;
+  /** Unsent text to copy, if any. */
+  text: string;
 }
 
 export interface ReviewsPanelView {
-  /** Present once this review's data was deleted; holds unsent text to copy, if any. */
-  deleted: { text: string } | null;
+  /** Present once this review ended. */
+  ended: EndedReviewView | null;
   busy: boolean;
   error: string;
   reviews: readonly ReviewItemView[];
 }
 
-function deletedReview(view: { text: string }): TemplateResult {
-  return html`<section class="deleted-review"><h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in a worktree of the repository to start a fresh session.</p>
+function endedReview(view: EndedReviewView): TemplateResult {
+  const notice = view.reason === "archived"
+    ? html`<h1>Implementation archived</h1><p>Implementation <code>${view.implementationId}</code> was archived, which ends its review. Its review data is kept, but this page no longer updates or saves changes. This viewer stops after ten minutes without use; after that, run review again to open another saved review.</p>`
+    : html`<h1>Review data deleted</h1><p>This session can no longer save changes. Open another saved review, or run review again in a worktree of the repository to start a fresh session.</p>`;
+  return html`<section class="ended-review" data-end=${view.reason}>${notice}
       ${view.text ? html`<label>Copy any unsent text you want to keep<textarea readonly rows="6" .value=${view.text}></textarea></label>` : nothing}</section>`;
 }
 
@@ -40,14 +54,14 @@ function review(view: ReviewsPanelView, item: ReviewItemView): TemplateResult {
         <p>Last edited <time datetime=${item.updatedAt}>${item.updatedText}</time></p>
         ${item.unavailable !== null ? html`<p class="review-unavailable">Unavailable: ${item.unavailable}</p>` : nothing}</div>
         <div class="review-actions"><button class="tb-btn" type="button" data-action="open-review" data-review-id=${item.id} ?disabled=${view.busy || !item.canOpen}>Open review</button>
-        <button class="tb-btn" type="button" data-action="complete-review" data-review-id=${item.id} ?disabled=${view.busy}>${item.completed ? "Reopen review" : "Mark complete"}</button>
+        ${item.archived ? nothing : html`<button class="tb-btn" type="button" data-action="complete-review" data-review-id=${item.id} ?disabled=${view.busy}>${item.completed ? "Reopen review" : "Mark complete"}</button>`}
         <button class="tb-btn" type="button" data-action="manage-review-data" data-review-id=${item.id} ?disabled=${view.busy}>Delete data…</button></div>
       </article>`;
 }
 
 export function reviewsPanelView(view: ReviewsPanelView): TemplateResult {
-  return html`${view.deleted ? deletedReview(view.deleted) : nothing}
-      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ?disabled=${view.busy}>Refresh</button>${view.deleted ? nothing : html`<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
+  return html`${view.ended ? endedReview(view.ended) : nothing}
+      <header><h2>Saved reviews</h2><button class="tb-btn" type="button" data-action="refresh-reviews" ?disabled=${view.busy}>Refresh</button>${view.ended ? nothing : html`<button class="tb-btn" type="button" data-action="toggle-reviews">Close</button>`}</header>
       ${view.error ? html`<p role="alert">${view.error}</p>` : nothing}
       ${view.busy ? html`<p role="status">Loading review…</p>` : nothing}
       ${!view.reviews.length && !view.busy ? html`<p>No saved reviews.</p>` : nothing}

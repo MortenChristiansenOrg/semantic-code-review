@@ -40,7 +40,7 @@ import {
 } from "./shared/viewer-access.js";
 
 export { registerReview, readReview, patchReviewState, reviewDirectory, reviewId, feedbackDirectory, recordViewer, listReviews, setReviewCompleted } from "./shared/review-store.js";
-import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, removeOrphanedReviews, reviewDeletionConfirmed, setReviewCompleted } from "./shared/review-store.js";
+import { registerReview, readReview, readReviewArtifact, patchReviewState, reviewDirectory, feedbackDirectory, reviewId, reviewHome, withReviewLock, recordViewer, listReviews, removeOrphanedReviews, reviewDeletionConfirmed, setReviewCompleted, reviewImplementationArchived, readReviewImplementationArchived } from "./shared/review-store.js";
 
 export { captureReviewContext, assertReviewContext, runReviewCommand } from "./shared/review-context.js";
 import { captureReviewContext, assertReviewContext, isolateReviewEnvironment, spawnReviewCommand, reviewEnvironment, type ReviewContext } from "./shared/review-context.js";
@@ -2187,8 +2187,11 @@ export function registeredReviews(): Wire.ReviewSummary[] {
     let unavailableReason = "";
     // Listing doesn't make a remote review's projection again; opening it does.
     try { captureReviewContext(record.id, "unbuilt"); } catch (error) { unavailableReason = cliErrorMessage(error); }
+    // Archiving ends the review; only a review that cannot be opened may have ended so.
+    const archived = Boolean(unavailableReason) && reviewImplementationArchived(record);
+    if (archived) unavailableReason = `Implementation ${record.implementationId} was archived.`;
     const { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote } = record;
-    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason };
+    return { id, generation, title, implementationId, repositoryRoot, createdAt, updatedAt, completedAt, remote, available: !unavailableReason, unavailableReason, archived };
   }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }
 
@@ -2271,6 +2274,13 @@ export function reviewRetirementCheck(context: ReviewContext) {
     return current !== original;
   };
 }
+/** How long a viewer whose implementation was archived runs on after the last
+ * request of a page, so that open pages, which learn it from their requests,
+ * can still tell. SEMANTIC_VIEW_ARCHIVED_IDLE_MS shortens it for tests. */
+function archivedViewerIdleMs(): number {
+  const configured = Number(process.env.SEMANTIC_VIEW_ARCHIVED_IDLE_MS);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : 10 * 60_000;
+}
 interface ViewerServerOptions {
   viewerDir: string;
   port: number;
@@ -2294,6 +2304,30 @@ function serveViewer({
 }: ViewerServerOptions): Promise<http.Server> {
   const review = assertReviewContext(context);
   let server: http.Server | null = null;
+  // Archiving ends the review: pages are told, and the viewer stops once no
+  // page has made a request for archivedViewerIdleMs.
+  let archivedAt: number | undefined, lastRequestAt = Date.now();
+  /** Whether the implementation was archived; once it was, it stays so. */
+  const archived = async () => {
+    if (archivedAt === undefined && await readReviewImplementationArchived(review)) archivedAt = Date.now();
+    return archivedAt !== undefined;
+  };
+  /** Stops listening, then ends the process. */
+  const exit = () => {
+    const done = () => process.exit(0);
+    if (server) server.close(done);
+    else done();
+    setTimeout(done, 500).unref();
+  };
+  /** Ends a viewer whose implementation was archived, releasing its record first
+   * so no launch looks for it on its port. */
+  const stopArchived = () => {
+    try {
+      const recorded = readReview(context.reviewId).viewer;
+      if (recorded?.processId === process.pid && recorded.port === port) recordViewer(context.reviewId, context.generation, undefined, recorded);
+    } catch { /* A deleted or replaced review records no viewer of this one. */ }
+    exit();
+  };
   let management: ManagementWorker | null = null;
   const manage = (): ManagementWorker => {
     if (!management?.healthy) management = createViewerWorker(repoRoot, context, true);
@@ -2312,6 +2346,7 @@ function serveViewer({
     response.end(text);
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
+    lastRequestAt = Date.now();
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // The request's jobs read the active refs once, in the worker, so checking
     // its review neither runs Git again nor holds up this thread.
@@ -2332,10 +2367,15 @@ function serveViewer({
     catch { plain(response, 400, "Bad request."); return; }
     const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
     const param = (key: string) => url.searchParams.get(key);
-    const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable"> = {}) =>
+    const failure = (status: number, error: unknown, extra: Pick<Wire.ApiFailure, "reviewUnavailable" | "implementationArchived"> = {}) =>
       sendJson<Wire.ApiFailure>(response, status, { ok: false, error: cliErrorMessage(error), ...extra });
-    /** Answers a request whose review check failed. */
-    const refuse = (error: unknown) => failure(409, retiredReason(error), { reviewUnavailable: reviewSessionUnavailable(context) });
+    /** Answers a request whose review check failed, saying whether the review was
+     * deleted or replaced, or else whether its implementation was archived. */
+    const refuse = async (error: unknown) => {
+      const unavailable = reviewSessionUnavailable(context);
+      const ended = !unavailable && await archived();
+      failure(409, retiredReason(error), { reviewUnavailable: unavailable, ...(ended ? { implementationArchived: true } : {}) });
+    };
 
     if (pathname.startsWith("/api/")) {
       if (!ownApiCaller(request, port)) {
@@ -2359,7 +2399,7 @@ function serveViewer({
       }
       // Fetching updates checks only the review's identity, as it makes the projection again.
       try { if (!pathname.startsWith("/api/reviews") && pathname !== "/api/review-state" && pathname !== "/api/remote/refresh") await jobs.call("checkReview"); }
-      catch (error) { refuse(error); return; }
+      catch (error) { await refuse(error); return; }
     }
 
     if (pathname === "/api/session" && request.method === "POST") {
@@ -2412,7 +2452,7 @@ function serveViewer({
         if (!isTrustedRequest(request, port)) throw new Error("Uploading requires a same-origin request.");
         const { data, filename, mediaType } = parseAttachmentUpload(await readRequestFields(request, 29 * 1024 * 1024), MAX_ATTACHMENT_BYTES);
         // The upload may have taken long; the review is checked again before it is stored.
-        try { await jobs.call("checkReview"); } catch (error) { refuse(error); return; }
+        try { await jobs.call("checkReview"); } catch (error) { await refuse(error); return; }
         const attachment = withReviewLock(context.reviewId, () => storeAttachment(context.reviewId, context.generation, filename, mediaType, Buffer.from(data, "base64")));
         sendJson<Wire.AttachmentUploadResponse>(response, 200, { ok: true, attachment });
       } catch (error) { failure(400, error); }
@@ -2634,12 +2674,7 @@ function serveViewer({
         return;
       }
       sendJson<Wire.ShutdownResponse>(response, 200, { ok: true });
-      setTimeout(() => {
-        const done = () => process.exit(0);
-        if (server) server.close(done);
-        else done();
-        setTimeout(done, 500).unref();
-      }, 50);
+      setTimeout(exit, 50);
       return;
     }
 
@@ -2697,6 +2732,17 @@ function serveViewer({
         }
       }, 1000);
       retirement.unref(); httpServer.once("close", () => clearInterval(retirement));
+      const idle = archivedViewerIdleMs();
+      let checking = false;
+      const archiveCheck = setInterval(async () => {
+        if (checking) return;
+        checking = true;
+        try {
+          if (!await archived() || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
+          clearInterval(archiveCheck); stopArchived();
+        } finally { checking = false; }
+      }, Math.min(60_000, idle));
+      archiveCheck.unref(); httpServer.once("close", () => clearInterval(archiveCheck));
       const expiry = setInterval(() => { access.expire(); sweepLaunchFiles(context.reviewId, LAUNCH_CODE_LIFETIME_MS); }, 60_000);
       expiry.unref(); httpServer.once("close", () => clearInterval(expiry));
       resolve(httpServer);
