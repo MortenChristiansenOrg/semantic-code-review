@@ -2289,6 +2289,8 @@ function restoreDetachedCheckout(root: string, checkout: DetachedCheckout, branc
   try {
     // A stale registration's path may now hold another repository.
     if (gitCommonDirectory(worktree) !== gitCommonDirectory(root)) return leave("it now belongs to another repository");
+    // A plain directory at a stale registration's path resolves to the checkout around it.
+    if (real(git(["rev-parse", "--show-toplevel"], { cwd: worktree })) !== real(worktree)) return leave("it is no longer a worktree root");
     current = gitOptional(["symbolic-ref", "--quiet", "HEAD"], { cwd: worktree });
     detachedAt = git(["rev-parse", "HEAD"], { cwd: worktree });
   } catch {
