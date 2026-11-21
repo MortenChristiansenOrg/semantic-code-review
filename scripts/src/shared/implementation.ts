@@ -171,7 +171,9 @@ export function changedFilesOfRanges(
         const { files, next } = parseChanges(fields, index + 1, commit);
         index = next;
         const key = JSON.stringify([root, parent, commit]);
-        derived.set(key, changedFileFacts(key, () => checkedChanges(files, parent, commit)));
+        // An empty range is cached only where empty ranges are allowed.
+        if (files.length === 0 && !allowEmpty) continue;
+        derived.set(key, files.length === 0 ? files : changedFileFacts(key, () => checkedChanges(files, parent, commit)));
       }
     }
   }
@@ -312,7 +314,8 @@ export function loadImplementation(root: string, files: ArtifactFiles, { include
   }
 
   const ranges = stackRanges(manifest.baseRevision, stack, files.describe("manifest.json"));
-  const inventories = changedFilesOfRanges(root, ranges);
+  // A stage the target already contains is empty; validation requires its commit to be marked.
+  const inventories = changedFilesOfRanges(root, ranges, { allowEmpty: true });
   const stages = new Map<string, Stage>();
   let baseBranch = manifest.targetBranch;
   for (const [index, { id, label, value }] of stageDocuments.entries()) {

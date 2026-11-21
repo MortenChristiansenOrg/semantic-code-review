@@ -654,13 +654,27 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   pointer-events: none;
 }
 .tag-pop-float.is-above { transform-origin: bottom left; transform: translateY(6px) scale(.985); }
-.tag-pop-float.is-shown { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
+.tag-pop-float.is-shown {
+  opacity: 1; visibility: visible; transform: none; pointer-events: auto;
+  /* Visible at once when shown, even with reduced motion, so what it
+     describes never reads as hidden. Hiding still fades out first. */
+  transition: opacity .16s var(--ease), transform .16s var(--ease);
+}
 .tag-pop-float .tag-pop-kind { display: block; margin-bottom: 6px; }
 .tag-pop-float strong {
   font-family: var(--sans); font-size: 12px; font-weight: 400; display: block; line-height: 1.32;
   overflow-wrap: anywhere;
 }
 .tag-pop-float.is-tooltip { width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 7px 10px; }
+/* A cut-off tooltip names the keys that scroll it while its trigger has focus. */
+.tag-pop-float .pop-scroll-hint {
+  position: sticky; bottom: -10px; display: block;
+  margin: 8px -12px -10px; padding: 4px 12px;
+  border-top: 1px solid #46515f; background: #303a46;
+  font-family: var(--mono); font-size: 10.5px; color: #aab4c0; text-align: right;
+}
+.tag-pop-float.is-tooltip .pop-scroll-hint { bottom: -7px; margin: 6px -10px -7px; padding: 4px 10px; }
+.tag-pop-float .pop-scroll-hint:empty { display: none; }
 .tag-pop-float b { font-weight: 400; }
 .tag-pop-float p {
   color: #c4ccd6; font-size: 12.5px; margin: 8px 0 0; line-height: 1.5;

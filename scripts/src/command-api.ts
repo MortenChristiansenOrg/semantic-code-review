@@ -184,6 +184,8 @@ export const semanticImplementationApi: CliSignature = {
       options: [
         option("from", "<stage-id>"),
         option("base", "<revision>"),
+        option("continue"),
+        option("abort"),
         option("json"),
       ],
     },

@@ -3,12 +3,20 @@ export interface RestackOptions {
     from?: string;
     /** Replacement trunk revision, usually the current target branch head. Mutually exclusive with `from`. */
     base?: string;
+    /** Completes the pending restack once its conflict is resolved and staged in the reported worktree. Moves refs only if the target, stage and artifact refs are unchanged since the restack began. */
+    continue?: true;
+    /** Discards the pending restack and its worktree; no ref has moved. */
+    abort?: true;
     /** Emits exact old and new revisions for every refreshed stage. */
     json?: true;
 }
 /**
  * Accepts edited stage branches, folds each into one stage commit again, and
- * replays every branch above the earliest one.
+ * replays every branch above the earliest one by cherry-picking its stage commit
+ * in a scratch worktree outside the user's checkouts. A stage whose changes the
+ * target already contains becomes a marked empty commit. On a conflict, no ref
+ * moves: the restack is recorded as pending and the worktree keeps normal Git
+ * conflict state for `continue` or `abort`.
  * @cli semantic-flow.mjs
  * @command implementation restack
  */

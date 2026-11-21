@@ -601,6 +601,129 @@ test('a long stage rationale tooltip stays within the viewport and scrolls', asy
   await expect(tooltip).toBeVisible();
 });
 
+for (const reducedMotion of ['no-preference', 'reduce']) test(`a tooltip taller than the window scrolls to its end with the keyboard from its trigger (${reducedMotion} motion)`, async ({ page }) => {
+  await page.emulateMedia({ reducedMotion });
+  const data = fixture();
+  const long = (last) => `${'This stage exists because of a long chain of reasons. '.repeat(50)}${last}`;
+  data.stages[0].rationale = long('The final reason.');
+  data.stages[1].rationale = long('Another final reason.');
+  await page.setViewportSize({ width: 390, height: 600 });
+  await mount(page, data);
+  await page.mouse.move(0, 0);
+  // Record whether the page's own handling of each key, such as scrolling, was taken over.
+  await page.evaluate(() => {
+    window.keyTaken = [];
+    window.addEventListener('keydown', (e) => window.keyTaken.push(e.defaultPrevented));
+  });
+  const keyTaken = () => page.evaluate(() => window.keyTaken.splice(0));
+  const tooltip = page.locator('#review-tooltip');
+  const hint = tooltip.locator('.pop-scroll-hint');
+
+  // A tooltip that fits keeps the keys for the page.
+  const short = page.locator('[data-tooltip]:not(.rationale-label)').first();
+  await short.focus();
+  await expect(tooltip).toHaveClass(/is-shown/);
+  expect(await tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(false);
+  await expect(hint).toBeHidden();
+  await page.keyboard.press('ArrowDown');
+  expect(await keyTaken()).toEqual([false]);
+
+  const label = page.locator('.stage[data-stage="first"] .rationale-label');
+  // The key hint never belongs to a hidden tooltip: not before the opening
+  // frame shows it, nor in that frame while its fade begins.
+  expect(await label.evaluate((el) => new Promise((done) => {
+    const pop = document.querySelector('#review-tooltip'), hint = pop.querySelector('.pop-scroll-hint');
+    el.focus();
+    const before = hint.textContent;
+    // Runs right after the opening frame's own callback, which focus queued first.
+    requestAnimationFrame(() => done({ before, opening: hint.textContent === '' || getComputedStyle(pop).visibility === 'visible' }));
+  }))).toEqual({ before: '', opening: true });
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip.locator('strong')).toHaveText(data.stages[0].rationale);
+  // Screen readers still get the full text, without the visible key hint.
+  await expect(label).toHaveAttribute('aria-describedby', 'review-tooltip');
+  await expect(label).toHaveAccessibleDescription(data.stages[0].rationale);
+  await expect(hint).toBeVisible();
+  await expect(hint).toContainText('to scroll');
+  // The tooltip shows on screen in full, its hint included, and is no tab stop.
+  await expect.poll(() => tooltip.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return box.top >= 0 && box.bottom <= innerHeight;
+  })).toBe(true);
+  await expect(tooltip).toHaveAttribute('tabindex', '-1');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  const atEnd = () => tooltip.evaluate((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1);
+  await page.keyboard.press('ArrowDown');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  let presses = 1;
+  for (; presses < 40 && !(await atEnd()); presses++) await page.keyboard.press('PageDown');
+  expect(await atEnd()).toBe(true);
+  expect(await keyTaken()).toEqual(Array(presses).fill(true));
+  // The final line is inside the tooltip's visible area, above the key hint.
+  const lastLineShown = () => tooltip.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el.querySelector('strong'));
+    const last = [...range.getClientRects()].at(-1), box = el.getBoundingClientRect();
+    return last.top >= box.top && last.bottom <= el.querySelector('.pop-scroll-hint').getBoundingClientRect().top;
+  });
+  expect(await lastLineShown()).toBe(true);
+  await expect(label).toBeFocused();
+  await expect(tooltip).toBeVisible();
+  await page.keyboard.press('Home');
+  await expect.poll(() => tooltip.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press('End');
+  await expect.poll(atEnd).toBe(true);
+
+  // The next long tooltip opens at its start.
+  const next = page.locator('.stage[data-stage="second"] .rationale-label');
+  await next.focus();
+  await expect(tooltip.locator('strong')).toHaveText(data.stages[1].rationale);
+  expect(await tooltip.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.keyboard.press('End');
+  await expect.poll(atEnd).toBe(true);
+  // A resize keeps the reader's place, with the last line above the hint.
+  await page.setViewportSize({ width: 395, height: 600 });
+  await expect(hint).toBeVisible();
+  await expect.poll(atEnd).toBe(true);
+  expect(await lastLineShown()).toBe(true);
+  // Reopened after Escape closed it, it starts again at the top.
+  await next.focus();
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await next.blur();
+  await next.focus();
+  await expect(tooltip).toBeVisible();
+  expect(await tooltip.evaluate((el) => el.scrollTop)).toBe(0);
+  // End pressed before the opening frame, as on a busy machine, still ends at
+  // the last line once that frame adds the key hint.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await next.blur();
+  await next.evaluate((el) => {
+    el.focus();
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+  });
+  await expect(hint).toBeVisible();
+  await expect.poll(atEnd).toBe(true);
+  expect(await lastLineShown()).toBe(true);
+
+  // Escape closes it and gives the keys back to the page.
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  // Reopening it by pointer leaves no earlier key hint to describe while it is hidden.
+  expect(await next.evaluate((el) => {
+    el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true }));
+    return document.querySelector('#review-tooltip .pop-scroll-hint').textContent;
+  })).toBe('');
+  await expect(tooltip).toBeVisible();
+  await expect(next).toHaveAccessibleDescription(data.stages[1].rationale);
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await keyTaken();
+  await page.keyboard.press('ArrowDown');
+  expect(await keyTaken()).toEqual([false]);
+});
+
 test('editing a draft from the notes panel focuses its visible form and survives a refresh', async ({ page }) => {
   const data = fixture();
   await mount(page, data, { comments: [{ kind: 'file', id: fileId, nodeId: 'first-two', body: 'Edit this note', mode: 'feedback', createdAt: 1 }] });

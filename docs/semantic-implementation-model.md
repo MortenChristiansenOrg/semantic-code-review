@@ -48,6 +48,8 @@ cumulative branch at the final stage head.
    to a newer snapshot when the target still exists.
 6. A change is committed directly on the affected branch.
 7. `restack` cascades it through every branch above and refreshes snapshots.
+   A conflict moves no branch: it stays pending in a scratch worktree until
+   `restack --continue` or `--abort`.
 8. Approval publishes metadata on a sibling metadata branch.
 9. Tooling verifies the local stack and may create a named cumulative branch.
 10. Remote publication, review creation, and merge remain outside the flow.
