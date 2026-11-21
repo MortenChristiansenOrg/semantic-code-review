@@ -7,7 +7,7 @@ import { uploadOps } from "./attachments";
 import { captureEditor } from "./editor";
 import { exportState } from "./feedback-actions";
 import { errorMessage, failureOf, isRecord, type UnknownRecord } from "./narrow";
-import { endedReviewText, markReviewEnded } from "./saved-reviews";
+import { endedReviewText, markReviewEnded, updateReviewList } from "./saved-reviews";
 import { readState } from "./stored-state";
 import type { ViewerState } from "./types";
 
@@ -237,7 +237,11 @@ export async function writeState(): Promise<void> {
       persistedState = next;
     }
     saveError = "";
-  } finally { savingState = false; showSaveStatus(); }
+  } finally {
+    savingState = false; showSaveStatus();
+    // A save that lands after the review ended changes what the notice lists as not saved.
+    if (reviewEnded) updateReviewList();
+  }
   if (stateChanges(persistedState, storedState()).length) scheduleSave();
 }
 export async function flushReviewState(): Promise<void> {

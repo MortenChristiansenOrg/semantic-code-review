@@ -1679,6 +1679,31 @@ test('a stage approval whose save the archive cancels is listed as not saved', a
   await expect(page.locator('.ended-review li')).toHaveText(['Stage first']);
 });
 
+test('a stage approval whose save lands after the archive notice is not listed as unsaved', async ({ page }) => {
+  await mount(page);
+  await page.locator('.stage-title[data-id="first"]').click();
+  const one = page.locator('details[data-node="first-one"]'), two = page.locator('details[data-node="first-two"]');
+  await one.locator('summary').click(); await two.locator('summary').click();
+  await saveAction(page, () => one.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-one')]);
+  await saveAction(page, () => two.locator('.mini-approve').click(), (state) => !!state.approvals?.[approvalKey('first', 'first-two')]);
+  let archived = false, release;
+  const released = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  // The save succeeds, but only after the archive notice is shown.
+  await page.route('**/api/review-state?*', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    await released; return route.fallback();
+  });
+  const sent = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await page.locator('.stage[data-stage="first"] .stage-approve .approve').click();
+  await sent;
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  await expect(page.locator('.ended-review li')).toHaveText(['Stage first']);
+  release();
+  await expect(page.locator('.ended-review li')).toHaveCount(0);
+});
+
 test('an approval removal whose save the archive refuses is listed as not saved', async ({ page }) => {
   await mount(page);
   await page.locator('.stage-title[data-id="first"]').click();
