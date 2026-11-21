@@ -181,7 +181,7 @@ export const semanticImplementationApi: CliSignature = {
     },
     {
       command: "stage remove",
-      options: [option("json"), option("id", "<stage-id>", { required: true })],
+      options: [option("json"), option("id", "<stage-id>", { required: true }), option("implementation-id", "<implementation-id>")],
     },
     {
       command: "restack",

@@ -29,10 +29,11 @@ preparing, run status with the same `--project` as the helper below:
 ```
 
 From the returned `artifact.worktree`, remove every stage listed in
-`emptyStageThreads` without open threads:
+`emptyStageThreads` without open threads, naming the returned
+`artifact.implementationId`:
 
 ```text
-<semantic-flow> implementation stage remove --id <stage-id> --json
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
 
 Report each removal. The command refuses the only remaining stage: when every

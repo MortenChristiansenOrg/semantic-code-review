@@ -361,6 +361,17 @@ function emptyStageThreads(feedbackRoot: string, emptyStages: readonly string[])
   return [...stageThreads(feedbackRoot, emptyStages)].map(([stageId, threads]) => ({ stageId, openThreadIds: threads.open }));
 }
 
+/** emptyStageThreads, or null when the feedback cannot be read, such as while
+ * another command initializes it. */
+function knownEmptyStageThreads(feedbackRoot: string, emptyStages: readonly string[]): EmptyStageThreads[] | null {
+  try {
+    return emptyStageThreads(feedbackRoot, emptyStages);
+  } catch (error) {
+    console.error(`Warning: the threads on empty stages are unknown: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
 async function checkFeedback(root: string): Promise<CapturedValidation> {
   const { validateFeedbackAt } = await feedbackService();
   return captureValidation(() => validateFeedbackAt(root));
@@ -933,13 +944,15 @@ async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: Tar
 
   return {
     worktree: candidate.worktree,
+    implementationId: candidate.implementationId,
     currentBranch: candidate.currentBranch,
     worktreeChanges,
     targetRestack,
     feedbackExists: candidate.feedbackExists,
     stages,
-    // Read after the round's threads were validated; an empty stage without any is removable.
-    emptyStageThreads: emptyStageThreads(feedbackRoot, emptyStages),
+    // Read after the round's threads were validated; an empty stage without any
+    // is removable. Null when they cannot be read: sync has already moved refs.
+    emptyStageThreads: knownEmptyStageThreads(feedbackRoot, emptyStages),
     ...(claim ? { claim: claimId, claimedElsewhere, responses } : {}),
   };
 }

@@ -212,13 +212,15 @@ nothing; the restack names it. `emptyStageThreads` in the feedback result, and
 in `<semantic-flow> status --json` run with the same `--project` and
 `--implementation-id` as `feedback`, lists each empty stage with the IDs of its
 threads that are not resolved. Threads returned in this round count as not
-resolved.
+resolved. It is null when the threads could not be read; then run that status
+command for them.
 
 Remove an empty stage without unresolved threads before posting replies, from
-the returned `worktree`:
+the returned `worktree`, naming the returned `implementationId`; the command
+refuses when that worktree works on another implementation:
 
 ```text
-<semantic-flow> implementation stage remove --id <stage-id> --json
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
 
 The command refuses the only remaining stage; when every stage is empty, keep

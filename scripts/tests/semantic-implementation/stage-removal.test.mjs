@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -305,4 +306,48 @@ test("a viewer request that read the refs before the removal cannot reopen a thr
   const feedback = readingActiveRefsOnce(reads, () => reviewFeedback(repository.root, { reviewId, generation: readReview(reviewId).generation }));
   assert.throws(() => readingActiveRefsOnce(reads, () => feedback.reopenThread("on-policy")), /stage policy was removed, so its threads are read-only/);
   assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads", "on-policy.json")).status, "resolved");
+});
+
+test("stage remove refuses while a Git operation is in progress in a checkout it would move", (t) => {
+  const repository = emptiedPolicy(t);
+  const state = stackState(repository);
+  // HEAD on the removed branch would be detached under a stopped cherry-pick.
+  repository.git("switch", branchOf("policy"));
+  const cherryPick = path.resolve(repository.root, repository.git("rev-parse", "--git-path", "CHERRY_PICK_HEAD"));
+  fs.writeFileSync(cherryPick, `${repository.git("rev-parse", "HEAD")}\n`);
+  repository.expectSemanticFailure("A Git operation is in progress", "stage", "remove", "--id", "policy");
+  assert.equal(stackState(repository), state);
+  assert.equal(repository.git("symbolic-ref", "--short", "HEAD"), branchOf("policy"));
+  fs.rmSync(cherryPick);
+
+  // A detached HEAD that would follow a rebuilt head is not moved under a bisect.
+  const api = repository.git("rev-parse", branchOf("api"));
+  repository.git("switch", "--detach", api);
+  const bisect = path.resolve(repository.root, repository.git("rev-parse", "--git-path", "BISECT_LOG"));
+  fs.writeFileSync(bisect, "git bisect start\n");
+  repository.expectSemanticFailure("A Git operation is in progress", "stage", "remove", "--id", "policy");
+  assert.equal(stackState(repository), state);
+  assert.equal(repository.git("rev-parse", "HEAD"), api);
+  fs.rmSync(bisect);
+  repository.semantic("stage", "remove", "--id", "policy");
+  assert.equal(repository.git("rev-parse", "HEAD"), repository.git("rev-parse", branchOf("api")));
+});
+
+test("stage remove refuses another implementation, and a concurrent removal leaves HEAD detached", async (t) => {
+  const repository = emptiedPolicy(t);
+  repository.expectSemanticFailure("This worktree works on implementation test-implementation, not other.",
+    "stage", "remove", "--id", "policy", "--implementation-id", "other");
+  repository.git("switch", branchOf("policy"));
+  const base = repository.git("rev-parse", "main");
+  const remove = () => new Promise((resolve) => {
+    execFile(process.execPath, [...semanticCli, "stage", "remove", "--id", "policy", "--implementation-id", "test-implementation", "--json"],
+      { cwd: repository.root, encoding: "utf8" }, (error, stdout, stderr) => resolve({ status: error ? error.code ?? 1 : 0, stdout, stderr }));
+  });
+  const results = await Promise.all([remove(), remove()]);
+  assert.deepEqual(results.map(({ status }) => status === 0).sort(), [false, true], results.map(({ stderr }) => stderr).join("\n"));
+  // The losing removal does not point HEAD back at the deleted branch.
+  assert.equal(repository.result("git", ["symbolic-ref", "--quiet", "HEAD"]).status, 1);
+  assert.equal(repository.git("rev-parse", "HEAD"), base);
+  assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branchOf("policy")}`]).status, 1);
+  repository.semantic("validate");
 });

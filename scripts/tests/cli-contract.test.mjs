@@ -326,7 +326,7 @@ test("skill indexes command-specific workflows", () => {
     /Do not ask for permission\s+merely because Git reported a conflict/,
   );
   // The agent removes an empty stage on its own once nothing on it is open, and never asks in the chat.
-  const removeEmptyStage = /<semantic-flow> implementation stage remove --id <stage-id> --json/;
+  const removeEmptyStage = /<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json/;
   assert.match(commandText.get("feedback"), removeEmptyStage);
   assert.match(commandText.get("feedback"), /Remove an empty stage without unresolved threads before posting replies/);
   assert.match(commandText.get("feedback"), /the stage is now empty and will be removed once they\s+are resolved/);

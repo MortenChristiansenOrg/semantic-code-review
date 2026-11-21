@@ -2106,6 +2106,15 @@ export interface StageRemoval {
   detachedAt: string | null;
 }
 
+/** The Git operation in progress in the worktree at root, such as a merge,
+ * cherry-pick, rebase or bisect; undefined when none is. */
+function gitOperationInProgress(root: string): string | undefined {
+  for (const state of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer", "BISECT_LOG"]) {
+    if (fs.existsSync(path.resolve(root, git(["rev-parse", "--git-path", state], { cwd: root })))) return state;
+  }
+  return undefined;
+}
+
 /** Detaches HEAD at commit while it is still at expected, without touching
  * the index or the working tree, which match both. */
 function moveHead(root: string, commit: string, expected: string | undefined): void {
@@ -2119,7 +2128,12 @@ function removeStage(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage remove"));
   const json = flag(options, "json");
   const id = option(options, "id", { required: true });
+  const requestedImplementation = option(options, "implementation-id");
   const { root } = workspace;
+  const selected = activeImplementationId(root, workspace.snapshot);
+  if (requestedImplementation !== undefined && selected !== requestedImplementation) {
+    fail(`This worktree works on implementation ${selected}, not ${requestedImplementation}. Run the command in the worktree of ${requestedImplementation}.`);
+  }
   // Full validation refuses a pending restack and a stack that differs from its branches.
   const artifact = validateArtifact(workspace, { quiet: true });
   const implementationId = artifact.manifest.implementationId;
@@ -2217,24 +2231,44 @@ function removeStage(workspace: Workspace, options: Options): void {
   const follow = detachedHead === undefined ? undefined
     : detachedHead === removedHead ? removedBase
       : rebuilt.find((entry) => entry.previousHeadRevision === detachedHead)?.headRevision;
+  // Moving HEAD with update-ref skips the checks a checkout makes, so a
+  // stopped merge, cherry-pick, rebase or bisect would lose its place.
+  const operation = wasCurrent || follow !== undefined ? gitOperationInProgress(root) : undefined;
+  if (operation !== undefined) {
+    fail(`A Git operation is in progress in ${root} (${operation}). Finish or abort it, then run the command again.`);
+  }
   let resolvedThreadIds: string[] = [];
   let committed = false;
   // The review lock keeps threads from being added to or reopened on the stage
   // between the check and the commit.
   try {
     withArtifactLock(workspace, implementationId, () => {
+      // Another command, such as a concurrent removal, may have changed the
+      // artifact since it was read; everything above was decided on that read.
+      if (gitOptional(["rev-parse", "--verify", "--quiet", activeRef(implementationId)], { cwd: root }) !== workspace.snapshot.version) {
+        fail(`Implementation ${implementationId} changed while stage ${id} was being removed; run the command again.`);
+      }
       const threads = stageThreads(feedbackDirectory(root, implementationId), [id]).get(id) ?? { open: [], resolved: [] };
       if (threads.open.length > 0) {
         fail(`Stage ${id} has feedback threads that are not resolved: ${threads.open.join(", ")}. It can be removed once the reviewer resolves them.`);
       }
       resolvedThreadIds = threads.resolved;
+      let detached = false;
       try {
         // Both trees are the same, so only HEAD moves; no checkout hook runs.
-        if (wasCurrent) moveHead(root, removedBase, removedHead);
+        if (wasCurrent) {
+          moveHead(root, removedBase, removedHead);
+          detached = true;
+        }
         commitArtifact(root, workspace.snapshot, draft, refUpdates);
         committed = true;
       } catch (error) {
-        if (wasCurrent) git(["symbolic-ref", "HEAD", `refs/heads/${branch}`], { cwd: root, allowFailure: true });
+        // HEAD goes back to the branch only while nothing else moved either.
+        if (detached && currentBranch(root) === undefined
+          && gitOptional(["rev-parse", "--verify", "--quiet", "HEAD"], { cwd: root }) === removedBase
+          && gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: root }) === removedHead) {
+          git(["symbolic-ref", "HEAD", `refs/heads/${branch}`], { cwd: root, allowFailure: true });
+        }
         throw error;
       }
     });
@@ -2250,6 +2284,8 @@ function removeStage(workspace: Workspace, options: Options): void {
     detachedAt = removedBase;
   } else if (follow !== undefined) {
     try {
+      const started = gitOperationInProgress(root);
+      if (started !== undefined) throw new Error(`a Git operation is in progress (${started})`);
       moveHead(root, follow, detachedHead);
       detachedAt = follow;
     } catch (error) {
