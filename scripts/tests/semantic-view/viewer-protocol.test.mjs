@@ -360,12 +360,23 @@ test("a viewer of an archived implementation tells its pages, lists the review a
   // A page loaded now, even in a hidden tab that does not poll, starts archived.
   const bootstrap = await capture("BootstrapResponse", "api/bootstrap");
   assert.equal(bootstrap.implementation.implementationArchived, true);
-  // The review data remains, and the review list says the review ended.
-  await get("ReviewStateResponse", "api/review-state");
+  // The review data remains readable, and the review list says the review ended.
+  const kept = await get("ReviewStateResponse", "api/review-state");
+  // A page that has not seen the archive cannot change the review data, nor a
+  // review list loaded before it complete the review.
+  const save = await post("ApiFailure", "api/review-state", { ...target, changes: [
+    { path: ["specificationOpen", "first"], before: { present: false }, after: { present: true, value: true } },
+  ] }, 409);
+  assert.equal(save.implementationArchived, true);
+  const completion = await post("ApiFailure", "api/reviews/completion", { ...target, completed: true, expectedCompletedAt: null }, 409);
+  assert.equal(completion.implementationArchived, true);
+  const unchanged = await get("ReviewStateResponse", "api/review-state");
+  assert.deepEqual([unchanged.state, unchanged.stateRevision], [kept.state, kept.stateRevision]);
   const { reviews } = await get("ReviewsResponse", "api/reviews");
   const listed = reviews.find((review) => review.id === target.reviewId);
   assert.equal(listed.archived, true);
   assert.equal(listed.available, false);
+  assert.equal(listed.completedAt, null);
   // Any refusal of a request of the review says so, not only the review check's.
   const invalid = await post("ApiFailure", "api/reviews/completion", { ...target, completed: "maybe" }, 409);
   assert.equal(invalid.implementationArchived, true);
@@ -380,6 +391,54 @@ test("a viewer of an archived implementation tells its pages, lists the review a
   // Its record no longer names it, so nothing looks for it on its port.
   const record = JSON.parse(fs.readFileSync(path.join(process.env.SEMANTIC_FLOW_HOME, "reviews", target.reviewId, "review.json"), "utf8"));
   assert.equal(record.viewer, undefined);
+});
+
+/** Waits for a viewer process to exit; returns when it did, in ms since the epoch. */
+async function exitTime(pid, limitMs) {
+  for (const deadline = Date.now() + limitMs; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 25))) {
+    if (exited(pid)) return Date.now();
+  }
+  assert.fail(`Viewer process ${pid} kept running.`);
+}
+
+test("an archived viewer unused for its idle period stops once it sees the archive, not an idle period later", async (t) => {
+  const viewer = viewerCleanup(t);
+  const repository = createReviewRepository(t);
+  const idle = 4000;
+  await startViewer(viewer, repository, { SEMANTIC_VIEW_ARCHIVED_IDLE_MS: String(idle) });
+  const { get } = await client(viewer.url);
+  await get("RevisionResponse", "api/revision");
+  await new Promise((resolve) => setTimeout(resolve, idle + 500));
+  repository.flow("archive", "--json");
+  const archivedAt = Date.now();
+  // It checks ten times an idle period, so it stops well within one.
+  const stoppedAt = await exitTime(viewer.pid, 3 * idle);
+  assert.ok(stoppedAt - archivedAt < idle / 2, `The viewer stopped ${stoppedAt - archivedAt} ms after the archive.`);
+});
+
+test("an archived viewer counts a launch code exchange when it arrives, not when its body ends", async (t) => {
+  const viewer = viewerCleanup(t);
+  const repository = createReviewRepository(t);
+  const idle = 6000, upload = 4000;
+  await startViewer(viewer, repository, { SEMANTIC_VIEW_ARCHIVED_IDLE_MS: String(idle) });
+  const { capture } = await client(viewer.url);
+  repository.flow("archive", "--json");
+  const { code } = await capture("LaunchResponse", "api/launch", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  // The exchange arrives now; its body ends `upload` ms later.
+  const { port } = new URL(viewer.url);
+  const body = JSON.stringify({ code });
+  const arrivedAt = Date.now();
+  const status = await new Promise((resolve, reject) => {
+    const request = http.request({ host: "127.0.0.1", port, method: "POST", path: "/api/session",
+      headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) } }, (response) => { response.resume(); resolve(response.statusCode); });
+    request.once("error", reject);
+    request.write(body.slice(0, 1));
+    setTimeout(() => request.end(body.slice(1)), upload);
+  });
+  assert.equal(status, 200);
+  const stoppedAt = await exitTime(viewer.pid, 3 * idle);
+  // Counted when its body ended, it would keep the viewer until arrival + upload + idle.
+  assert.ok(stoppedAt - arrivedAt < idle + upload / 2, `The viewer stopped ${stoppedAt - arrivedAt} ms after the exchange arrived.`);
 });
 
 test("stopping a viewer that already exited sends nothing to its port", async (t) => {

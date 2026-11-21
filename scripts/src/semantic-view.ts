@@ -2301,11 +2301,11 @@ function serveViewer({
   // Archiving ends the review: pages are told, and the viewer stops once no
   // page has made a request for archivedViewerIdleMs. Only requests that pass
   // the host and access checks count, when they arrive.
-  let archivedAt: number | undefined, lastRequestAt = Date.now();
+  let wasArchived = false, lastRequestAt = Date.now();
   /** Whether the implementation was archived; once it was, it stays so. */
   const archived = async () => {
-    if (archivedAt === undefined && await readReviewImplementationArchived(review)) archivedAt = Date.now();
-    return archivedAt !== undefined;
+    if (!wasArchived && await readReviewImplementationArchived(review)) wasArchived = true;
+    return wasArchived;
   };
   /** Ends a viewer whose implementation was archived, releasing its record first
    * so no launch looks for it on its port. Requests in progress may finish, for
@@ -2340,8 +2340,10 @@ function serveViewer({
     response.end(text);
   };
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
-    /** Counts the request, once it passed the host and access checks, as use of the viewer. */
-    const use = () => { lastRequestAt = Date.now(); };
+    /** Counts the request, once it passed the host and access checks, as use of
+     * the viewer when it arrived, however long its body took. */
+    const arrivedAt = Date.now();
+    const use = () => { lastRequestAt = Math.max(lastRequestAt, arrivedAt); };
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // The request's jobs read the active refs once, in the worker, so checking
     // its review neither runs Git again nor holds up this thread.
@@ -2751,10 +2753,11 @@ function serveViewer({
         if (checking) return;
         checking = true;
         try {
-          if (!await archived() || Date.now() - Math.max(lastRequestAt, archivedAt ?? 0) < idle) return;
+          // Idle time runs from the last request, not from when the archive was seen.
+          if (!await archived() || Date.now() - lastRequestAt < idle) return;
           clearInterval(archiveCheck); stopArchived();
         } finally { checking = false; }
-      }, Math.min(60_000, idle));
+      }, Math.min(60_000, Math.ceil(idle / 10)));
       archiveCheck.unref(); httpServer.once("close", () => clearInterval(archiveCheck));
       const expiry = setInterval(() => { access.expire(); sweepLaunchFiles(context.reviewId, LAUNCH_CODE_LIFETIME_MS); }, 60_000);
       expiry.unref(); httpServer.once("close", () => clearInterval(expiry));
@@ -3007,7 +3010,9 @@ function runJob(jobs: object, method: unknown, args: unknown, unknownJob: string
   return Reflect.apply(job, jobs, args);
 }
 
-/** Viewer jobs that read only review data, never the active refs. */
+/** Viewer jobs that read only review data, never the active refs of a request's
+ * scope. Changing review data reads whether the implementation was archived
+ * from Git itself, under the review lock. */
 const REF_FREE_JOBS = new Set<string>(["readReview", "patchReviewState"]);
 
 function serveWorkerJobs(port: MessagePort, root: string, context: ReviewContext, management: boolean) {

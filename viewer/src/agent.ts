@@ -6,6 +6,7 @@ import { data } from "./context";
 import { exportFeedback, exportState } from "./feedback-actions";
 import { setRefreshNotice } from "./polling";
 import { render } from "./render";
+import { reviewEnded } from "./state";
 import { errorMessage, failureOf } from "./narrow";
 import type { Note } from "./types";
 import { showUnreadReplies } from "./unread-replies";
@@ -51,10 +52,11 @@ export function setAutoSendPreferred(on: boolean): void {
 export const agentTakesFeedback = (): boolean => Boolean(!data.remote && agent?.session && !agent.stopRequested && (agent.listening || agent.working));
 export const autoSendActive = (): boolean => autoSendPreferred && agentTakesFeedback();
 // Send just the saved note or reply at once; a save during a send goes out when that send finishes.
+// Once the review ended, queued saves stay as drafts and nothing more is sent.
 export function autoSendFeedback(saved?: { note?: Note; reply?: string | null }): void {
   const stored = readAutoSendPreferred();
   if (stored !== null && stored !== autoSendPreferred) adoptAutoSendPreferred(stored);
-  if (!autoSendActive()) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); return; }
+  if (reviewEnded || !autoSendActive()) { autoSendQueue.notes.clear(); autoSendQueue.replies.clear(); return; }
   if (saved?.note) autoSendQueue.notes.add(saved.note);
   else if (saved && saved.reply != null) autoSendQueue.replies.add(saved.reply);
   if (exportState.phase === "working") return;

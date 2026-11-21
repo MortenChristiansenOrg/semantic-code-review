@@ -223,6 +223,12 @@ export function reviewImplementationArchived(record: ReviewRecord): boolean {
   try { return archivedByRefs(gitRaw([...location.args, ...archiveStateArguments(record.implementationId)], { cwd: location.cwd }), record.implementationId); }
   catch { return false; }
 }
+/** Refuses to change a review whose implementation was archived, which ended
+ * it. Called under the review lock: archiving removes the active ref under the
+ * same lock, so no change lands after it. */
+function assertImplementationNotArchived(record: ReviewRecord): void {
+  if (reviewImplementationArchived(record)) throw new Error(`Implementation ${record.implementationId} was archived, which ended its review.`);
+}
 /** reviewImplementationArchived without blocking this thread. */
 export function readReviewImplementationArchived(record: ReviewRecord): Promise<boolean> {
   const location = reviewGitLocation(record);
@@ -774,6 +780,7 @@ export function patchReviewState(id: string, generation: string, changes: StateC
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("This review session was replaced. Reopen the review.");
+    assertImplementationNotArchived(record);
     const previousActivity = structuredClone(reviewActivity(record.state));
     const previousSnapshots = approvalSnapshotIds(record.state);
     const previousAttachments = attachmentIds(record.state);
@@ -871,6 +878,7 @@ export function setReviewCompleted(id: string, generation: string, completed: bo
   return withReviewLock(id, () => {
     const record = readReview(id);
     if (record.generation !== generation) throw new Error("The selected review was replaced. Refresh the review list.");
+    assertImplementationNotArchived(record);
     if (Boolean(record.completedAt) === completed) return record;
     if (record.completedAt !== expectedCompletedAt) throw new Error("The review lifecycle changed in another tab. Refresh the review list.");
     record.updatedAt = new Date().toISOString();

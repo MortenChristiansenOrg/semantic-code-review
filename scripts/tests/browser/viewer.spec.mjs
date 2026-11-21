@@ -4002,6 +4002,38 @@ test('interactive reviews can send feedback notes and replies automatically when
   expect(exports).toHaveLength(2);
 });
 
+test('an archive that refuses an automatic send stops the saves queued behind it', async ({ page }) => {
+  const now = new Date().toISOString();
+  const data = { ...fixture(), feedback: [thread('existing')],
+    agent: { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: now } };
+  await mount(page, data);
+  const exports = [];
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/feedback/export*', async (route) => {
+    exports.push(route.request().postDataJSON());
+    await held; return route.fulfill(archivedRefusal);
+  });
+  await showNotes(page);
+  await page.getByRole('checkbox', { name: 'Send automatically' }).check();
+  await page.locator('.side.notes [data-action="thread-reply"]').click();
+  await page.locator('textarea[name="reply-body"]').fill('Please also cover the edge case.');
+  await page.getByRole('button', { name: 'Save reply', exact: true }).click();
+  await expect.poll(() => exports.length).toBe(1);
+  // A note saved while the reply is sent waits for that send.
+  await page.locator('.side.notes [data-action="toggle-notes"]').click();
+  await openFile(page); await page.locator('.file-notes .thread-add').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Rename this file');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  release();
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  // The queued note stays unsent, so its text is offered for copying instead.
+  await expect(page.locator('.ended-review textarea')).toHaveValue(/Rename this file/);
+  await page.waitForTimeout(500);
+  expect(exports).toHaveLength(1);
+});
+
 test('showing an answered round opens the active thread, not a resolved one with an unread reply', async ({ page }) => {
   const now = new Date().toISOString();
   const comment = (id, author, body, createdAt = '2026-10-08T10:00:00Z') => ({ id, author, body, attachments: [], createdAt });
