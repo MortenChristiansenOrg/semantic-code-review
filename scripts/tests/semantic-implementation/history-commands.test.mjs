@@ -312,6 +312,8 @@ function conflictingStack(t) {
 
 test("a restack conflict leaves Git conflict state in a scratch worktree until restack --continue", (t) => {
   const { repository, originalApi } = conflictingStack(t);
+  // A title changed before the restack reaches the stage that conflicts.
+  repository.semantic("stage", "set", "--finalized", "--id", "api", "--title", "Serve the API");
   const branches = () => repository.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/");
   const before = branches();
   const failure = repository.expectSemanticFailure("stopped at a conflict in shared.txt", "restack", "--from", "policy");
@@ -355,8 +357,9 @@ test("a restack conflict leaves Git conflict state in a scratch worktree until r
   const api = "semantic-flow/test-implementation/stages/api";
   assert.equal(repository.git("show", `${api}:shared.txt`), "setting=resolved\npersistence=true\napi=true");
   assert.equal(repository.git("show", `${api}:policy.txt`), "policy=revised");
-  // The replayed stage keeps its generated message and author.
-  assert.equal(repository.git("show", "-s", "--format=%B", api), repository.git("show", "-s", "--format=%B", originalApi));
+  // The resolved stage keeps its author and takes its current title.
+  assert.equal(repository.git("show", "-s", "--format=%B", api), repository.git("show", "-s", "--format=%B", originalApi).replace(/^.*/, "Serve the API"));
+  assert.equal(repository.git("show", "-s", "--format=%an <%ae> %aI", api), repository.git("show", "-s", "--format=%an <%ae> %aI", originalApi));
   assert.equal(repository.git("rev-list", "--count", `${api}^..${api}`), "1");
   assert.equal(fs.existsSync(worktree), false);
   assert.doesNotMatch(repository.git("worktree", "list"), new RegExp(path.basename(worktree)));
@@ -539,6 +542,97 @@ test("a correction to an emptied stage warns that its replaced commit no longer 
   const corrected = repository.result(process.execPath, [...semanticCli, "restack", "--from", "policy"]);
   assert.equal(corrected.status, 0, corrected.stderr);
   assert.match(corrected.stderr, new RegExp(`stage policy was empty in place of ${head}; its correction now defines the stage`));
+});
+
+test("restack rebuilds a finalized stage's commit message after its title or summary changes", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy", title: "Add policy", summary: "Define the policy." });
+  // A second author's commit makes the folded stage carry a co-author trailer.
+  repository.commitFile("policy-notes.txt", "notes\n", "Note the policy\n\nCo-authored-by: Bob Pair <bob@example.test>");
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  beginStage(repository, { id: "api", title: "Add API", summary: "Expose the policy.", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "api", file: "api.txt", contents: "api\n" });
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  const api = "semantic-flow/test-implementation/stages/api";
+  const show = (format, ref) => repository.git("show", "-s", `--format=${format}`, ref);
+  const originalPolicy = repository.git("rev-parse", policy);
+  const identity = show("%an <%ae> %aI|%cn <%ce> %cI", policy);
+  assert.equal(show("%B", policy), "Add policy\n\nDefine the policy.\n\nCo-authored-by: Bob Pair <bob@example.test>");
+
+  const updated = repository.semantic("stage", "set", "--finalized", "--id", "policy", "--title", "Add the access policy", "--summary", "Define who may read orders.");
+  assert.match(updated, /commit message takes the new title and summary at the next restack/);
+  // Nothing moves until the restack.
+  assert.equal(repository.git("rev-parse", policy), originalPolicy);
+  repository.git("switch", policy);
+  const result = JSON.parse(repository.semantic("restack", "--from", "policy", "--json"));
+  assert.deepEqual(result.stages.map(({ id, rewritten }) => ({ id, rewritten })), [{ id: "policy", rewritten: true }, { id: "api", rewritten: true }]);
+  const expected = "Add the access policy\n\nDefine who may read orders.\n\nCo-authored-by: Bob Pair <bob@example.test>";
+  assert.equal(show("%B", policy), expected);
+  // Only the message changed: the tree, parent, authors and dates are the stage commit's.
+  assert.equal(repository.git("rev-parse", `${policy}^{tree}`), repository.git("rev-parse", `${originalPolicy}^{tree}`));
+  assert.equal(repository.git("rev-parse", `${policy}^`), repository.git("rev-parse", `${originalPolicy}^`));
+  assert.equal(show("%an <%ae> %aI|%cn <%ce> %cI", policy), identity);
+  assert.equal(repository.git("rev-parse", `${api}^`), repository.git("rev-parse", policy));
+  assert.equal(show("%B", api), "Add API\n\nExpose the policy.");
+  repository.semantic("validate", "--publish");
+  // A restack with nothing to change rewrites nothing.
+  const again = JSON.parse(repository.semantic("restack", "--from", "policy", "--json"));
+  assert.equal(again.rewrittenBranches, 0);
+
+  // A replayed stage takes its current title too, and an emptied one keeps its marker.
+  repository.semantic("stage", "set", "--finalized", "--id", "api", "--title", "Serve the policy");
+  repository.git("switch", "main");
+  repository.commitFile("policy.txt", "policy\n", "Land the policy elsewhere");
+  repository.commitFile("policy-notes.txt", "notes\n", "Land the notes elsewhere");
+  const emptied = repository.git("rev-parse", policy);
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--summary", "Define who may change orders.");
+  const restacked = JSON.parse(repository.semantic("restack", "--base", "main", "--json"));
+  assert.deepEqual(restacked.stages.map(({ id, emptied }) => ({ id, emptied })), [{ id: "policy", emptied: true }, { id: "api", emptied: false }]);
+  assert.equal(show("%B", policy), `Add the access policy\n\nDefine who may change orders.\n\nSemantic-Flow-Empty: ${emptied}\nCo-authored-by: Bob Pair <bob@example.test>`);
+  assert.equal(show("%B", api), "Serve the policy\n\nExpose the policy.");
+  // A later title change reaches the empty stage's commit and keeps the marker.
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--title", "Add the order policy");
+  repository.commitFile("other.txt", "other\n", "Other work");
+  repository.semantic("restack", "--base", "main");
+  assert.equal(show("%B", policy), `Add the order policy\n\nDefine who may change orders.\n\nSemantic-Flow-Empty: ${emptied}\nCo-authored-by: Bob Pair <bob@example.test>`);
+  repository.semantic("validate", "--publish");
+});
+
+test("a rebuilt stage message keeps its trailers under any trailer separator and gains none from its summary", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy", title: "Add policy", summary: "Define the policy." });
+  repository.commitFile("policy-notes.txt", "notes\n", "Note the policy\n\nCo-authored-by: Bob Pair <bob@example.test>");
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  beginStage(repository, { id: "api", title: "Add API", summary: "Expose the policy.", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "api", file: "api.txt", contents: "api\n" });
+  const policy = "semantic-flow/test-implementation/stages/policy";
+  const api = "semantic-flow/test-implementation/stages/api";
+  // Under another trailer separator the colon trailers still count.
+  repository.git("config", "trailer.separators", "=");
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--title", "Add the access policy");
+  // A summary that ends in a trailer-like paragraph gives no credit.
+  repository.semantic("stage", "set", "--finalized", "--id", "api", "--summary", "Expose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>");
+  // A summary that quotes a real trailer mid-text keeps the trailer.
+  repository.semantic("stage", "set", "--finalized", "--id", "policy", "--summary", "Define the policy.\nCo-authored-by: Bob Pair <bob@example.test>\nsaid so.");
+  repository.git("switch", "main");
+  repository.commitFile("other.txt", "other\n", "Other work");
+  repository.semantic("restack", "--base", "main");
+  const policyMessage = "Add the access policy\n\nDefine the policy.\nCo-authored-by: Bob Pair <bob@example.test>\nsaid so.\n\nCo-authored-by: Bob Pair <bob@example.test>";
+  const apiMessage = "Add API\n\nExpose the policy, crediting like this:\n\nCo-authored-by: Example Person <example@example.test>";
+  assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
+  assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
+  // A second restack rewrites nothing.
+  assert.equal(JSON.parse(repository.semantic("restack", "--base", "main", "--json")).rewrittenBranches, 0);
+  assert.equal(repository.git("show", "-s", "--format=%B", api), apiMessage);
+  assert.equal(repository.git("show", "-s", "--format=%B", policy), policyMessage);
+  // A correction credited with the configured separator keeps the stage's colon co-author too.
+  repository.git("switch", policy);
+  repository.commitFile("policy.txt", "policy fixed\n", "Fix the policy\n\nCo-authored-by=Carol Fixer <carol@example.test>");
+  repository.semantic("restack", "--from", "policy");
+  assert.match(repository.git("show", "-s", "--format=%B", policy), /Co-authored-by: Bob Pair <bob@example\.test>\nCo-authored-by: Carol Fixer <carol@example\.test>$/);
+  repository.semantic("validate", "--publish");
 });
 
 test("restack keeps non-ASCII names and messages under another log output encoding", (t) => {

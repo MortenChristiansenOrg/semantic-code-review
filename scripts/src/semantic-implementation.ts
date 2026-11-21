@@ -298,12 +298,38 @@ function currentIdentity(root: string, variable: "GIT_AUTHOR_IDENT" | "GIT_COMMI
 const IDENTITY = /^[^<>\x00-\x1f]+ <[^<>\x00-\x1f]+>$/;
 const identityEmail = (identity: string) => /<([^>]*)>\s*$/.exec(identity)?.[1]?.toLowerCase() ?? identity.toLowerCase();
 
-/** The message of a stage commit: the stage's title and summary, then a
- * Co-authored-by trailer for each co-author. A marked empty stage commit also
- * names the stage commit whose changes the target contains. */
-function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, coAuthors: readonly string[], emptyOf?: string): string {
-  const trailers = [...(emptyOf ? [`${EMPTY_STAGE_TRAILER}: ${emptyOf}`] : []), ...coAuthors.map((identity) => `Co-authored-by: ${identity}`)];
-  return [stage.title.trim(), stage.summary.trim(), ...(trailers.length ? [trailers.join("\n")] : [])].join("\n\n") + "\n";
+/** The message of a stage commit: the stage's title and summary, then its
+ * trailers, such as a Co-authored-by trailer for each co-author. A marked empty
+ * stage commit also names the stage commit whose changes the target contains. */
+function stageCommitMessage(stage: Pick<EditableStage, "title" | "summary">, trailers: readonly string[], emptyOf?: string): string {
+  const block = [...(emptyOf ? [`${EMPTY_STAGE_TRAILER}: ${emptyOf}`] : []), ...trailers];
+  return [stage.title.trim(), stage.summary.trim(), ...(block.length ? [block.join("\n")] : [])].join("\n\n") + "\n";
+}
+
+/** Git options that read trailers with the separators the user configured
+ * and with the colon Semantic Flow writes, so neither kind is missed. */
+function trailerReading(root: string): string[] {
+  // Untrimmed: a space or tab can be a separator.
+  let configured = ":";
+  try { configured = gitRaw(["config", "--get", "trailer.separators"], { cwd: root }).replace(/\r?\n$/, ""); } catch { /* Unset: Git's default. */ }
+  // The first separator is the one Git prints trailers with, so the colon comes first.
+  return ["-c", `trailer.separators=:${configured.replaceAll(":", "")}`];
+}
+
+const coAuthorTrailer = (identity: string) => `Co-authored-by: ${identity}`;
+
+/** The trailers a stage commit carries over to a rebuilt message: every
+ * trailer but the empty-stage marker, which the caller decides. A summary
+ * whose last paragraph Git reads as trailers is parsed as such when no
+ * trailer follows it, so the lines Git finds there are not taken as trailers. */
+function stageTrailers(root: string, commit: string, stage: Pick<EditableStage, "summary">): string[] {
+  const reading = trailerReading(root);
+  const parse = (args: string[], input?: string) => gitRaw([...reading, ...args], { cwd: root, ...(input === undefined ? {} : { input }) })
+    .split(/\0|\r?\n/).map((trailer) => trailer.trim()).filter(Boolean);
+  // The summary follows the title in a stage message, as it does here.
+  const fromSummary = new Set(parse(["interpret-trailers", "--parse", "--no-divider"], `Title\n\n${stage.summary.trim()}\n`));
+  return parse(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:unfold,separator=%x00)", commit])
+    .filter((trailer) => !fromSummary.has(trailer) && !new RegExp(`^${EMPTY_STAGE_TRAILER}\\s*:`, "i").test(trailer));
 }
 
 /** Everyone who wrote commits in base..head, as authors or co-authors, except
@@ -312,7 +338,8 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
   // Only the trailer block counts: a Co-authored-by line in the body is text,
   // not attribution. A message cannot hold NUL, so NUL separates the values
   // and two of them start each commit.
-  const log = gitRaw(["log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
+  // The range holds the user's commits and the stage commit Semantic Flow wrote.
+  const log = gitRaw([...trailerReading(root), "log", "--encoding=UTF-8", "--reverse", "--format=%x00%x00%an <%ae>%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", `${base}..${head}`], { cwd: root });
   const seen = new Set([identityEmail(author)]);
   const coAuthors: string[] = [];
   for (const entry of log.split("\0\0").slice(1)) {
@@ -335,10 +362,10 @@ function rangeCoAuthors(root: string, base: string, head: string, author: string
 function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">, base: string, head: string, label: string, keepOneCommit = false): string {
   const count = assertLinearRange(root, base, head, label);
   if (count === 0) fail(`${label} has no commits.`);
-  // An unchanged stage keeps its commit, even when its title or summary was edited since.
+  // An unchanged stage keeps its commit here; withStageMessage brings its message up to date.
   if (count === 1 && keepOneCommit) return head;
   const author = currentIdentity(root);
-  const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author));
+  const message = stageCommitMessage(stage, rangeCoAuthors(root, base, head, author).map(coAuthorTrailer));
   const [authorDate, committerDate, existing] = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%aI%x00%cI%x00%B", head], { cwd: root }).split("\0");
   if (count === 1 && existing.trimEnd() === message.trimEnd()) return head;
   // The folded head's dates make the fold repeatable: folding the same commits again gives the same commit.
@@ -347,6 +374,15 @@ function foldStage(root: string, stage: Pick<EditableStage, "title" | "summary">
     input: message,
     env: { GIT_AUTHOR_DATE: authorDate, GIT_COMMITTER_DATE: committerDate },
   });
+}
+
+/** commit with the message its stage now generates: the current title and
+ * summary over the commit's own trailers. Its tree, parent, authors and dates
+ * stay, so a commit whose message is current is returned as it is. */
+function withStageMessage(root: string, stage: Pick<EditableStage, "title" | "summary">, commit: string): string {
+  const message = stageCommitMessage(stage, stageTrailers(root, commit, stage), emptyStageMarker(root, commit));
+  if (commitMetadata(root, commit).message.trimEnd() === message.trimEnd()) return commit;
+  return replayedCommit(root, `${commit}^{tree}`, `${commit}^`, commit, message);
 }
 
 /** Points code targets captured on commits a fold replaced at the folded
@@ -1246,6 +1282,9 @@ function setStage(workspace: Workspace, options: Options): void {
     return stage;
   });
   console.log(`Updated ${finalized ? "finalized" : "working"} stage ${id}.`);
+  if (finalized && (title !== undefined || summary !== undefined)) {
+    console.log(`Its commit message takes the new title and summary at the next restack, such as implementation restack --from ${id} with its stage branch checked out.`);
+  }
 }
 
 /** An insight item built from command options, validated when stored in its stage. */
@@ -2062,7 +2101,7 @@ const RESOLVED_EMPTY = "resolved";
  * and the marker trailer: the stage commit it replaced, or RESOLVED_EMPTY.
  * Undefined when head is not one. */
 function emptyStageMarker(root: string, head: string): string | undefined {
-  const [tree, parent, ...markers] = gitRaw(["show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
+  const [tree, parent, ...markers] = gitRaw([...trailerReading(root), "show", "-s", "--encoding=UTF-8", `--format=%T%x00%P%x00%(trailers:key=${EMPTY_STAGE_TRAILER},valueonly,unfold,separator=%x00)`, head], { cwd: root }).split("\0");
   if (!parent || parent.includes(" ")) return undefined;
   if (tree !== git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return undefined;
   return markers.map((value) => value.trim()).find((value) => value === RESOLVED_EMPTY || /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value));
@@ -2088,10 +2127,8 @@ function isMarkedEmptyStage(root: string, head: string): boolean {
  * stage commit whose changes parent contains; when it is itself a marked empty
  * commit, its marker is kept. A stage resolved to nothing is marked as such. */
 function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "summary">, parent: string, source: string, resolved = false): string {
-  const coAuthors = gitRaw(["show", "-s", "--encoding=UTF-8", "--format=%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x00)", source], { cwd: root })
-    .split("\0").map((trailer) => trailer.trim()).filter((trailer) => IDENTITY.test(trailer));
   const original = resolved ? RESOLVED_EMPTY : emptyStageMarker(root, source) ?? source;
-  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, coAuthors, original));
+  return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, stageTrailers(root, source, stage), original));
 }
 
 /** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
@@ -2461,7 +2498,8 @@ function replayStages(root: string, artifact: Artifact, run: RestackRun, heads: 
       if (marker !== RESOLVED_EMPTY) console.error(`semantic-implementation: stage ${id} stays empty: the stage commit ${replaced} its marker names no longer exists, so its changes cannot be replayed.`);
       nextHead = emptyStageCommit(root, stage, run.parentHead, actualHead);
     } else if (replaced === undefined && !integrated && isAncestor(root, run.parentHead, actualHead)) {
-      nextHead = foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged);
+      // A title or summary edited since the stage was folded reaches its commit here.
+      nextHead = withStageMessage(root, stage, foldStage(root, stage, run.parentHead, actualHead, `Stage ${id}`, unchanged));
       // A correction that takes out every change of the stage drops them on purpose.
       if (sameTree(root, nextHead, run.parentHead)) nextHead = emptyStageCommit(root, stage, run.parentHead, nextHead, true);
     } else {
@@ -2503,11 +2541,11 @@ function replacedBy(root: string, plan: Pick<RestackPlan, "emptied" | "nextHead"
 }
 
 /** The commit a replayed stage becomes: its tree on parent with the stage
- * commit's message and authors, or a marked empty commit when the target
- * already contains its changes. */
+ * commit's authors and trailers under the stage's current title and summary,
+ * or a marked empty commit when the target already contains its changes. */
 function stageResult(root: string, stage: Stage, tree: string, parent: string, stageCommit: string, resolved = false): string {
   if (tree === git(["rev-parse", `${parent}^{tree}`], { cwd: root })) return emptyStageCommit(root, stage, parent, stageCommit, resolved);
-  return replayedCommit(root, tree, parent, stageCommit);
+  return replayedCommit(root, tree, parent, stageCommit, stageCommitMessage(stage, stageTrailers(root, stageCommit, stage)));
 }
 
 function restack(workspace: Workspace, options: Options): void {

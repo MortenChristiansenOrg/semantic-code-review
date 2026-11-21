@@ -43,7 +43,8 @@ export interface SetStageOptions {
 
 /**
  * Updates stage metadata on the active working stage or, with `finalized`, on a finalized stage.
- * At least one field to update must be supplied.
+ * At least one field to update must be supplied. A finalized stage's commit
+ * message takes a new title or summary at the next restack that covers it.
  * @cli semantic-flow.mjs
  * @command implementation stage set
  */
