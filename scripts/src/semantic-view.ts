@@ -1213,8 +1213,10 @@ function changesNothing(root: string, base: string, head: string): boolean {
   // The raw commit object names its parents; replacement refs and grafts cannot hide one.
   const commit = git(["--no-replace-objects", "cat-file", "commit", head], { cwd: root, allowFailure: true });
   if (commit === null) return false;
-  const header = commit.slice(0, commit.indexOf("\n\n") < 0 ? commit.length : commit.indexOf("\n\n"));
-  const parents = header.split("\n").filter((line) => line.startsWith("parent ")).map((line) => line.slice("parent ".length).trim());
+  // Git reads parents only from the lines right after the tree line.
+  const lines = commit.split("\n"), parents: string[] = [];
+  if (!lines[0]?.startsWith("tree ")) return false;
+  for (const line of lines.slice(1)) { if (!line.startsWith("parent ")) break; parents.push(line.slice("parent ".length)); }
   if (parents.length !== 1 || parents[0] !== base) return false;
   return git(["--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
 }
