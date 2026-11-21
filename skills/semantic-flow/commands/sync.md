@@ -70,12 +70,15 @@ stale; report its thread IDs without guessing new anchors, answering feedback,
 or resolving threads. Refreshed non-line anchors do not constitute approval.
 
 A stage the restack emptied appears in `emptyStageThreads`. When no thread on it
-is unresolved, remove it after testing and report the removal; otherwise keep it
-and report it as empty:
+is unresolved, remove it after testing, from the artifact worktree, and report
+the removal; otherwise keep it and report it as empty:
 
 ```text
 <semantic-flow> implementation stage remove --id <stage-id> --json
 ```
+
+The command refuses the only remaining stage; when every stage is empty, keep
+the last one and report that the implementation no longer changes anything.
 
 Report the target/upstream revisions, rewritten stages, removed or empty stages,
 checkout, validation results, and any remaining stale anchors. Stop after synchronization. Do not

@@ -18,12 +18,19 @@ export function emptyStageIds(stages: Iterable<{ id: string; change: { files: re
 
 /** The feedback threads on each of the stages: those assigned to it or
  * targeting it, split into resolved threads and the others, which are open.
- * Reads the feedback stored at feedbackRoot; a review without feedback has none. */
+ * Reads the feedback stored at feedbackRoot; a review without feedback has
+ * none, and feedback without its manifest fails. */
 export function stageThreads(feedbackRoot: string, stageIds: readonly string[]): Map<string, { open: string[]; resolved: string[] }> {
   const result = new Map<string, { open: string[]; resolved: string[] }>();
   for (const id of stageIds) result.set(id, { open: [], resolved: [] });
   const manifest = path.join(feedbackRoot, "manifest.json");
-  if (!fs.existsSync(manifest)) return result;
+  if (!fs.existsSync(manifest)) {
+    // Threads without their manifest are unknown, never none.
+    if (fs.existsSync(feedbackRoot) && fs.readdirSync(feedbackRoot).length > 0) {
+      throw new Error(`Incomplete feedback state in ${feedbackRoot}: manifest.json is missing.`);
+    }
+    return result;
+  }
   for (const id of readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest).threads) {
     const thread = readDocument(THREAD_SCHEMA_ID, path.join(feedbackRoot, "threads", `${id}.json`));
     for (const stageId of new Set([thread.assignedStageId, thread.target.stageId])) {

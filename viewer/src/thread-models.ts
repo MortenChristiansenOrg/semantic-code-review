@@ -128,6 +128,12 @@ export function threadTargetState(t: FeedbackThread): TargetState {
 export function jumpModel(ref: ElementRef): JumpView {
   return { kind: ref.kind, id: ref.id, stageId: ref.stageId || "", nodeId: ref.nodeId || "" };
 }
+/** The removed stage a thread targets or is assigned to; such a thread can be
+ * read but no longer replied to or reopened. */
+function removedStageOf(thread: FeedbackThread): { id: string; title: string } | undefined {
+  const removed = data.removedStages ?? [];
+  return removed.find((stage) => stage.id === thread.target?.stageId) ?? removed.find((stage) => stage.id === thread.assignedStageId);
+}
 // An exported feedback thread: a reviewer <-> agent conversation the reviewer
 // can continue, mark resolved, or reopen. Only the reviewer controls closure.
 // `withLabel` marks the notes panel's copy, which names the target and can jump to it.
@@ -161,6 +167,10 @@ export function threadModel(t: FeedbackThread, withLabel?: boolean): ThreadView 
   else if (kind !== "line" && t.anchorStale && !(t.comments || []).some((cm) => cm.author === "agent"))
     staleMsg = `Stage changed since this feedback was sent.`;
   if (withLabel && !ref && !staleMsg) staleMsg = "The original target is no longer available.";
+  // A thread of a removed stage is read-only wherever it shows. Its note says
+  // why a target on that stage is gone, so no other notice repeats it.
+  const removed = removedStageOf(t);
+  if (removed && removed.id === tgtStageId) staleMsg = "";
   return {
     id: t.id, status: t.status, collapsed: threadCollapsed(t), kind, kindLabel: threadTypeLabel(kind),
     title: (withLabel || kind === "line" && !threadLineId(t)) && t.target && t.target.label
@@ -180,9 +190,10 @@ export function threadModel(t: FeedbackThread, withLabel?: boolean): ThreadView 
     // remove before preparing feedback; the one being edited is shown as a form.
     drafts: repliesForThread(t.id).filter((r) => r.id !== replyEditId)
       .map((r) => ({ id: r.id, body: r.body, attachments: attachmentModels(r.attachments), sending: sendingDrafts.has(r.id) })),
-    actionable: t.status === "open" || t.status === "resolved",
-    replying: replyTo === t.id,
-    reply: replyTo === t.id && Boolean(withLabel) === state.notesOpen
+    actionable: !removed && (t.status === "open" || t.status === "resolved"),
+    ...(removed ? { removedStage: removed.title } : {}),
+    replying: !removed && replyTo === t.id,
+    reply: !removed && replyTo === t.id && Boolean(withLabel) === state.notesOpen
       ? { draft: replyDraft, editing: replyEditId != null, attachments: attachmentEditorModel(replyAttachments), saveDisabled: uploadOps.size > 0 }
       : null,
   };

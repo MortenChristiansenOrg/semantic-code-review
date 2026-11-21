@@ -47,6 +47,12 @@ Its `stageHead` records the assigned stage snapshot. Before returning pending
 feedback, the CLI refreshes non-line anchors when the exact target still exists.
 A non-line thread remains stale when its target disappeared.
 
+The assigned stage and the stage of a stage-backed target must be stages of the
+implementation, except in a resolved thread, which may keep a stage that
+`implementation stage remove` took out of the stack. Such a thread stays
+readable but can no longer be replied to or reopened, and no new thread can
+name the removed stage.
+
 Line anchors remain fixed. A stage's head commit changes at every fold and
 restack, also when its content stays the same, so the head says nothing about
 one line. While the stage head is the anchored one, the line is where it was

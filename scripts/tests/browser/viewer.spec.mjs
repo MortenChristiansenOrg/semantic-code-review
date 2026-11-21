@@ -4966,6 +4966,21 @@ async function selectAcrossLineThread(page) {
 }
 const lineTarget = { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 1, label: 'shared.js:1' };
 
+test('a line thread assigned to a removed stage is read-only in the diff too', async ({ page }) => {
+  const data = fixture();
+  const lineId = 'l:first:new:1:shared.js';
+  data.removedStages = [{ id: 'gone', title: 'Stage gone' }];
+  data.feedback = [{ ...thread('line', 'resolved', lineTarget), assignedStageId: 'gone', resolvedAt: '2026-09-08T11:00:00Z' }];
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  const lineThread = page.locator(`.line-thread[data-thread="${lineId}"] .tthread`);
+  await expect(lineThread).toContainText('Feedback line');
+  if (await lineThread.evaluate((element) => element.classList.contains('is-collapsed'))) await lineThread.locator('.tthread-h').click();
+  await expect(lineThread.locator('.tthread-removed')).toHaveText('Stage removed');
+  await expect(lineThread.locator('[data-action="thread-reopen"], [data-action="thread-reply"]')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('a line thread held by a code selection applies the reviewer\'s collapse and busy state at once', async ({ page }) => {
   const data = fixture();
   const lineId = 'l:first:new:1:shared.js';
