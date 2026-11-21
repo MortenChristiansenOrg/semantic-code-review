@@ -275,6 +275,7 @@ test("stage remove refuses while threads cannot be read, and completes when only
 
   // A running round's heartbeat cannot be written once the stage is removed.
   if (process.getuid?.() === 0) return t.skip("root ignores directory permissions");
+  if (process.platform === "win32") return t.skip("Windows ignores read-only directory modes");
   const review = path.dirname(repository.feedbackPath());
   const now = new Date().toISOString();
   fs.writeFileSync(path.join(review, "agent.json"), JSON.stringify({ session: { id: "round", startedAt: now, heartbeatAt: now, feedbackAt: now } }));
@@ -358,9 +359,9 @@ const gitPath = (repository, worktree, state) =>
 
 test("stage remove refuses while another worktree has a Git operation in progress on a branch it moves", (t) => {
   const repository = emptiedPolicy(t);
-  // Git names worktrees by their real path, such as /private/var rather than /var on macOS.
-  const created = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-operation-"));
-  const other = process.platform === "win32" ? created : fs.realpathSync(created);
+  // Git names worktrees by their real path: /private/var rather than /var on
+  // macOS, and long names rather than 8.3 short names on Windows.
+  const other = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-operation-")));
   t.after(() => fs.rmSync(other, { recursive: true, force: true }));
   // A stopped multi-commit cherry-pick on the stage branch above the removed one.
   const above = path.join(other, "above");
