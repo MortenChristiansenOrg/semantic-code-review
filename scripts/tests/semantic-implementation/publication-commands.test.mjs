@@ -553,5 +553,8 @@ test("branches stay outside the short names of Semantic Flow's own refs", (t) =>
   repository.git("branch", "refs/tags/semantic-review-archive/reserved", "main");
   repository.expectSemanticFailure("refs/heads/refs/tags/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
   repository.git("branch", "-D", "refs/tags/semantic-review-archive/reserved");
+  repository.git("tag", "refs/tags/semantic-review-archive/reserved", "main");
+  repository.expectSemanticFailure("refs/tags/refs/tags/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
+  repository.git("tag", "-d", "refs/tags/semantic-review-archive/reserved");
   repository.semantic("archive", "share", "--id", "reserved");
 });
