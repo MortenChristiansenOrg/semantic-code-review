@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,7 +16,7 @@ import {
 import { createViewerDataSource } from "../../src/semantic-view.ts";
 import { reviewFeedback } from "../../src/review-feedback.ts";
 import { listActiveImplementations, readingActiveRefsOnce } from "../../src/shared/artifact-store.ts";
-import { readReview } from "../../src/shared/review-store.ts";
+import { readReview, reviewHome, withReviewLock } from "../../src/shared/review-store.ts";
 
 const branchOf = (id) => `semantic-flow/test-implementation/stages/${id}`;
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
@@ -350,4 +350,142 @@ test("stage remove refuses another implementation, and a concurrent removal leav
   assert.equal(repository.git("rev-parse", "HEAD"), base);
   assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branchOf("policy")}`]).status, 1);
   repository.semantic("validate");
+});
+
+/** The Git directory file of a worktree, such as its CHERRY_PICK_HEAD. */
+const gitPath = (repository, worktree, state) =>
+  path.resolve(worktree, repository.run("git", ["-C", worktree, "rev-parse", "--git-path", state]));
+
+test("stage remove refuses while another worktree has a Git operation in progress on a branch it moves", (t) => {
+  const repository = emptiedPolicy(t);
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-operation-"));
+  t.after(() => fs.rmSync(other, { recursive: true, force: true }));
+  // A stopped multi-commit cherry-pick on the stage branch above the removed one.
+  const above = path.join(other, "above");
+  repository.git("worktree", "add", "--quiet", above, branchOf("api"));
+  fs.mkdirSync(gitPath(repository, above, "sequencer"));
+  fs.writeFileSync(gitPath(repository, above, "CHERRY_PICK_HEAD"), `${repository.git("rev-parse", "main")}\n`);
+  const state = stackState(repository);
+  repository.expectSemanticFailure(`A Git operation is in progress in ${above} (CHERRY_PICK_HEAD).`, "stage", "remove", "--id", "policy");
+  assert.equal(stackState(repository), state);
+  fs.rmSync(gitPath(repository, above, "sequencer"), { recursive: true });
+  fs.rmSync(gitPath(repository, above, "CHERRY_PICK_HEAD"));
+  repository.git("worktree", "remove", "--force", above);
+
+  // Another worktree's detached HEAD stays where it is, so its operation is not in the way.
+  const api = repository.git("rev-parse", branchOf("api"));
+  const detached = path.join(other, "detached");
+  repository.git("worktree", "add", "--quiet", "--detach", detached, api);
+  fs.writeFileSync(gitPath(repository, detached, "BISECT_LOG"), "git bisect start\n");
+  repository.semantic("stage", "remove", "--id", "policy");
+  assert.equal(repository.run("git", ["-C", detached, "rev-parse", "HEAD"]), api);
+});
+
+test("stage remove checks for a Git operation again once it holds the review lock", async (t) => {
+  const repository = emptiedPolicy(t);
+  repository.feedback("init");
+  repository.git("switch", branchOf("policy"));
+  const state = stackState(repository);
+  const review = path.basename(path.dirname(repository.feedbackPath()));
+  const locks = path.join(reviewHome(), "locks");
+  const sleep = new Int32Array(new SharedArrayBuffer(4));
+  let removal;
+  withReviewLock(review, () => {
+    removal = new Promise((resolve) => {
+      execFile(process.execPath, [...semanticCli, "stage", "remove", "--id", "policy"], { cwd: repository.root, encoding: "utf8" },
+        (error, stdout, stderr) => resolve({ status: error ? error.code ?? 1 : 0, stdout, stderr }));
+    });
+    // The removal has passed its first checks once it waits for the lock: a merge starts meanwhile.
+    const deadline = Date.now() + 8000;
+    while (!fs.readdirSync(locks).some((entry) => entry.includes(".lock.claim-"))) {
+      assert.ok(Date.now() < deadline, "the removal never waited for the review lock");
+      Atomics.wait(sleep, 0, 0, 20);
+    }
+    fs.writeFileSync(gitPath(repository, repository.root, "MERGE_HEAD"), `${repository.git("rev-parse", "main")}\n`);
+  });
+  const { status, stderr } = await removal;
+  assert.notEqual(status, 0);
+  assert.match(stderr, /A Git operation is in progress in .* \(MERGE_HEAD\)/);
+  assert.equal(stackState(repository), state);
+  assert.equal(repository.git("symbolic-ref", "--short", "HEAD"), branchOf("policy"));
+});
+
+test("a removal that follows another moves a detached HEAD to the latest rebuilt head", async (t) => {
+  const { repository, commits } = createImplementationWithStages(t, ["p", "q", "api"]);
+  repository.git("switch", "main");
+  repository.git("merge", "--quiet", "--ff-only", commits.get("q"));
+  repository.semantic("restack", "--base", "main");
+  repository.git("switch", "--detach", branchOf("api"));
+
+  // Once the first removal commits, a second one starts; the first moves HEAD
+  // only once the second waits for the review lock, or else has finished.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-race-"));
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const [started, waited, out, status] = ["started", "waited", "out", "status"].map((name) => path.join(scratch, name));
+  const locks = path.join(reviewHome(), "locks");
+  const command = [process.execPath, ...semanticCli, "stage", "remove", "--id", "q", "--json"].map((part) => `'${part}'`).join(" ");
+  fs.writeFileSync(path.join(fixtureHooks(repository), "reference-transaction"), `#!/bin/sh
+input=$(cat)
+case "$1 $input" in
+  committed*refs/semantic-review/active/*)
+    [ -e '${started}' ] && exit 0
+    : > '${started}'
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+    ( cd '${repository.root}' && ${command} > '${out}' 2>&1; echo $? > '${status}' ) </dev/null >/dev/null 2>&1 &
+    ;;
+  "prepared "*" HEAD"*)
+    [ -e '${started}' ] && [ ! -e '${waited}' ] || exit 0
+    : > '${waited}'
+    tries=0
+    until [ -s '${status}' ] || ls '${locks}' 2>/dev/null | grep -q '[.]lock[.]claim-'; do
+      tries=$((tries + 1)); [ $tries -gt 400 ] && break
+      sleep 0.05
+    done
+    ;;
+esac
+exit 0
+`, { mode: 0o755 });
+  const first = JSON.parse(repository.semantic("stage", "remove", "--id", "p", "--json"));
+  const deadline = Date.now() + 30_000;
+  while (!fs.existsSync(status) || !fs.readFileSync(status, "utf8").trim()) {
+    assert.ok(Date.now() < deadline, "the second removal did not finish");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(fs.readFileSync(status, "utf8").trim(), "0", fs.readFileSync(out, "utf8"));
+  const second = JSON.parse(fs.readFileSync(out, "utf8").split("\n").find((line) => line.startsWith("{")));
+  const api = repository.git("rev-parse", branchOf("api"));
+  assert.equal(first.detachedAt, first.rebuiltStages.find(({ id }) => id === "api").headRevision);
+  assert.equal(second.detachedAt, api);
+  assert.equal(repository.git("rev-parse", "HEAD"), api);
+  repository.semantic("validate");
+});
+
+test("stage remove acts only on the implementation the worktree itself works on", (t) => {
+  const repository = emptiedPolicy(t);
+  const second = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "semantic-removal-other-")), "worktree");
+  t.after(() => fs.rmSync(path.dirname(second), { recursive: true, force: true }));
+  repository.git("worktree", "add", "--quiet", "--detach", second, "main");
+  const run = (cwd, selection, ...args) => spawnSync(process.execPath, [...semanticCli, ...args],
+    { cwd, encoding: "utf8", env: { ...process.env, SEMANTIC_FLOW_IMPLEMENTATION_ID: selection } });
+  const init = run(second, "", "init", "--implementation-id", "other", "--title", "Other", "--summary", "Other work.", "--target-branch", "main",
+    "--specification-id", "other", "--specification-title", "Other", "--specification-summary", "Other work.",
+    "--source-kind", "local", "--source-reference", "other", "--criterion", "works=It works.");
+  assert.equal(init.status, 0, init.stderr);
+  const state = stackState(repository);
+
+  // An inherited selection does not make the option pass in the other implementation's worktree.
+  const inherited = run(second, "test-implementation", "stage", "remove", "--id", "policy", "--implementation-id", "test-implementation");
+  assert.notEqual(inherited.status, 0);
+  assert.match(inherited.stderr, /This worktree works on implementation other, not test-implementation\./);
+  const selected = run(second, "test-implementation", "stage", "remove", "--id", "policy");
+  assert.notEqual(selected.status, 0);
+  assert.match(selected.stderr, /This worktree works on implementation other, not test-implementation, which SEMANTIC_FLOW_IMPLEMENTATION_ID selects\./);
+  const option = run(repository.root, "test-implementation", "stage", "remove", "--id", "policy", "--implementation-id", "other");
+  assert.notEqual(option.status, 0);
+  assert.match(option.stderr, /This worktree works on implementation test-implementation, not other\./);
+  assert.equal(stackState(repository), state);
+
+  // A selection of the worktree's own implementation passes.
+  const removal = run(repository.root, "test-implementation", "stage", "remove", "--id", "policy", "--implementation-id", "test-implementation");
+  assert.equal(removal.status, 0, removal.stderr);
 });
