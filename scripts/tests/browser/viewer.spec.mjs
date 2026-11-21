@@ -1025,6 +1025,39 @@ test('each stage contains its steps and ends with an approval naming the stage',
   await expect(first).toHaveClass(/is-approved/);
 });
 
+test('an empty stage is marked as empty, asks for no approval and stays out of coverage', async ({ page }) => {
+  const data = fixture();
+  data.requirements = [{ id: 'story', title: 'Story', summary: 'Summary', source: { kind: 'local', reference: 'story' }, acceptance: [{ id: 'works', text: 'It works.' }] }];
+  Object.assign(data.stages[1], { files: [], empty: true, specificationRefs: ['story#works'] });
+  await mount(page, data);
+  const second = page.locator('.stage[data-stage="second"]');
+  await expect(second).toHaveClass(/is-empty/);
+  await expect(second.locator('.sm-empty')).toHaveText('Empty stage · changes nothing');
+  await expect(second.locator('.stage-meta')).not.toContainText('file reviews');
+  await page.locator('.stage-title[data-id="second"]').click();
+  await expect(second.locator('.stage-card .nodes details.node')).toHaveCount(2);
+  await expect(second.locator('.approve')).toHaveCount(0);
+  await expect(second.locator('.stage-children-count')).toHaveCount(0);
+  // Only the first stage counts: its stage, two steps and two file approvals.
+  const toggle = page.locator('.tb-btn[data-action="toggle-coverage"]');
+  await expect(toggle).toContainText('0/5');
+  await toggle.click();
+  await expect(page.locator('.side.coverage .cov-stage')).toHaveCount(1);
+  await expect(page.locator('.side.coverage .cov-stage')).toContainText('Stage first');
+  // The first stage is unaffected.
+  await expect(page.locator('.stage[data-stage="first"]')).not.toHaveClass(/is-empty/);
+  await expect(page.locator('.stage[data-stage="first"] .stage-approve .approve')).toHaveCount(1);
+  await expect(page.locator('.story-end')).toContainText('5 of 5 items still await your review.');
+});
+
+test('a review whose every stage is empty claims no approval', async ({ page }) => {
+  const data = fixture();
+  for (const stage of data.stages) Object.assign(stage, { files: [], empty: true });
+  await mount(page, data);
+  await expect(page.locator('.story-end')).toContainText('Every stage is empty, so nothing awaits your review.');
+  await expect(page.locator('.tb-btn[data-action="toggle-coverage"]')).toContainText('0/0');
+});
+
 test('on narrow screens the stage title reports and follows its expansion state', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await mount(page);

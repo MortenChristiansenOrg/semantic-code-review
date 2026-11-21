@@ -111,7 +111,7 @@ export function storyView(view: StoryView): TemplateResult {
       </div>
       <footer class="story-end">
         <span class="eyebrow">End of review</span>
-        <p>${remaining ? `${remaining} of ${view.reviewable} items still await your review.` : "Every stage, step, and file review has your approval."}</p>
+        <p>${remaining ? `${remaining} of ${view.reviewable} items still await your review.` : view.reviewable ? "Every stage, step, and file review has your approval." : "Every stage is empty, so nothing awaits your review."}</p>
       </footer>
     </div>`;
 }

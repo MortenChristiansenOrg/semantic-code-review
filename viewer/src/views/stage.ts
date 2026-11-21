@@ -21,6 +21,8 @@ export interface StageView {
   rationale: string;
   open: boolean;
   approved: boolean;
+  /** The stage changes nothing and has nothing to approve. */
+  empty: boolean;
   nodesApproved: number;
   nodeCount: number;
   filesApproved: number;
@@ -45,10 +47,14 @@ function dependencies(stage: StageView): TemplateResult {
   return html`<span class="sm-deps" tabindex="0" data-tooltip=${joinHints(`Depends on ${stage.dependencySummary}`, ...chips.map((chip) => chip.hint))}><span class="sm-deps-label">Depends on</span>${chips.map((chip) => html`<span class="dep-chip" data-tooltip=${chip.hint || nothing}>${chip.text}</span>`)}</span>`;
 }
 
+const EMPTY_HINT = "The target or the stages below already contain this stage's changes, or a resolution dropped them. It stays in the implementation with nothing to approve, and stack preparation skips it.";
+
 function stageMeta(stage: StageView): TemplateResult {
   return html`<div class="stage-meta">
-            <span>${stage.nodesApproved}/${stage.nodeCount} steps</span>
-            <span>${stage.filesApproved}/${stage.fileCount} file reviews</span>
+            ${stage.empty
+              ? html`<span class="sm-empty" tabindex="0" data-tooltip=${EMPTY_HINT}>Empty stage · changes nothing</span>`
+              : html`<span>${stage.nodesApproved}/${stage.nodeCount} steps</span>
+            <span>${stage.filesApproved}/${stage.fileCount} file reviews</span>`}
             ${stage.insightCount ? html`<span>${stage.insightsReviewed}/${stage.insightCount} insights reviewed</span>` : nothing}
             ${stage.dependencies.length ? dependencies(stage) : nothing}
             ${stage.acceptance.length ? html`<span class="sm-ac"><span class="sm-ac-label" aria-label="Acceptance criteria">✦</span>${stage.acceptance.map(acceptanceChip)}</span>` : nothing}
@@ -65,7 +71,7 @@ const RATIONALE = "Why this stage";
 /** The body is inert while the stage is closed, so its steps leave the tab order. */
 export function stageView(stage: StageView): TemplateResult {
   const target = { kind: "stage", id: stage.id, stageId: "" } as const;
-  return html`<section class="stage ${stage.approved ? "is-approved" : ""} ${stage.open ? "is-open" : ""}" data-stage=${stage.id} aria-labelledby="stage-title-${stage.id}">
+  return html`<section class="stage ${stage.approved ? "is-approved" : ""} ${stage.empty ? "is-empty" : ""} ${stage.open ? "is-open" : ""}" data-stage=${stage.id} aria-labelledby="stage-title-${stage.id}">
       <div class="stage-card">
       <div class="stage-bar">
         <button class="stop ${stage.approved ? "is-approved" : ""}" data-action="toggle-stage" data-id=${stage.id} type="button" aria-expanded=${String(stage.open)}>
@@ -80,18 +86,18 @@ export function stageView(stage: StageView): TemplateResult {
           <p class="rationale">${rationale(stage.rationale)}</p>
           ${stageMeta(stage)}
         </div>
-        <div class="stage-approve"><div class="note-cluster">${notesToggle(stage.notes)}${addNoteButton(target)}</div>${approveButton(stage.approve, "sm")}</div>
+        <div class="stage-approve"><div class="note-cluster">${notesToggle(stage.notes)}${addNoteButton(target)}</div>${stage.empty ? nothing : approveButton(stage.approve, "sm")}</div>
       </div>
       ${inlineThread(stage.thread)}
       <div class="stage-body" ?inert=${!stage.open}>
         <div class="stage-children-head">
           <span class="eyebrow">Steps in stage ${stage.number}</span>
-          <span class="stage-children-count">${stage.nodesApproved}/${stage.nodeCount} approved</span>
+          ${stage.empty ? nothing : html`<span class="stage-children-count">${stage.nodesApproved}/${stage.nodeCount} approved</span>`}
         </div>
         <div class="nodes">${repeat(stage.nodes, (node) => node.id, nodeView)}</div>
         <div class="stage-foot">
           <span class="stage-foot-label">End of stage ${stage.number}</span>
-          ${approveButton(stage.approve, "", `stage ${stage.number}`)}
+          ${stage.empty ? nothing : approveButton(stage.approve, "", `stage ${stage.number}`)}
         </div>
       </div>
       </div>

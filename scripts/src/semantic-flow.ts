@@ -41,6 +41,7 @@ import {
   type JsonRecord,
 } from "./shared/narrow.js";
 import { withValidationContext } from "./shared/validation-context.js";
+import { describeFinalizedStages } from "./shared/stage-report.js";
 import {
   probeViewer,
   stopViewerAndWait,
@@ -337,12 +338,16 @@ function captureValidation(validate: () => string): CapturedValidation {
   }
 }
 
-async function checkImplementation(root: string): Promise<CapturedValidation> {
+async function checkImplementation(root: string): Promise<CapturedValidation & { emptyStages: string[] | null }> {
   const { validateImplementation } = await implementationService();
-  return captureValidation(() => {
-    const { message, warnings } = validateImplementation(root);
-    return [message, ...warnings.map((warning) => `Warning: ${warning}`)].join("\n");
+  // Unknown (null) unless the implementation validates.
+  let emptyStages: string[] | null = null;
+  const captured = captureValidation(() => {
+    const validation = validateImplementation(root);
+    emptyStages = validation.emptyStages;
+    return [validation.message, ...validation.warnings.map((warning) => `Warning: ${warning}`)].join("\n");
   });
+  return { ...captured, emptyStages };
 }
 
 async function checkFeedback(root: string): Promise<CapturedValidation> {
@@ -362,11 +367,14 @@ async function runWorkflow(options: Options, mode: "validate" | "prepare" | "arc
   else {
     const summary: unknown = result;
     const stages = records(isRecord(summary) ? summary.stages : undefined);
+    const emptyStages = strings(arrayField(summary, "emptyStages"));
     const workingStages = isRecord(summary) && Array.isArray(summary.workingStages) ? summary.workingStages.length : 0;
     console.log(`Artifact: ${candidate.worktree}`);
-    console.log(`Semantic flow ${mode} passed: ${stages.length} finalized stage(s), ${workingStages} working stage(s).`);
+    // The stack leaves empty stages out, but they are finalized stages all the same.
+    console.log(`Semantic flow ${mode} passed: ${describeFinalizedStages(stages.length + emptyStages.length, emptyStages)}, ${workingStages} working stage(s).`);
     if (mode === "prepare" || flag(options, "stack")) {
       for (const stage of stages) console.log(`  ${stringField(stage, "branch")} -> ${stringField(stage, "baseBranch")} (${stringField(stage, "headRevision")})`);
+      if (emptyStages.length) console.log(`Skipped empty stage(s): ${emptyStages.join(", ")}`);
       console.log(`Final cumulative head: ${stringField(summary, "finalHeadRevision")}`);
     }
   }
@@ -456,8 +464,11 @@ async function status(options: Options): Promise<void> {
     }),
   );
 
+  const { emptyStages, ...implementationValidation } = artifactValidation;
   const result = {
     artifact: candidate,
+    /** The marked empty finalized stages; null when the artifact does not validate, so they are unknown. */
+    emptyStages,
     criteria: {
       total: allCriteria.length,
       covered: allCriteria.filter((criterion) =>
@@ -481,7 +492,7 @@ async function status(options: Options): Promise<void> {
       branchExists: metadataPublished,
     },
     validation: {
-      artifact: artifactValidation,
+      artifact: implementationValidation,
       feedback: feedbackValidation,
     },
   };
@@ -493,7 +504,7 @@ async function status(options: Options): Promise<void> {
   console.log(`${candidate.implementationId}: ${candidate.title}`);
   console.log(`Artifact: ${candidate.worktree}`);
   console.log(
-    `Stages: ${candidate.finalizedStageIds.length} finalized, ${candidate.workingStageIds.length} working`,
+    `Stages: ${describeFinalizedStages(candidate.finalizedStageIds.length, emptyStages ?? [])}, ${candidate.workingStageIds.length} working stage(s)`,
   );
   console.log(
     `Criteria: ${result.criteria.covered}/${result.criteria.total} covered`,

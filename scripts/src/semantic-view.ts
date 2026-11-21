@@ -1205,6 +1205,22 @@ function nodeChangeFields(change: ViewerNodeChange): Omit<Wire.NodeChange, "path
   };
 }
 
+/** Whether a stage changes nothing: its head is one commit on its base that
+ * changes no file outside the artifact folder. Remote metadata is not trusted
+ * to say so; false when the commits cannot be read. */
+function changesNothing(root: string, base: string, head: string): boolean {
+  // Exactly one parent, the base: a merge can hide commits behind an unchanged tree.
+  // The raw commit object names its parents; replacement refs and grafts cannot hide one.
+  const commit = git(["--no-replace-objects", "cat-file", "commit", head], { cwd: root, allowFailure: true });
+  if (commit === null) return false;
+  // Git reads parents only from the lines right after the tree line.
+  const lines = commit.split("\n"), parents: string[] = [];
+  if (!lines[0]?.startsWith("tree ")) return false;
+  for (const line of lines.slice(1)) { if (!line.startsWith("parent ")) break; parents.push(line.slice("parent ".length)); }
+  if (parents.length !== 1 || parents[0] !== base) return false;
+  return git(["--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
+}
+
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,
   lineAnchorCache?: LineAnchorCache): Wire.ImplementationData {
   const artifact = readViewerArtifact(repoRoot);
@@ -1272,6 +1288,8 @@ function buildImplementationData(repoRoot: string, statsForStage: (stage: Viewer
       nodes,
       files,
       insights: buildInsights(s, repoRoot),
+      // Git, not the recorded file list, decides that a stage is empty.
+      ...(files.length === 0 && changesNothing(repoRoot, base, head) ? { empty: true as const } : {}),
     };
   });
 
