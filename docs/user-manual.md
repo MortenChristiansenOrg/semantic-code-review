@@ -628,7 +628,7 @@ To share the archive, create its annotated tag and push it:
 
 ```text
 <semantic-flow> implementation archive share --id <implementation-id>
-git push <remote> refs/tags/semantic-review/archive/<implementation-id>
+git push <remote> refs/tags/semantic-review-archive/<implementation-id>
 ```
 
 The tag never moves, so record landing first. Pushing it sends the artifact, its

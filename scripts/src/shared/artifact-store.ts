@@ -195,8 +195,10 @@ export const activeRef = (implementationId: string) => `${ACTIVE_REF_PREFIX}${im
  * its active ref to this one in one transaction. */
 export const ARCHIVE_REF_PREFIX = `${OWN_REF_PREFIX}archive/`;
 export const archiveRef = (implementationId: string) => `${ARCHIVE_REF_PREFIX}${implementationId}`;
-/** The annotated tag that shares an archive. It is never moved once created. */
-export const ARCHIVE_TAG_PREFIX = "refs/tags/semantic-review/archive/";
+/** The annotated tag that shares an archive. It is never moved once created.
+ * Its short name differs from every ref under `refs/semantic-review/`, so Git
+ * resolves `semantic-review-archive/<id>` to the tag alone. */
+export const ARCHIVE_TAG_PREFIX = "refs/tags/semantic-review-archive/";
 export const archiveTag = (implementationId: string) => `${ARCHIVE_TAG_PREFIX}${implementationId}`;
 
 /** An active implementation, as its ref names it. */

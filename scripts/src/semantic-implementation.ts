@@ -991,6 +991,7 @@ function initialize(root: string, options: Options): void {
   git(["check-ref-format", "--branch", stageBranchName(branchPrefix, "probe")], {
     cwd: root,
   });
+  assertBranchOutsideOwnNames(`${branchPrefix}/`, "Branch prefix", branchPrefix);
   const versionFile = path.join(skillDirectory, "VERSION");
   const skillVersion = fs.existsSync(versionFile) ? fs.readFileSync(versionFile, "utf8").trim() : "";
   const manifestInput: ImplementationManifest = {
@@ -3185,6 +3186,7 @@ function prepareBranch(
     fail(`Cumulative branch ${branch} is already bound; omit --rebind.`);
   }
   git(["check-ref-format", "--branch", branch], { cwd: workspace.root });
+  assertBranchOutsideOwnNames(branch, "Cumulative branch", branch);
   if (artifact.manifest.stages.every((id) => finalizedStage(artifact, id).change.files.length === 0)) {
     fail(`Every stage of ${artifact.manifest.implementationId} is empty; there is nothing to prepare.`);
   }
@@ -3438,11 +3440,23 @@ function assertDirectRefs(root: string, refs: readonly string[]): void {
   }
 }
 
+/** Short-name prefixes Semantic Flow keeps for its own refs: everything under
+ * `refs/semantic-review/` and the shared archive tags. A branch inside them
+ * would make Git's short names ambiguous. */
+const OWN_SHORT_NAME_PREFIXES = ["semantic-review/", "semantic-review-archive/"];
+
+function assertBranchOutsideOwnNames(name: string, label: string, shown: string): void {
+  // A branch named refs/... would also shadow a full ref name.
+  const reserved = [...OWN_SHORT_NAME_PREFIXES, "refs/"].find((prefix) => name.startsWith(prefix));
+  if (reserved) fail(`${label} ${shown} is inside ${reserved}, which Semantic Flow keeps for its own refs; choose another name.`);
+}
+
 /** The archive's shared tag and the commit it names, if it was shared. Any
  * ref at the tag's name counts as shared, so nothing replaces it. */
 function sharedArchive(root: string, implementationId: string): { tag: string; commit: string | undefined; annotated: boolean } | undefined {
   const tag = archiveTag(implementationId);
-  const object = gitOptional(["rev-parse", "--verify", "--quiet", tag], { cwd: root });
+  // Only the tag itself counts; rev-parse would also find a branch named after it.
+  const object = gitOptional(["show-ref", "--verify", "--hash", tag], { cwd: root });
   if (!object) return undefined;
   const annotated = git(["cat-file", "-t", object], { cwd: root }) === "tag";
   return { tag, commit: gitOptional(["rev-parse", "--verify", "--quiet", `${object}^{commit}`], { cwd: root }), annotated };
@@ -3560,6 +3574,10 @@ function shareArchive(root: string, options: Options): void {
   const tag = archiveTag(implementationId);
   const shared = sharedArchive(root, implementationId);
   const push = `git push <remote> ${tag}`;
+  // A ref of an older artifact may share the tag's short name, which would make pushing it by that name fail.
+  const short = tag.slice("refs/tags/".length);
+  const clash = [`refs/heads/${short}`, `refs/${short}`, `refs/heads/${tag}`, `refs/tags/${tag}`].find((ref) => gitOptional(["show-ref", "--verify", "--quiet", ref], { cwd: root }) !== undefined);
+  if (clash) fail(`${clash} shares a name with the archive tag ${tag}, so pushing the tag by name would fail; rename or delete it before sharing the archive.`);
   if (shared) {
     if (!shared.annotated || shared.commit !== archive.commit) fail(`${tag} already exists and is not an annotated tag of the current archive commit ${archive.commit}; a shared archive tag is never moved or replaced.`);
     console.log(`The archive of ${implementationId} is already shared as ${tag}. Push it with: ${push}`);

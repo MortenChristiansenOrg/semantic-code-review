@@ -98,7 +98,7 @@ export interface ShareArchiveOptions {
     message?: string;
 }
 /**
- * Shares an archive as the annotated tag `semantic-review/archive/<implementation-id>`
+ * Shares an archive as the annotated tag `semantic-review-archive/<implementation-id>`
  * and prints the command that pushes it. The tag is created once and never
  * moved, so the archive's landing record cannot change afterwards. Pushing
  * the tag sends the artifact, its evidence and the stage commits.

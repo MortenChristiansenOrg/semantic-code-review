@@ -57,7 +57,7 @@ Only when the user asks to share the archive, run:
 <semantic-flow> implementation archive share --id <implementation-id>
 ```
 
-It creates the annotated tag `semantic-review/archive/<implementation-id>`,
+It creates the annotated tag `semantic-review-archive/<implementation-id>`,
 which is never moved, so record landing first. Push the tag with the printed
 command only to a remote the user named. Pushing it sends the artifact, its
 evidence and the stage commits.

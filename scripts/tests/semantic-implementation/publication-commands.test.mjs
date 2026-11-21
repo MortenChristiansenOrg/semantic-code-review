@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -140,10 +141,16 @@ test("archive pins the publication under a ref and records landing by ancestry",
   repository.semantic("archive", "landing", "--id", "archived");
   assert.equal(repository.git("rev-parse", archive), archived);
   const shared = repository.semantic("archive", "share", "--id", "archived");
-  assert.match(shared, /git push <remote> refs\/tags\/semantic-review\/archive\/archived/);
-  const tag = "refs/tags/semantic-review/archive/archived";
+  assert.match(shared, /git push <remote> refs\/tags\/semantic-review-archive\/archived/);
+  const tag = "refs/tags/semantic-review-archive/archived";
   assert.equal(repository.git("cat-file", "-t", tag), "tag");
   assert.equal(repository.git("rev-parse", `${tag}^{commit}`), repository.git("rev-parse", archive));
+  // The tag's short name names the tag alone, so it can be pushed by that name.
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-flow-archive-remote-"));
+  t.after(() => fs.rmSync(remote, { recursive: true, force: true }));
+  repository.git("init", "--quiet", "--bare", remote);
+  repository.git("-c", "core.warnAmbiguousRefs=false", "push", "--quiet", remote, "semantic-review-archive/archived");
+  assert.equal(repository.git("--git-dir", remote, "rev-parse", "refs/tags/semantic-review-archive/archived"), repository.git("rev-parse", tag));
   repository.semantic("archive", "share", "--id", "archived");
   repository.expectSemanticFailure("never moves", "archive", "landing", "--id", "archived", "--landed", target);
   repository.expectSemanticFailure("No archive of missing", "archive", "share", "--id", "missing");
@@ -477,7 +484,7 @@ test("archive refuses a metadata branch that is the target, survives a failing d
   repository.git("config", "diff.external", "false");
   const result = JSON.parse(repository.flow("archive", "--json"));
   assert.equal(result.archive.suggestedLanding, squash);
-  repository.git("tag", "semantic-review/archive/tagged", result.archive.commit);
+  repository.git("tag", "semantic-review-archive/tagged", result.archive.commit);
   repository.expectSemanticFailure("is not an annotated tag", "archive", "share", "--id", "tagged");
   repository.expectSemanticFailure("never moves", "archive", "landing", "--id", "tagged", "--landed", squash);
 });
@@ -513,8 +520,41 @@ test("archive writes only direct refs and replaces a stale artifact folder under
   assert.notEqual(repository.result("git", ["cat-file", "-e", `${archive}:.semantic-review/stale.txt`]).status, 0);
   assert.equal(repository.git("rev-parse", `${archive}:.semantic-review/manifest.json`), repository.git("rev-parse", "semantic-flow/direct/metadata:.semantic-review/manifest.json"));
   // A dangling symbolic ref at the tag name is not overwritten.
-  repository.git("symbolic-ref", "refs/tags/semantic-review/archive/direct", "refs/tags/elsewhere");
+  repository.git("symbolic-ref", "refs/tags/semantic-review-archive/direct", "refs/tags/elsewhere");
   repository.expectSemanticFailure("is a symbolic ref", "archive", "share", "--id", "direct");
   repository.expectSemanticFailure("is a symbolic ref", "archive", "landing", "--id", "direct", "--landed", target);
   assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", "refs/tags/elsewhere"]).status, 1);
+});
+
+test("branches stay outside the short names of Semantic Flow's own refs", (t) => {
+  const repository = createRepository(t);
+  for (const prefix of ["semantic-review/work", "semantic-review-archive"]) {
+    repository.expectSemanticFailure("which Semantic Flow keeps for its own refs", "init",
+      "--implementation-id", "reserved", "--title", "Reserved", "--summary", "Reserved names.",
+      "--target-branch", "main", "--branch-prefix", prefix,
+      "--specification-id", "story", "--specification-title", "Story", "--specification-summary", "Story.",
+      "--source-kind", "local", "--source-reference", "reserved", "--criterion", "works=It works.");
+  }
+  assert.equal(repository.artifact.present(), false);
+  initializeImplementation(repository, { implementationId: "reserved" });
+  beginStage(repository);
+  finalizeStage(repository);
+  for (const branch of ["semantic-review/archive/reserved", "semantic-review-archive/reserved", "refs/tags/semantic-review-archive/reserved"]) {
+    repository.expectSemanticFailure("which Semantic Flow keeps for its own refs", "prepare-branch", "--branch", branch);
+    assert.equal(repository.result("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).status, 1);
+  }
+  // A branch an older artifact left at the tag's short name blocks sharing until it is gone.
+  repository.semantic("archive");
+  repository.git("branch", "semantic-review-archive/reserved", "main");
+  repository.expectSemanticFailure("refs/heads/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
+  assert.equal(repository.result("git", ["show-ref", "--verify", "--quiet", "refs/tags/semantic-review-archive/reserved"]).status, 1);
+  repository.git("branch", "-D", "semantic-review-archive/reserved");
+  // So does a branch named after the tag's full name, which would make pushing the full name fail.
+  repository.git("branch", "refs/tags/semantic-review-archive/reserved", "main");
+  repository.expectSemanticFailure("refs/heads/refs/tags/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
+  repository.git("branch", "-D", "refs/tags/semantic-review-archive/reserved");
+  repository.git("tag", "refs/tags/semantic-review-archive/reserved", "main");
+  repository.expectSemanticFailure("refs/tags/refs/tags/semantic-review-archive/reserved shares a name with the archive tag", "archive", "share", "--id", "reserved");
+  repository.git("tag", "-d", "refs/tags/semantic-review-archive/reserved");
+  repository.semantic("archive", "share", "--id", "reserved");
 });
