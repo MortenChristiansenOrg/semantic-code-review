@@ -2301,7 +2301,8 @@ function serveViewer({
   // Archiving ends the review: pages are told, and the viewer stops once no
   // page has made a request for archivedViewerIdleMs. Only requests that pass
   // the host and access checks count, when they arrive.
-  let wasArchived = false, lastRequestAt = Date.now();
+  // Idle time uses the monotonic clock, so a change to the system clock cannot shorten or extend it.
+  let wasArchived = false, lastRequestAt = performance.now();
   /** Whether the implementation was archived; once it was, it stays so. */
   const archived = async () => {
     if (!wasArchived && await readReviewImplementationArchived(review)) wasArchived = true;
@@ -2342,7 +2343,7 @@ function serveViewer({
   const requestHandler = async (request: http.IncomingMessage, response: http.ServerResponse) => {
     /** Counts the request, once it passed the host and access checks, as use of
      * the viewer when it arrived, however long its body took. */
-    const arrivedAt = Date.now();
+    const arrivedAt = performance.now();
     const use = () => { lastRequestAt = Math.max(lastRequestAt, arrivedAt); };
     for (const [name, value] of Object.entries(COMMON_HEADERS)) response.setHeader(name, value);
     // The request's jobs read the active refs once, in the worker, so checking
@@ -2754,7 +2755,7 @@ function serveViewer({
         checking = true;
         try {
           // Idle time runs from the last request, not from when the archive was seen.
-          if (!await archived() || Date.now() - lastRequestAt < idle) return;
+          if (!await archived() || performance.now() - lastRequestAt < idle) return;
           clearInterval(archiveCheck); stopArchived();
         } finally { checking = false; }
       }, Math.min(60_000, Math.ceil(idle / 10)));
