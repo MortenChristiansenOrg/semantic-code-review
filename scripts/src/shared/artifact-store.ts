@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fail } from "./errors.js";
 import { git, gitRaw } from "./git.js";
-import { jsonBytes, parseJsonDocument } from "./json.js";
+import { jsonBytes, parseJsonDocument, removeFolder, replaceFile } from "./json.js";
 import { errorCode, errorMessage, isRecord } from "./narrow.js";
 
 /** The folder published and archived artifacts are stored under in a commit. */
@@ -691,7 +691,7 @@ function writeFileAtomically(file: string, bytes: Buffer): void {
   const temporary = `${file}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(temporary, bytes);
-    fs.renameSync(temporary, file);
+    replaceFile(temporary, file);
   } finally {
     fs.rmSync(temporary, { force: true });
   }
@@ -699,7 +699,10 @@ function writeFileAtomically(file: string, bytes: Buffer): void {
 
 /** Replaces the files of an artifact directory, such as a remote review's
  * projection. The change runs first; nothing is replaced when it fails. When
- * anything fails, undo reverts the change and the previous files stay. */
+ * anything fails, undo reverts the change and the previous files stay.
+ * Viewers may be reading the directory meanwhile; Windows refuses to move a
+ * directory while a file in it is open, so each move waits for them as
+ * replaceFile does. */
 export function replaceArtifactDirectory(
   directory: string,
   files: Iterable<readonly [string, Buffer]>,
@@ -708,21 +711,28 @@ export function replaceArtifactDirectory(
 ): void {
   const next = `${directory}.next`;
   const previous = `${directory}.previous`;
-  fs.rmSync(next, { recursive: true, force: true });
+  // A replacement whose rollback failed left the earlier files only in their
+  // backup. They may not match what the change undid, so they are not shown
+  // again, but kept until new files are in place.
+  const leftover = !fs.existsSync(directory) && fs.existsSync(previous);
+  let movedAside = false;
+  removeFolder(next);
   try {
     // Each file is written before the next is produced, so large files are not all held at once.
     for (const [file, bytes] of files) writeFileAtomically(path.join(next, ...checkedPath(file).split("/")), bytes);
     try {
       change();
-      fs.rmSync(previous, { recursive: true, force: true });
-      if (fs.existsSync(directory)) fs.renameSync(directory, previous);
-      fs.renameSync(next, directory);
+      if (!leftover) removeFolder(previous);
+      if (fs.existsSync(directory)) { replaceFile(directory, previous); movedAside = true; }
+      replaceFile(next, directory);
     } catch (error) {
       // The change is reverted first; both rollback steps run before any failure is described.
       const failures: Array<[string, unknown]> = [];
-      try { undo(); } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
+      let undone = false;
+      try { undo(); undone = true; } catch (failure) { failures.push(["Reverting the change also failed", failure]); }
       try {
-        if (!fs.existsSync(directory) && fs.existsSync(previous)) fs.renameSync(previous, directory);
+        // The previous files are shown again only with the change they match reverted.
+        if (undone && movedAside && !fs.existsSync(directory)) replaceFile(previous, directory);
       } catch (failure) {
         failures.push([`Restoring the previous files from ${previous} also failed`, failure]);
       }
@@ -734,10 +744,10 @@ export function replaceArtifactDirectory(
     }
   } finally {
     // The staged files are not needed once the replacement succeeded or failed.
-    try { fs.rmSync(next, { recursive: true, force: true }); } catch { /* The operation's own outcome says more. */ }
+    try { removeFolder(next); } catch { /* The operation's own outcome says more. */ }
   }
   // The new files are in place; a copy left behind is removed by the next replacement.
-  try { fs.rmSync(previous, { recursive: true, force: true }); } catch { /* See above. */ }
+  try { removeFolder(previous); } catch { /* See above. */ }
 }
 
 // --- Artifacts stored in Git trees ------------------------------------------

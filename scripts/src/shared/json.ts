@@ -98,16 +98,30 @@ export function writeJson(file: string, value: unknown): void {
 export const REPLACE_WAIT_MS = 2000;
 const SHARING_VIOLATIONS = ["EPERM", "EACCES", "EBUSY"];
 
-/** Moves source over destination, as `fs.renameSync` does. Windows refuses to
- * replace a file while another process has it open, which readers of review data
- * do briefly, so there the move is retried until the readers are done. */
+/** Moves a file or directory over destination, as `fs.renameSync` does.
+ * Windows refuses to replace a file, or move a directory, while another process
+ * has it or a file in it open, which readers of review data and artifacts do
+ * briefly, so there the move is retried until the readers are done. */
 export function replaceFile(source: string, destination: string): void {
+  waitingForReaders(() => fs.renameSync(source, destination), SHARING_VIOLATIONS);
+}
+
+/** Removes a folder and everything in it, if it exists. Windows refuses while
+ * another process has a file in it open, so there it waits as replaceFile does. */
+export function removeFolder(folder: string): void {
+  // Windows may also report a folder whose files were just removed as not yet empty.
+  waitingForReaders(() => fs.rmSync(folder, { recursive: true, force: true }), [...SHARING_VIOLATIONS, "ENOTEMPTY"]);
+}
+
+/** Runs operation, and on Windows runs it again while another process's open
+ * handle refuses it, for up to REPLACE_WAIT_MS in all. */
+function waitingForReaders(operation: () => void, refusals: readonly string[]): void {
   const deadline = performance.now() + REPLACE_WAIT_MS;
   for (let pause = 5; ; pause = Math.min(pause * 2, 100)) {
-    try { fs.renameSync(source, destination); return; }
+    try { operation(); return; }
     catch (error) {
       const remaining = deadline - performance.now();
-      if (process.platform !== "win32" || !SHARING_VIOLATIONS.includes(errorCode(error) ?? "") || remaining <= 0) throw error;
+      if (process.platform !== "win32" || !refusals.includes(errorCode(error) ?? "") || remaining <= 0) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(pause, remaining));
     }
   }
