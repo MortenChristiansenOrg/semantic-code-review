@@ -62,6 +62,9 @@
 * { box-sizing: border-box; }
 
 html { scroll-behavior: smooth; scrollbar-gutter: stable; }
+/* Focus and scrolled-to elements stop below what covers the top of a scroll
+   area; sticky-insets.ts measures its height into --sticky-inset. */
+html, .side.notes .notes-list { scroll-padding-top: calc(var(--sticky-inset, 0px) + 8px); }
 html:has(.review-list[open]) { overflow: hidden; }
 
 body {

@@ -21,6 +21,7 @@ import { installPopover } from "./popover";
 import { render } from "./render";
 import { initSavedReviews, markReviewEnded, refreshReviews } from "./saved-reviews";
 import { installSelection } from "./selection";
+import { installStickyInsets } from "./sticky-insets";
 import { initState, installUnloadGuard, persist, reviewEnded, reviewEndOf, state, type ReviewEnd, type SavedReview } from "./state";
 import { installHeldThreadLists, usableNotes } from "./threads";
 import { installUnreadReplies } from "./unread-replies";
@@ -76,6 +77,7 @@ async function startApp(): Promise<boolean> {
   installKeyboard();
   installSelection();
   installUnreadReplies();
+  installStickyInsets();
 
   const drafts: Draft[] = compose ? [...usableNotes(), compose] : usableNotes();
   const legacyDrafts = drafts.filter(note => note.kind === "line" && !("exported" in note && note.exported) && note.snapshot && !note.snapshot.fileRevision);
