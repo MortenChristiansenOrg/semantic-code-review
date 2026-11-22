@@ -944,14 +944,16 @@ function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback, 
     respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
     if (!respondsTo) fail(`Feedback thread ${id} is not part of round ${claimId}.`);
   }
-  thread.comments.push({
+  const comment: Comment = {
     id: commentId,
     author,
     ...commentInput(paths, options),
     createdAt: new Date().toISOString(),
     ...(respondsTo ? { respondsTo } : {}),
-  });
-  const replied = thread.status === "resolved" ? reopened(thread) : thread;
+  };
+  const extended: Thread = { ...thread, comments: [...thread.comments, comment] };
+  // Checked before it joins the others, so a batch names the reply that is invalid.
+  const replied = parseDocument(THREAD_SCHEMA_ID, extended.status === "resolved" ? reopened(extended) : extended, "Feedback reply input");
   feedback.threads.set(id, replied);
   return { id, commentId, thread: replied };
 }
@@ -1077,7 +1079,6 @@ function partialFeedbackBatch(paths: FeedbackPaths, values: unknown[], mode: "ad
         feedback.manifest.threads.push(id);
       } else {
         const reply = applyReply(paths, options, feedback, semantic);
-        parseDocument(THREAD_SCHEMA_ID, reply.thread, "Feedback reply input");
         if (option(options, "author") === "agent") replies.push({ threadId: id, claimId: option(options, "claim") });
       }
       changed.add(id);

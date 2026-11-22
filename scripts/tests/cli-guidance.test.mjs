@@ -312,3 +312,21 @@ test("an organization file with a wrong schema key or value shows the right one"
   fs.writeFileSync(file, '{"$schema":"wrong"}');
   assert.ok(failure(repository.root, organize).includes(`unsupported schema wrong. Use "${ORGANIZATION_SCHEMA}".`));
 });
+
+test("a reply the schema rejects names its batch item and changes nothing", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  repository.feedback("thread", "add", "--id", "open", "--comment-id", "opened", "--body", "Check.", "--label", "Stage", "--target-kind", "stage", "--stage", "implementation");
+  const file = repository.feedbackPath("threads", "open.json");
+  const before = fs.readFileSync(file, "utf8");
+  const reply = (id) => ({ id: "open", "comment-id": id, body: "Done." });
+  const replies = [reply("valid"), reply("BAD ID")];
+  const args = ["feedback", "thread", "reply-batch", "--input", "-"];
+  assert.match(failure(repository.root, args, JSON.stringify({ replies })), /replies\[1\]: Feedback reply input\/comments\/2\/id must match pattern/);
+  assert.equal(fs.readFileSync(file, "utf8"), before);
+
+  const partial = run(repository.root, args, JSON.stringify({ replies: [...replies, reply("last")], partial: true }));
+  assert.equal(partial.status, 0, partial.stderr);
+  assert.deepEqual(JSON.parse(partial.stdout).rejected.map(({ index }) => index), [1]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")).comments.map(({ id }) => id), ["opened", "valid", "last"]);
+});
