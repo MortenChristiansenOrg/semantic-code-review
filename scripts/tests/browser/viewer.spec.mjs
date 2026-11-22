@@ -32,6 +32,11 @@ function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first',
     comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
 async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {}) {
+  // A page that already shows the viewer is at http://localhost/, so going to the launch link would change only
+  // its fragment: the running page would redeem the code and reload whenever that finished, while the test
+  // already acts on it. Each mount starts a new document instead, and the old one is gone before the routes
+  // below can take its requests.
+  if (page.url() !== 'about:blank') await page.goto('about:blank');
   const allData = [data, ...other];
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
@@ -2762,6 +2767,163 @@ test('switching Markdown preview preserves a line draft and its source anchor', 
   await page.getByRole('button', { name: 'Source', exact: true }).click();
   await expect(editor).toHaveValue('Keep this review draft');
   await expect(source.locator('.line-thread')).toHaveAttribute('data-thread', 'l:first:new:1:README.md');
+});
+
+/** Moves keyboard focus back to `target` with Shift+Tab while its top lies 2px under what covers the top of its scroll
+ * area: `area.covers`, in the window or in the closest `area.scroller`. A focused element out of view is centred anyway;
+ * one partly in view is where it can hide. Then expects the focused target to lie below the covers. */
+async function shiftTabBackUnder(page, target, area) {
+  // How far the target's top lies below the covers, then scrolls it 2px under them if asked.
+  const offset = (scroll) => target.evaluate((el, { area, scroll }) => {
+    const bottom = Math.max(...[...document.querySelectorAll(area.covers)].map((cover) => cover.getBoundingClientRect().bottom));
+    const offset = el.getBoundingClientRect().top - bottom;
+    if (scroll) (area.scroller ? el.closest(area.scroller) : window).scrollBy({ top: offset + 2, behavior: 'instant' });
+    return offset;
+  }, { area, scroll });
+  await target.focus();
+  await page.keyboard.press('Tab');
+  await expect(target).not.toBeFocused();
+  // Scrolls until the target stays put, once a scroll the focus started has ended and the covers stick to the top.
+  await expect.poll(async () => Math.abs(await offset(true) + 2)).toBeLessThan(1);
+  await page.keyboard.press('Shift+Tab');
+  await expect(target).toBeFocused();
+  await expect.poll(() => offset(false)).toBeGreaterThanOrEqual(0);
+}
+
+/** Shows the fresh-link notice, as when the server refuses the page's key. */
+async function loseAccess(page) {
+  await page.route('http://localhost/api/revision**', (route) => route.fulfill({ status: 403, json: { ok: false, keyRequired: true } }));
+  await expect(page.locator('#fresh-link-notice')).toBeVisible();
+}
+
+for (const layout of ['wide', 'wrapped', 'notice']) {
+  test(`a link focused in a Markdown preview is not hidden under the top bar (${layout})`, async ({ page }) => {
+    // The top bar wraps on narrow screens; a fresh-link notice sticks at the top above it.
+    await page.setViewportSize(layout === 'wrapped' ? { width: 380, height: 700 } : { width: 1280, height: 800 });
+    const data = fixture(); data.stages[0].files[0].path = 'README.md';
+    await mount(page, data);
+    const links = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} with [link ${i}](https://example.com/${i}).`).join('\n\n');
+    await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: `# Document\n\n${links}`, revision: 'b'.repeat(40), side: 'head' } }));
+    await openFile(page);
+    await page.getByRole('button', { name: 'Preview', exact: true }).click();
+    const link = page.locator('.markdown-preview a').first();
+    await expect(link).toBeVisible();
+    if (layout === 'notice') await loseAccess(page);
+    if (layout === 'wrapped') expect((await page.locator('.topbar-wrap').boundingBox()).height).toBeGreaterThan(100);
+    // Room to scroll the link to the top of the window.
+    await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+    await shiftTabBackUnder(page, link, { covers: '.topbar-wrap, #fresh-link-notice' });
+  });
+}
+
+test('the fresh-link notice leaves the top bar and the side panels uncovered', async ({ page }) => {
+  await mount(page);
+  await loseAccess(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  // A control is uncovered when a click at its centre reaches it.
+  const uncovered = (locator) => locator.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+  });
+  const notes = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect.poll(() => uncovered(notes)).toBe(true);
+  await notes.click();
+  await expect.poll(() => uncovered(page.locator('.side.notes .side-head button[data-action="toggle-notes"]'))).toBe(true);
+});
+
+test('a focused link stays uncovered when the fresh-link notice appears above the top bar', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const data = fixture(); data.stages[0].files[0].path = 'README.md';
+  await mount(page, data);
+  const links = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} with [link ${i}](https://example.com/${i}).`).join('\n\n');
+  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: `# Document\n\n${links}`, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const link = page.locator('.markdown-preview a').first();
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await link.focus();
+  // How far the link's top lies below the covers.
+  const offset = () => link.evaluate((el) => el.getBoundingClientRect().top - Math.max(...[...document.querySelectorAll('.topbar-wrap, #fresh-link-notice')].map((cover) => cover.getBoundingClientRect().bottom)));
+  await expect.poll(async () => {
+    const now = await offset();
+    await page.evaluate((by) => window.scrollBy({ top: by, behavior: 'instant' }), now - 20);
+    return Math.round(now);
+  }).toBe(20);
+  await loseAccess(page);
+  await expect.poll(offset).toBeGreaterThanOrEqual(0);
+  await expect(link).toBeFocused();
+});
+
+test('in a short window the fresh-link notice and the top bar scroll away with the page', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 256 });
+  await mount(page);
+  await loseAccess(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  for (const cover of ['.topbar-wrap', '#fresh-link-notice'])
+    await expect.poll(() => page.locator(cover).evaluate((el) => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(0);
+});
+
+test('a focused top bar control returns into view when the notice makes the header scroll away', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 320 });
+  await mount(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  const reviews = page.locator('.topbar [data-action="toggle-reviews"]');
+  await reviews.focus();
+  await loseAccess(page);
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  await expect.poll(() => reviews.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+  await expect(reviews).toBeFocused();
+  // The saved reviews dialog returns focus to it in view.
+  await reviews.click();
+  await expect(page.locator('.review-list[open]')).toHaveCount(1);
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  await page.keyboard.press('Escape');
+  await expect(reviews).toBeFocused();
+  await expect.poll(() => reviews.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+});
+
+test('in a short window minimized agent questions leave the top bar controls uncovered', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 175 });
+  const now = new Date().toISOString();
+  await mount(page, { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] } });
+  await page.locator('[data-action="minimize-agent-questions"]').click();
+  await expect(page.locator('.agent-questions-show')).toBeVisible();
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  for (const control of await page.locator('.topbar button').all()) {
+    expect(await control.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+    })).toBe(true);
+  }
+});
+
+test('focused minimized agent questions return into view when a shorter window makes the header scroll away', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 500 });
+  const now = new Date().toISOString();
+  await mount(page, { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] } });
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 400, behavior: 'instant' }));
+  await page.locator('[data-action="minimize-agent-questions"]').focus();
+  await page.keyboard.press('Enter');
+  const show = page.locator('.agent-questions-show');
+  await expect(show).toBeFocused();
+  await page.setViewportSize({ width: 720, height: 175 });
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  await expect.poll(() => show.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+  await expect(show).toBeFocused();
+});
+
+test('a thread focused in the notes panel is not hidden under its filter switch', async ({ page }) => {
+  const data = fixture();
+  data.feedback = Array.from({ length: 12 }, (_, i) => thread(`open-${i}`));
+  await mount(page, data);
+  await showNotes(page);
+  await shiftTabBackUnder(page, page.locator('.side.notes .tthread[data-thread-id="open-6"] .tthread-h'), { covers: '.side.notes .notes-switch', scroller: '.notes-list' });
 });
 
 test('more than twelve open Markdown previews do not evict each other', async ({ page }) => {

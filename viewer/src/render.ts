@@ -14,6 +14,7 @@ import { reviewsDialog, reviewsOpen, setReviewsOpen, updateReviewList } from "./
 import { refreshDiffSelection } from "./selection";
 import { hasSelectionHits } from "./selection-hits";
 import { reviewEnded, state } from "./state";
+import { updateStickyInsets } from "./sticky-insets";
 import { beginThreadLists, endThreadLists } from "./threads";
 import { observeUnreadReplies, unreadReplyCount } from "./unread-replies";
 import { renderPage, type PageView } from "./views/page";
@@ -63,5 +64,6 @@ export function enhance(): void {
   const unread = unreadReplyCount();
   document.title = unread ? `(${unread}) ${baseTitle}` : baseTitle;
   fadePendingHighlight();
+  updateStickyInsets();
 }
 
