@@ -28,6 +28,8 @@ without asking permission for their internal operations. Apply
    <semantic-flow> implementation restack --continue
    ```
 
+   In a feedback round, add the round's `--claim <claim>`.
+
    It replays the remaining stages. If another stage conflicts, repeat from
    step 1 with the newly reported worktree.
 
@@ -44,6 +46,8 @@ remove it from the artifact worktree, naming the rerun helper's
 ```text
 <semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
+
+In a feedback round, add the round's `--claim <claim>` here too.
 
 The command refuses the only remaining stage; keep it and report that the
 implementation no longer changes anything.

@@ -351,7 +351,7 @@ test("a round waiting for the reviewer keeps its work, lease, and answers throug
   const round = await waitAsync(repository, "--timeout", "5");
   // An unrestacked correction makes the stack temporarily invalid while the round waits.
   repository.commitFile("implementation.txt", "implementation v2\n", "Work in progress");
-  repository.feedback("agent", "ask", "--id", "which-way", "--body", "Which way?");
+  repository.feedback("agent", "ask", "--id", "which-way", "--claim", round.claim, "--body", "Which way?");
   const file = path.join(reviewDirectory(repository), "agent.json");
   const stale = new Date(Date.now() - 20 * 60_000).toISOString();
   fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), claims: agentState(repository).claims.map((claim) => ({ ...claim, activityAt: stale })) }));
@@ -361,7 +361,7 @@ test("a round waiting for the reviewer keeps its work, lease, and answers throug
 
   controlAgent(reviewContext(repository), "respond", { requestId: "which-way", body: "Left" });
   assert.deepEqual((await waitAsync(repository, "--session", round.session, "--timeout", "5")).responses, [{ id: "which-way", question: "Which way?", answer: "Left" }]);
-  repository.semantic("restack", "--from", "implementation");
+  repository.semantic("restack", "--from", "implementation", "--claim", round.claim);
   repository.feedback("thread", "reply", "--id", "decide", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Went left.");
   assert.deepEqual(await waitAsync(repository, "--session", round.session, "--timeout", "5"), { session: round.session, stopped: true, reason: "stopped" });
 });
@@ -395,10 +395,10 @@ test("agent activity renews only its own round, so an abandoned round still expi
   fs.writeFileSync(file, JSON.stringify({ ...agentState(repository), claims: [...agentState(repository).claims, abandoned] }));
   const abandonedActivity = () => agentState(repository).claims.find((claim) => claim.id === "abandoned")?.activityAt;
 
-  repository.feedback("agent", "progress", "--body", "Working");
-  repository.feedback("agent", "ask", "--id", "check", "--body", "Check?");
+  repository.feedback("agent", "progress", "--claim", round.claim, "--body", "Working");
+  repository.feedback("agent", "ask", "--id", "check", "--claim", round.claim, "--body", "Check?");
   repository.commitFile("implementation.txt", "implementation v2\n", "Address feedback");
-  repository.semantic("restack", "--from", "implementation");
+  repository.semantic("restack", "--from", "implementation", "--claim", round.claim);
   repository.feedback("thread", "reply", "--id", "active", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Done.");
   assert.equal(abandonedActivity(), old);
 });

@@ -60,6 +60,10 @@ const stageWithFinalized = { note: "required with --finalized" };
 const messageContent = { note: "--body or --attachments is required" };
 const evidenceContent = { note: "one of --file, --before, --after or --inline is required" };
 const evidenceFile = { repeatable: true, note: `${evidenceContent.note}; file types: ${EVIDENCE_EXTENSIONS.join(", ")}` };
+/** The feedback round a command acts for; see roundRefusal. */
+const roundClaim = option("claim", "<claim-id>", { note: "required while an agent listens to the review" });
+/** The feedback round an implementation change belongs to; see roundRefusal. */
+const roundChange = option("claim", "<claim-id>", { note: "the feedback round this change belongs to; required while a listening agent answers a round" });
 const restackAction = { note: "exactly one of --from, --base, --continue or --abort is required" };
 const releaseChoice = "not with --source";
 const nodeRefs = option("node-ref", "<node-id>", { repeatable: true, note: "required once the stage is organized, unless --replace keeps the recorded nodes" });
@@ -97,7 +101,7 @@ export const semanticImplementationApi: CliSignature = {
         ...specificationOptions,
       ],
     },
-    { command: "specification add", options: specificationOptions },
+    { command: "specification add", options: [...specificationOptions, roundChange] },
     {
       command: "stage begin",
       options: [
@@ -111,9 +115,10 @@ export const semanticImplementationApi: CliSignature = {
           required: true,
           repeatable: true,
         }),
+        roundChange,
       ],
     },
-    { command: "stage record-batch", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("items", "<json-array>", { required: true, note: "a plain array in --input JSON; each item takes the options of stage record, or of stage validation with kind validation, except stage and finalized, which belong outside the items" })] },
+    { command: "stage record-batch", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("items", "<json-array>", { required: true, note: "a plain array in --input JSON; each item takes the options of stage record, or of stage validation with kind validation, except stage, finalized and claim, which belong outside the items" }), roundChange] },
     { command: "stage plan", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("selectors")] },
     {
       command: "stage set",
@@ -127,6 +132,7 @@ export const semanticImplementationApi: CliSignature = {
         option("specification-ref", "<specification-id>#<criterion-id>", {
           repeatable: true,
         }),
+        roundChange,
       ],
     },
     {
@@ -151,6 +157,7 @@ export const semanticImplementationApi: CliSignature = {
         kindOption("mitigation", "<text>"),
         kindOption("question", "<text>"),
         nodeRefs,
+        roundChange,
       ],
     },
     {
@@ -160,7 +167,7 @@ export const semanticImplementationApi: CliSignature = {
         option("remove", undefined, { note: "not with --code-path, --code-start or --code-end" }),
         option("code-path", "<repository-path>", { note: "required without --remove" }),
         option("code-start", "<line>", { note: "required without --remove" }),
-        option("code-end", "<line>", { note: "defaults to --code-start" })],
+        option("code-end", "<line>", { note: "defaults to --code-start" }), roundChange],
     },
     {
       command: "stage organize",
@@ -168,6 +175,7 @@ export const semanticImplementationApi: CliSignature = {
         option("stage", "<stage-id|current>", stageWithFinalized),
         option("file", "<json-file>", { required: true }),
         option("finalized"),
+        roundChange,
       ],
     },
     {
@@ -183,6 +191,7 @@ export const semanticImplementationApi: CliSignature = {
         option("replace"),
         option("finalized"),
         ...codeTargetOptions,
+        roundChange,
       ],
     },
     {
@@ -202,21 +211,22 @@ export const semanticImplementationApi: CliSignature = {
         option("replace"),
         option("finalized"),
         ...codeTargetOptions,
+        roundChange,
       ],
     },
-    { command: "stage evidence-remove", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("item-id", "<id>", { required: true }), option("finalized")] },
-    { command: "stage no-evidence", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("reason", "<text>", { note: "required without --remove" }), option("remove", undefined, { note: "not with --reason" }), option("finalized")] },
+    { command: "stage evidence-remove", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("item-id", "<id>", { required: true }), option("finalized"), roundChange] },
+    { command: "stage no-evidence", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("reason", "<text>", { note: "required without --remove" }), option("remove", undefined, { note: "not with --reason" }), option("finalized"), roundChange] },
     {
       command: "stage finish",
-      options: [option("json"),option("id", "<stage-id|current>")],
+      options: [option("json"), option("id", "<stage-id|current>"), roundChange],
     },
     {
       command: "stage discard",
-      options: [option("id", "<stage-id|current>")],
+      options: [option("id", "<stage-id|current>"), roundChange],
     },
     {
       command: "stage remove",
-      options: [option("json"), option("id", "<stage-id>", { required: true }), option("implementation-id", "<implementation-id>")],
+      options: [option("json"), option("id", "<stage-id>", { required: true }), option("implementation-id", "<implementation-id>"), roundChange],
     },
     {
       command: "restack",
@@ -226,6 +236,7 @@ export const semanticImplementationApi: CliSignature = {
         option("continue", undefined, restackAction),
         option("abort", undefined, restackAction),
         option("json"),
+        roundChange,
       ],
     },
     { command: "publish", options: [option("message", "<commit-message>")] },
@@ -349,9 +360,10 @@ export const reviewFeedbackApi: CliSignature = {
         option("id", "<request-id>", { required: true, note: "lowercase and hyphenated, up to 80 characters" }),
         option("body", "<text>", { required: true, note: "up to 4000 characters" }),
         option("choice", "<text>", { repeatable: true, note: "up to six, each up to 200 characters" }),
+        roundClaim,
       ],
     },
-    { command: "agent progress", options: [option("body", "<text>", { required: true, note: "up to 200 characters" })] },
+    { command: "agent progress", options: [option("body", "<text>", { required: true, note: "up to 200 characters" }), roundClaim] },
   ],
 };
 
@@ -446,7 +458,7 @@ export function commandOptionNames(
 /** The keys one `stage record-batch` item may have. Its kind narrows them;
  * without a usable kind, an item may have those of any kind. */
 export function batchItemKeys(kind: string | undefined): ReadonlySet<string> {
-  const outside = (name: string) => name !== "stage" && name !== "finalized";
+  const outside = (name: string) => name !== "stage" && name !== "finalized" && name !== "claim";
   const validation = ["kind", ...commandOptionNames(semanticImplementationApi, "stage validation")].filter(outside);
   if (kind === "validation") return new Set(validation);
   if (kind !== undefined && INSIGHT_KINDS.includes(kind)) return new Set([...insightOptionNames(kind)].filter(outside));

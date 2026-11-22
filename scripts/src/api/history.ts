@@ -5,10 +5,12 @@ export interface RestackOptions {
   base?: string;
   /** Completes the pending restack once its conflict is resolved and staged in the reported worktree. Moves refs only if the target, stage and artifact refs are unchanged since the restack began. */
   continue?: true;
-  /** Discards the pending restack and its worktree; no ref has moved. */
+  /** Discards the pending restack and its worktree; no ref has moved. Accepted even for a round another agent took over. */
   abort?: true;
   /** Emits exact old and new revisions for every refreshed stage. */
   json?: true;
+  /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+  claim?: string;
 }
 
 /**

@@ -14,6 +14,8 @@ export interface BeginStageOptions {
     "depends-on"?: readonly string[];
     /** Covered criteria formatted as `<specification-id>#<criterion-id>`. */
     "specification-ref": readonly string[];
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Creates the single active working stage before its code changes begin.
@@ -36,6 +38,8 @@ export interface SetStageOptions {
     "depends-on"?: readonly string[];
     /** Complete replacement criterion coverage list. */
     "specification-ref"?: readonly string[];
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Updates stage metadata on the active working stage or, with `finalized`, on a finalized stage.
@@ -86,6 +90,8 @@ export interface RecordStageInsightOptions {
     question?: string;
     /** Change nodes relevant to this item. Required once the stage is organized. */
     "node-ref"?: readonly string[];
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Records a decision, discovery, failure, risk, or question when it occurs.
@@ -101,6 +107,8 @@ export interface OrganizeStageOptions {
     file: string;
     /** Reorganizes an already finalized stage. */
     finalized?: true;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Post-processes a committed stage diff into descriptive change nodes.
@@ -136,6 +144,8 @@ export interface RecordValidationOptions {
     replace?: true;
     /** Updates a finalized stage instead of the active working stage. */
     finalized?: true;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Records real validation evidence for a working or finalized stage.
@@ -176,6 +186,8 @@ export interface RecordEvidenceOptions {
     replace?: true;
     /** Updates a finalized stage instead of the active working stage. */
     finalized?: true;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Records a capture from exercising the committed stage head. Requires the stage branch checked out and a clean worktree.
@@ -190,6 +202,8 @@ export interface RemoveEvidenceOptions {
     "item-id": string;
     /** Updates a finalized stage instead of the active working stage. */
     finalized?: true;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Removes evidence and its unused files, for example a capture containing sensitive data.
@@ -206,6 +220,8 @@ export interface RecordNoEvidenceOptions {
     remove?: true;
     /** Updates a finalized stage instead of the active working stage. */
     finalized?: true;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Records why a stage has no evidence, or clears that reason.
@@ -218,6 +234,8 @@ export interface FinishStageOptions {
     json?: true;
     /** Working stage to finalize; omitted or `current` selects the only active stage. */
     id?: string;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Finalizes a working stage against the current stage branch head, folding the
@@ -230,6 +248,8 @@ export declare function finishStage(options: FinishStageOptions): void;
 export interface DiscardStageOptions {
     /** Working stage to delete without reverting implementation files; omitted or `current` selects the only active stage. */
     id?: string;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Deletes an unfinished working stage without reverting code changes.
@@ -244,6 +264,8 @@ export interface RemoveStageOptions {
     id: string;
     /** Implementation the stage belongs to; refused when this worktree works on another one. */
     "implementation-id"?: string;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Removes a finalized stage that changes nothing, such as one a restack or a
@@ -270,6 +292,8 @@ export interface RecordStageBatchOptions {
      * In `--input` JSON, give the array itself: `{"items": [{...}]}`. Only `--items` on the command line takes it as JSON text.
      */
     items: readonly object[] | string;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /** Atomically records multiple observed insights and validation evidence for one stage.
  * @cli semantic-flow.mjs
@@ -306,6 +330,8 @@ export interface TargetInsightOptions {
     "code-start"?: string;
     /** Last line, inclusive; defaults to code-start. */
     "code-end"?: string;
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /** Attach or retarget after reviewing an insight against committed code, or remove its link.
  * @cli semantic-flow.mjs

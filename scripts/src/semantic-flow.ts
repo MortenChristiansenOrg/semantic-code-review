@@ -48,7 +48,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
@@ -710,7 +710,9 @@ async function launchViewer(
 
 /** verifiedTarget is the target head the caller checked; the restack refuses
  * a target that moved from it rather than restacking onto the new head. */
-async function refreshAdvancedTarget(candidate: ActiveCandidate, verifiedTarget?: string): Promise<{
+/** Restacks the implementation onto its advanced target branch. round is who restacks:
+ * a listening session's own wait, or null outside any round. */
+async function refreshAdvancedTarget(candidate: ActiveCandidate, round: RoundIdentity, verifiedTarget?: string): Promise<{
   candidate: ActiveCandidate;
   targetRestack: TargetRestack | null;
 }> {
@@ -828,6 +830,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate, verifiedTarget?
     restackSummary = restackOntoTarget(
       candidate.worktree,
       targetHead,
+      round,
       detachedBranch === null ? undefined : { worktree: candidate.worktree, branch: detachedBranch, head: originalHead },
     );
   } catch (error) {
@@ -1068,7 +1071,7 @@ async function waitForFeedback(options: Options): Promise<void> {
       if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
       if (step.responses) { print({ session, responses: step.responses }); return; }
       if (step.pending) {
-        const { candidate: current, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")));
+        const { candidate: current, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")), { session });
         const result = await feedbackSnapshot(current, targetRestack, { session });
         if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
         // Another run claimed the threads first; keep listening.
@@ -1099,7 +1102,7 @@ async function waitForFeedback(options: Options): Promise<void> {
 async function feedback(options: Options): Promise<void> {
   if (flag(options, "wait")) return waitForFeedback(options);
   if (options.has("session") || options.has("timeout")) fail("--session and --timeout require --wait.");
-  const { candidate, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")));
+  const { candidate, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")), null);
   const result = await feedbackSnapshot(candidate, targetRestack, { session: null });
   const { worktreeChanges, stages } = result;
   if (flag(options, "json")) {
@@ -1362,7 +1365,7 @@ async function sync(options: Options): Promise<void> {
 
   try {
     if (revision(targetRef) !== targetRevision) fail("Target branch moved before restacking; retry from its current head.");
-    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate, targetRevision);
+    const { candidate: refreshed, targetRestack } = await refreshAdvancedTarget(candidate, null, targetRevision);
     const snapshot = await feedbackSnapshot(refreshed, targetRestack);
     const result = {
       ...snapshot,

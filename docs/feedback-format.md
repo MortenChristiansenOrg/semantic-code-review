@@ -94,8 +94,13 @@ every thread has a reply, and expires after 30 minutes without agent activity.
 
 A review the agent listens to (`/semantic-flow review`) records one listening
 session with a heartbeat. Starting another session replaces it and returns the
-threads of every running round to the queue; replies a replaced round posts
-afterwards are refused. Ending a session returns threads its unfinished round
+threads of every running round to the queue. Afterwards a replaced round can
+post no reply, progress note or question, and can change the implementation
+only to abort a restack it left pending. Every command that changes the
+implementation accepts the round's `claim` and checks it under the review lock,
+in the same step as the snapshot and ref transaction, so a takeover cannot come
+between the check and the change. While a listening session's round runs, a
+change that names no round is refused. Ending a session returns threads its unfinished round
 claimed to the queue. A round waiting for the
 reviewer's answer to `agent ask` keeps its claim until the answer arrives. The viewer shows the session, the running round, and questions the
 agent asks with `agent ask`; reviewer answers, stop requests, and completing the

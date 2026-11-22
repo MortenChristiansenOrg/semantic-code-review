@@ -72,22 +72,20 @@ effect only after the current round.
 When a result first has `stages` or `responses`, read `feedback.md` completely
 once. A round's result has the same fields as its `feedback --json` preflight,
 with the threads already claimed, so do not run that preflight. Process each
-round by its “Ask in the viewer”, “Address feedback”, “Restack conflicts”, and
-“Reply” sections, including parallel subagents for questions and for
+round by its “The round's claim”, “Ask in the viewer”, “Address feedback”,
+“Restack conflicts”, and “Reply” sections, including parallel subagents for questions and for
 independent stage changes. Reuse stage worktrees created in earlier rounds.
 
 Start the next wait only after `reply` or `reply-batch` has finished, never as
 a parallel tool call beside it, even when the harness encourages parallel
 calls. A wait that finds the round still unanswered returns its threads to the
-queue after a few seconds and reports them on stderr. If a reply reports that
-the round was replaced, another agent took over the review: end with one short
-line and change nothing more.
+queue after a few seconds and reports them on stderr.
 
 Before long steps, you may show what the round is doing:
 
 ```text
 <semantic-flow> feedback agent progress --input -
-{"body":"Changing the cancellation and refund stages"}
+{"claim":"<claim>","body":"Changing the cancellation and refund stages"}
 ```
 
 When a round needs an answer from `agent ask`, wait with the session as usual.
