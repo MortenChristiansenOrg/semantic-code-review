@@ -40,7 +40,13 @@ use stable semantic IDs. Stage-backed targets also store:
 - `stageHead`
 
 Node targets add a node ID. Insight targets add collection and item IDs. File
-targets add a path. Line targets add a diff side and line number.
+targets add a path. Line targets add a path, a diff side and a line number. The
+path is the file's path in the stage on both sides, also for a removed line of a
+file the stage renames; the side says which revision counts the line: `old` the
+stage's base, where a renamed file still has its previous path, and `new` the
+stage head. A line target given by the previous path of a renamed file is refused
+with the path to use. A thread stored before this rule by that previous path is
+read by the file's path while its stage head is the anchored one.
 
 The thread's `assignedStageId` identifies where the agent should make a change.
 Its `stageHead` records the assigned stage snapshot. Before returning pending

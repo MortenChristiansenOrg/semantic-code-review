@@ -319,6 +319,8 @@ export type StageTarget = TargetFields & StageAnchor & { kind: "stage" };
 export type NodeTarget = TargetFields & StageAnchor & { kind: "node"; nodeId: string };
 export type InsightTarget = TargetFields & StageAnchor & { kind: "insight"; collection: InsightCollection; itemId: string };
 export type FileTarget = TargetFields & StageAnchor & { kind: "file"; path: string };
+/** `path` is the file's path in the stage on both sides; `side` says which
+ * revision counts `line`: the stage's base or its head. */
 export type LineTarget = TargetFields & StageAnchor & { kind: "line"; path: string; side: "old" | "new"; line: number };
 
 export type Target = SpecificationTarget | CriterionTarget | StageTarget | NodeTarget | InsightTarget | FileTarget | LineTarget;

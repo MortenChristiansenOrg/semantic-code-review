@@ -590,9 +590,9 @@ export interface AddFeedbackThreadOptions {
     collection?: string;
     /** Insight identifier for an insight target. */
     item?: string;
-    /** Repository path for file and line targets. */
+    /** Repository path for file and line targets. A line target names the file by its path in the stage on both sides, also for a removed line of a renamed file. */
     path?: string;
-    /** Diff side for a line target. */
+    /** Diff side for a line target: `old` counts the line in the stage's base, `new` in the stage head. */
     side?: DiffSide;
     /** Positive line number for a line target. */
     line?: string;

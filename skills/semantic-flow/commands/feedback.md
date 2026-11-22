@@ -64,7 +64,9 @@ target against the rewritten diff and continue when the target remains clear;
 do not ask merely because its recorded commit anchor moved. Preflight
 automatically refreshes pending non-line anchors when their exact target still
 exists; these threads are marked `reanchored: true`. Continue without asking
-when their feedback remains clear. A line thread's `currentLine` is where the
+when their feedback remains clear. A line target names its file by the file's
+path in the stage; with `side: "old"` the line is counted in the stage's base,
+where a file the stage renames still has its previous path. A line thread's `currentLine` is where the
 line it was written about now stands, unchanged, in the stage's diff; its target
 keeps the original line number. A remaining `stale: true` means a line thread's
 line changed or left the diff, or a non-line target could not be found. Inspect
