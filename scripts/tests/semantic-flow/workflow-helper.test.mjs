@@ -447,7 +447,7 @@ test("version reports installed and schema versions", () => {
   });
   assert.equal(result.status, 0, result.stderr);
   const version = JSON.parse(result.stdout);
-  assert.match(version.skillVersion, /^\d+\.\d+\.\d+$/);
+  assert.equal(version.skillVersion, builtSkillVersion);
   assert.equal(version.artifactFormatVersion, "0.1");
   assert.equal(version.feedbackFormatVersion, "0.1");
   assert.equal(
