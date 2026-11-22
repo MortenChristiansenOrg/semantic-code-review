@@ -52,17 +52,18 @@ export type LineAnchorCache = Map<string, number | null>;
 const defaultGit = (root: string): LineAnchorGit => (args, input, env) => gitRaw(args, { cwd: root, input, env, allowFailure: true });
 
 interface Hunk { oldStart: number; oldCount: number; newStart: number; newCount: number }
-interface Section { oldPath: string; newPath: string; oldBlob: string; newBlob: string; binary: boolean; hunks: Hunk[] }
+/** One file's part of a patch; a path is empty on the side where the file does not exist. */
+export interface Section { oldPath: string; newPath: string; oldBlob: string; newBlob: string; binary: boolean; hunks: Hunk[] }
 
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** Git's C-style quoted path, unquoted; the prefix `a/` or `b/` removed. */
-function patchPath(value: string): string {
+function patchPath(value: string, prefixed = true): string {
   // Git ends a path with a space in it with a tab; an unquoted path has no tab.
   let text = value.replace(/\r$/, "").split("\t", 1)[0];
   if (text === "/dev/null") return "";
   if (text.startsWith("\"") && text.endsWith("\"")) text = unquote(text.slice(1, -1));
-  return text.replace(/^[ab]\//, "");
+  return prefixed ? text.replace(/^[ab]\//, "") : text;
 }
 
 function unquote(text: string): string {
@@ -91,14 +92,15 @@ function headerPath(rest: string): string {
 }
 
 /** Splits `diff-tree --stdin --always -p -U0` output into one list of file
- * sections per input line, in input order. */
-function parseBlocks(output: string): Section[][] {
-  const blocks: Section[][] = [];
+ * sections per input line, in input order; without `headed`, the output of a
+ * single diff into one list. */
+function parseBlocks(output: string, headed = true): Section[][] {
+  const blocks: Section[][] = headed ? [] : [[]];
   const lines = output.split("\n");
   let section: Section | null = null;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index].replace(/\r$/, "");
-    if (OBJECT_ID.test(line)) { blocks.push([]); section = null; continue; }
+    if (headed && OBJECT_ID.test(line)) { blocks.push([]); section = null; continue; }
     const block = blocks.at(-1);
     if (!block) continue;
     if (line.startsWith("diff --git ")) {
@@ -110,8 +112,9 @@ function parseBlocks(output: string): Section[][] {
     if (!section) continue;
     if (line.startsWith("--- ")) section.oldPath = patchPath(line.slice(4));
     else if (line.startsWith("+++ ")) section.newPath = patchPath(line.slice(4));
-    else if (line.startsWith("rename from ")) section.oldPath = patchPath(line.slice(12));
-    else if (line.startsWith("rename to ")) section.newPath = patchPath(line.slice(10));
+    // Rename lines name paths without a prefix.
+    else if (line.startsWith("rename from ")) section.oldPath = patchPath(line.slice(12), false);
+    else if (line.startsWith("rename to ")) section.newPath = patchPath(line.slice(10), false);
     else if (line.startsWith("new file mode ")) section.oldPath = "";
     else if (line.startsWith("deleted file mode ")) section.newPath = "";
     else if (line.startsWith("Binary files ")) section.binary = true;
@@ -130,6 +133,11 @@ function parseBlocks(output: string): Section[][] {
     }
   }
   return blocks;
+}
+
+/** The file sections of a `-p -U0` patch with the settings of diff-settings.ts. */
+export function patchSections(patch: string): Section[] {
+  return parseBlocks(patch, false)[0];
 }
 
 /** The line a line of `filePath` became, or null when the diff changed or
@@ -205,7 +213,8 @@ export function locateLineAnchors(
 /** Locates the inputs at `indexes`; undefined where Git could not answer. */
 function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], runGit: LineAnchorGit): (number | null | undefined)[] {
   const names = [...new Set(indexes.map((index) => anchoredName(inputs[index].anchor)))];
-  const resolvedOutput = runGit(["cat-file", "--batch-check=%(objectname) %(objecttype)"], `${names.join("\n")}\n`);
+  // Replacement refs would name another parent than the diff below reads.
+  const resolvedOutput = runGit(["--no-replace-objects", "cat-file", "--batch-check=%(objectname) %(objecttype)"], `${names.join("\n")}\n`);
   if (resolvedOutput === null) return indexes.map(() => undefined);
   const resolved = new Map<string, string>();
   resolvedOutput.split("\n").forEach((line, index) => {

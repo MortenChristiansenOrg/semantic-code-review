@@ -141,6 +141,20 @@ test("rows of renamed files and unusual paths are followed", (t) => {
   assert.deepEqual(result, [6, null, 3, 2]);
 });
 
+test("a removed line is followed from the anchored head's own parent, whatever replacement refs say", (t) => {
+  const { repository, root, commit } = history(t);
+  const base = commit(root, { "app.js": lines("a", "b", "c") });
+  const head = commit(base, { "app.js": lines("a", "c") });
+  const restackedBase = commit(root, { "app.js": lines("x", "a", "b", "c") });
+  const restacked = commit(restackedBase, { "app.js": lines("x", "a", "c") });
+  // A replacement whose parent has another line above.
+  const decoyBase = commit(root, { "app.js": lines("y", "z", "a", "b", "c") });
+  repository.git("replace", head, commit(decoyBase, { "app.js": lines("y", "z", "a", "c") }));
+  const stage = { baseRevision: restackedBase, headRevision: restacked };
+  const { result } = locate(repository, [{ anchor: { stageHead: head, path: "app.js", side: "old", line: 2 }, stage, file: modified }]);
+  assert.deepEqual(result, [3]);
+});
+
 test("removed lines that look like diff headers do not confuse the reading", (t) => {
   const { repository, root, commit } = history(t);
   const tricky = ["--- a/app.js", "+++ b/app.js", "diff --git a/x b/x", "@@ -1 +1 @@", "a".repeat(40)];

@@ -155,7 +155,8 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       fs.writeFileSync(oldFile, comparedBytes); fs.writeFileSync(newFile, currentBytes);
       let patch: string;
       // The settings of the viewer's diffs, so the lines read the same whatever the user's Git configuration.
-      const command = porcelainDiff("diff", ["--no-index", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile]);
+      const command = porcelainDiff("diff", ["--no-index", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile],
+        { objectIdLength: current.headRevision.length });
       try { patch = runReviewCommand(context, "git", command.args, { encoding: null, environment: command.env }).toString("utf8"); }
       catch (error) {
         const stdout = capturedOutput(error, "stdout");

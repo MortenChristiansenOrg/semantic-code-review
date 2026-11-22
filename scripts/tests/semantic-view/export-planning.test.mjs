@@ -1266,6 +1266,7 @@ test("the viewer lists and shows a stage's changes as its inventory does, whatev
       { t: "add", o: undefined, n: 41, s: "edited" },
     ],
     sub: [{ t: "del", o: 1, n: undefined, s: commitOf(base) }, { t: "add", o: undefined, n: 1, s: commitOf(head) }],
+    "third.txt": [{ t: "add", o: undefined, n: 41, s: "edited" }],
   };
   for (const group of Object.keys(HOSTILE_GIT)) {
     await withHostileGit(repository.root, group, async () => {
@@ -1275,6 +1276,7 @@ test("the viewer lists and shows a stage's changes as its inventory does, whatev
         { ...UPDATE_AND_RENAMES[0], additions: 1, deletions: 0, binary: false },
         { ...UPDATE_AND_RENAMES[1], additions: 2, deletions: 1, binary: false },
         { ...UPDATE_AND_RENAMES[2], previousPath: undefined, additions: 1, deletions: 1, binary: false },
+        { ...UPDATE_AND_RENAMES[3], previousPath: undefined, additions: 1, deletions: 0, binary: false },
       ], group);
       // A small stage's patches, and a page of a file's whole content.
       for (const mode of ["changes", "full"]) {

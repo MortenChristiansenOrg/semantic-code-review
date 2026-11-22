@@ -11,9 +11,10 @@
  * files outside the repository, `git log -p`) run porcelain with an option for
  * each of those. Both pass options for what plumbing still reads too: submodule
  * ignore rules from .gitmodules or submodule.<name>.ignore, diff.renameLimit,
- * diff.indentHeuristic, diff.suppressBlankEmpty, which writes an empty context
- * line without its leading space, replacement refs, attributes, and the
- * GIT_DIFF_OPTS variable, which overrides the context of every patch. */
+ * core.bigFileThreshold, diff.indentHeuristic, diff.suppressBlankEmpty, which
+ * writes an empty context line without its leading space, replacement refs,
+ * attributes, and the GIT_DIFF_OPTS variable, which overrides the context of
+ * every patch. */
 
 /** The empty tree of each object format, by the length of its IDs. */
 const EMPTY_TREES: Record<number, string> = {
@@ -28,10 +29,12 @@ const EMPTY_TREES: Record<number, string> = {
  * deletion, or a patch into "Binary files differ". The user's attributes file
  * is not read (Git reads /dev/null as the null device on every platform), and
  * without attributes Git uses the "default" diff driver, whose binary setting
- * is restored to detection. Patch headers name non-ASCII paths as they are. */
+ * is restored to detection. A file larger than core.bigFileThreshold would be
+ * binary too; the threshold is Git's default. Patch headers name non-ASCII
+ * paths as they are. */
 function globalOptions(literalPathspecs: boolean): string[] {
   return ["--no-replace-objects", ...(literalPathspecs ? ["--literal-pathspecs"] : []),
-    "-c", "core.attributesFile=/dev/null", "-c", "diff.default.binary=auto",
+    "-c", "core.attributesFile=/dev/null", "-c", "diff.default.binary=auto", "-c", "core.bigFileThreshold=512m",
     "-c", "core.quotePath=false", "-c", "diff.suppressBlankEmpty=false"];
 }
 

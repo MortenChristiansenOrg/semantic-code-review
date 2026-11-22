@@ -220,8 +220,8 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    the Git configuration, and that the viewer's diffs and hunk selectors no
    longer follow `diff.algorithm`, `diff.indentHeuristic` or text conversion
    (`textconv`). Hunk selectors recorded under such settings may need to be
-   generated again, and line threads on lines those settings placed elsewhere
-   may show as stale.
+   generated again, and a line thread written on lines those settings placed
+   elsewhere may show as stale or, for a text conversion, on another line.
    The first release with prerelease support must say under Updating that
    `/semantic-flow update -p` (or `--prerelease`) installs the newest version
    including prereleases, which are less tested, that plain `update` stays on

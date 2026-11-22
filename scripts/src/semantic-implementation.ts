@@ -51,6 +51,7 @@ import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.js";
 import { diffTree, FIND_RENAMES, porcelainDiff } from "./shared/diff-settings.js";
+import { patchSections } from "./shared/line-anchors.js";
 import { parseJson, readJsonInput } from "./shared/json.js";
 import {
   changedFiles,
@@ -437,23 +438,12 @@ function readDiffChangeShape(root: string, parent: string, commit: string, file:
   const paths = [...new Set([file.previousPath, file.path].filter((value): value is string => Boolean(value)))];
   // The viewer's patch settings, so selectors name the hunks it shows.
   const command = diffTree(["-p", "--unified=0", ...FIND_RENAMES, parent, commit, "--", ...paths], { objectIdLength: commit.length });
-  const patch = gitRaw(command.args, { cwd: root, env: command.env });
-  const hunks: DiffHunk[] = [];
-  for (const line of patch.split(/\r?\n/)) {
-    const match = line.match(
-      /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
-    );
-    if (!match) continue;
-    hunks.push({
-      oldStart: Number(match[1]),
-      oldCount: match[2] === undefined ? 1 : Number(match[2]),
-      newStart: Number(match[3]),
-      newCount: match[4] === undefined ? 1 : Number(match[4]),
-    });
-  }
+  // A path also selects the files below a directory of that name; only the file's own section counts.
+  const own = patchSections(gitRaw(command.args, { cwd: root, env: command.env }))
+    .filter((section) => (section.newPath || section.oldPath) === file.path);
   return {
-    binary: /(?:Binary files|GIT binary patch)/.test(patch),
-    hunks,
+    binary: own.some((section) => section.binary),
+    hunks: own.flatMap((section) => section.hunks),
   };
 }
 
@@ -3400,7 +3390,8 @@ function abortRestack(workspace: Workspace): void {
 
 function changedPathNames(root: string, from: string, to: string): string[] {
   const command = diffTree(["--name-only", "-z", "--no-renames", from, to, "--"], { objectIdLength: to.length });
-  return gitRaw(command.args, { cwd: root, env: command.env }).split("\0").filter(Boolean);
+  // Bytes, since text output is trimmed and a path can start with white space.
+  return gitRaw(command.args, { cwd: root, env: command.env, encoding: "buffer" }).toString("utf8").split("\0").filter(Boolean);
 }
 
 function lastStageHead(artifact: Artifact): string {

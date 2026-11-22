@@ -1126,6 +1126,7 @@ test("stage plan generates the selectors of a stage's inventory as the viewer sh
     { ...UPDATE_AND_RENAMES[0], selectors: shape([40, 0, 41, 1]) },
     { ...UPDATE_AND_RENAMES[1], selectors: shape([1, 1, 1, 1], [40, 0, 41, 1]) },
     { ...UPDATE_AND_RENAMES[2], selectors: shape([1, 1, 1, 1]) },
+    { ...UPDATE_AND_RENAMES[3], selectors: shape([40, 0, 41, 1]) },
   ];
   for (const group of Object.keys(HOSTILE_GIT)) {
     await withHostileGit(repository.root, group, () => {
@@ -1133,6 +1134,22 @@ test("stage plan generates the selectors of a stage's inventory as the viewer sh
       assert.deepEqual(plan.files, expected, group);
     });
   }
+});
+
+test("stage plan gives a file the hunks of its own diff, not those of files below a directory of the same name", (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("old.txt", "content\n", "Add old");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("mv", "old.txt", "renamed.txt");
+  repository.write("old.txt/child.txt", "child\n");
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Rename old and add a folder in its place");
+  const plan = JSON.parse(repository.semantic("stage", "plan", "--stage", "implementation", "--selectors"));
+  assert.deepEqual(plan.files, [
+    { path: "old.txt/child.txt", kind: "added", selectors: { binary: false, hunks: [{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 1 }] } },
+    { path: "renamed.txt", kind: "renamed", previousPath: "old.txt", selectors: { binary: false, hunks: [] } },
+  ]);
 });
 
 test("a base revision that is not a commit ID never reaches Git", (t) => {

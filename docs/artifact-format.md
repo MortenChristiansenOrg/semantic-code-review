@@ -173,7 +173,8 @@ its commit at the next restack.
 
 ```text
 git --no-replace-objects --literal-pathspecs -c core.attributesFile=/dev/null \
-  -c diff.default.binary=auto -c core.quotePath=false -c diff.suppressBlankEmpty=false \
+  -c diff.default.binary=auto -c core.bigFileThreshold=512m \
+  -c core.quotePath=false -c diff.suppressBlankEmpty=false \
   diff-tree -r --ignore-submodules=none --no-ext-diff --no-textconv --no-color \
   --diff-algorithm=myers --indent-heuristic --inter-hunk-context=0 \
   --src-prefix=a/ --dst-prefix=b/ --submodule=short \
