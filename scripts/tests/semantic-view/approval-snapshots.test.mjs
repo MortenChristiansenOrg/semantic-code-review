@@ -69,6 +69,8 @@ test('comparison pages preserve all changed rows including source header-like te
 
 test('a comparison shows changed line endings whatever core.autocrlf says', (t) => {
   const { repo, context } = setup(t);
+  // The line endings are committed as they are.
+  repo.git('config', 'core.autocrlf', 'false');
   repo.commitFile('code.txt', 'a\r\nb\r\n', 'Windows line endings');
   const saved = captureApprovalSnapshot(context, endpoint(repo));
   repo.commitFile('code.txt', 'a\nb\n', 'Unix line endings');
