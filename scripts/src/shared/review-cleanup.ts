@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
-import { attachmentIds, beginReviewDeletion, completeReviewDeletion, pathMissing, pendingDeletionDirectory, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
+import { beginReviewDeletion, completeReviewDeletion, pathMissing, pendingDeletionDirectory, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
 import { parseJson, parseJsonDocument } from "./json.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, THREAD_SCHEMA_ID } from "./documents.js";
 import { isDocument, type DocumentTypes, type SchemaId } from "./schema-validation.js";
@@ -14,12 +14,15 @@ const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 type Entry = { name: string; size: number; modified: number; directory: boolean; link: boolean; hash?: string };
 type Category = { label: string; detail: string; bytes: number };
-/** A document's hash, so the fingerprint changes with its content. One that
- * cannot be read is recorded as such: it keeps whole-review deletion possible,
- * and the readers that need it, such as cleanup's feedback check, report it. */
-function contentHash(file: string): string {
+/** Stands in for the content of a file or folder that cannot be read. Its
+ * change time and identity still change with every write, so the fingerprint
+ * does too; recording it keeps whole-review deletion possible, and the readers
+ * that need the content, such as cleanup's feedback check, report it. */
+const unreadable = (error: unknown, stat: fs.Stats) => `unreadable:${errorCode(error) ?? "unknown"}:${stat.dev}:${stat.ino}:${stat.ctimeMs}`;
+/** A document's hash, so the fingerprint changes with its content. */
+function contentHash(file: string, stat: fs.Stats): string {
   try { return digest(fs.readFileSync(file)); }
-  catch (error) { return `unreadable:${errorCode(error) ?? "unknown"}`; }
+  catch (error) { return unreadable(error, stat); }
 }
 /** Never follow directory links when calculating sizes or deletion candidates. */
 function inventory(directory: string): Entry[] {
@@ -29,11 +32,27 @@ function inventory(directory: string): Entry[] {
   function visit(relative: string) {
     const file = path.join(directory, relative), stat = fs.lstatSync(file), isDirectory = stat.isDirectory();
     entries.push({ name: relative.replaceAll(path.sep, "/"), size: isDirectory ? 0 : stat.size, modified: stat.mtimeMs, directory: isDirectory, link: stat.isSymbolicLink(),
-      ...(!stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: contentHash(file) } : {}) });
-    if (isDirectory) for (const name of fs.readdirSync(file).sort()) visit(path.join(relative, name));
+      ...(!stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: contentHash(file, stat) } : {}) });
+    if (!isDirectory) return;
+    let names: string[];
+    try { names = fs.readdirSync(file).sort(); }
+    catch (error) { entries[entries.length - 1].hash = unreadable(error, stat); return; }
+    for (const name of names) visit(path.join(relative, name));
   }
   for (const name of fs.readdirSync(directory).sort()) visit(name);
   return entries;
+}
+/** The attachments value refers to. The viewer opens an attachment by its ID,
+ * so a reference whose path names another attachment keeps both. */
+function usedAttachmentIds(value: unknown): Set<string> {
+  const ids = new Set<string>();
+  (function visit(item: unknown) {
+    if (!item || typeof item !== "object") return;
+    const stored = isRecord(item) && typeof item.path === "string" ? /^attachments\/([a-f0-9]{64})\/content\.bin$/.exec(item.path) : null;
+    if (stored && isRecord(item) && typeof item.id === "string" && /^[a-f0-9]{64}$/.test(item.id)) { ids.add(item.id); ids.add(stored[1]); }
+    for (const child of Object.values(item)) visit(child);
+  })(value);
+  return ids;
 }
 /** Why a file cannot be read, in plain words. */
 function readProblem(error: unknown): string {
@@ -43,7 +62,11 @@ function readProblem(error: unknown): string {
 }
 /** What is at file, without following a link. */
 function probe(file: string): "missing" | "link" | "directory" | "file" | { problem: string } {
-  try { const stat = fs.lstatSync(file); return stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "directory" : "file"; }
+  try {
+    const stat = fs.lstatSync(file);
+    // Reading a special file, such as a named pipe, could wait forever.
+    return stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "directory" : stat.isFile() ? "file" : { problem: "it is not a regular file" };
+  }
   catch (error) { return errorCode(error) === "ENOENT" ? "missing" : { problem: readProblem(error) }; }
 }
 /** A feedback document's value, or why it cannot be read. Duplicate keys and
@@ -98,7 +121,7 @@ function submittedFeedback(directory: string) {
     const thread = readFeedbackDocument(THREAD_SCHEMA_ID, path.join(threadFolder, `${id}.json`));
     if ("problem" in thread) return disabled(`feedback thread ${id}${listed.has(id) ? ", listed in feedback/manifest.json," : ""} cannot be read because ${thread.problem}`);
     if (listed.has(id)) { threads++; if (thread.value.status !== "resolved") unresolved++; }
-    for (const attachment of attachmentIds(thread.value)) refs.add(attachment);
+    for (const attachment of usedAttachmentIds(thread.value)) refs.add(attachment);
   }
   return { refs, threads, unresolved, error: "" };
 }
@@ -106,7 +129,7 @@ function inspect(id: string, generation: string) {
   const review = readReview(id);
   if (review.generation !== generation) throw new Error("The selected review was replaced. Refresh Saved reviews.");
   const directory = reviewDirectory(id), entries = inventory(directory), state = review.state;
-  const refs = attachmentIds(state), snapshots = new Set(Object.values(isRecord(state.approvals) ? state.approvals : {}).map((value) => stringField(value, "snapshotId")));
+  const refs = usedAttachmentIds(state), snapshots = new Set(Object.values(isRecord(state.approvals) ? state.approvals : {}).map((value) => stringField(value, "snapshotId")));
   const feedback = submittedFeedback(directory), referenceError = feedback.error, { threads: feedbackThreads, unresolved } = feedback;
   for (const id of feedback.refs) refs.add(id);
   const unused: Array<{ path: string; bytes: number }> = [];

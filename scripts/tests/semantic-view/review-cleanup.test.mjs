@@ -705,6 +705,28 @@ test('unused cleanup does not remove the attachments of threads it finds but the
   fs.writeFileSync(path.join(feedback, 'threads', 'first.json'), '{'); assertCleanupKeeps(review, file, /feedback thread first cannot be read because it is not valid JSON/);
 });
 
+test('a feedback document or folder that cannot be read disables cleanup, keeps deletion possible and still guards the preview', (t) => {
+  const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
+  const thread = path.join(feedback, 'threads', 'first.json'), threads = path.join(feedback, 'threads'), denied = new Set([thread]);
+  const read = fs.readFileSync, list = fs.readdirSync, deny = (target) => { if (denied.has(String(target))) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); };
+  t.mock.method(fs, 'readFileSync', (target, ...rest) => { deny(target); return read(target, ...rest); });
+  t.mock.method(fs, 'readdirSync', (target, ...rest) => { deny(target); return list(target, ...rest); });
+  const before = assertCleanupKeeps(review, file, /cannot be read because access to it was denied/);
+  // Same size and modification time: only the change time shows the new content.
+  const stat = fs.statSync(thread), text = read(thread, 'utf8');
+  fs.writeFileSync(thread, text.replace('See the log.', 'See the LOG.')); fs.utimesSync(thread, stat.atime, stat.mtime);
+  assert.notEqual(preview(review).fingerprint, before.fingerprint);
+  denied.clear(); denied.add(threads);
+  const current = assertCleanupKeeps(review, file, /feedback\/threads cannot be read because access to it was denied/);
+  assert.equal(deleteReviewData(review.id, review.generation, current.fingerprint).deleted, true);
+});
+
+test('a feedback document that is not a regular file disables cleanup instead of waiting on it', { skip: process.platform === 'win32' && 'Windows has no named pipes in the file system' }, (t) => {
+  const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
+  fs.rmSync(path.join(feedback, 'manifest.json')); execFileSync('mkfifo', [path.join(feedback, 'manifest.json')]);
+  assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because it is not a regular file/);
+});
+
 test('unused cleanup keeps an attachment a thread names by ID even when its path names another', (t) => {
   const { review } = setup(t), named = oldAttachment(review, 'named.log'), other = oldAttachment(review, 'other.log');
   submitFeedback(review, { first: [{ ...named, path: other.path }] });

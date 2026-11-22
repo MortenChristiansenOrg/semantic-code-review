@@ -705,9 +705,7 @@ export function attachmentIds(state: unknown): Set<string> {
   const ids = new Set<string>();
   function visit(value: unknown) {
     if (!value || typeof value !== "object") return;
-    // The viewer opens an attachment by its ID, so a path naming another one keeps both.
-    const stored = isRecord(value) && typeof value.path === "string" ? /^attachments\/([a-f0-9]{64})\/content\.bin$/.exec(value.path) : null;
-    if (stored && isRecord(value) && typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id)) { ids.add(value.id); ids.add(stored[1]); }
+    if (isRecord(value) && typeof value.id === "string" && /^[a-f0-9]{64}$/.test(value.id) && value.path === `attachments/${value.id}/content.bin`) ids.add(value.id);
     for (const item of Object.values(value)) visit(item);
   }
   visit(state); return ids;
