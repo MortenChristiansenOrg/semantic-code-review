@@ -986,7 +986,10 @@ async function* gitLines(repoRoot: string, { args, env }: DiffCommand): AsyncGen
 async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
   targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
-  const args = (context: number) => diffTree(["-p", `-U${context}`, ...FIND_RENAMES, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
+  // A path also selects the files below a directory of that name, which Git
+  // could pair with the file as a rename; renames are found only for a renamed file.
+  const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
+  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
     { objectIdLength: stage.change.headRevision.length });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;

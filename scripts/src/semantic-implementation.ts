@@ -436,9 +436,12 @@ function diffChangeShape(root: string, parent: string, commit: string, file: Fil
 
 function readDiffChangeShape(root: string, parent: string, commit: string, file: FileChange): DiffChangeShape {
   const paths = [...new Set([file.previousPath, file.path].filter((value): value is string => Boolean(value)))];
-  // The viewer's patch settings, so selectors name the hunks it shows.
-  const command = diffTree(["-p", "--unified=0", ...FIND_RENAMES, parent, commit, "--", ...paths], { objectIdLength: commit.length });
-  // A path also selects the files below a directory of that name; only the file's own section counts.
+  // The viewer's patch settings, so selectors name the hunks it shows. A path
+  // also selects the files below a directory of that name, which Git could
+  // pair with the file as a rename: renames are found only for a file the
+  // inventory renames, and only the file's own section counts.
+  const renames = file.kind === "renamed" ? FIND_RENAMES : ["--no-renames"];
+  const command = diffTree(["-p", "--unified=0", ...renames, parent, commit, "--", ...paths], { objectIdLength: commit.length });
   const own = patchSections(gitRaw(command.args, { cwd: root, env: command.env }))
     .filter((section) => (section.newPath || section.oldPath) === file.path);
   return {

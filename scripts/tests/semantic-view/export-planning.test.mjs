@@ -18,7 +18,7 @@ import {
   scriptsDirectory,
   sourceLoader,
 } from "../helpers/repository.mjs";
-import { HOSTILE_GIT, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
+import { HOSTILE_GIT, PATH_PREFIX_CHANGES, pathPrefixStage, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
 
 const moduleUrl = new URL("../../src/semantic-view.ts", import.meta.url).href;
 
@@ -1289,4 +1289,19 @@ test("the viewer lists and shows a stage's changes as its inventory does, whatev
       }
     });
   }
+});
+
+test("the viewer pages a file's own diff, not that of files below a directory of the same name", async (t) => {
+  const repository = pathPrefixStage(t);
+  organizeStage(repository, { nodes: [{ id: "implementation-change", description: "Replace files by folders.",
+    changes: PATH_PREFIX_CHANGES.map(({ path }) => ({ path, classification: "behavior" })) }] });
+  repository.semantic("stage", "finish");
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const shown = async (filePath) => {
+    const file = stage.files.find((item) => item.path === filePath);
+    return (await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, "full")).lines.map(({ t, s }) => ({ t, s }));
+  };
+  assert.deepEqual(await shown("gone.txt"), "abcdefghij".split("").map((s) => ({ t: "del", s })));
+  assert.deepEqual(await shown("old.txt/child.txt"), [{ t: "add", s: "child" }]);
 });

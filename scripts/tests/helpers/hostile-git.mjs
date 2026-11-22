@@ -112,3 +112,35 @@ export function submoduleAndRenamesStage(t) {
   repository.semantic("stage", "finish");
   return repository;
 }
+
+/** A working stage whose changes a diff limited to one path could confuse
+ * with files below a directory of that name: old.txt is renamed and replaced
+ * by a folder, gone.txt is deleted and replaced by a folder whose child is
+ * outside.txt moved there, a file similar to gone.txt. */
+export function pathPrefixStage(t) {
+  const repository = createRepository(t);
+  const letters = (changed) => "abcdefghij".split("").map((letter) => (letter === changed ? letter.toUpperCase() : letter)).join("\n") + "\n";
+  repository.write("old.txt", "content\n");
+  repository.write("gone.txt", letters());
+  repository.write("outside.txt", letters("c"));
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Add files");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("mv", "old.txt", "renamed.txt");
+  repository.write("old.txt/child.txt", "child\n");
+  repository.git("rm", "--quiet", "gone.txt");
+  repository.git("rm", "--quiet", "outside.txt");
+  repository.write("gone.txt/child.txt", letters("c"));
+  repository.git("add", ".");
+  repository.git("commit", "-m", "Replace files by folders");
+  return repository;
+}
+
+/** The inventory of pathPrefixStage. */
+export const PATH_PREFIX_CHANGES = [
+  { path: "gone.txt", kind: "deleted" },
+  { path: "gone.txt/child.txt", kind: "renamed", previousPath: "outside.txt" },
+  { path: "old.txt/child.txt", kind: "added" },
+  { path: "renamed.txt", kind: "renamed", previousPath: "old.txt" },
+];

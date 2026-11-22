@@ -10,7 +10,7 @@ import {
   initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
-import { HOSTILE_GIT, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
+import { HOSTILE_GIT, PATH_PREFIX_CHANGES, pathPrefixStage, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
 import { readArtifact } from "../../src/shared/artifact-store.ts";
 import { changedFilesOfRanges, readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
 
@@ -1137,19 +1137,15 @@ test("stage plan generates the selectors of a stage's inventory as the viewer sh
 });
 
 test("stage plan gives a file the hunks of its own diff, not those of files below a directory of the same name", (t) => {
-  const repository = createRepository(t);
-  repository.commitFile("old.txt", "content\n", "Add old");
-  initializeImplementation(repository);
-  beginStage(repository);
-  repository.git("mv", "old.txt", "renamed.txt");
-  repository.write("old.txt/child.txt", "child\n");
-  repository.git("add", ".");
-  repository.git("commit", "-m", "Rename old and add a folder in its place");
+  const repository = pathPrefixStage(t);
+  const hunks = (...items) => ({ binary: false, hunks: items.map(([oldStart, oldCount, newStart, newCount]) => ({ oldStart, oldCount, newStart, newCount })) });
   const plan = JSON.parse(repository.semantic("stage", "plan", "--stage", "implementation", "--selectors"));
-  assert.deepEqual(plan.files, [
-    { path: "old.txt/child.txt", kind: "added", selectors: { binary: false, hunks: [{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 1 }] } },
-    { path: "renamed.txt", kind: "renamed", previousPath: "old.txt", selectors: { binary: false, hunks: [] } },
-  ]);
+  assert.deepEqual(plan.files, PATH_PREFIX_CHANGES.map((file) => ({ ...file, selectors: hunks(...{
+    "gone.txt": [[1, 10, 0, 0]],
+    "gone.txt/child.txt": [],
+    "old.txt/child.txt": [[0, 0, 1, 1]],
+    "renamed.txt": [],
+  }[file.path]) })));
 });
 
 test("a base revision that is not a commit ID never reaches Git", (t) => {
