@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fail } from "./errors.js";
-import { parseJson } from "./json.js";
+import { parseJson, withoutByteOrderMark } from "./json.js";
 import { errorMessage, isRecord } from "./narrow.js";
 
 export type OptionValue = string | true;
@@ -36,6 +36,8 @@ function inputOptionValues(name: string, value: unknown): OptionValue[] {
   if (typeof value === "number" && Number.isFinite(value)) {
     return [String(value)];
   }
+  // A batch is one value, also when its items wrongly are strings or numbers.
+  if (structuredOptions.has(name) && Array.isArray(value)) return [JSON.stringify(value)];
   if (Array.isArray(value) && value.length > 0) {
     if (value.every((item) => typeof item === "string")) {
       return value;
@@ -46,9 +48,6 @@ function inputOptionValues(name: string, value: unknown): OptionValue[] {
       )
     ) {
       return value.map(String);
-    }
-    if (structuredOptions.has(name)) {
-      return [JSON.stringify(value)];
     }
     fail(
       `Input option ${name} arrays may contain only strings or finite numbers.`,
@@ -98,7 +97,13 @@ export function parseArguments(values: string[]): ParsedArguments {
   return { positionals, options };
 }
 
-export function expandInputOptions(options: Options, cwd: string): Options {
+/** Reads the options of --input. Every key is checked against the command's
+ * options before any value is converted, so a wrong key is never reported as a wrong value. */
+export function expandInputOptions(
+  options: Options,
+  cwd: string,
+  allowedFor: (kind: string | undefined) => ReadonlySet<string>,
+): Options {
   const input = option(options, "input");
   if (!input) {
     return options;
@@ -107,9 +112,9 @@ export function expandInputOptions(options: Options, cwd: string): Options {
   const file = input === "-" ? "standard input" : path.resolve(cwd, input);
   let value: unknown;
   try {
-    value = parseJson(
+    value = parseJson(withoutByteOrderMark(
       input === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(file, "utf8"),
-    );
+    ));
   } catch (error) {
     fail(`Could not read JSON input ${file}: ${errorMessage(error)}`);
   }
@@ -119,12 +124,21 @@ export function expandInputOptions(options: Options, cwd: string): Options {
 
   const expanded: Options = new Map(options);
   expanded.delete("input");
-  for (const [rawName, rawValue] of Object.entries(value)) {
-    const name = inputOptionName(rawName);
+  const keys = Object.keys(value);
+  for (const name of keys.map(inputOptionName)) {
     if (name === "input" || name === "help") {
       fail(`JSON input may not set --${name}.`);
     }
-    if (expanded.has(name)) {
+  }
+  const given = options.get("kind")?.[0];
+  const allowed = allowedFor(typeof given === "string" ? given : inputKind(value));
+  assertKnownKeys(keys, allowed, `JSON input ${file}`, inputOptionName);
+  for (const [rawName, rawValue] of Object.entries(value)) {
+    const name = inputOptionName(rawName);
+    if (!options.has(name) && expanded.has(name)) {
+      fail(`JSON input ${file}: Duplicate input option ${name}.`);
+    }
+    if (options.has(name)) {
       fail(
         `Option --${name} is set both on the command line and in ${file}.`,
       );
@@ -184,9 +198,24 @@ export function assertKnownOptions(
 ): void {
   for (const name of options.keys()) {
     if (!allowed.has(name)) {
-      fail(`Unknown option --${name}.`);
+      const valid = [...allowed].map((option) => `--${option}`).join(", ");
+      fail(`Unknown option --${name}. Valid options: ${valid || "none"}.`);
     }
   }
+}
+
+/** Reports every key of a JSON object that names none of the allowed options.
+ * optionName maps a key to the option it names, where other spellings are accepted. */
+export function assertKnownKeys(
+  keys: readonly string[],
+  allowed: ReadonlySet<string>,
+  where: string,
+  optionName: (key: string) => string = (key) => key,
+): void {
+  const unknown = keys.filter((key) => !allowed.has(optionName(key)));
+  if (!unknown.length) return;
+  const named = unknown.map((key) => JSON.stringify(key)).join(", ");
+  fail(`${where}: Unknown key${unknown.length > 1 ? "s" : ""} ${named}. Valid keys: ${[...allowed].join(", ") || "none"}.`);
 }
 
 export function splitPair(value: string, label: string): [string, string] {
@@ -198,13 +227,31 @@ export function splitPair(value: string, label: string): [string, string] {
 }
 
 /** Converts a structured batch item using the same names and values as --input. */
-export function objectOptions(value: unknown): Options {
-  if (!value || Array.isArray(value) || typeof value !== "object") fail("Batch items must be objects.");
+export function objectOptions(value: unknown, allowed: ReadonlySet<string>, where: string): Options {
+  if (!isRecord(value)) fail(`${where}: must be an object.`);
+  assertKnownKeys(Object.keys(value), allowed, where, inputOptionName);
   const result: Options = new Map();
   for (const [rawName, rawValue] of Object.entries(value)) {
     const name = inputOptionName(rawName);
-    if (result.has(name)) fail(`Duplicate input option ${name}.`);
-    result.set(name, inputOptionValues(name, rawValue));
+    if (result.has(name)) fail(`${where}: Duplicate input option ${name}.`);
+    inBatchItem(where, () => result.set(name, inputOptionValues(name, rawValue)));
   }
   return result;
+}
+
+/** The `kind` of JSON input or a batch item, read before its values are converted. */
+export function inputKind(input: Record<string, unknown>): string | undefined {
+  const key = Object.keys(input).find((candidate) => inputOptionName(candidate) === "kind");
+  const value = key === undefined ? undefined : input[key];
+  const single: unknown = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  return typeof single === "string" ? single : undefined;
+}
+
+/** Runs the work on one batch item, naming the item in what it reports. */
+export function inBatchItem<T>(where: string, action: () => T): T {
+  try {
+    return action();
+  } catch (error) {
+    fail(`${where}: ${errorMessage(error)}`);
+  }
 }

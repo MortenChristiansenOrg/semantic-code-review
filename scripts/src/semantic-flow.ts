@@ -13,12 +13,11 @@ import {
   renderCliHelp,
   semanticFlowApi,
 } from "./command-api.js";
+import { readCommandLine } from "./command-line.js";
 import {
   assertKnownOptions,
-  expandInputOptions,
   flag,
   option,
-  parseArguments,
   type Options,
 } from "./shared/arguments.js";
 import { fail } from "./shared/errors.js";
@@ -1815,14 +1814,7 @@ async function update(options: Options): Promise<void> {
 }
 
 async function dispatch(positionals: string[], options: Options): Promise<void> {
-  const [command, ...extra] = positionals;
-  if (extra.length > 0) {
-    fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
-  }
-  if (!command || command === "help" || flag(options, "help")) {
-    console.log(HELP);
-    return;
-  }
+  const [command] = positionals;
   if (command === "inspect") {
     const json = flag(options, "json");
     printInspection(inspect(options), json);
@@ -1865,15 +1857,7 @@ async function dispatch(positionals: string[], options: Options): Promise<void> 
 
 /** Runs one workflow command line, such as `semantic-flow status`. */
 export async function runWorkflowCommand(argv: string[]): Promise<void> {
-  const parsed = parseArguments(argv);
-  if (parsed.options.has("help") && parsed.positionals.length === 0) {
-    assertKnownOptions(parsed.options, new Set(["help"]));
-    flag(parsed.options, "help");
-    console.log(HELP);
-    return;
-  }
-  await dispatch(
-    parsed.positionals,
-    expandInputOptions(parsed.options, process.cwd()),
-  );
+  const commandLine = readCommandLine(semanticFlowApi, argv, process.cwd());
+  if (!commandLine) return;
+  await dispatch(commandLine.positionals, commandLine.options);
 }

@@ -152,8 +152,13 @@ there.
 
 All bundled commands accept `--input <json-file>` or `--input -` where the API
 declares options. The input is one JSON object. Camel-case and kebab-case keys
-are accepted, arrays supply repeated options, and `true` supplies a flag. Do
+are accepted, arrays supply repeated options, and `true` supplies a flag. Give
+batch options (`items`, `threads`, `replies`) as plain arrays of objects, not
+as strings. Keys inside `threads` and `replies` items are kebab-case only. Do
 not provide the same option in both JSON and command-line arguments.
+
+`<semantic-flow> <command> --help` shows a command's options, which are
+required, and their allowed values.
 
 Commands operating on the active working stage infer it when `--stage` or
 `--id` is omitted. `current` is accepted explicitly. Updates to a finalized

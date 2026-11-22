@@ -66,7 +66,7 @@ import { readUnvalidatedImplementation, removedStageFile } from "./shared/implem
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
 import type { ReviewRecord, ViewerRecord } from "./shared/review-store.js";
-import { assertKnownOptions, option, parseArguments } from "./shared/arguments.js";
+import { assertKnownOptions, flag, option, parseArguments } from "./shared/arguments.js";
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 import type * as Wire from "./shared/viewer-protocol.js";
 import {
@@ -3210,6 +3210,13 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
   try {
     const { positionals, options } = parseArguments(argv);
     const [command, ...paths] = positionals;
+    if (options.has("help") && (!command || command === "serve")) {
+      flag(options, "help");
+      assertKnownOptions(options, new Set(["help", "review", "generation"]));
+      console.log(VIEWER_USAGE);
+      await startupWorker?.close();
+      return;
+    }
     if (command !== "serve") fail(VIEWER_USAGE);
     assertKnownOptions(options, new Set(["review", "generation"]));
     const reviewOption = option(options, "review"), generation = option(options, "generation");

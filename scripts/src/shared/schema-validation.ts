@@ -51,7 +51,8 @@ let ajv: Ajv2020 | undefined;
 function schemas(): Ajv2020 {
   if (!ajv) {
     // Schemas are only added here; Ajv compiles and caches each one on first use.
-    ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, validateFormats: true });
+    // verbose gives each error its schema, which names the valid keys.
+    ajv = new Ajv2020({ allErrors: true, verbose: true, strict: true, strictRequired: false, validateFormats: true });
     addFormats(ajv);
     for (const schema of [
       artifactCommonSchema, manifestSchema, specificationSchema, stageSchema, landingSchema,
@@ -68,9 +69,19 @@ function validator<K extends SchemaId>(id: K): ValidateFunction<DocumentTypes[K]
   return compiled;
 }
 
+/** What the schema accepts instead, for a wrong value or key. */
+function errorDetail({ keyword, params, parentSchema }: ErrorObject): string {
+  if (keyword === "enum" && Array.isArray(params.allowedValues)) return `: ${params.allowedValues.join(", ")}`;
+  if (keyword === "const") return `: ${JSON.stringify(params.allowedValue)}`;
+  if (keyword !== "additionalProperties") return "";
+  const properties: unknown = parentSchema?.properties;
+  const valid = isRecord(properties) ? ` Valid keys: ${Object.keys(properties).join(", ")}.` : "";
+  return `: unknown key ${JSON.stringify(params.additionalProperty)}.${valid}`;
+}
+
 export function schemaErrors(errors: ErrorObject[] | null | undefined, file: string): string {
   return (errors ?? [])
-    .map((error) => `${file}${error.instancePath || "/"} ${error.message ?? "is invalid"}`)
+    .map((error) => `${file}${error.instancePath || "/"} ${error.message ?? "is invalid"}${errorDetail(error)}`)
     .join("\n") || `${file}/ is invalid`;
 }
 
@@ -82,8 +93,13 @@ export function isDocument<K extends SchemaId>(id: K, value: unknown): value is 
 /** Validates value as a document of this kind, failing with every schema error. */
 export function parseDocument<K extends SchemaId>(id: K, value: unknown, file: string): DocumentTypes[K] {
   const schemaId = isRecord(value) ? value.$schema : undefined;
-  if (typeof schemaId !== "string") fail(`${file}: missing string $schema.`);
-  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}.`);
+  if (typeof schemaId !== "string") {
+    // A misspelled $schema is itself an unknown key.
+    const check = validator(id);
+    const unknown = check(value) ? [] : (check.errors ?? []).filter(({ keyword }) => keyword === "additionalProperties");
+    fail(`${file}: missing string $schema. Use "${id}".${unknown.length ? `\n${schemaErrors(unknown, file)}` : ""}`);
+  }
+  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}. Use "${id}".`);
   const validate = validator(id);
   if (!validate(value)) fail(schemaErrors(validate.errors, file));
   return value;

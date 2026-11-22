@@ -8,12 +8,13 @@ import {
   renderCliHelp,
   reviewFeedbackApi,
 } from "./command-api.js";
+import { readCommandLine } from "./command-line.js";
 import {
   assertKnownOptions,
-  expandInputOptions,
+  assertKnownKeys,
   flag,
+  inBatchItem,
   option,
-  parseArguments,
   repeatedOption,
   type Options,
 } from "./shared/arguments.js";
@@ -559,12 +560,13 @@ function createThread(paths: FeedbackPaths, options: Options, semantic: Semantic
   return thread;
 }
 
-function addThreads(paths: FeedbackPaths, optionSets: Options[]): Thread[] {
+function addThreads(paths: FeedbackPaths, optionSets: Options[], batch = false): Thread[] {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const knownIds = new Set(feedback.threads.keys());
-  const threads = optionSets.map((options) =>
-    createThread(paths, options, semantic, knownIds),
-  );
+  const threads = optionSets.map((options, index) => {
+    const create = () => createThread(paths, options, semantic, knownIds);
+    return batch ? inBatchItem(`threads[${index}]`, create) : create();
+  });
   const oldManifest = structuredClone(feedback.manifest);
   feedback.manifest.threads.push(...threads.map((thread) => thread.id));
   const files = threads.map((thread) =>
@@ -592,9 +594,9 @@ function addThread(paths: FeedbackPaths, options: Options): void {
 }
 
 function batchThreadOptions(value: unknown, index: number): Options {
-  if (!isRecord(value)) {
-    fail(`Feedback thread batch item ${index + 1} must be an object.`);
-  }
+  const where = `threads[${index}]`;
+  if (!isRecord(value)) fail(`${where}: must be an object.`);
+  assertKnownKeys(Object.keys(value), commandOptionNames(reviewFeedbackApi, "thread add"), where);
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
     if (name === "attachments" && isStringArray(item)) {
@@ -604,15 +606,9 @@ function batchThreadOptions(value: unknown, index: number): Options {
     } else if (typeof item === "number" && Number.isFinite(item)) {
       options.set(name, [String(item)]);
     } else {
-      fail(
-        `Feedback thread batch item ${index + 1} option ${name} must be a string or finite number.`,
-      );
+      fail(`${where}: option ${name} must be a string or finite number.`);
     }
   }
-  assertKnownOptions(
-    options,
-    commandOptionNames(reviewFeedbackApi, "thread add"),
-  );
   return options;
 }
 
@@ -645,6 +641,7 @@ function addThreadBatch(paths: FeedbackPaths, options: Options): void {
   const threads = addThreads(
     paths,
     values.map((value, index) => batchThreadOptions(value, index)),
+    true,
   );
   console.log(`Added ${threads.length} feedback thread(s).`);
 }
@@ -947,14 +944,16 @@ function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback, 
     respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
     if (!respondsTo) fail(`Feedback thread ${id} is not part of round ${claimId}.`);
   }
-  thread.comments.push({
+  const comment: Comment = {
     id: commentId,
     author,
     ...commentInput(paths, options),
     createdAt: new Date().toISOString(),
     ...(respondsTo ? { respondsTo } : {}),
-  });
-  const replied = thread.status === "resolved" ? reopened(thread) : thread;
+  };
+  const extended: Thread = { ...thread, comments: [...thread.comments, comment] };
+  // Checked before it joins the others, so a batch names the reply that is invalid.
+  const replied = parseDocument(THREAD_SCHEMA_ID, extended.status === "resolved" ? reopened(extended) : extended, "Feedback reply input");
   feedback.threads.set(id, replied);
   return { id, commentId, thread: replied };
 }
@@ -964,17 +963,22 @@ function agentReplies(optionSets: Options[]): AgentReply[] {
     .map((options) => ({ threadId: option(options, "id", { required: true }), claimId: option(options, "claim") }));
 }
 
-function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string; commentId: string; thread: Thread }[] {
+function replyThreads(paths: FeedbackPaths, optionSets: Options[], batch = false): { id: string; commentId: string; thread: Thread }[] {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const originals = new Map<string, Thread>();
   for (const options of optionSets) {
-    const id = option(options, "id", { required: true });
+    // applyReply reports a missing id, with the item it is missing from.
+    const id = option(options, "id");
+    if (id === undefined) continue;
     const thread = feedback.threads.get(id);
     if (thread && !originals.has(id)) {
       originals.set(id, structuredClone(thread));
     }
   }
-  const replies = optionSets.map((options) => applyReply(paths, options, feedback, semantic));
+  const replies = optionSets.map((options, index) => {
+    const apply = () => applyReply(paths, options, feedback, semantic);
+    return batch ? inBatchItem(`replies[${index}]`, apply) : apply();
+  });
   try {
     for (const id of originals.keys()) {
       const thread = feedback.threads.get(id);
@@ -990,9 +994,9 @@ function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string
 }
 
 function batchReplyOptions(value: unknown, index: number): Options {
-  if (!isRecord(value)) {
-    fail(`Feedback reply batch item ${index + 1} must be an object.`);
-  }
+  const where = `replies[${index}]`;
+  if (!isRecord(value)) fail(`${where}: must be an object.`);
+  assertKnownKeys(Object.keys(value), commandOptionNames(reviewFeedbackApi, "thread reply"), where);
   const options: Options = new Map();
   for (const [name, item] of Object.entries(value)) {
     if (name === "attachments" && isStringArray(item)) {
@@ -1000,15 +1004,9 @@ function batchReplyOptions(value: unknown, index: number): Options {
     } else if (typeof item === "string") {
       options.set(name, [item]);
     } else {
-      fail(
-        `Feedback reply batch item ${index + 1} option ${name} must be a string.`,
-      );
+      fail(`${where}: option ${name} must be a string.`);
     }
   }
-  assertKnownOptions(
-    options,
-    commandOptionNames(reviewFeedbackApi, "thread reply"),
-  );
   return options;
 }
 
@@ -1030,6 +1028,7 @@ function replyThreadBatch(paths: FeedbackPaths, options: Options): void {
   const replies = replyThreads(
     paths,
     items.map((value, index) => batchReplyOptions(value, index)),
+    true,
   );
   console.log(`Added ${replies.length} feedback reply/replies.`);
 }
@@ -1080,7 +1079,6 @@ function partialFeedbackBatch(paths: FeedbackPaths, values: unknown[], mode: "ad
         feedback.manifest.threads.push(id);
       } else {
         const reply = applyReply(paths, options, feedback, semantic);
-        parseDocument(THREAD_SCHEMA_ID, reply.thread, "Feedback reply input");
         if (option(options, "author") === "agent") replies.push({ threadId: id, claimId: option(options, "claim") });
       }
       changed.add(id);
@@ -1203,22 +1201,7 @@ function reopenThreadById(paths: FeedbackPaths, id: string): void {
   validateFeedback(paths, { quiet: true });
 }
 
-function rejectExtraPositionals(positionals: string[]): void {
-  const extra = positionals.slice(2);
-  if (extra.length) fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
-}
-
-function printHelp(positionals: string[], options: Options): void {
-  rejectExtraPositionals(positionals);
-  const help = options.get("help");
-  if (help && (help.length !== 1 || help[0] !== true)) {
-    fail("--help is a flag.");
-  }
-  console.log(HELP);
-}
-
 function dispatch(paths: FeedbackPaths, positionals: string[], options: Options): void {
-  rejectExtraPositionals(positionals);
   const [command, subcommand] = positionals;
   if (command === "init" && !subcommand) return initialize(paths, options);
   if (command === "thread" && subcommand === "add") {
@@ -1283,15 +1266,10 @@ function feedbackOperation<T>(paths: FeedbackPaths, action: () => T): T {
 
 /** Runs one `semantic-flow feedback` command line in the current working directory. */
 export function runFeedbackCommand(argv: string[]): void {
-  const { positionals, options: parsedOptions } = parseArguments(argv);
-  const options = expandInputOptions(parsedOptions, process.cwd());
+  const commandLine = readCommandLine(reviewFeedbackApi, argv, process.cwd());
+  if (!commandLine) return;
+  const { positionals, options } = commandLine;
   const command = positionals.join(" ");
-  if (!positionals.length || positionals[0] === "help" || options.has("help")) {
-    printHelp(positionals, options);
-    return;
-  }
-  if (!reviewFeedbackApi.commands.some((entry) => entry.command === command)) fail(`Unknown command: ${command}.\n\n${HELP}`);
-  assertKnownOptions(options, commandOptionNames(reviewFeedbackApi, command));
   let paths = pathsFor(repositoryRoot());
   if (command === "init" && fs.existsSync(path.join(reviewDirectory(paths.reviewId), "review.json")) && readReview(paths.reviewId).remote) {
     fail("Remote reviews support personal notes only.");

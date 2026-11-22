@@ -8,16 +8,19 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+  batchItemKeys,
   commandOptionNames,
+  INSIGHT_KINDS,
   renderCliHelp,
   semanticImplementationApi,
 } from "./command-api.js";
+import { readCommandLine } from "./command-line.js";
 import {
   assertKnownOptions,
-  expandInputOptions,
   flag,
+  inBatchItem,
+  inputKind,
   option,
-  parseArguments,
   repeatedOption,
   splitPair,
   objectOptions,
@@ -47,7 +50,7 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.js";
-import { parseJson, readJson } from "./shared/json.js";
+import { parseJson, readJsonInput } from "./shared/json.js";
 import {
   changedFiles,
   fullFormFiles,
@@ -1341,7 +1344,6 @@ function setStage(workspace: Workspace, options: Options): void {
 interface RecordedItem {
   collection: InsightCollection;
   value: JsonRecord;
-  allowed: string[];
 }
 
 function itemForKind(kind: string, options: Options): RecordedItem {
@@ -1356,7 +1358,6 @@ function itemForKind(kind: string, options: Options): RecordedItem {
           summary: option(options, "summary", { required: true }),
           rationale: option(options, "rationale", { required: true }),
         },
-        allowed: ["category", "summary", "rationale"],
       };
     case "assumption":
       return {
@@ -1366,7 +1367,6 @@ function itemForKind(kind: string, options: Options): RecordedItem {
           statement: option(options, "statement", { required: true }),
           riskIfWrong: option(options, "risk-if-wrong", { required: true }),
         },
-        allowed: ["statement", "risk-if-wrong"],
       };
     case "alternative":
       return {
@@ -1376,7 +1376,6 @@ function itemForKind(kind: string, options: Options): RecordedItem {
           approach: option(options, "approach", { required: true }),
           reasonRejected: option(options, "reason-rejected", { required: true }),
         },
-        allowed: ["approach", "reason-rejected"],
       };
     case "failed-attempt":
       return {
@@ -1387,7 +1386,6 @@ function itemForKind(kind: string, options: Options): RecordedItem {
           outcome: option(options, "outcome", { required: true }),
           lesson: option(options, "lesson", { required: true }),
         },
-        allowed: ["approach", "outcome", "lesson"],
       };
     case "risk": {
       const value: JsonRecord = {
@@ -1399,7 +1397,6 @@ function itemForKind(kind: string, options: Options): RecordedItem {
       return {
         collection: "risks",
         value,
-        allowed: ["summary", "mitigation"],
       };
     }
     case "question":
@@ -1409,13 +1406,14 @@ function itemForKind(kind: string, options: Options): RecordedItem {
           id,
           question: option(options, "question", { required: true }),
         },
-        allowed: ["question"],
       };
     default:
-      fail(
-        `Unsupported record kind ${kind}. Use decision, assumption, alternative, failed-attempt, risk, or question.`,
-      );
+      fail(unsupportedKind(kind, INSIGHT_KINDS));
   }
+}
+
+function unsupportedKind(kind: string, kinds: readonly string[]): string {
+  return `Unsupported record kind ${kind}. Use ${kinds.slice(0, -1).join(", ")}, or ${kinds.at(-1)}.`;
 }
 
 function validateRecordedNodeRefs(stage: EditableStage, nodeRefs: string[] | undefined): void {
@@ -1481,7 +1479,7 @@ function targetInsight(workspace: Workspace, options: Options): void {
   const artifact = validateArtifact(workspace, { quiet: true, validateGit: false });
   const id = explicitId ?? selectedWorkingStageId(artifact, requested, "stage");
   const collection = option(options, "collection", { required: true }), itemId = option(options, "item-id", { required: true });
-  if (!isInsightCollection(collection)) fail("Unknown insight collection.");
+  if (!isInsightCollection(collection)) fail(`--collection must be one of ${STAGE_ITEM_COLLECTIONS.join(", ")}.`);
   const remove = flag(options, "remove");
   const hasCode = ["code-path", "code-start", "code-end"].some(key => options.has(key));
   if (remove ? hasCode : !hasCode) fail("Use --remove or --code-path with --code-start to set a target.");
@@ -1515,19 +1513,7 @@ function recordStageItem(workspace: Workspace, options: Options, batch: StageBat
   if (nodeRefs.length > 0) {
     item.value.nodeRefs = nodeRefs;
   }
-  item.allowed.push("node-ref", "code-path", "code-start", "code-end");
   const replace = flag(options, "replace");
-  assertKnownOptions(
-    options,
-    new Set([
-      "stage",
-      "kind",
-      "item-id",
-      "replace",
-      "finalized",
-      ...item.allowed,
-    ]),
-  );
 
   updateStage(workspace, stageId, finalized, (stage) => {
     const index = stageItems(stage, item.collection).findIndex(
@@ -1753,24 +1739,40 @@ function recordStageBatch(workspace: Workspace, options: Options): void {
   if (!stage) fail(`Stage ${id} does not exist.`);
   const items: unknown = parseJson(option(options, "items", { required: true }));
   if (!Array.isArray(items) || !items.length) fail("--items must be a non-empty JSON array.");
-  // Each entry is narrowed to options by objectOptions and validated with the stage.
+  // Each entry is narrowed to options by batchItemOptions and validated with the stage.
   const entries: unknown[] = items;
+  // Every item's keys are checked before the first item is recorded.
+  const inputs = entries.map(batchItemOptions);
   const batch: StageBatch = { artifact, finalized, stage: structuredClone(stage) };
-  for (const item of entries) {
-    const input = objectOptions(item);
-    if (input.has("stage") || input.has("finalized")) fail("Set the batch stage and finalized flag outside items.");
+  for (const [index, input] of inputs.entries()) {
     input.set("stage", [id]);
     if (finalized) input.set("finalized", [true]);
-    if (option(input, "kind") === "validation") {
-      input.delete("kind");
-      recordValidation(workspace, input, batch);
-    } else recordStageItem(workspace, input, batch);
+    inBatchItem(`items[${index}]`, () => {
+      if (option(input, "kind") === "validation") {
+        input.delete("kind");
+        recordValidation(workspace, input, batch);
+      } else recordStageItem(workspace, input, batch);
+    });
   }
   const draft = new ArtifactDraft(workspace.snapshot);
   writeStage(draft, batch.stage);
   validateArtifact(workspace, { quiet: true, validateGit: false }, draft);
   commitArtifact(workspace.root, workspace.snapshot, draft);
   console.log(JSON.stringify({ stageId: id, recorded: entries.length }));
+}
+
+function batchItemOptions(item: unknown, index: number): Options {
+  const where = `items[${index}]`;
+  const fields = isRecord(item) ? item : {};
+  if (Object.keys(fields).some((key) => ["stage", "finalized"].includes(key.toLowerCase()))) {
+    fail(`${where}: Set the batch stage and finalized flag outside items.`);
+  }
+  const input = objectOptions(item, batchItemKeys(inputKind(fields)), where);
+  const kind = input.get("kind")?.[0];
+  if (typeof kind === "string" && kind !== "validation" && !INSIGHT_KINDS.includes(kind)) {
+    fail(`${where}: ${unsupportedKind(kind, [...INSIGHT_KINDS, "validation"])}`);
+  }
+  return input;
 }
 
 function organizationPlan(workspace: Workspace, options: Options): void {
@@ -1842,7 +1844,7 @@ function organizeStage(workspace: Workspace, options: Options): void {
     workspace.root,
     option(options, "file", { required: true }),
   );
-  const organization = parseDocument(STAGE_ORGANIZATION_SCHEMA_ID, readJson(inputFile), inputFile);
+  const organization = parseDocument(STAGE_ORGANIZATION_SCHEMA_ID, readJsonInput(inputFile), inputFile);
 
   const artifact = validateArtifact(workspace, {
     quiet: true,
@@ -4162,19 +4164,7 @@ export function implementationWorkflow(
 }
 
 function dispatch(root: string, positionals: string[], options: Options): void {
-  const [command, subcommand, ...extra] = positionals;
-  if (extra.length > 0) {
-    fail(`Unexpected positional arguments: ${extra.join(" ")}.`);
-  }
-  if (!command || command === "help" || flag(options, "help")) {
-    console.log(HELP);
-    return;
-  }
-  // Unknown options are reported before the artifact is read.
-  const known = [command, subcommand].filter(Boolean).join(" ");
-  if (semanticImplementationApi.commands.some((signature) => signature.command === known)) {
-    assertKnownOptions(options, commandOptionNames(semanticImplementationApi, known));
-  }
+  const [command, subcommand] = positionals;
 
   if (command === "init" && subcommand === undefined) {
     initialize(root, options);
@@ -4261,17 +4251,8 @@ function dispatch(root: string, positionals: string[], options: Options): void {
 
 /** Runs one `semantic-flow implementation` command line in the current working directory. */
 export function runImplementationCommand(argv: string[]): void {
-  const parsed = parseArguments(argv);
-  if (parsed.options.has("help") && parsed.positionals.length === 0) {
-    assertKnownOptions(parsed.options, new Set(["help"]));
-    flag(parsed.options, "help");
-    console.log(HELP);
-    return;
-  }
+  const commandLine = readCommandLine(semanticImplementationApi, argv, process.cwd());
+  if (!commandLine) return;
   const root = repositoryRoot();
-  withValidationContext(() => dispatch(
-    root,
-    parsed.positionals,
-    expandInputOptions(parsed.options, process.cwd()),
-  ));
+  withValidationContext(() => dispatch(root, commandLine.positionals, commandLine.options));
 }
