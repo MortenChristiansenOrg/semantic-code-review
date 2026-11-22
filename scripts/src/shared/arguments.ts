@@ -36,6 +36,8 @@ function inputOptionValues(name: string, value: unknown): OptionValue[] {
   if (typeof value === "number" && Number.isFinite(value)) {
     return [String(value)];
   }
+  // A batch is one value, also when its items wrongly are strings or numbers.
+  if (structuredOptions.has(name) && Array.isArray(value)) return [JSON.stringify(value)];
   if (Array.isArray(value) && value.length > 0) {
     if (value.every((item) => typeof item === "string")) {
       return value;
@@ -46,9 +48,6 @@ function inputOptionValues(name: string, value: unknown): OptionValue[] {
       )
     ) {
       return value.map(String);
-    }
-    if (structuredOptions.has(name)) {
-      return [JSON.stringify(value)];
     }
     fail(
       `Input option ${name} arrays may contain only strings or finite numbers.`,
@@ -100,7 +99,11 @@ export function parseArguments(values: string[]): ParsedArguments {
 
 /** Reads the options of --input. Every key is checked against the command's
  * options before any value is converted, so a wrong key is never reported as a wrong value. */
-export function expandInputOptions(options: Options, cwd: string, allowed: ReadonlySet<string>): Options {
+export function expandInputOptions(
+  options: Options,
+  cwd: string,
+  allowedFor: (kind: string | undefined) => ReadonlySet<string>,
+): Options {
   const input = option(options, "input");
   if (!input) {
     return options;
@@ -127,10 +130,15 @@ export function expandInputOptions(options: Options, cwd: string, allowed: Reado
       fail(`JSON input may not set --${name}.`);
     }
   }
+  const given = options.get("kind")?.[0];
+  const allowed = allowedFor(typeof given === "string" ? given : inputKind(value));
   assertKnownKeys(keys, allowed, `JSON input ${file}`, inputOptionName);
   for (const [rawName, rawValue] of Object.entries(value)) {
     const name = inputOptionName(rawName);
-    if (expanded.has(name)) {
+    if (!options.has(name) && expanded.has(name)) {
+      fail(`JSON input ${file}: Duplicate input option ${name}.`);
+    }
+    if (options.has(name)) {
       fail(
         `Option --${name} is set both on the command line and in ${file}.`,
       );
@@ -226,11 +234,24 @@ export function objectOptions(value: unknown, allowed: ReadonlySet<string>, wher
   for (const [rawName, rawValue] of Object.entries(value)) {
     const name = inputOptionName(rawName);
     if (result.has(name)) fail(`${where}: Duplicate input option ${name}.`);
-    try {
-      result.set(name, inputOptionValues(name, rawValue));
-    } catch (error) {
-      fail(`${where}: ${errorMessage(error)}`);
-    }
+    inBatchItem(where, () => result.set(name, inputOptionValues(name, rawValue)));
   }
   return result;
+}
+
+/** The `kind` of JSON input or a batch item, read before its values are converted. */
+export function inputKind(input: Record<string, unknown>): string | undefined {
+  const key = Object.keys(input).find((candidate) => inputOptionName(candidate) === "kind");
+  const value = key === undefined ? undefined : input[key];
+  const single: unknown = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  return typeof single === "string" ? single : undefined;
+}
+
+/** Runs the work on one batch item, naming the item in what it reports. */
+export function inBatchItem<T>(where: string, action: () => T): T {
+  try {
+    return action();
+  } catch (error) {
+    fail(`${where}: ${errorMessage(error)}`);
+  }
 }

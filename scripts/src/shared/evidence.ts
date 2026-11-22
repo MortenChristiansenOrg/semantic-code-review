@@ -14,10 +14,13 @@ const MEDIA_TYPES: Record<string, string> = {
   json: "application/json", pdf: "application/pdf",
 };
 
+/** The file types evidence may be captured in. */
+export const EVIDENCE_EXTENSIONS: readonly string[] = Object.keys(MEDIA_TYPES);
+
 export function evidenceMediaType(file: string) {
   const extension = path.extname(file).slice(1).toLowerCase();
   const mediaType = MEDIA_TYPES[extension];
-  if (!mediaType) fail(`Unsupported evidence file ${path.basename(file)}. Use ${Object.keys(MEDIA_TYPES).join(", ")}.`);
+  if (!mediaType) fail(`Unsupported evidence file ${path.basename(file)}. Use ${EVIDENCE_EXTENSIONS.join(", ")}.`);
   return { extension, mediaType };
 }
 

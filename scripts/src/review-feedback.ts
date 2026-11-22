@@ -13,6 +13,7 @@ import {
   assertKnownOptions,
   assertKnownKeys,
   flag,
+  inBatchItem,
   option,
   repeatedOption,
   type Options,
@@ -559,12 +560,13 @@ function createThread(paths: FeedbackPaths, options: Options, semantic: Semantic
   return thread;
 }
 
-function addThreads(paths: FeedbackPaths, optionSets: Options[]): Thread[] {
+function addThreads(paths: FeedbackPaths, optionSets: Options[], batch = false): Thread[] {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const knownIds = new Set(feedback.threads.keys());
-  const threads = optionSets.map((options) =>
-    createThread(paths, options, semantic, knownIds),
-  );
+  const threads = optionSets.map((options, index) => {
+    const create = () => createThread(paths, options, semantic, knownIds);
+    return batch ? inBatchItem(`threads[${index}]`, create) : create();
+  });
   const oldManifest = structuredClone(feedback.manifest);
   feedback.manifest.threads.push(...threads.map((thread) => thread.id));
   const files = threads.map((thread) =>
@@ -639,6 +641,7 @@ function addThreadBatch(paths: FeedbackPaths, options: Options): void {
   const threads = addThreads(
     paths,
     values.map((value, index) => batchThreadOptions(value, index)),
+    true,
   );
   console.log(`Added ${threads.length} feedback thread(s).`);
 }
@@ -958,17 +961,22 @@ function agentReplies(optionSets: Options[]): AgentReply[] {
     .map((options) => ({ threadId: option(options, "id", { required: true }), claimId: option(options, "claim") }));
 }
 
-function replyThreads(paths: FeedbackPaths, optionSets: Options[]): { id: string; commentId: string; thread: Thread }[] {
+function replyThreads(paths: FeedbackPaths, optionSets: Options[], batch = false): { id: string; commentId: string; thread: Thread }[] {
   const { semantic, feedback } = validateFeedback(paths, { quiet: true });
   const originals = new Map<string, Thread>();
   for (const options of optionSets) {
-    const id = option(options, "id", { required: true });
+    // applyReply reports a missing id, with the item it is missing from.
+    const id = option(options, "id");
+    if (id === undefined) continue;
     const thread = feedback.threads.get(id);
     if (thread && !originals.has(id)) {
       originals.set(id, structuredClone(thread));
     }
   }
-  const replies = optionSets.map((options) => applyReply(paths, options, feedback, semantic));
+  const replies = optionSets.map((options, index) => {
+    const apply = () => applyReply(paths, options, feedback, semantic);
+    return batch ? inBatchItem(`replies[${index}]`, apply) : apply();
+  });
   try {
     for (const id of originals.keys()) {
       const thread = feedback.threads.get(id);
@@ -1018,6 +1026,7 @@ function replyThreadBatch(paths: FeedbackPaths, options: Options): void {
   const replies = replyThreads(
     paths,
     items.map((value, index) => batchReplyOptions(value, index)),
+    true,
   );
   console.log(`Added ${replies.length} feedback reply/replies.`);
 }

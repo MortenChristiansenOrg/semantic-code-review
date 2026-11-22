@@ -566,7 +566,7 @@ export interface AddFeedbackThreadOptions {
     side?: DiffSide;
     /** Positive line number for a line target. */
     line?: string;
-    /** Stage responsible for resolving the thread when it differs from the anchor stage. */
+    /** Stage responsible for resolving the thread when it differs from the anchor stage; required for specification and criterion targets, which have none. */
     "assigned-stage"?: string;
 }
 /**

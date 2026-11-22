@@ -11,7 +11,6 @@ import {
   batchItemKeys,
   commandOptionNames,
   INSIGHT_KINDS,
-  insightOptionNames,
   renderCliHelp,
   semanticImplementationApi,
 } from "./command-api.js";
@@ -19,6 +18,8 @@ import { readCommandLine } from "./command-line.js";
 import {
   assertKnownOptions,
   flag,
+  inBatchItem,
+  inputKind,
   option,
   repeatedOption,
   splitPair,
@@ -1506,8 +1507,6 @@ function recordStageItem(workspace: Workspace, options: Options, batch: StageBat
   const stageId = explicitId
     ?? selectedWorkingStageId(batch?.artifact ?? validateArtifact(workspace, { quiet: true, validateGit: false }), requestedStage, "stage");
   const kind = option(options, "kind", { required: true });
-  // An option of another kind is the mistake to report, before what this kind lacks.
-  if (INSIGHT_KINDS.includes(kind)) assertKnownOptions(options, insightOptionNames(kind));
   const item = itemForKind(kind, options);
   const itemId = option(options, "item-id", { required: true });
   const nodeRefs = repeatedOption(options, "node-ref");
@@ -1748,14 +1747,12 @@ function recordStageBatch(workspace: Workspace, options: Options): void {
   for (const [index, input] of inputs.entries()) {
     input.set("stage", [id]);
     if (finalized) input.set("finalized", [true]);
-    try {
+    inBatchItem(`items[${index}]`, () => {
       if (option(input, "kind") === "validation") {
         input.delete("kind");
         recordValidation(workspace, input, batch);
       } else recordStageItem(workspace, input, batch);
-    } catch (error) {
-      fail(`items[${index}]: ${errorMessage(error)}`);
-    }
+    });
   }
   const draft = new ArtifactDraft(workspace.snapshot);
   writeStage(draft, batch.stage);
@@ -1767,9 +1764,11 @@ function recordStageBatch(workspace: Workspace, options: Options): void {
 function batchItemOptions(item: unknown, index: number): Options {
   const where = `items[${index}]`;
   const fields = isRecord(item) ? item : {};
-  if ("stage" in fields || "finalized" in fields) fail(`${where}: Set the batch stage and finalized flag outside items.`);
-  const { kind } = fields;
-  const input = objectOptions(item, batchItemKeys(kind), where);
+  if (Object.keys(fields).some((key) => ["stage", "finalized"].includes(key.toLowerCase()))) {
+    fail(`${where}: Set the batch stage and finalized flag outside items.`);
+  }
+  const input = objectOptions(item, batchItemKeys(inputKind(fields)), where);
+  const kind = input.get("kind")?.[0];
   if (typeof kind === "string" && kind !== "validation" && !INSIGHT_KINDS.includes(kind)) {
     fail(`${where}: ${unsupportedKind(kind, [...INSIGHT_KINDS, "validation"])}`);
   }

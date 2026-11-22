@@ -230,3 +230,85 @@ test("stored artifact and feedback documents still reject a byte-order mark", (t
   repository.artifact.write(stage, `${BOM}${repository.artifact.read(stage)}`);
   repository.expectSemanticFailure("byte-order marks are not allowed", "validate");
 });
+
+test("each feedback target kind needs just the options its help requires", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const { options } = cliApis[1].commands.find(({ command }) => command === "thread add");
+  const values = { specification: "story", criterion: "works", stage: "implementation", node: "implementation-change", path: "implementation.txt",
+    side: "new", line: "1", "assigned-stage": "implementation" };
+  for (const kind of ["specification", "criterion", "stage", "node", "file", "line"]) {
+    const required = options.filter(({ note }) => {
+      const kinds = /^required for --target-kind ([^;]*)/.exec(note ?? "")?.[1];
+      return kinds?.split(/, | or /).includes(kind);
+    });
+    repository.feedback("thread", "add", "--id", `on-${kind}`, "--comment-id", `comment-${kind}`, "--body", "Check this.", "--label", "Anchor",
+      "--target-kind", kind, ...required.flatMap(({ name }) => [`--${name}`, values[name]]));
+  }
+});
+
+test("a mistyped subcommand lists the commands", (t) => {
+  const cwd = outsideRepository(t);
+  for (const words of [["implementation", "archive", "landed"], ["implementation", "validate", "stack"], ["feedback", "init", "again"]]) {
+    assert.match(failure(cwd, words), /Unknown command: .*\n\n[\s\S]*Usage:/);
+  }
+  assert.match(failure(cwd, ["implementation", "archive", "share", "extra"]), /Unexpected positional arguments: extra/);
+  assert.match(failure(cwd, ["version", "extra"]), /Unexpected positional arguments: extra/);
+});
+
+test("help is found from the top, names longer commands, and rejects a malformed request", (t) => {
+  const cwd = outsideRepository(t);
+  for (const words of [["implementation", "stage", "record"], ["feedback", "thread", "add"]]) {
+    assert.equal(run(cwd, ["help", ...words]).stdout, run(cwd, [...words, "--help"]).stdout);
+  }
+  assert.match(run(cwd, ["implementation", "archive", "--help"]).stdout, /See also:[\s\S]*archive landing[\s\S]*archive share/);
+  for (const args of [["implementation", "--help", "--bogus"], ["--help", "--bogus"], ["feedback", "--help", "--bogus"],
+    ["viewer", "serve", "--help=true"], ["viewer", "bogus", "--help"]]) failure(cwd, args);
+  assert.equal(run(cwd, ["feedback", "--wait", "--help"]).status, 0);
+});
+
+test("stage record offers and checks only its kind's keys, before converting values", (t) => {
+  const { repository, batch } = workingStage(t);
+  const record = ["implementation", "stage", "record"];
+  const option = failure(repository.root, [...record, "--kind", "decision", "--bogus"]);
+  assert.doesNotMatch(option.split("Valid options:")[1], /--question|--mitigation/);
+  for (const kind of ["question", ["question"]]) {
+    const value = { kind, category: [{ a: 1 }] };
+    assert.match(failure(repository.root, [...record, "--input", "-"], JSON.stringify(value)), /Unknown key "category"/);
+    assert.match(batch({ items: [value] }), /items\[0\]: Unknown key "category"/);
+  }
+  assert.match(failure(repository.root, [...record, "--kind", "question", "--input", "-"], '{"category":[{"a":1}]}'), /Unknown key "category"/);
+  const validation = batch({ items: [{ Kind: "validation", category: "engineering" }] });
+  assert.doesNotMatch(validation.split("Valid keys:")[1], /\bstage\b|finalized|category/);
+  assert.match(batch({ items: [{ kind: ["bogus"] }] }), /or validation\./);
+});
+
+test("a batch of strings and a doubly given key name the real mistake", (t) => {
+  const { repository, batch } = workingStage(t);
+  for (const items of [["a"], ["a", "b"], [1, 2]]) assert.match(batch({ items }), /items\[0\]: must be an object/);
+  const duplicate = failure(repository.root, ["status", "--input", "-"], '{"implementationId":"a","implementation-id":"b"}');
+  assert.match(duplicate, /JSON input standard input: Duplicate input option implementation-id/);
+});
+
+test("a feedback batch names the item that is incomplete", (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const thread = (id) => ({ id, "comment-id": `${id}-comment`, body: "Check.", label: "Stage", "target-kind": "stage", stage: "implementation" });
+  const { label, ...unlabelled } = thread("second");
+  const add = failure(repository.root, ["feedback", "thread", "add-batch", "--input", "-"], JSON.stringify({ threads: [thread("first"), unlabelled] }));
+  assert.match(add, /threads\[1\]: Missing required option --label/);
+  const reply = failure(repository.root, ["feedback", "thread", "reply-batch", "--input", "-"], '{"replies":[{"comment-id":"c","body":"Done."}]}');
+  assert.match(reply, /replies\[0\]: Missing required option --id/);
+});
+
+test("an organization file with a wrong schema key or value shows the right one", (t) => {
+  const { repository } = workingStage(t);
+  const file = path.join(outsideRepository(t), "organization.json");
+  const organize = ["implementation", "stage", "organize", "--file", file];
+  fs.writeFileSync(file, JSON.stringify({ schema: ORGANIZATION_SCHEMA, nodes: [], itemLinks: [] }));
+  const missing = failure(repository.root, organize);
+  assert.ok(missing.includes(`missing string $schema. Use "${ORGANIZATION_SCHEMA}".`));
+  assert.match(missing, /unknown key "schema"\. Valid keys: \$schema, nodes, itemLinks/);
+  fs.writeFileSync(file, '{"$schema":"wrong"}');
+  assert.ok(failure(repository.root, organize).includes(`unsupported schema wrong. Use "${ORGANIZATION_SCHEMA}".`));
+});

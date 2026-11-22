@@ -1,4 +1,5 @@
 import { INSIGHT_COLLECTIONS } from "./shared/documents.js";
+import { EVIDENCE_EXTENSIONS } from "./shared/evidence.js";
 
 export interface OptionSignature {
   name: string;
@@ -12,6 +13,8 @@ export interface OptionSignature {
 export interface CommandSignature {
   command: string;
   options?: OptionSignature[];
+  /** The options the command takes for a `--kind`, where that narrows them. */
+  optionsForKind?: (kind: string) => ReadonlySet<string>;
 }
 
 /** The one CLI executable; every command group runs inside it. */
@@ -56,7 +59,10 @@ const collectionValues = `<${INSIGHT_COLLECTIONS.join("|")}>`;
 const stageWithFinalized = { note: "required with --finalized" };
 const messageContent = { note: "--body or --attachments is required" };
 const evidenceContent = { note: "one of --file, --before, --after or --inline is required" };
-const nodeRefs = option("node-ref", "<node-id>", { repeatable: true, note: "required once the stage is organized" });
+const evidenceFile = { repeatable: true, note: `${evidenceContent.note}; file types: ${EVIDENCE_EXTENSIONS.join(", ")}` };
+const restackAction = { note: "exactly one of --from, --base, --continue or --abort is required" };
+const releaseChoice = "not with --source";
+const nodeRefs = option("node-ref", "<node-id>", { repeatable: true, note: "required once the stage is organized, unless --replace keeps the recorded nodes" });
 const codeTargetOptions: OptionSignature[] = [
   option("code-path", "<repository-path>", { note: "required with --code-start or --code-end" }),
   option("code-start", "<line>", { note: "required with --code-path" }),
@@ -107,7 +113,7 @@ export const semanticImplementationApi: CliSignature = {
         }),
       ],
     },
-    { command: "stage record-batch", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("items", "<json-array>", { required: true, note: "a plain array in --input JSON; each item takes the options of stage record, or of stage validation with kind validation" })] },
+    { command: "stage record-batch", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("items", "<json-array>", { required: true, note: "a plain array in --input JSON; each item takes the options of stage record, or of stage validation with kind validation, except stage and finalized, which belong outside the items" })] },
     { command: "stage plan", options: [option("stage", "<stage-id>", stageWithFinalized), option("finalized"), option("selectors")] },
     {
       command: "stage set",
@@ -125,6 +131,7 @@ export const semanticImplementationApi: CliSignature = {
     },
     {
       command: "stage record",
+      optionsForKind: (kind) => insightOptionNames(kind),
       options: [
         option("stage", "<stage-id|current>", stageWithFinalized),
         option("kind", `<${INSIGHT_KINDS.join("|")}>`, { required: true }),
@@ -150,7 +157,7 @@ export const semanticImplementationApi: CliSignature = {
       command: "stage target",
       options: [option("stage", "<stage-id|current>", stageWithFinalized), option("finalized"),
         option("collection", collectionValues, { required: true }), option("item-id", "<id>", { required: true }),
-        option("remove"),
+        option("remove", undefined, { note: "not with --code-path, --code-start or --code-end" }),
         option("code-path", "<repository-path>", { note: "required without --remove" }),
         option("code-start", "<line>", { note: "required without --remove" }),
         option("code-end", "<line>", { note: "defaults to --code-start" })],
@@ -185,9 +192,9 @@ export const semanticImplementationApi: CliSignature = {
         option("item-id", "<id>", { required: true }),
         option("kind", "<screenshot|recording|terminal|http|log|output-file|measurement|report>", { required: true }),
         option("summary", "<text>", { required: true }),
-        option("file", "<path>[=<caption>]", { repeatable: true, ...evidenceContent }),
-        option("before", "<path>[=<caption>]", { repeatable: true, ...evidenceContent }),
-        option("after", "<path>[=<caption>]", { repeatable: true, ...evidenceContent }),
+        option("file", "<path>[=<caption>]", evidenceFile),
+        option("before", "<path>[=<caption>]", evidenceFile),
+        option("after", "<path>[=<caption>]", evidenceFile),
         option("inline", "<text>", evidenceContent),
         option("reproduction", "<text>"),
         option("specification-ref", "<specification-id>#<criterion-id>", { repeatable: true }),
@@ -198,7 +205,7 @@ export const semanticImplementationApi: CliSignature = {
       ],
     },
     { command: "stage evidence-remove", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("item-id", "<id>", { required: true }), option("finalized")] },
-    { command: "stage no-evidence", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("reason", "<text>", { note: "required without --remove" }), option("remove"), option("finalized")] },
+    { command: "stage no-evidence", options: [option("stage", "<stage-id|current>", stageWithFinalized), option("reason", "<text>", { note: "required without --remove" }), option("remove", undefined, { note: "not with --reason" }), option("finalized")] },
     {
       command: "stage finish",
       options: [option("json"),option("id", "<stage-id|current>")],
@@ -214,10 +221,10 @@ export const semanticImplementationApi: CliSignature = {
     {
       command: "restack",
       options: [
-        option("from", "<stage-id>", { note: "one of --from, --base, --continue or --abort is required" }),
-        option("base", "<revision>", { note: "one of --from, --base, --continue or --abort is required" }),
-        option("continue"),
-        option("abort"),
+        option("from", "<stage-id>", restackAction),
+        option("base", "<revision>", restackAction),
+        option("continue", undefined, restackAction),
+        option("abort", undefined, restackAction),
         option("json"),
       ],
     },
@@ -258,7 +265,7 @@ export const semanticImplementationApi: CliSignature = {
     },
     {
       command: "validate",
-      options: [option("schema-only"), option("publish")],
+      options: [option("schema-only", undefined, { note: "not with --publish" }), option("publish", undefined, { note: "not with --schema-only" })],
     },
   ],
 };
@@ -294,7 +301,7 @@ export const reviewFeedbackApi: CliSignature = {
         option("path", "<repository-path>", { note: "required for --target-kind file or line" }),
         option("side", "<old|new>", { note: "required for --target-kind line" }),
         option("line", "<positive-integer>", { note: "required for --target-kind line" }),
-        option("assigned-stage", "<stage-id>"),
+        option("assigned-stage", "<stage-id>", { note: "required for --target-kind specification or criterion; otherwise defaults to --stage" }),
       ],
     },
     {
@@ -339,12 +346,12 @@ export const reviewFeedbackApi: CliSignature = {
     {
       command: "agent ask",
       options: [
-        option("id", "<request-id>", { required: true }),
-        option("body", "<text>", { required: true }),
-        option("choice", "<text>", { repeatable: true, note: "up to six" }),
+        option("id", "<request-id>", { required: true, note: "lowercase and hyphenated, up to 80 characters" }),
+        option("body", "<text>", { required: true, note: "up to 4000 characters" }),
+        option("choice", "<text>", { repeatable: true, note: "up to six, each up to 200 characters" }),
       ],
     },
-    { command: "agent progress", options: [option("body", "<text>", { required: true })] },
+    { command: "agent progress", options: [option("body", "<text>", { required: true, note: "up to 200 characters" })] },
   ],
 };
 
@@ -381,7 +388,7 @@ export const semanticFlowApi: CliSignature = {
     },
     {
       command: "review",
-      options: [...projectSelectionOptions, option("branch", "<branch-name>")],
+      options: [...projectSelectionOptions, option("branch", "<branch-name>", { note: "not with --implementation-id" })],
     },
     {
       command: "feedback",
@@ -402,9 +409,9 @@ export const semanticFlowApi: CliSignature = {
     {
       command: "update",
       options: [
-        option("version", "<version>", { note: "required with --allow-downgrade" }),
-        option("allow-downgrade"),
-        option("prerelease"),
+        option("version", "<version>", { note: `required with --allow-downgrade; ${releaseChoice}` }),
+        option("allow-downgrade", undefined, { note: releaseChoice }),
+        option("prerelease", undefined, { note: releaseChoice }),
         option("source", "<repository-path>", { note: "required with --use-current-source" }),
         option("use-current-source"),
       ],
@@ -438,16 +445,17 @@ export function commandOptionNames(
 
 /** The keys one `stage record-batch` item may have. Its kind narrows them;
  * without a usable kind, an item may have those of any kind. */
-export function batchItemKeys(kind: unknown): ReadonlySet<string> {
+export function batchItemKeys(kind: string | undefined): ReadonlySet<string> {
   const outside = (name: string) => name !== "stage" && name !== "finalized";
   const validation = ["kind", ...commandOptionNames(semanticImplementationApi, "stage validation")].filter(outside);
   if (kind === "validation") return new Set(validation);
-  if (typeof kind === "string" && INSIGHT_KINDS.includes(kind)) return new Set([...insightOptionNames(kind)].filter(outside));
+  if (kind !== undefined && INSIGHT_KINDS.includes(kind)) return new Set([...insightOptionNames(kind)].filter(outside));
   return new Set([...[...commandOptionNames(semanticImplementationApi, "stage record")].filter(outside), ...validation]);
 }
 
 /** The options `stage record` takes for one kind. */
 export function insightOptionNames(kind: string): ReadonlySet<string> {
+  if (!INSIGHT_KINDS.includes(kind)) return commandOptionNames(semanticImplementationApi, "stage record");
   const specific = (name: string) => INSIGHT_KINDS.filter((candidate) =>
     [...insightKinds[candidate].required, ...insightKinds[candidate].optional ?? []].includes(name));
   return new Set([...commandOptionNames(semanticImplementationApi, "stage record")].filter((name) => {

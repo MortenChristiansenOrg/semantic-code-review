@@ -93,8 +93,13 @@ export function isDocument<K extends SchemaId>(id: K, value: unknown): value is 
 /** Validates value as a document of this kind, failing with every schema error. */
 export function parseDocument<K extends SchemaId>(id: K, value: unknown, file: string): DocumentTypes[K] {
   const schemaId = isRecord(value) ? value.$schema : undefined;
-  if (typeof schemaId !== "string") fail(`${file}: missing string $schema.`);
-  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}.`);
+  if (typeof schemaId !== "string") {
+    // A misspelled $schema is itself an unknown key.
+    const check = validator(id);
+    const unknown = check(value) ? [] : (check.errors ?? []).filter(({ keyword }) => keyword === "additionalProperties");
+    fail(`${file}: missing string $schema. Use "${id}".${unknown.length ? `\n${schemaErrors(unknown, file)}` : ""}`);
+  }
+  if (schemaId !== id) fail(`${file}: unsupported schema ${schemaId}. Use "${id}".`);
   const validate = validator(id);
   if (!validate(value)) fail(schemaErrors(validate.errors, file));
   return value;

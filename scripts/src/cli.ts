@@ -21,7 +21,10 @@ function commandGroup(argv: readonly string[]): "implementation" | "feedback" | 
   return null;
 }
 
-async function main(argv: string[]): Promise<void> {
+async function main(typed: string[]): Promise<void> {
+  // `help <group> [command]` is that group's own help.
+  const [first, named, ...rest] = typed;
+  const argv = first === "help" && (named === "implementation" || named === "feedback") ? [named, "help", ...rest] : typed;
   const group = commandGroup(argv);
   if (group === "implementation") return (await import("./semantic-implementation.js")).runImplementationCommand(argv.slice(1));
   if (group === "feedback") return (await import("./review-feedback.js")).runFeedbackCommand(argv.slice(1));
