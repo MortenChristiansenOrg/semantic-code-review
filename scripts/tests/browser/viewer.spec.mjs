@@ -32,6 +32,11 @@ function thread(id, status = 'open', target = { kind: 'stage', stageId: 'first',
     comments: [{ author: 'user', body: `Feedback ${id}`, createdAt: '2026-09-08T10:00:00Z' }] };
 }
 async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {}) {
+  // A page that already shows the viewer is at http://localhost/, so going to the launch link would change only
+  // its fragment: the running page would redeem the code and reload whenever that finished, while the test
+  // already acts on it. Each mount starts a new document instead, and the old one is gone before the routes
+  // below can take its requests.
+  if (page.url() !== 'about:blank') await page.goto('about:blank');
   const allData = [data, ...other];
   const records = allData.map((item) => ({ id: item.reviewId || item.implementationId, generation: "test", remote: item.remote, title: item.title, implementationId: item.implementationId, repositoryRoot: `/repos/${item.reviewId || item.implementationId}`, updatedAt: "2026-09-11T10:00:00Z", completedAt: null, available: true }));
   await page.route('https://fonts.googleapis.com/**', (route) => route.abort());
@@ -137,10 +142,6 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
     if (url.pathname === '/api/diff') return json({ ok: true, lines: currentData.stages[0].files[0].lines, additions: 2 });
     return route.fulfill({ contentType: 'text/html', headers: csp ? { 'Content-Security-Policy': csp } : {}, body: '<meta charset="utf-8"><link rel="stylesheet" href="/styles.css"><div id="app"></div><script src="/boot.js"></script>' });
   });
-  // A page that already shows the viewer is at http://localhost/, so going to the launch link would change only
-  // its fragment: the running page would redeem the code and reload whenever that finished, while the test
-  // already acts on it. Each mount starts a new document instead.
-  if (page.url() !== 'about:blank') await page.goto('about:blank');
   await page.goto('http://localhost/#launch=code');
   await expect(page.locator('.stage')).toHaveCount(data.stages.length);
   expect(errors).toEqual([]);
@@ -2768,20 +2769,36 @@ test('switching Markdown preview preserves a line draft and its source anchor', 
   await expect(source.locator('.line-thread')).toHaveAttribute('data-thread', 'l:first:new:1:README.md');
 });
 
-/** Moves keyboard focus back to `target` with Shift+Tab once `scrollUnder` has scrolled its top just under what covers the
- * top of its scroll area. A focused element that is out of view is centred anyway; one partly in view is where it hides. */
-async function shiftTabBackUnder(page, target, scrollUnder) {
+/** Moves keyboard focus back to `target` with Shift+Tab while its top lies 2px under what covers the top of its scroll
+ * area: `area.covers`, in the window or in the closest `area.scroller`. A focused element out of view is centred anyway;
+ * one partly in view is where it can hide. Then expects the focused target to lie below the covers. */
+async function shiftTabBackUnder(page, target, area) {
+  // How far the target's top lies below the covers, then scrolls it 2px under them if asked.
+  const offset = (scroll) => target.evaluate((el, { area, scroll }) => {
+    const bottom = Math.max(...[...document.querySelectorAll(area.covers)].map((cover) => cover.getBoundingClientRect().bottom));
+    const offset = el.getBoundingClientRect().top - bottom;
+    if (scroll) (area.scroller ? el.closest(area.scroller) : window).scrollBy({ top: offset + 2, behavior: 'instant' });
+    return offset;
+  }, { area, scroll });
   await target.focus();
   await page.keyboard.press('Tab');
   await expect(target).not.toBeFocused();
-  await target.evaluate(scrollUnder);
+  // Scrolls until the target stays put, once a scroll the focus started has ended and the covers stick to the top.
+  await expect.poll(async () => Math.abs(await offset(true) + 2)).toBeLessThan(1);
   await page.keyboard.press('Shift+Tab');
   await expect(target).toBeFocused();
+  await expect.poll(() => offset(false)).toBeGreaterThanOrEqual(0);
+}
+
+/** Shows the fresh-link notice, as when the server refuses the page's key. */
+async function loseAccess(page) {
+  await page.route('http://localhost/api/revision**', (route) => route.fulfill({ status: 403, json: { ok: false, keyRequired: true } }));
+  await expect(page.locator('#fresh-link-notice')).toBeVisible();
 }
 
 for (const layout of ['wide', 'wrapped', 'notice']) {
   test(`a link focused in a Markdown preview is not hidden under the top bar (${layout})`, async ({ page }) => {
-    // The top bar wraps on narrow screens; a fresh-link notice sticks at the top over it.
+    // The top bar wraps on narrow screens; a fresh-link notice sticks at the top above it.
     await page.setViewportSize(layout === 'wrapped' ? { width: 380, height: 700 } : { width: 1280, height: 800 });
     const data = fixture(); data.stages[0].files[0].path = 'README.md';
     await mount(page, data);
@@ -2791,39 +2808,36 @@ for (const layout of ['wide', 'wrapped', 'notice']) {
     await page.getByRole('button', { name: 'Preview', exact: true }).click();
     const link = page.locator('.markdown-preview a').first();
     await expect(link).toBeVisible();
-    if (layout === 'notice') {
-      await page.route('http://localhost/api/revision**', (route) => route.fulfill({ status: 403, json: { ok: false, keyRequired: true } }));
-      await expect(page.locator('#fresh-link-notice')).toBeVisible();
-    }
+    if (layout === 'notice') await loseAccess(page);
+    if (layout === 'wrapped') expect((await page.locator('.topbar-wrap').boundingBox()).height).toBeGreaterThan(100);
     // Room to scroll the link to the top of the window.
     await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
-    const covers = page.locator('.topbar-wrap, #fresh-link-notice');
-    const coverBottom = () => covers.evaluateAll((elements) => Math.max(...elements.map((el) => el.getBoundingClientRect().bottom)));
-    if (layout === 'wrapped') expect(await coverBottom()).toBeGreaterThan(100);
-    await shiftTabBackUnder(page, link, (el) => {
-      // The first scroll sticks the covers to the top; the second leaves the link's top 2px under the lowest.
-      window.scrollBy({ top: el.getBoundingClientRect().top, behavior: 'instant' });
-      const bottom = Math.max(...[...document.querySelectorAll('.topbar-wrap, #fresh-link-notice')].map((cover) => cover.getBoundingClientRect().bottom));
-      window.scrollBy({ top: el.getBoundingClientRect().top - bottom + 2, behavior: 'instant' });
-    });
-    await expect.poll(async () => await link.evaluate((el) => el.getBoundingClientRect().top) - await coverBottom()).toBeGreaterThanOrEqual(0);
-    // The notice is taller than the top bar it covers.
-    if (layout === 'notice') expect(await coverBottom()).toBe(await page.locator('#fresh-link-notice').evaluate((el) => el.getBoundingClientRect().bottom));
+    await shiftTabBackUnder(page, link, { covers: '.topbar-wrap, #fresh-link-notice' });
   });
 }
+
+test('the fresh-link notice leaves the top bar and the side panels uncovered', async ({ page }) => {
+  await mount(page);
+  await loseAccess(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  // A control is uncovered when a click at its centre reaches it.
+  const uncovered = (locator) => locator.evaluate((el) => {
+    const box = el.getBoundingClientRect();
+    return el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+  });
+  const notes = page.locator('.tb-btn[data-action="toggle-notes"]');
+  await expect.poll(() => uncovered(notes)).toBe(true);
+  await notes.click();
+  await expect.poll(() => uncovered(page.locator('.side.notes .side-head button[data-action="toggle-notes"]'))).toBe(true);
+});
 
 test('a thread focused in the notes panel is not hidden under its filter switch', async ({ page }) => {
   const data = fixture();
   data.feedback = Array.from({ length: 12 }, (_, i) => thread(`open-${i}`));
   await mount(page, data);
   await showNotes(page);
-  const header = page.locator('.side.notes .tthread[data-thread-id="open-6"] .tthread-h');
-  await shiftTabBackUnder(page, header, (el) => {
-    const list = el.closest('.notes-list');
-    list.scrollBy({ top: el.getBoundingClientRect().top - list.querySelector('.notes-switch').getBoundingClientRect().bottom + 2, behavior: 'instant' });
-  });
-  const switchBottom = await page.locator('.notes-switch').evaluate((el) => el.getBoundingClientRect().bottom);
-  await expect.poll(async () => await header.evaluate((el) => el.getBoundingClientRect().top) - switchBottom).toBeGreaterThanOrEqual(0);
+  await shiftTabBackUnder(page, page.locator('.side.notes .tthread[data-thread-id="open-6"] .tthread-h'), { covers: '.side.notes .notes-switch', scroller: '.notes-list' });
 });
 
 test('more than twelve open Markdown previews do not evict each other', async ({ page }) => {

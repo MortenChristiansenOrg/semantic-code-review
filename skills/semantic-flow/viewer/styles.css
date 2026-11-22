@@ -100,7 +100,8 @@ button { font-family: inherit; cursor: pointer; }
 /* ---- topbar ----------------------------------------------------------- */
 .topbar-wrap {
   position: sticky;
-  top: 0;
+  /* Below the fresh-link notice, measured by sticky-insets.ts. */
+  top: var(--fresh-link-inset, 0px);
   z-index: 40;
 }
 .topbar {
@@ -1388,9 +1389,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 /* ---- side panels ------------------------------------------------------ */
 .side {
   position: fixed;
-  top: 0;
+  top: var(--fresh-link-inset, 0px);
   right: 0;
-  height: 100vh;
+  height: calc(100vh - var(--fresh-link-inset, 0px));
   width: 380px;
   max-width: 90vw;
   z-index: 60;
@@ -2230,14 +2231,14 @@ html:has(.file-search[open]) { overflow: hidden; }
 /* Questions overlay the page above open panels at a readable width; the reviewer
    can minimize them to consult the review before answering. */
 .agent-questions {
-  position: fixed; top: 76px; left: 0; right: 0; margin: 0 auto; z-index: 85; display: grid; gap: 14px;
-  width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - 96px); overflow: auto; overscroll-behavior: contain;
+  position: fixed; top: calc(var(--topbar-bottom, 64px) + 12px); left: 0; right: 0; margin: 0 auto; z-index: 85; display: grid; gap: 14px;
+  width: min(760px, calc(100vw - 32px)); max-height: calc(100dvh - var(--topbar-bottom, 64px) - 32px); overflow: auto; overscroll-behavior: contain;
   box-sizing: border-box; padding: 18px 22px 22px; border: 1px solid var(--signal); border-radius: 10px;
   background: color-mix(in srgb, var(--signal) 6%, var(--panel)); box-shadow: 0 16px 48px #0009;
 }
 .agent-questions-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .agent-questions-show {
-  position: fixed; top: 76px; left: 50%; translate: -50% 0; z-index: 85; cursor: pointer;
+  position: fixed; top: calc(var(--topbar-bottom, 64px) + 12px); left: 50%; translate: -50% 0; z-index: 85; cursor: pointer;
   font-family: var(--mono); font-size: 11.5px; letter-spacing: .05em; color: var(--text);
   width: max-content; max-width: calc(100vw - 32px); text-align: center;
   padding: 9px 16px; border: 1px solid var(--signal); border-radius: 999px; box-shadow: var(--shadow);

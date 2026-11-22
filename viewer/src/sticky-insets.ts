@@ -4,10 +4,14 @@
 // below holds the height of what covers its top in `--sticky-inset`, which the
 // style sheet turns into its `scroll-padding-top`. The heights are measured,
 // as the top bar wraps on narrow screens and notices join it.
+//
+// The root also holds `--fresh-link-inset`, the height of the fresh-link
+// notice, which the top bar and the side panels start below, and
+// `--topbar-bottom`, where the top bar ends, which the agent questions start below.
 
 /** Scroll areas, the root standing for the window, and what covers their top. */
 const areas: { scroller: string; covers: string }[] = [
-  // The fresh-link notice sticks over the top bar; minimized agent questions sit just below it.
+  // The top bar sticks below the fresh-link notice; minimized agent questions sit below the bar.
   { scroller: ":root", covers: ".topbar-wrap, #fresh-link-notice, .agent-questions-show" },
   { scroller: ".side.notes .notes-list", covers: ".notes-switch" },
 ];
@@ -20,13 +24,21 @@ function coverBottom(cover: Element): number {
   return (parseFloat(getComputedStyle(cover).top) || 0) + cover.getBoundingClientRect().height;
 }
 
+function setLength(element: HTMLElement, property: string, length: number): void {
+  const value = `${Math.ceil(length)}px`;
+  if (element.style.getPropertyValue(property) !== value) element.style.setProperty(property, value);
+}
+
 function measure(): void {
+  const root = document.documentElement;
+  const height = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().height ?? 0;
+  const notice = height("#fresh-link-notice");
+  setLength(root, "--fresh-link-inset", notice);
+  setLength(root, "--topbar-bottom", notice + height(".topbar-wrap"));
+  // The covers' positions read below follow the lengths set above.
   for (const area of areas) {
     const scroller = document.querySelector(area.scroller);
-    if (!(scroller instanceof HTMLElement)) continue;
-    const inset = Math.ceil(Math.max(0, ...[...scroller.querySelectorAll(area.covers)].map(coverBottom)));
-    const value = `${inset}px`;
-    if (scroller.style.getPropertyValue("--sticky-inset") !== value) scroller.style.setProperty("--sticky-inset", value);
+    if (scroller instanceof HTMLElement) setLength(scroller, "--sticky-inset", Math.max(0, ...[...scroller.querySelectorAll(area.covers)].map(coverBottom)));
   }
 }
 
