@@ -74,6 +74,33 @@ the current target and ask about the desired behavior only when applying the
 feedback is ambiguous.
 Do not guess the intended behavior.
 
+## The round's claim
+
+The returned `claim` names this round. Pass it with every command that acts
+for the round: as `--claim <claim>`, or as a `claim` key in `--input` JSON. That
+is every reply, `feedback agent progress`, `feedback agent ask`, and every
+`implementation` command that changes the implementation, such as `stage
+record`, `stage target`, `stage evidence`, `stage organize`, `stage remove`,
+and `restack`. While a listening agent answers a round, such a command without
+a claim is refused. Commands that only read need none. Work on `responses`
+continues the round that asked, with that round's claim. A null `claim` means
+no thread was claimed and there is no round, so omit it.
+
+The CLI cannot see edits or a plain `git commit`, so check the round with a
+progress report before you start changing a stage's code and again right before
+each commit, for example
+`{"claim":"<claim>","body":"Committing the refund stage corrections"}` passed to
+`<semantic-flow> feedback agent progress --input -`. Edit or commit only after
+it succeeds.
+
+If any command reports that the round was replaced, another agent started
+listening and took over its threads. Stop at once: no commit, restack, stage
+change, question, or reply for this round. If this round left a restack
+pending, first discard it with `<semantic-flow> implementation restack --abort
+--claim <claim>`; when that is refused, the new agent handles it. Leave other
+edits as they are. End with one
+short line in the chat, naming any uncommitted edits you left.
+
 ## Ask in the viewer
 
 The reviewer works in the viewer. Ask every question there, never in the chat:
@@ -86,7 +113,7 @@ The reviewer works in the viewer. Ask every question there, never in the chat:
 
   ```text
   <semantic-flow> feedback agent ask --input -
-  {"id":"<request-id>","body":"<question>","choice":["<option>","<option>"]}
+  {"id":"<request-id>","claim":"<claim>","body":"<question>","choice":["<option>","<option>"]}
   ```
 
   Choices are optional; the reviewer can always write a different answer. The
@@ -137,12 +164,13 @@ Handle all change requests assigned to one stage together:
 
 1. Inspect the thread targets and complete stage diff once.
 2. If the stage needs code changes, require `worktreeChanges` from preflight to
-   be empty, then check out its recorded branch. Preserve unrelated user changes
+   be empty, report progress with the claim, then check out its recorded branch. Preserve unrelated user changes
    and stop if the worktree is dirty. Ask about the affected edits in the viewer
    under `../docs/user-decisions.md`; do not ask whether to bypass the
    clean-worktree check.
 3. Apply all requested code corrections for the
-   stage as one coherent edit, then run relevant tests and commit.
+   stage as one coherent edit, then run relevant tests, report progress with
+   the claim, and commit.
 4. Update finalized insights only when the recorded reasoning changed. Do not
    record normal test runs as validation evidence. Recapture or remove evidence
    for changed nodes as `../docs/artifact-quality.md` describes. When recording
@@ -167,11 +195,15 @@ harness supports subagents, change them in parallel, one subagent per stage:
 - A branch can be checked out in only one worktree. If the artifact worktree has
   a stage branch checked out, run `git switch --detach` there first. Then run
   `git switch <stage-branch>` in each stage worktree, which must be clean.
-- Each subagent receives its stage's threads, branch, and worktree. It makes the
-  stage's corrections as one coherent edit, runs relevant tests, and commits on
-  that branch. It returns a reply summary per thread and notes on node coverage
-  or insights that changed. It never runs Semantic Flow commands, restacks,
-  or touches another branch.
+- Each subagent receives its stage's threads, branch, and worktree, the round's
+  `claim`, and the artifact worktree path. It reports progress with the claim from
+  the artifact worktree before editing and again before committing, as “The
+  round's claim” describes. In between it makes the stage's corrections as one
+  coherent edit, runs relevant tests, and commits on that branch. When a
+  progress report says the round was replaced, it changes nothing more and
+  returns that. Otherwise it returns a reply summary per thread and
+  notes on node coverage or insights that changed. It runs no other Semantic
+  Flow command, never restacks, and touches no other branch.
 - When every subagent has finished, run `git switch --detach` in each stage
   worktree so restacking can move those branches. Then perform steps 4 and 5
   for each changed stage from the artifact worktree.
@@ -184,7 +216,7 @@ After all affected branches are committed and organized, check out that
 earliest changed branch and run one restack:
 
 ```text
-<semantic-flow> implementation restack --from <earliest-changed-stage-id>
+<semantic-flow> implementation restack --from <earliest-changed-stage-id> --claim <claim>
 ```
 
 This accepts every edited stage head, folds each edited stage into one commit
@@ -222,7 +254,7 @@ the returned `worktree`, naming the returned `implementationId`; the command
 refuses when that worktree works on another implementation:
 
 ```text
-<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
+<semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --claim <claim> --json
 ```
 
 The command refuses the only remaining stage; when every stage is empty, keep
@@ -255,13 +287,9 @@ OS temporary file outside the repository:
 {"claim":"<claim>","replies":[{"id":"<thread-id>","comment-id":"<new-comment-id>","author":"agent","body":"<change-summary>"}]}
 ```
 
-Pass the round's `claim` with every reply. The reply then records the reviewer
-comment the round answered, and comments the reviewer added during the round
-stay queued for the next round, even if the round was replaced meanwhile. Never resolve
+The reply records the reviewer comment the round answered, and comments the
+reviewer added during the round stay queued for the next round. Never resolve
 a thread. Closing the conversation is the reviewer's decision.
-
-If a reply reports that the round was replaced, another agent started listening
-and took over its threads. End with one short line and change nothing more.
 
 ## Finish
 

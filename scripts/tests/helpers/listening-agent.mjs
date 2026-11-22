@@ -20,16 +20,18 @@ const cli = (...args) => run(process.execPath, [path.join(skill, 'scripts', 'sem
 const branchOf = id => JSON.parse(cli('implementation', 'export')).stages[id].change.branch;
 let sequence = 0;
 const reply = (id, claim, body) => cli('feedback', 'thread', 'reply', '--id', id, '--comment-id', `agent-${++sequence}`, '--author', 'agent', '--claim', claim, '--body', body);
-function edit(stage, file, change) {
+// Every change names its round, so a round another agent took over changes nothing.
+function edit(stage, file, change, claim) {
   git('switch', '-q', branchOf(stage));
   const target = path.join(repo, file);
   fs.writeFileSync(target, change(fs.readFileSync(target, 'utf8')));
+  cli('feedback', 'agent', 'progress', '--claim', claim, '--body', `Committing ${file}`);
   git('commit', '-qam', `Address feedback on ${file}`);
 }
 const setting = (key, value) => text => JSON.stringify({ ...JSON.parse(text), [key]: value }) + '\n';
-function restack(stage) {
+function restack(stage, claim) {
   git('switch', '-q', branchOf(stage));
-  cli('implementation', 'restack', '--from', stage);
+  cli('implementation', 'restack', '--from', stage, '--claim', claim);
 }
 
 cli('review');
@@ -40,7 +42,7 @@ for (;;) {
   if (result.stopped) { console.log('Stopped listening.'); break; }
   if (result.timedOut) continue;
   if (result.responses?.length) {
-    edit('notifications', 'notifications.json', setting('format', 'html')); restack('notifications');
+    edit('notifications', 'notifications.json', setting('format', 'html'), pending.claim); restack('notifications', pending.claim);
     for (const id of pending.threads) reply(id, pending.claim, 'Confirmations now use HTML, as you decided.');
     if (mode === 'sloppy') {
       const reviews = path.join(process.env.SEMANTIC_FLOW_HOME, 'reviews'), threads = path.join(reviews, fs.readdirSync(reviews)[0], 'feedback', 'threads');
@@ -54,11 +56,11 @@ for (;;) {
   for (const thread of threads) if (last(thread).endsWith('?')) reply(thread.id, result.claim, 'It comes from the order ID passed to the template renderer.');
   const changed = [];
   for (const thread of threads) {
-    if (/retry count to 2/.test(last(thread))) { edit(thread.stage, 'notifications.json', setting('retries', 2)); changed.push(thread); }
-    else if (/retried automatically/.test(last(thread))) { edit(thread.stage, 'delivery.md', text => text + (mode === 'sloppy' ? 'Failed deliveries are never retried.\n' : 'Failed deliveries are retried automatically.\n')); changed.push(thread); }
+    if (/retry count to 2/.test(last(thread))) { edit(thread.stage, 'notifications.json', setting('retries', 2), result.claim); changed.push(thread); }
+    else if (/retried automatically/.test(last(thread))) { edit(thread.stage, 'delivery.md', text => text + (mode === 'sloppy' ? 'Failed deliveries are never retried.\n' : 'Failed deliveries are retried automatically.\n'), result.claim); changed.push(thread); }
   }
   if (changed.length) {
-    restack(result.stages.find(stage => changed.some(thread => thread.stage === stage.stageId)).stageId);
+    restack(result.stages.find(stage => changed.some(thread => thread.stage === stage.stageId)).stageId, result.claim);
     cli('feedback', 'thread', 'reply-batch', '--claim', result.claim, '--replies', JSON.stringify(changed.map(thread => ({ id: thread.id, 'comment-id': `agent-${++sequence}`, author: 'agent', body: 'Done.' }))));
   }
   const contradiction = threads.filter(thread => /as HTML|plain text/.test(last(thread)));
@@ -66,7 +68,7 @@ for (;;) {
     // The format is already plain text; keeping it needs no commit.
     for (const thread of contradiction) reply(thread.id, result.claim, 'Kept plain text.');
   } else if (contradiction.length) {
-    cli('feedback', 'agent', 'ask', '--id', 'email-format', '--body', 'Two notes disagree about the email format. Should confirmations use HTML or plain text?', '--choice', 'HTML', '--choice', 'Plain text');
+    cli('feedback', 'agent', 'ask', '--id', 'email-format', '--claim', result.claim, '--body', 'Two notes disagree about the email format. Should confirmations use HTML or plain text?', '--choice', 'HTML', '--choice', 'Plain text');
     pending = { claim: result.claim, threads: contradiction.map(thread => thread.id) };
   }
   if (mode === 'early-exit' && rounds === 1) { console.log('Answered the first round.'); break; }

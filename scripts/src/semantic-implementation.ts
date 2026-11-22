@@ -70,7 +70,7 @@ import {
   archiveRef,
   archiveTag,
   buildArtifactTree,
-  commitArtifact,
+  commitArtifact as commitSnapshot,
   exportArtifactFiles,
   hasFile,
   listJsonIds,
@@ -93,7 +93,7 @@ import { errorCode, errorMessage, isRecord, isStringArray, type JsonRecord } fro
 import { parseDocument } from "./shared/schema-validation.js";
 import { feedbackDirectory, gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
 import { describeFinalizedStages, emptyStageIds, stageThreads } from "./shared/stage-report.js";
-import { touchAgent, updateAgentState } from "./shared/agent-session.js";
+import { claimActive, readAgentState, roundRefusal, touchAgent, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
 const linearRangeFacts = factCache<number>();
@@ -2475,13 +2475,57 @@ function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "su
   return replayedCommit(root, `${parent}^{tree}`, parent, source, stageCommitMessage(stage, stageTrailers(root, source, stage), original));
 }
 
-/** Holds the review lock across a multi-document artifact write and renews a running feedback round. */
+/** The feedback round the running command changes the implementation for. */
+let commandRound: RoundIdentity = null;
+/** Set while a command only undoes what a round left behind: it may go ahead, even for a
+ * replaced round, when this says so for the agent state read under the review lock. */
+let recovery: ((state: AgentState, now: number) => boolean) | undefined;
+
+function withRound<T>(round: RoundIdentity, operation: () => T): T {
+  const previous = commandRound;
+  commandRound = round;
+  try { return operation(); }
+  finally { commandRound = previous; }
+}
+
+/** Fails when the command's round may not change the implementation of review now. */
+function assertRoundMayChange(review: string): void {
+  const state = readAgentState(review), now = Date.now();
+  if (recovery?.(state, now)) return;
+  const refusal = roundRefusal(state, now, commandRound);
+  if (refusal) fail(refusal);
+}
+
+/** Holds the review lock across a multi-document artifact write, refuses it for a
+ * round another agent took over, and renews the running feedback round. A takeover
+ * takes the same lock, so none can come between the check and the write. */
 function withArtifactLock<T>(workspace: Workspace, implementationId: string, write: () => T): T {
   const review = reviewId(workspace.root, implementationId);
   return withReviewLock(review, () => {
-    const result = write();
-    updateAgentState(review, (state, now) => touchAgent(state, now));
-    return result;
+    assertRoundMayChange(review);
+    // Every write here commits through commitArtifact, which renews the round.
+    return write();
+  });
+}
+
+/** Renews the lease of the command's round, or of the running rounds when it names none. */
+function renewCommandRound(state: AgentState, now: number): void {
+  touchAgent(state, now, commandRound && "claim" in commandRound ? [commandRound.claim] : undefined);
+}
+
+/** Commits an artifact snapshot and its ref updates as one transaction, under the
+ * review lock and only while the command's round may change the implementation. */
+function commitArtifact(root: string, base: ArtifactSnapshot | undefined, draft: ArtifactDraft, refUpdates: readonly RefUpdate[] = [], retain: readonly string[] = []): string {
+  // A new implementation has no review yet, so no round can be changing it.
+  if (!base) return commitSnapshot(root, base, draft, refUpdates, retain);
+  const review = reviewId(root, activeImplementationId(root, draft));
+  return withReviewLock(review, () => {
+    assertRoundMayChange(review);
+    const commit = commitSnapshot(root, base, draft, refUpdates, retain);
+    // The snapshot is committed; a lease that cannot be renewed must not report it as failed.
+    try { updateAgentState(review, renewCommandRound); }
+    catch (error) { console.error(`semantic-implementation: the change was saved, but its feedback round was not renewed: ${errorMessage(error)}`); }
+    return commit;
   });
 }
 
@@ -2563,6 +2607,8 @@ interface PendingRestack {
   worktree: string;
   /** The checkout sync detached so the restack could move its stage branch; --continue and --abort switch it back. */
   checkout?: DetachedCheckout;
+  /** The feedback round that started the restack; it may still abort it after another agent took the round over. */
+  claim?: string;
 }
 
 /** A worktree that had branch checked out at head and was detached so a restack could move the branch. */
@@ -2609,6 +2655,7 @@ function readPendingRestack(files: ArtifactFiles): PendingRestack | undefined {
       const checkout = isRecord(record.checkout) ? record.checkout : invalid();
       return { worktree: text(checkout, "worktree"), branch: text(checkout, "branch"), head: sha(checkout, "head") };
     })() }),
+    ...(record.claim === undefined ? {} : { claim: text(record, "claim") }),
   };
 }
 
@@ -3010,11 +3057,11 @@ function emptiedStagesNote(root: string, summary: RestackSummary): string {
 /** Restacks every stage onto base, which must still be the target branch head. checkout names
  * a stage branch the caller detached for it; a restack that stops at a
  * conflict records it, so --continue and --abort switch the worktree back. */
-export function restackOntoTarget(root: string, base: string, checkout?: DetachedCheckout): RestackSummary {
-  return withValidationContext(() => {
+export function restackOntoTarget(root: string, base: string, round: RoundIdentity, checkout?: DetachedCheckout): RestackSummary {
+  return withValidationContext(() => withRound(round, () => {
     const workspace = openWorkspace(root);
     return withRestackLock(workspace, () => restackStages(workspace, { baseOption: base, checkout }));
-  });
+  }));
 }
 
 function restackStages(
@@ -3137,6 +3184,7 @@ function runRestack(
       conflict: error.conflict,
       worktree: run.location,
       ...(run.checkout ? { checkout: run.checkout } : {}),
+      ...(commandRound && "claim" in commandRound ? { claim: commandRound.claim } : {}),
     };
     let recorded = false;
     try {
@@ -3337,7 +3385,15 @@ function abortRestack(workspace: Workspace): void {
   const implementationId = activeImplementationId(workspace.root, workspace.snapshot);
   const draft = new ArtifactDraft(workspace.snapshot);
   draft.remove(PENDING_RESTACK_FILE);
-  withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft));
+  // Aborting changes no stage, so the round that started the restack may still
+  // discard it after another agent took that round over. Any other abort is a change like any other.
+  // Only while no other round runs: one that does may be resolving this restack itself.
+  const owner = pending?.claim;
+  recovery = owner !== undefined && commandRound !== null && "claim" in commandRound && owner === commandRound.claim
+    ? (state, now) => !state.claims.some((claim) => claim.id !== owner && claimActive(claim, now))
+    : undefined;
+  try { withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft)); }
+  finally { recovery = undefined; }
   // Only the folder restacks of this implementation use is ever deleted.
   const location = ScratchWorktree.location(workspace.root, implementationId);
   const canonical = pending === undefined || ScratchWorktree.isCanonical(workspace.root, implementationId, pending.worktree);
@@ -3976,12 +4032,16 @@ function archiveImplementation(
   // still active, so removing it under the same lock never overtakes one of
   // them. The lock is reentrant: the `archive` workflow already holds it while
   // it checks that every thread is resolved.
-  withReviewLock(reviewId(workspace.root, implementationId), () => removeArtifact(workspace.root, workspace.snapshot, [
-    ...stageChecks,
-    publication.update ?? publication.verify ?? fail("The publication has no metadata ref."),
-    { ref, next: commit, previous: ZERO_OID },
-    { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
-  ]));
+  const review = reviewId(workspace.root, implementationId);
+  withReviewLock(review, () => {
+    assertRoundMayChange(review);
+    removeArtifact(workspace.root, workspace.snapshot, [
+      ...stageChecks,
+      publication.update ?? publication.verify ?? fail("The publication has no metadata ref."),
+      { ref, next: commit, previous: ZERO_OID },
+      { ref: archiveTag(implementationId), next: ZERO_OID, previous: ZERO_OID },
+    ]);
+  });
   const suggestion = landing.outcome === "unknown" ? suggestedLanding(workspace.root, subject) : null;
   if (!quiet) {
     if (publication.update) console.log(`Published semantic implementation metadata on ${publication.branch} at ${publication.commit}.`);
@@ -4254,5 +4314,18 @@ export function runImplementationCommand(argv: string[]): void {
   const commandLine = readCommandLine(semanticImplementationApi, argv, process.cwd());
   if (!commandLine) return;
   const root = repositoryRoot();
-  withValidationContext(() => dispatch(root, commandLine.positionals, commandLine.options));
+  const { positionals, options } = commandLine;
+  const claim = option(options, "claim");
+  withValidationContext(() => withRound(claim === undefined ? null : { claim }, () => {
+    // A command that can change the implementation for a round checks that round
+    // before it touches anything; the write checks it again under the review lock.
+    const signature = semanticImplementationApi.commands.find(({ command }) => command === positionals.slice(0, 2).join(" "))
+      ?? semanticImplementationApi.commands.find(({ command }) => command === positionals[0]);
+    const changes = signature?.options?.some(({ name }) => name === "claim") && !options.has("abort");
+    if (changes) {
+      const workspace = openWorkspace(root);
+      assertRoundMayChange(reviewId(root, activeImplementationId(root, workspace.snapshot)));
+    }
+    dispatch(root, positionals, options);
+  }));
 }

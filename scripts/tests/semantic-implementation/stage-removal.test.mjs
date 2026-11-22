@@ -285,7 +285,7 @@ test("stage remove refuses while threads cannot be read, and completes when only
   const execution = repository.result(process.execPath, [...semanticCli, "stage", "remove", "--id", "policy", "--json"]);
   fs.chmodSync(review, 0o700);
   assert.equal(execution.status, 0, execution.stderr);
-  assert.match(execution.stderr, /the stage was removed, but /);
+  assert.match(execution.stderr, /the change was saved, but its feedback round was not renewed/);
   const removal = JSON.parse(execution.stdout);
   assert.equal(removal.stageId, "policy");
   assert.equal(removal.detachedAt, repository.git("rev-parse", "main"));

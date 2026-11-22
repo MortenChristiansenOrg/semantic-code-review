@@ -48,6 +48,8 @@ export interface AddSpecificationOptions {
     "source-url"?: string;
     /** Acceptance criteria formatted as `<criterion-id>=<text>`; supply one entry per criterion. */
     criterion: readonly string[];
+    /** Feedback round (`claim` from the feedback preflight or wait) this change belongs to. Required while a listening agent answers a round; refused once another agent took the round over. */
+    claim?: string;
 }
 /**
  * Adds another specification to the active implementation.

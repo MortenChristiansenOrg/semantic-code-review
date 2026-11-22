@@ -111,7 +111,7 @@ test("unknown input keys are reported together, before their values are converte
   const { repository, batch } = workingStage(t);
   const before = repository.artifact.implementation();
   const error = batch({ stageId: "implementation", validations: [{ summary: "Tests pass" }], decisions: [{ id: "d" }] });
-  assert.match(error, /JSON input standard input: Unknown keys "stageId", "validations", "decisions"\. Valid keys: stage, finalized, items\./);
+  assert.match(error, /JSON input standard input: Unknown keys "stageId", "validations", "decisions"\. Valid keys: stage, finalized, items, claim\./);
   assert.doesNotMatch(error, /arrays may contain/);
   assert.deepEqual(repository.artifact.implementation(), before);
 

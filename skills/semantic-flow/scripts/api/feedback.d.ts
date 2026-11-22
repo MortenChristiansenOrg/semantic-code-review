@@ -184,6 +184,8 @@ export interface AskReviewerOptions {
     body: string;
     /** Optional answer the reviewer can pick; repeat for up to six choices. The reviewer can always write a different answer. */
     choice?: string[];
+    /** Feedback round (`claim`) this question belongs to. Required while an agent listens to the review; refused once another agent took the round over. */
+    claim?: string;
 }
 /** Shows a question in the viewer. The answer is returned in `responses` by the next `semantic-flow feedback` call.
  * @cli semantic-flow.mjs
@@ -193,6 +195,8 @@ export declare function askReviewer(options: AskReviewerOptions): void;
 export interface ReportAgentProgressOptions {
     /** Short description of the running round's current work, shown in the viewer. */
     body: string;
+    /** Feedback round (`claim`) whose work this describes. Required while an agent listens to the review; refused once another agent took the round over. */
+    claim?: string;
 }
 /** Updates the progress note of the feedback round in progress.
  * @cli semantic-flow.mjs

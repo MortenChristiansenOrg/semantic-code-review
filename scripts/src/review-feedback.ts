@@ -51,7 +51,7 @@ import { atomicJson, readReview, readReviewArtifact, registerReview, relocateRev
 import { isDeepStrictEqual } from "node:util";
 import { attachmentReferences, resolveAttachment, storeAttachment, validateAttachmentReferences, MAX_ATTACHMENT_BYTES, type Attachment } from "./shared/review-attachments.js";
 import { awaitsAgentReply, latestUserCommentId } from "./shared/feedback-awaiting.js";
-import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, roundReplaced, roundThrough, sendInProgress, touchAgent, updateAgentState, type ClaimedThread } from "./shared/agent-session.js";
+import { addRequest, claimActive, claimedThreadIds, claimedThrough, createClaim, liveSession, readAgentState, recordAgentReplies, replacedRoundMessage, roundRefusal, roundReplaced, roundThrough, sendInProgress, touchAgent, updateAgentState, type AgentClaim, type ClaimedThread } from "./shared/agent-session.js";
 
 const renamedPathFacts = factCache<string | null>();
 const renameMapFacts = factCache<string | null>();
@@ -945,7 +945,7 @@ function applyReply(paths: FeedbackPaths, options: Options, feedback: Feedback, 
   let respondsTo: string | undefined;
   if (author === "agent") {
     const state = readAgentState(paths.reviewId);
-    if (claimId && roundReplaced(state, claimId)) fail(`Round ${claimId} was replaced: another agent started listening to this review and took over its threads. Post no more replies for this round and stop.`);
+    if (claimId && roundReplaced(state, claimId)) fail(replacedRoundMessage(claimId));
     respondsTo = claimId ? roundThrough(state, claimId, id) : claimedThrough(state, Date.now(), id) ?? latestUserCommentId(thread);
     if (!respondsTo) fail(`Feedback thread ${id} is not part of round ${claimId}.`);
   }
@@ -1130,7 +1130,7 @@ function askReviewer(paths: FeedbackPaths, options: Options): void {
   if (!body || body.length > 4000) fail("--body must contain 1 to 4000 characters.");
   const choices = repeatedOption(options, "choice").map((choice) => choice.trim());
   if (choices.length > 6 || choices.some((choice) => !choice || choice.length > 200)) fail("Use at most six nonblank --choice values of up to 200 characters.");
-  updateAgentState(paths.reviewId, (state, now) => addRequest(state, now, id, body, choices));
+  updateAgentState(paths.reviewId, (state, now) => addRequest(state, now, id, body, choices, option(options, "claim")));
   console.log(`Asked the reviewer in the viewer (${id}). The answer is returned by the next feedback command.`);
 }
 
@@ -1138,15 +1138,27 @@ function askReviewer(paths: FeedbackPaths, options: Options): void {
 function reportProgress(paths: FeedbackPaths, options: Options): void {
   const body = option(options, "body", { required: true }).trim();
   if (!body || body.length > 200) fail("--body must contain 1 to 200 characters.");
-  updateAgentState(paths.reviewId, (state, now) => {
-    const session = liveSession(state)?.id ?? null;
+  const claimId = option(options, "claim");
+  const shown = updateAgentState(paths.reviewId, (state, now) => {
     const claims = state.claims.filter((claim) => claimActive(claim, now));
-    const claim = claims.filter((item) => item.sessionId === session).at(-1) ?? claims.at(-1);
+    let claim: AgentClaim | undefined;
+    if (claimId !== undefined) {
+      // A replaced round's note would otherwise show as the new agent's.
+      const refusal = roundRefusal(state, now, { claim: claimId });
+      if (refusal) fail(refusal);
+      // A round that ended without being taken over may still change the implementation, so the check passes; nothing shows it.
+      claim = claims.find((item) => item.id === claimId);
+      if (!claim) return false;
+    } else {
+      if (liveSession(state)) fail("An agent is listening to this review. Pass the claim of your round with --claim.");
+      claim = claims.filter((item) => item.sessionId === null).at(-1);
+    }
     if (!claim) fail("No feedback round is in progress.");
     claim.note = body;
     touchAgent(state, now, [claim.id]);
+    return true;
   });
-  console.log("Updated the viewer's progress note.");
+  console.log(shown ? "Updated the viewer's progress note." : `Round ${claimId} is no longer running, so the viewer does not show the note. It was not taken over, so its work may continue.`);
 }
 
 function resolveThread(paths: FeedbackPaths, options: Options): void {

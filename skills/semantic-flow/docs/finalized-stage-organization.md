@@ -45,6 +45,8 @@ or line exactly once, using either hunks or line ranges consistently.
 <semantic-flow> implementation stage organize --finalized --stage <stage-id> --file <organization-json>
 ```
 
+In a feedback round, add the round's `--claim <claim>`.
+
 Both `--stage` and `--file` are required here. `--file` is the temporary
 organization document, not the manifest or an existing stage artifact.
 Passing organization fields through `--input` does not replace `--file`.

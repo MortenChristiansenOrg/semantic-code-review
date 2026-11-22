@@ -34,6 +34,8 @@ export interface AgentClaim {
 }
 export interface AgentRequest {
   id: string; sessionId: string | null; body: string; choices: string[]; createdAt: string;
+  /** The round that asked; the question goes when another agent takes that round over. */
+  claimId?: string;
   response?: { body: string; respondedAt: string };
 }
 export interface AgentSession {
@@ -107,8 +109,9 @@ function parseAgentRequest(value: unknown): AgentRequest | undefined {
   const { response } = value;
   const answered = isRecord(response) && isString(response.body) && isString(response.respondedAt)
     ? { response: { body: response.body, respondedAt: response.respondedAt } } : {};
+  const claimId = optional(value.claimId);
   return { id: value.id, sessionId: value.sessionId, body: value.body, choices: isStringArray(value.choices) ? value.choices : [],
-    createdAt: value.createdAt, ...answered };
+    createdAt: value.createdAt, ...(claimId === undefined ? {} : { claimId }), ...answered };
 }
 function parseAgentSession(value: unknown): AgentSession | undefined {
   if (!isRecord(value) || !isString(value.id) || !isString(value.startedAt) || !isString(value.heartbeatAt) ||
@@ -200,7 +203,7 @@ export function touchAgent(state: AgentState, now: number, claimIds?: Iterable<s
 
 /** Starting to listen replaces any earlier session and returns the threads of every running round to the queue. */
 export function startSession(state: AgentState, now: number): AgentSession {
-  for (const claim of state.claims) claim.replaced = true;
+  for (const claim of state.claims) replaceRound(state, claim);
   endSession(state, now, "superseded");
   state.claims = [];
   const session = { id: randomUUID(), startedAt: iso(now), heartbeatAt: iso(now), feedbackAt: iso(now) };
@@ -230,12 +233,18 @@ export function createClaim(state: AgentState, now: number, sessionId: string | 
     const taken = new Set(threads.map((thread) => thread.id));
     for (const earlier of [...state.claims, ...state.retiredClaims]) {
       if (earlier === claim || earlier.sessionId === undefined || earlier.sessionId === sessionId) continue;
-      if (earlier.threads.some((thread) => taken.has(thread.id))) earlier.replaced = true;
+      if (earlier.threads.some((thread) => taken.has(thread.id))) replaceRound(state, earlier);
     }
   }
   const session = liveSession(state);
   if (session && session.id === sessionId) session.feedbackAt = iso(now);
   return claim.id;
+}
+
+/** Marks a round as taken over and drops the questions it asked, which its agent no longer awaits. */
+function replaceRound(state: AgentState, round: AgentClaim | RetiredClaim) {
+  round.replaced = true;
+  state.requests = state.requests.filter((request) => request.claimId !== round.id);
 }
 
 /** Releases claims so their unanswered threads can be picked up again. */
@@ -285,6 +294,46 @@ export function roundReplaced(state: AgentState, claimId: string) {
   return state.retiredClaims.some((item) => item.id === claimId && item.replaced);
 }
 
+/** What an agent whose round was replaced is told, whichever command it ran. */
+export function replacedRoundMessage(claimId: string) {
+  return `Round ${claimId} was replaced: another agent started listening to this review and took over its threads. ` +
+    "Make no further changes for this round: no commits, restacks, stage changes, questions or replies. End with one short line.";
+}
+
+/** Who changes the implementation: the agent of a feedback round, a listening
+ * session itself (its automatic target restack), or null for a change outside any round. */
+export type RoundIdentity = { claim: string } | { session: string } | null;
+
+/** Why the implementation may not be changed for round now, or undefined when it may.
+ * A named round may change it unless another agent took it over. A change that names
+ * no round is refused while a listening session's round runs, so the agent of a
+ * replaced round that forgets its claim cannot change the stages the new round works on. */
+export function roundRefusal(state: AgentState, now: number, round: RoundIdentity): string | undefined {
+  if (round && "claim" in round) {
+    if (roundReplaced(state, round.claim)) return replacedRoundMessage(round.claim);
+    const known = state.claims.some((claim) => claim.id === round.claim) || state.retiredClaims.some((claim) => claim.id === round.claim);
+    return known ? undefined : `Round ${round.claim} is not a feedback round of this review. Pass the claim the feedback preflight or wait returned.`;
+  }
+  if (round) return liveSession(state)?.id === round.session ? undefined : "This listening session was replaced or stopped.";
+  const session = liveSession(state);
+  if (session && state.claims.some((claim) => claim.sessionId === session.id && claimActive(claim, now))) {
+    return "A listening agent is answering a feedback round of this review. If this change belongs to your round, " +
+      "pass the claim your feedback preflight or wait returned with --claim. Any other change waits until the round is finished.";
+  }
+  return undefined;
+}
+
+/** The session a named round belongs to, for the questions it asks. Fails when the
+ * round was replaced or is unknown. */
+export function roundSession(state: AgentState, now: number, claimId: string): string | null {
+  const refusal = roundRefusal(state, now, { claim: claimId });
+  if (refusal) throw new Error(refusal);
+  const claim = state.claims.find((item) => item.id === claimId) ?? state.retiredClaims.find((item) => item.id === claimId);
+  // A session that ended collects no more answers, so its round's question is asked outside any session.
+  const sessionId = claim?.sessionId ?? null;
+  return sessionId !== null && liveSession(state)?.id === sessionId ? sessionId : null;
+}
+
 /** The comment a named round answers in a thread, even after the round was released. */
 export function roundThrough(state: AgentState, claimId: string, threadId: string) {
   const claim = state.claims.find((item) => item.id === claimId) ?? state.retiredClaims.find((item) => item.id === claimId);
@@ -326,15 +375,21 @@ export function sendInProgress(state: AgentState, now: number) {
   return Object.values(state.sends).some((until) => age(now, until) < 0);
 }
 
-export function addRequest(state: AgentState, now: number, id: string, body: string, choices: string[]) {
+/** Adds a question for the reviewer. A question that names its round belongs to that
+ * round's session; one that names none is asked outside any listening session. */
+export function addRequest(state: AgentState, now: number, id: string, body: string, choices: string[], claimId?: string) {
+  const sessionId = claimId === undefined ? null : roundSession(state, now, claimId);
+  if (claimId === undefined && liveSession(state)) {
+    throw new Error("An agent is listening to this review. Pass the claim of the round this question belongs to with --claim.");
+  }
   const existing = state.requests.find((request) => request.id === id);
   if (existing) {
     if (existing.body !== body || JSON.stringify(existing.choices) !== JSON.stringify(choices)) throw new Error(`Request ${id} already exists with different content.`);
     return existing;
   }
-  const request = { id, sessionId: liveSession(state)?.id ?? null, body, choices, createdAt: iso(now) };
+  const request: AgentRequest = { id, sessionId, body, choices, createdAt: iso(now), ...(claimId === undefined ? {} : { claimId }) };
   state.requests.push(request);
-  touchAgent(state, now);
+  touchAgent(state, now, claimId === undefined ? undefined : [claimId]);
   return request;
 }
 

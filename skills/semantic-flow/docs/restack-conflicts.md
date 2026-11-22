@@ -28,6 +28,8 @@ without asking permission for their internal operations. Apply
    <semantic-flow> implementation restack --continue
    ```
 
+   In a feedback round, add the round's `--claim <claim>`.
+
    It replays the remaining stages. If another stage conflicts, repeat from
    step 1 with the newly reported worktree.
 
@@ -45,6 +47,8 @@ remove it from the artifact worktree, naming the rerun helper's
 <semantic-flow> implementation stage remove --id <stage-id> --implementation-id <implementation-id> --json
 ```
 
+In a feedback round, add the round's `--claim <claim>` here too.
+
 The command refuses the only remaining stage; keep it and report that the
 implementation no longer changes anything.
 
@@ -54,7 +58,8 @@ its worktree stay while you await the answer.
 
 If `--continue` reports that a ref or the artifact changed since the restack
 began, inspect what changed instead of retrying. `<semantic-flow>
-implementation restack --abort` discards the pending restack and its worktree;
+implementation restack --abort` (with the round's `--claim <claim>` in a feedback
+round) discards the pending restack and its worktree;
 no ref has moved, so start the restack again from the current state. It also
 switches back a stage branch that `sync` or `feedback` detached. If the
 artifact worktree is still detached after `--continue` or `--abort`, for

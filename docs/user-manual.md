@@ -589,6 +589,11 @@ current round is finished. Listening also ends when you mark the review complete
 or after two hours without feedback, both once the current round is finished or
 at once while the agent waits for your answer to its question, and when another
 agent starts listening to the same review, which takes over its threads at once.
+The replaced agent then changes nothing more for its round: the CLI refuses its
+stage changes, restacks, replies, progress notes and questions, and it ends with
+one short line. While a listening agent works on a round, other changes to the
+implementation, for example from `/semantic-flow continue` in another
+conversation, are refused until the round is finished.
 A completed
 review starts no listening: choose **Reopen review** in Saved reviews first.
 Running `/semantic-flow review` again in the same conversation reopens the
