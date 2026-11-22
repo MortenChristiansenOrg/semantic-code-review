@@ -98,8 +98,10 @@ function readFeedbackDocument<K extends SchemaId>(schema: K, file: string): { va
 function submittedFeedback(directory: string) {
   const refs = new Set<string>();
   let threads = 0, unresolved = 0;
-  const none = { refs, threads, unresolved, error: "" };
-  const disabled = (problem: string) => ({ refs, threads, unresolved, error: `Clean unused files is disabled, so that no attachment of submitted feedback is removed: ${problem}.` });
+  // Stands in for the listed threads the inventory cannot see, for the fingerprint.
+  const stamps: string[] = [];
+  const none = { refs, threads, unresolved, stamps, error: "" };
+  const disabled = (problem: string) => ({ refs, threads, unresolved, stamps, error: `Clean unused files is disabled, so that no attachment of submitted feedback is removed: ${problem}.` });
   const folderProblem = (name: string, kind: ReturnType<typeof probe>) => kind === "link" ? `${name} in the review's storage is a symbolic link or junction, which cleanup does not follow` :
     kind === "file" ? `${name} in the review's storage is a file, not a folder` : `${name} cannot be read because ${typeof kind === "object" ? kind.problem : kind}`;
   const feedback = path.join(directory, "feedback"), threadFolder = path.join(feedback, "threads");
@@ -120,7 +122,13 @@ function submittedFeedback(directory: string) {
   if (threadsKind === "directory") {
     // The feedback commands ignore folders there too.
     try { found = fs.readdirSync(threadFolder, { withFileTypes: true }).filter((entry) => !entry.isDirectory() && entry.name.endsWith(".json")).map((entry) => entry.name.slice(0, -5)).filter((id) => !listed.has(id)).sort(); }
-    catch (error) { return disabled(`feedback/threads cannot be read because ${readProblem(error)}`); }
+    catch (error) {
+      for (const id of listed) {
+        try { const stat = fs.lstatSync(path.join(threadFolder, `${id}.json`)); stamps.push(`${id}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`); }
+        catch (statError) { stamps.push(`${id}:${errorCode(statError) ?? "unknown"}`); }
+      }
+      return disabled(`feedback/threads cannot be read because ${readProblem(error)}`);
+    }
   } else if (threadsKind !== "missing") return disabled(folderProblem("feedback/threads", threadsKind));
   for (const id of [...listed, ...found]) {
     const thread = readFeedbackDocument(THREAD_SCHEMA_ID, path.join(threadFolder, `${id}.json`));
@@ -128,7 +136,7 @@ function submittedFeedback(directory: string) {
     if (listed.has(id)) { threads++; if (thread.value.status !== "resolved") unresolved++; }
     for (const attachment of usedAttachmentIds(thread.value)) refs.add(attachment);
   }
-  return { refs, threads, unresolved, error: "" };
+  return { refs, threads, unresolved, stamps, error: "" };
 }
 function inspect(id: string, generation: string) {
   const review = readReview(id);
@@ -172,7 +180,7 @@ function inspect(id: string, generation: string) {
   const { state: ignoredState, stateRevision: ignoredRevision, lastSaveId: ignoredSaveId, viewer: ignoredViewer, gitCommonDir: ignoredLocator, missingSince: ignoredMissing, ...identity } = review;
   return { review: identity, storageDirectory: directory, bytes, categories, drafts, unresolved, referenceError,
     // The candidates are included because an upload becomes one by age alone.
-    fingerprint: digest(JSON.stringify([review, entries, unused])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0) };
+    fingerprint: digest(JSON.stringify([review, entries, unused, feedback.stamps])), unused, unusedBytes: unused.reduce((sum, item) => sum + item.bytes, 0) };
 }
 function withCleanupDiagnostics<T>(id: string, retry: string, operation: () => T): T {
   try { return withReviewLock(id, operation); }

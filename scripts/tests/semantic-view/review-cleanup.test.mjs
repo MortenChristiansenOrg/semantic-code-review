@@ -718,7 +718,11 @@ test('a feedback document or folder that cannot be read disables cleanup, keeps 
   fs.writeFileSync(thread, text.replace('See the log.', 'See the LOG.')); fs.utimesSync(thread, stat.atime, stat.mtime);
   assert.notEqual(preview(review).fingerprint, before.fingerprint);
   denied.clear(); denied.add(threads);
-  const current = assertCleanupKeeps(review, file, /feedback\/threads cannot be read because access to it was denied/);
+  const listing = assertCleanupKeeps(review, file, /feedback\/threads cannot be read because access to it was denied/);
+  // The inventory cannot see the thread, but a thread the manifest lists still guards the preview.
+  fs.writeFileSync(thread, text.replace('See the log.', 'See the Log.')); fs.utimesSync(thread, stat.atime, stat.mtime);
+  const current = assertCleanupKeeps(review, file, /feedback\/threads cannot be read/);
+  assert.notEqual(current.fingerprint, listing.fingerprint);
   assert.equal(deleteReviewData(review.id, review.generation, current.fingerprint).deleted, true);
 });
 
