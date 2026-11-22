@@ -4,7 +4,7 @@ import path from "node:path";
 import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { attachmentIds, beginReviewDeletion, completeReviewDeletion, pathMissing, pendingDeletionDirectory, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
-import { parseJson } from "./json.js";
+import { parseJson, parseJsonDocument } from "./json.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, THREAD_SCHEMA_ID } from "./documents.js";
 import { isDocument, type DocumentTypes, type SchemaId } from "./schema-validation.js";
 import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
@@ -14,6 +14,13 @@ const GRACE_MS = 60 * 60 * 1000;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 type Entry = { name: string; size: number; modified: number; directory: boolean; link: boolean; hash?: string };
 type Category = { label: string; detail: string; bytes: number };
+/** A document's hash, so the fingerprint changes with its content. One that
+ * cannot be read is recorded as such: it keeps whole-review deletion possible,
+ * and the readers that need it, such as cleanup's feedback check, report it. */
+function contentHash(file: string): string {
+  try { return digest(fs.readFileSync(file)); }
+  catch (error) { return `unreadable:${errorCode(error) ?? "unknown"}`; }
+}
 /** Never follow directory links when calculating sizes or deletion candidates. */
 function inventory(directory: string): Entry[] {
   if (!fs.existsSync(directory)) return [];
@@ -22,50 +29,73 @@ function inventory(directory: string): Entry[] {
   function visit(relative: string) {
     const file = path.join(directory, relative), stat = fs.lstatSync(file), isDirectory = stat.isDirectory();
     entries.push({ name: relative.replaceAll(path.sep, "/"), size: isDirectory ? 0 : stat.size, modified: stat.mtimeMs, directory: isDirectory, link: stat.isSymbolicLink(),
-      ...(!stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: digest(fs.readFileSync(file)) } : {}) });
+      ...(!stat.isSymbolicLink() && stat.isFile() && relative.endsWith(".json") && !relative.startsWith("snapshots" + path.sep) ? { hash: contentHash(file) } : {}) });
     if (isDirectory) for (const name of fs.readdirSync(file).sort()) visit(path.join(relative, name));
   }
   for (const name of fs.readdirSync(directory).sort()) visit(name);
   return entries;
 }
-/** Why a feedback document cannot be read, in plain words, or its value. */
+/** Why a file cannot be read, in plain words. */
+function readProblem(error: unknown): string {
+  const code = errorCode(error);
+  return code === "ENOENT" ? "it is missing" : code === "EISDIR" ? "it is a folder" : code === "EACCES" || code === "EPERM" ? "access to it was denied" :
+    code === "EBUSY" ? "another program is using it" : `it cannot be read (${code ?? errorMessage(error)})`;
+}
+/** What is at file, without following a link. */
+function probe(file: string): "missing" | "link" | "directory" | "file" | { problem: string } {
+  try { const stat = fs.lstatSync(file); return stat.isSymbolicLink() ? "link" : stat.isDirectory() ? "directory" : "file"; }
+  catch (error) { return errorCode(error) === "ENOENT" ? "missing" : { problem: readProblem(error) }; }
+}
+/** A feedback document's value, or why it cannot be read. Duplicate keys and
+ * byte-order marks are refused, as the feedback readers refuse them. */
 function readFeedbackDocument<K extends SchemaId>(schema: K, file: string): { value: DocumentTypes[K] } | { problem: string } {
+  const kind = probe(file);
+  if (kind === "link") return { problem: "it is a symbolic link or junction, which cleanup does not follow" };
+  if (typeof kind === "object") return kind;
   let text: string;
   try { text = fs.readFileSync(file, "utf8"); }
-  catch (error) {
-    const code = errorCode(error);
-    return { problem: code === "ENOENT" ? "its file is missing" : code === "EISDIR" ? "it is a folder" : `its file cannot be read (${errorMessage(error)})` };
-  }
+  catch (error) { return { problem: readProblem(error) }; }
   let value: unknown;
-  try { value = parseJson(text); }
-  catch { return { problem: "its file is not valid JSON" }; }
-  return isDocument(schema, value) ? { value } : { problem: "its file does not match the feedback format" };
+  try { value = parseJsonDocument(text, file); }
+  catch { return { problem: "it is not valid JSON" }; }
+  return isDocument(schema, value) ? { value } : { problem: "it does not match the feedback format" };
 }
 /** The submitted feedback whose attachments cleanup keeps: the threads the
  * feedback manifest lists, which are those the viewer and the feedback commands
- * read, and any other thread file found. Cleanup cannot know which attachments
- * are used while any of it cannot be read, or while part of it is reached
- * through a link (a symbolic link or a Windows junction), which the inventory
- * never follows; error then says why and no attachment counts as unused. */
-function submittedFeedback(directory: string, entries: Entry[]) {
+ * read, and any other thread file found. It probes the paths those readers open,
+ * which a case-insensitive volume also resolves when a folder's case differs.
+ * Cleanup cannot know which attachments are used while any of it cannot be
+ * read, or while part of it is reached through a link (a symbolic link or a
+ * Windows junction), which the inventory never follows; error then says why
+ * and no attachment counts as unused. */
+function submittedFeedback(directory: string) {
   const refs = new Set<string>();
   let threads = 0, unresolved = 0;
+  const none = { refs, threads, unresolved, error: "" };
   const disabled = (problem: string) => ({ refs, threads, unresolved, error: `Clean unused files is disabled, so that no attachment of submitted feedback is removed: ${problem}.` });
-  const link = entries.find((entry) => entry.link && (entry.name === "feedback" || entry.name.startsWith("feedback/")));
-  if (link) return disabled(`${link.name} in the review's storage is a symbolic link or junction, which cleanup does not follow`);
-  const folder = entries.find((entry) => entry.name === "feedback");
-  const manifestFile = path.join(directory, "feedback", "manifest.json");
-  if (!entries.some((entry) => entry.name === "feedback/manifest.json")) {
-    // No feedback was submitted: the folder is missing or empty.
-    if (!folder || folder.directory && !entries.some((entry) => entry.name.startsWith("feedback/"))) return { refs, threads, unresolved, error: "" };
-    return disabled("feedback/manifest.json is missing, so the threads it should list are unknown");
+  const folderProblem = (name: string, kind: ReturnType<typeof probe>) => kind === "link" ? `${name} in the review's storage is a symbolic link or junction, which cleanup does not follow` :
+    kind === "file" ? `${name} in the review's storage is a file, not a folder` : `${name} cannot be read because ${typeof kind === "object" ? kind.problem : kind}`;
+  const feedback = path.join(directory, "feedback"), threadFolder = path.join(feedback, "threads");
+  const feedbackKind = probe(feedback);
+  if (feedbackKind === "missing") return none;
+  if (feedbackKind !== "directory") return disabled(folderProblem("feedback", feedbackKind));
+  if (probe(path.join(feedback, "manifest.json")) === "missing") {
+    let empty: boolean;
+    try { empty = fs.readdirSync(feedback).length === 0; }
+    catch (error) { return disabled(`feedback cannot be read because ${readProblem(error)}`); }
+    // No feedback was submitted while its folder is empty.
+    return empty ? none : disabled("feedback/manifest.json is missing, so the threads it should list are unknown");
   }
-  const manifest = readFeedbackDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifestFile);
+  const manifest = readFeedbackDocument(FEEDBACK_MANIFEST_SCHEMA_ID, path.join(feedback, "manifest.json"));
   if ("problem" in manifest) return disabled(`feedback/manifest.json cannot be read because ${manifest.problem}`);
-  const listed = new Set(manifest.value.threads);
-  const found = entries.flatMap((entry) => /^feedback\/threads\/([^/]+)\.json$/.exec(entry.name)?.[1] ?? []).filter((id) => !listed.has(id));
+  const listed = new Set(manifest.value.threads), threadsKind = probe(threadFolder);
+  let found: string[] = [];
+  if (threadsKind === "directory") {
+    try { found = fs.readdirSync(threadFolder).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((id) => !listed.has(id)).sort(); }
+    catch (error) { return disabled(`feedback/threads cannot be read because ${readProblem(error)}`); }
+  } else if (threadsKind !== "missing") return disabled(folderProblem("feedback/threads", threadsKind));
   for (const id of [...listed, ...found]) {
-    const thread = readFeedbackDocument(THREAD_SCHEMA_ID, path.join(directory, "feedback", "threads", `${id}.json`));
+    const thread = readFeedbackDocument(THREAD_SCHEMA_ID, path.join(threadFolder, `${id}.json`));
     if ("problem" in thread) return disabled(`feedback thread ${id}${listed.has(id) ? ", listed in feedback/manifest.json," : ""} cannot be read because ${thread.problem}`);
     if (listed.has(id)) { threads++; if (thread.value.status !== "resolved") unresolved++; }
     for (const attachment of attachmentIds(thread.value)) refs.add(attachment);
@@ -77,7 +107,7 @@ function inspect(id: string, generation: string) {
   if (review.generation !== generation) throw new Error("The selected review was replaced. Refresh Saved reviews.");
   const directory = reviewDirectory(id), entries = inventory(directory), state = review.state;
   const refs = attachmentIds(state), snapshots = new Set(Object.values(isRecord(state.approvals) ? state.approvals : {}).map((value) => stringField(value, "snapshotId")));
-  const feedback = submittedFeedback(directory, entries), referenceError = feedback.error, { threads: feedbackThreads, unresolved } = feedback;
+  const feedback = submittedFeedback(directory), referenceError = feedback.error, { threads: feedbackThreads, unresolved } = feedback;
   for (const id of feedback.refs) refs.add(id);
   const unused: Array<{ path: string; bytes: number }> = [];
   if (!referenceError) for (const entry of entries) {

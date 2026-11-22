@@ -856,7 +856,7 @@ artifacts, publications, and archives are preserved.
 Files referenced by saved messages, drafts, feedback, or approvals are retained.
 Cleanup is disabled, and the dialog says why, while submitted feedback cannot
 be read: the feedback manifest or a thread it lists is missing or damaged, or
-the `feedback` folder or a part of it is a symbolic link or junction. Deleting
+the `feedback` folder, its `threads` folder or one of those files is a symbolic link or junction. Deleting
 the whole review still works then.
 Recent uploads and snapshots have a one-hour grace period to protect in-flight
 work; uploading the same file again renews that protection. Cleanup runs only

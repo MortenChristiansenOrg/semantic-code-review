@@ -677,17 +677,24 @@ test('unused cleanup is disabled while the feedback manifest or a thread it list
   const { review } = setup(t), file = oldAttachment(review, 'context.log');
   const feedback = submitFeedback(review, { first: [file] }), manifestFile = path.join(feedback, 'manifest.json'), thread = path.join(feedback, 'threads', 'first.json');
   const manifestText = fs.readFileSync(manifestFile, 'utf8'), threadText = fs.readFileSync(thread, 'utf8');
-  fs.writeFileSync(manifestFile, '{"threads": ['); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because its file is not valid JSON/);
-  fs.writeFileSync(manifestFile, '{"threads": ["first"]}'); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because its file does not match the feedback format/);
+  fs.writeFileSync(manifestFile, '{"threads": ['); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because it is not valid JSON/);
+  fs.writeFileSync(manifestFile, manifestText.replace('"threads":', '"threads": [], "threads":')); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because it is not valid JSON/);
+  fs.writeFileSync(manifestFile, '{"threads": ["first"]}'); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because it does not match the feedback format/);
   fs.rmSync(manifestFile); assertCleanupKeeps(review, file, /feedback\/manifest\.json is missing/);
   fs.writeFileSync(manifestFile, manifestText); fs.rmSync(thread);
-  assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file is missing/);
-  fs.writeFileSync(thread, '{'); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file is not valid JSON/);
-  fs.writeFileSync(thread, JSON.stringify({ ...JSON.parse(threadText), comments: [] })); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file does not match the feedback format/);
+  assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because it is missing/);
+  fs.writeFileSync(thread, '{'); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because it is not valid JSON/);
+  fs.writeFileSync(thread, JSON.stringify({ ...JSON.parse(threadText), comments: [] })); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because it does not match the feedback format/);
   fs.rmSync(thread); fs.mkdirSync(thread); assertCleanupKeeps(review, file, /cannot be read because it is a folder/);
-  fs.rmSync(thread, { recursive: true }); fs.writeFileSync(thread, '{');
+  fs.rmSync(thread, { recursive: true }); fs.writeFileSync(thread, threadText);
+  const read = fs.readFileSync, denied = t.mock.method(fs, 'readFileSync', (target, ...rest) => {
+    if (String(target) === thread) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    return read(target, ...rest);
+  });
   // Deleting the whole review does not depend on reading its feedback.
-  assert.equal(deleteReviewData(review.id, review.generation, assertCleanupKeeps(review, file, /not valid JSON/).fingerprint).deleted, true);
+  const current = assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because access to it was denied/);
+  assert.equal(deleteReviewData(review.id, review.generation, current.fingerprint).deleted, true);
+  denied.mock.restore();
   assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
 });
 
@@ -695,7 +702,21 @@ test('unused cleanup does not remove the attachments of threads it finds but the
   const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
   fs.writeFileSync(path.join(feedback, 'manifest.json'), JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(feedback, 'manifest.json'), 'utf8')), threads: [] }));
   const current = preview(review); assert.equal(current.referenceError, ''); assert.deepEqual(current.unused, []);
-  fs.writeFileSync(path.join(feedback, 'threads', 'first.json'), '{'); assertCleanupKeeps(review, file, /feedback thread first cannot be read because its file is not valid JSON/);
+  fs.writeFileSync(path.join(feedback, 'threads', 'first.json'), '{'); assertCleanupKeeps(review, file, /feedback thread first cannot be read because it is not valid JSON/);
+});
+
+test('unused cleanup keeps an attachment a thread names by ID even when its path names another', (t) => {
+  const { review } = setup(t), named = oldAttachment(review, 'named.log'), other = oldAttachment(review, 'other.log');
+  submitFeedback(review, { first: [{ ...named, path: other.path }] });
+  const current = preview(review); assert.equal(current.referenceError, ''); assert.deepEqual(current.unused, []);
+});
+
+test('unused cleanup reads feedback through a folder name that differs only in case where the volume ignores case', (t) => {
+  const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
+  fs.renameSync(feedback, path.join(reviewDirectory(review.id), 'Feedback'));
+  if (!fs.existsSync(path.join(feedback, 'manifest.json'))) return t.skip('The volume distinguishes case, so no reader finds this feedback.');
+  const current = preview(review); assert.equal(current.referenceError, ''); assert.deepEqual(current.unused, []);
+  fs.rmSync(path.join(feedback, 'threads', 'first.json')); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because it is missing/);
 });
 
 for (const linked of ['feedback', 'feedback/threads']) test(`unused cleanup is disabled while ${linked} is a link, and deletion keeps the linked files`, (t) => {

@@ -172,6 +172,7 @@ permission, keeps its review.
 Unused-file cleanup keeps every persisted reference and protects fresh uploads
 and snapshots for one hour. It reads the feedback manifest and every thread it
 lists, and any other thread file it finds; while any of them cannot be read, or
-part of `feedback/` is a symbolic link or junction, it removes no attachment. Unreferenced files are retired inside the owning
+one of them or the `feedback` or `feedback/threads` folder is a symbolic link or
+junction, it removes no attachment. Unreferenced files are retired inside the owning
 review's `.cleanup/` folder before removal, so interrupted cleanup can be retried
 without exposing half-removed attachments to new messages.
