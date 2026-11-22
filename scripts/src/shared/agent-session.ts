@@ -34,6 +34,8 @@ export interface AgentClaim {
 }
 export interface AgentRequest {
   id: string; sessionId: string | null; body: string; choices: string[]; createdAt: string;
+  /** The round that asked; the question goes when another agent takes that round over. */
+  claimId?: string;
   response?: { body: string; respondedAt: string };
 }
 export interface AgentSession {
@@ -107,8 +109,9 @@ function parseAgentRequest(value: unknown): AgentRequest | undefined {
   const { response } = value;
   const answered = isRecord(response) && isString(response.body) && isString(response.respondedAt)
     ? { response: { body: response.body, respondedAt: response.respondedAt } } : {};
+  const claimId = optional(value.claimId);
   return { id: value.id, sessionId: value.sessionId, body: value.body, choices: isStringArray(value.choices) ? value.choices : [],
-    createdAt: value.createdAt, ...answered };
+    createdAt: value.createdAt, ...(claimId === undefined ? {} : { claimId }), ...answered };
 }
 function parseAgentSession(value: unknown): AgentSession | undefined {
   if (!isRecord(value) || !isString(value.id) || !isString(value.startedAt) || !isString(value.heartbeatAt) ||
@@ -200,7 +203,7 @@ export function touchAgent(state: AgentState, now: number, claimIds?: Iterable<s
 
 /** Starting to listen replaces any earlier session and returns the threads of every running round to the queue. */
 export function startSession(state: AgentState, now: number): AgentSession {
-  for (const claim of state.claims) claim.replaced = true;
+  for (const claim of state.claims) replaceRound(state, claim);
   endSession(state, now, "superseded");
   state.claims = [];
   const session = { id: randomUUID(), startedAt: iso(now), heartbeatAt: iso(now), feedbackAt: iso(now) };
@@ -230,12 +233,18 @@ export function createClaim(state: AgentState, now: number, sessionId: string | 
     const taken = new Set(threads.map((thread) => thread.id));
     for (const earlier of [...state.claims, ...state.retiredClaims]) {
       if (earlier === claim || earlier.sessionId === undefined || earlier.sessionId === sessionId) continue;
-      if (earlier.threads.some((thread) => taken.has(thread.id))) earlier.replaced = true;
+      if (earlier.threads.some((thread) => taken.has(thread.id))) replaceRound(state, earlier);
     }
   }
   const session = liveSession(state);
   if (session && session.id === sessionId) session.feedbackAt = iso(now);
   return claim.id;
+}
+
+/** Marks a round as taken over and drops the questions it asked, which its agent no longer awaits. */
+function replaceRound(state: AgentState, round: AgentClaim | RetiredClaim) {
+  round.replaced = true;
+  state.requests = state.requests.filter((request) => request.claimId !== round.id);
 }
 
 /** Releases claims so their unanswered threads can be picked up again. */
@@ -376,7 +385,7 @@ export function addRequest(state: AgentState, now: number, id: string, body: str
     if (existing.body !== body || JSON.stringify(existing.choices) !== JSON.stringify(choices)) throw new Error(`Request ${id} already exists with different content.`);
     return existing;
   }
-  const request = { id, sessionId, body, choices, createdAt: iso(now) };
+  const request: AgentRequest = { id, sessionId, body, choices, createdAt: iso(now), ...(claimId === undefined ? {} : { claimId }) };
   state.requests.push(request);
   touchAgent(state, now, claimId === undefined ? undefined : [claimId]);
   return request;

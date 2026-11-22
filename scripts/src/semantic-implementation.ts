@@ -2606,6 +2606,8 @@ interface PendingRestack {
   worktree: string;
   /** The checkout sync detached so the restack could move its stage branch; --continue and --abort switch it back. */
   checkout?: DetachedCheckout;
+  /** The feedback round that started the restack; it may still abort it after another agent took the round over. */
+  claim?: string;
 }
 
 /** A worktree that had branch checked out at head and was detached so a restack could move the branch. */
@@ -2652,6 +2654,7 @@ function readPendingRestack(files: ArtifactFiles): PendingRestack | undefined {
       const checkout = isRecord(record.checkout) ? record.checkout : invalid();
       return { worktree: text(checkout, "worktree"), branch: text(checkout, "branch"), head: sha(checkout, "head") };
     })() }),
+    ...(record.claim === undefined ? {} : { claim: text(record, "claim") }),
   };
 }
 
@@ -3016,10 +3019,7 @@ function restack(workspace: Workspace, options: Options): void {
     fail("restack takes --from or --base to start, or --continue or --abort for a pending restack.");
   }
   if (abort) {
-    // Aborting only discards a pending restack, so a replaced round may still clean up after itself.
-    recovering = true;
-    try { withRestackLock(workspace, () => abortRestack(workspace)); }
-    finally { recovering = false; }
+    withRestackLock(workspace, () => abortRestack(workspace));
     return;
   }
   const summary = withRestackLock(workspace, () => proceed ? continueRestack(workspace) : restackStages(workspace, { fromId, baseOption }));
@@ -3183,6 +3183,7 @@ function runRestack(
       conflict: error.conflict,
       worktree: run.location,
       ...(run.checkout ? { checkout: run.checkout } : {}),
+      ...(commandRound && "claim" in commandRound ? { claim: commandRound.claim } : {}),
     };
     let recorded = false;
     try {
@@ -3383,7 +3384,11 @@ function abortRestack(workspace: Workspace): void {
   const implementationId = activeImplementationId(workspace.root, workspace.snapshot);
   const draft = new ArtifactDraft(workspace.snapshot);
   draft.remove(PENDING_RESTACK_FILE);
-  withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft));
+  // Aborting changes no stage, so the round that started the restack may still
+  // discard it after another agent took that round over. Any other abort is a change like any other.
+  recovering = pending?.claim !== undefined && commandRound !== null && "claim" in commandRound && pending.claim === commandRound.claim;
+  try { withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft)); }
+  finally { recovering = false; }
   // Only the folder restacks of this implementation use is ever deleted.
   const location = ScratchWorktree.location(workspace.root, implementationId);
   const canonical = pending === undefined || ScratchWorktree.isCanonical(workspace.root, implementationId, pending.worktree);

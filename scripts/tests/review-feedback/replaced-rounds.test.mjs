@@ -39,6 +39,8 @@ function implementationState(repository) {
     head: repository.git("rev-parse", "HEAD"),
     branch: repository.git("branch", "--show-current"),
     worktree: repository.git("status", "--porcelain=v1", "--untracked-files=all"),
+    // A scratch restack worktree is registered here while a restack is pending.
+    worktrees: repository.git("worktree", "list", "--porcelain"),
   };
 }
 const stageBranch = (repository, id) => repository.git("branch", "--list", "--format=%(refname:short)", `*/stages/${id}`);
@@ -59,7 +61,12 @@ test("every command that changes the implementation refuses a replaced round bef
   repository.commitFile("implementation.txt", "implementation v2\n", "Address feedback");
   const before = implementationState(repository);
 
-  assert.ok(changingCommands.length >= 15, changingCommands.map((words) => words.join(" ")).join(", "));
+  // Kept by hand, so a new command that changes the implementation without taking a claim is noticed.
+  assert.deepEqual(changingCommands.map((words) => words.join(" ")).sort(), [
+    "restack", "specification add", "stage begin", "stage discard", "stage evidence", "stage evidence-remove",
+    "stage finish", "stage no-evidence", "stage organize", "stage record", "stage record-batch", "stage remove",
+    "stage set", "stage target", "stage validation",
+  ]);
   for (const words of changingCommands) {
     const refusal = repository.expectSemanticFailure("was replaced", ...words, "--claim", replaced.claim);
     assert.match(refusal.stderr, /Make no further changes for this round.*End with one short line/s, words.join(" "));
@@ -106,6 +113,24 @@ test("a replaced round cannot continue its pending restack but can still abort i
   assert.equal(repository.artifact.exists(".work/restack.json"), false);
 });
 
+test("a replaced round cannot abort the restack the new round left pending", async (t) => {
+  const { repository } = createImplementationWithStages(t, ["base", "upper"]);
+  repository.feedback("init");
+  addThread(repository, "conflict", "base");
+  const replaced = await waitAsync(repository, "--timeout", "5");
+  const takeover = await waitAsync(repository, "--timeout", "5");
+  repository.git("switch", stageBranch(repository, "base"));
+  repository.commitFile("upper.txt", "base wants this\n", "Conflicting correction");
+  repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "base", "--claim", takeover.claim);
+
+  const before = implementationState(repository);
+  repository.expectSemanticFailure("was replaced", "restack", "--abort", "--claim", replaced.claim);
+  repository.expectSemanticFailure("pass the claim", "restack", "--abort");
+  assert.deepEqual(implementationState(repository), before);
+  repository.semantic("restack", "--abort", "--claim", takeover.claim);
+  assert.equal(repository.artifact.exists(".work/restack.json"), false);
+});
+
 test("a takeover between a command's check and its write does not let the write through", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
@@ -137,8 +162,13 @@ test("a takeover between a command's check and its write does not let the write 
       updateAgentState(review, (state, now) => { startSession(state, now); });
     });
   `;
-  const holding = run([...sourceLoader, "--input-type=module", "-e", holder, "--", review, locks, ready], repository.root);
-  while (!fs.existsSync(ready)) await new Promise((resolve) => setTimeout(resolve, 20));
+  let holderDone = false;
+  const holding = run([...sourceLoader, "--input-type=module", "-e", holder, "--", review, locks, ready], repository.root)
+    .finally(() => { holderDone = true; });
+  while (!fs.existsSync(ready)) {
+    if (holderDone) assert.fail(`The lock holder ended early: ${(await holding).stderr}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   const restack = await run([...semanticCli, "restack", "--from", "implementation", "--claim", round.claim], repository.root);
   const held = await holding;
   assert.equal(held.status, 0, held.stderr);
@@ -169,6 +199,18 @@ test("a replaced round's progress and questions never show as the new agent's", 
   state = agentState(repository);
   assert.equal(state.claims[0].note, "Renaming again");
   assert.deepEqual(state.requests.map((request) => [request.id, request.sessionId]), [["which-name", takeover.session]]);
+});
+
+test("a standalone round's open question goes when a listening agent takes the round over", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "rename");
+  const standalone = JSON.parse(repository.flow("feedback", "--json"));
+  repository.feedback("agent", "ask", "--id", "which-name", "--claim", standalone.claim, "--body", "Which name?");
+  assert.equal(agentState(repository).requests.length, 1);
+  const takeover = await waitAsync(repository, "--timeout", "5");
+  assert.deepEqual(threadIds(takeover), ["rename"]);
+  assert.deepEqual(agentState(repository).requests, []);
 });
 
 test("a new agent takes over at once while the replaced round is still working", async (t) => {

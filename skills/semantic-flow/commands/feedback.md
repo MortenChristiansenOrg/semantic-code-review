@@ -49,31 +49,6 @@ any feedback command in this run returned a `targetRestack`.
 Use the returned `worktree` as the working directory for every remaining Git,
 implementation, and feedback command.
 
-## The round's claim
-
-The returned `claim` names this round. Pass it with every command that acts
-for the round: as `--claim <claim>`, or as a `claim` key in `--input` JSON. That
-is every reply, `feedback agent progress`, `feedback agent ask`, and every
-`implementation` command that changes the implementation, such as `stage
-record`, `stage target`, `stage evidence`, `stage organize`, `stage remove`,
-and `restack`. While a listening agent answers a round, such a command without
-a claim is refused. Commands that only read need none. Work on `responses`
-continues the round that asked, with that round's claim. A null `claim` means
-no thread was claimed and there is no round, so omit it.
-
-The CLI cannot see a plain `git commit`. Right before committing a stage
-correction, report it with the claim, for example
-`{"claim":"<claim>","body":"Committing the refund stage corrections"}` passed to
-`<semantic-flow> feedback agent progress --input -`, and commit only after it
-succeeds.
-
-If any command reports that the round was replaced, another agent started
-listening and took over its threads. Stop at once: no commit, restack, stage
-change, question, or reply for this round. If the refusal came from `restack
---continue`, first discard this round's pending restack with `<semantic-flow>
-implementation restack --abort`. Leave other edits as they are. End with one
-short line in the chat, naming any uncommitted edits you left.
-
 If `stages` and `responses` are empty, remove the empty stages that
 `emptyStageThreads` allows (see "Empty stages"), report that no feedback awaits
 a reply, and stop. Read the whole conversation in every returned thread. Comments may contain `attachments`,
@@ -96,6 +71,32 @@ line changed or left the diff, or a non-line target could not be found. Inspect
 the current target and ask about the desired behavior only when applying the
 feedback is ambiguous.
 Do not guess the intended behavior.
+
+## The round's claim
+
+The returned `claim` names this round. Pass it with every command that acts
+for the round: as `--claim <claim>`, or as a `claim` key in `--input` JSON. That
+is every reply, `feedback agent progress`, `feedback agent ask`, and every
+`implementation` command that changes the implementation, such as `stage
+record`, `stage target`, `stage evidence`, `stage organize`, `stage remove`,
+and `restack`. While a listening agent answers a round, such a command without
+a claim is refused. Commands that only read need none. Work on `responses`
+continues the round that asked, with that round's claim. A null `claim` means
+no thread was claimed and there is no round, so omit it.
+
+The CLI cannot see edits or a plain `git commit`, so check the round with a
+progress report before you start changing a stage's code and again right before
+each commit, for example
+`{"claim":"<claim>","body":"Committing the refund stage corrections"}` passed to
+`<semantic-flow> feedback agent progress --input -`. Edit or commit only after
+it succeeds.
+
+If any command reports that the round was replaced, another agent started
+listening and took over its threads. Stop at once: no commit, restack, stage
+change, question, or reply for this round. If the refusal came from `restack
+--continue`, first discard this round's pending restack with `<semantic-flow>
+implementation restack --abort --claim <claim>`. Leave other edits as they are. End with one
+short line in the chat, naming any uncommitted edits you left.
 
 ## Ask in the viewer
 
@@ -160,7 +161,7 @@ Handle all change requests assigned to one stage together:
 
 1. Inspect the thread targets and complete stage diff once.
 2. If the stage needs code changes, require `worktreeChanges` from preflight to
-   be empty, then check out its recorded branch. Preserve unrelated user changes
+   be empty, report progress with the claim, then check out its recorded branch. Preserve unrelated user changes
    and stop if the worktree is dirty. Ask about the affected edits in the viewer
    under `../docs/user-decisions.md`; do not ask whether to bypass the
    clean-worktree check.
@@ -192,11 +193,12 @@ harness supports subagents, change them in parallel, one subagent per stage:
   a stage branch checked out, run `git switch --detach` there first. Then run
   `git switch <stage-branch>` in each stage worktree, which must be clean.
 - Each subagent receives its stage's threads, branch, and worktree, the round's
-  `claim`, and the artifact worktree path. It makes the stage's corrections as
-  one coherent edit, runs relevant tests, reports progress with the claim from
-  the artifact worktree as “The round's claim” describes, and commits on that
-  branch. When the progress report says the round was replaced, it commits
-  nothing and returns that. Otherwise it returns a reply summary per thread and
+  `claim`, and the artifact worktree path. It reports progress with the claim from
+  the artifact worktree before editing and again before committing, as “The
+  round's claim” describes. In between it makes the stage's corrections as one
+  coherent edit, runs relevant tests, and commits on that branch. When a
+  progress report says the round was replaced, it changes nothing more and
+  returns that. Otherwise it returns a reply summary per thread and
   notes on node coverage or insights that changed. It runs no other Semantic
   Flow command, never restacks, and touches no other branch.
 - When every subagent has finished, run `git switch --detach` in each stage

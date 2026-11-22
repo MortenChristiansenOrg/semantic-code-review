@@ -48,7 +48,7 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
+import { claimedThreadIds, endSession, readAgentState, roundRefusal, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
@@ -816,6 +816,9 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate, round: RoundIde
       `Target branch ${candidate.targetBranch} advanced, but automatic restacking cannot preserve detached HEAD ${originalHead}. Check out a semantic stage or the target branch first.`,
     );
   }
+  // Refused before the checkout is touched; the restack checks again under the review lock.
+  const refusal = roundRefusal(readAgentState(reviewId(candidate.worktree, candidate.implementationId)), Date.now(), round);
+  if (refusal) fail(refusal);
   // Load the service first, so a failed import never leaves the branch detached.
   const { restackOntoTarget } = await implementationService();
   // A checked-out stage branch is detached while the restack rewrites it.
