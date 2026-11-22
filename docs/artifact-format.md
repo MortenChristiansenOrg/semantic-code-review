@@ -172,16 +172,27 @@ its commit at the next restack.
 `files` is derived from:
 
 ```text
-git --no-replace-objects -c core.attributesFile=/dev/null -c diff.default.binary=auto \
-  diff-tree -r -z --name-status --ignore-submodules=none --find-renames=50% -l1000 \
-  <baseRevision> <headRevision> --
+git --no-replace-objects --literal-pathspecs -c core.attributesFile=/dev/null \
+  -c diff.default.binary=auto -c core.quotePath=false -c diff.suppressBlankEmpty=false \
+  diff-tree -r --ignore-submodules=none --no-ext-diff --no-textconv --no-color \
+  --diff-algorithm=myers --indent-heuristic --inter-hunk-context=0 \
+  --src-prefix=a/ --dst-prefix=b/ --submodule=short \
+  -z --name-status --find-renames=50% -l1000 <baseRevision> <headRevision> --
 ```
 
-run with `GIT_ATTR_SOURCE` set to the empty tree and `GIT_ATTR_NOSYSTEM=1`, so
-that the inventory does not depend on Git configuration, replacement refs or
-attributes (Git reads `/dev/null` as the null device on every platform). `1000` is the rename limit of this format (Git's default since
-2.33). Git before 2.41 ignores `GIT_ATTR_SOURCE` and still reads the worktree's
-`.gitattributes`, and every Git version reads `$GIT_DIR/info/attributes`.
+run with `GIT_ATTR_SOURCE` set to the empty tree, `GIT_ATTR_NOSYSTEM=1` and
+`GIT_DIFF_OPTS` unset, so that the inventory does not depend on Git
+configuration, replacement refs or attributes (Git reads `/dev/null` as the null
+device on every platform). `1000` is the rename limit of this format (Git's
+default since 2.33). Git before 2.41 ignores `GIT_ATTR_SOURCE` and still reads
+the worktree's `.gitattributes`, and every Git version reads
+`$GIT_DIR/info/attributes`.
+
+Hunk selectors and line ranges refer to the patch the same command writes with
+`-p -U0` in place of `-z --name-status`: hunks found with Git's default
+algorithm and indent heuristic, without text conversion, so a selector means
+the same hunk on every computer. The reference viewer shows the same patch with
+more context.
 
 Supported kinds are `added`, `modified`, `deleted`, and `renamed`.
 

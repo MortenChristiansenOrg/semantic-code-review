@@ -13,6 +13,7 @@ import { replaceArtifactDirectory } from '../../src/shared/artifact-store.ts';
 import { readReviewArtifact } from '../../src/shared/review-store.ts';
 import { createRepository, feedbackCli, flowCli, implementationFromScript, initializeImplementation } from '../helpers/repository.mjs';
 import { viewerFetch } from '../helpers/viewer-client.mjs';
+import { commitSubmoduleAndFiles, commitSubmoduleUpdateAndRenames, UPDATE_AND_RENAMES, withHostileGit } from '../helpers/hostile-git.mjs';
 import { createViewerDataSource, startRemoteReview, refreshRemoteReview, createImplementationDataScript, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot,
   patchReviewState, readReview, reviewDirectory, reviewId, registeredReviews, inspectReviewStorage, deleteReviewData, exportFeedback } from '../../src/semantic-view.ts';
 
@@ -835,4 +836,20 @@ test('a projection is replaced while another process reads one of its files', { 
     assert.equal(await exited, 0);
     assert.deepEqual(fs.readdirSync(parent).filter((name) => !['artifact.previous', 'go'].includes(name)), ['artifact']);
   } finally { reader.kill(); }
+});
+
+test('a reconstructed remote review lists the files a stage inventory lists, whatever the Git configuration', async (t) => {
+  const { author, source } = setup(t);
+  author.git('switch', 'feature');
+  commitSubmoduleAndFiles(author);
+  const updated = commitSubmoduleUpdateAndRenames(author);
+  author.git('switch', 'main');
+  const review = startRemoteReview(source.root, 'feature');
+  for (const group of ['submodules', 'renames']) {
+    await withHostileGit(review.repositoryRoot, group, () => {
+      refreshRemoteReview(review.id, review.generation);
+      const stage = dataFor(review).stages.find((item) => item.id === `commit-${updated}`);
+      assert.deepEqual(stage.files.map(({ path, kind, previousPath }) => ({ path, kind, ...(previousPath ? { previousPath } : {}) })), UPDATE_AND_RENAMES, group);
+    });
+  }
 });

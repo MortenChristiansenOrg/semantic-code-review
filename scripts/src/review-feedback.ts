@@ -39,6 +39,7 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
+import { diffTree, FIND_RENAMES } from "./shared/diff-settings.js";
 import { locateLineAnchors, storedLineTargetPath } from "./shared/line-anchors.js";
 import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
@@ -245,18 +246,8 @@ function renamedPathBetween(root: string, fromRevision: string, toRevision: stri
 
 function readRenamedPath(root: string, fromRevision: string, toRevision: string, repositoryPath: string): string | null {
   const raw = renameMapFacts(JSON.stringify([root, fromRevision, toRevision]), (): string | null => {
-    const output: unknown = git([
-      "--no-pager",
-      "diff",
-      "--name-status",
-      "-z",
-      "--find-renames=50%",
-      fromRevision,
-      toRevision,
-    ], {
-      cwd: root,
-      allowFailure: true,
-    });
+    const command = diffTree(["--name-status", "-z", ...FIND_RENAMES, fromRevision, toRevision, "--"], { objectIdLength: toRevision.length });
+    const output: unknown = gitRaw(command.args, { cwd: root, env: command.env, allowFailure: true });
     return typeof output === "string" ? output : null;
   });
   if (raw === null) return null;

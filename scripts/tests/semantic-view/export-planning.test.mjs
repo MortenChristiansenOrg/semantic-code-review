@@ -18,6 +18,7 @@ import {
   scriptsDirectory,
   sourceLoader,
 } from "../helpers/repository.mjs";
+import { HOSTILE_GIT, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
 
 const moduleUrl = new URL("../../src/semantic-view.ts", import.meta.url).href;
 
@@ -341,10 +342,10 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
 
   const firstScript = dataSource.implementationDataScript();
   const stage = implementationFromScript(firstScript).stages[0];
-  const initialDiffCalls = calls.filter((args) => args.includes("diff")).length;
+  const initialDiffCalls = calls.filter((args) => args.includes("diff-tree")).length;
   assert.equal(initialDiffCalls, 1);
   assert.equal(dataSource.implementationDataScript(), firstScript);
-  assert.equal(calls.filter((args) => args.includes("diff")).length, 1);
+  assert.equal(calls.filter((args) => args.includes("diff-tree")).length, 1);
 
   assert.equal(
     (await dataSource.fileDiff(
@@ -355,7 +356,7 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
     )).additions,
     1,
   );
-  assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
+  assert.equal(calls.filter((args) => args.includes("diff-tree")).length, 3);
   assert.equal(
     (await dataSource.fileDiff(
       "implementation",
@@ -365,7 +366,7 @@ test("viewer data caches metadata and batches lazy diffs by stage", async (t) =>
     )).additions,
     1,
   );
-  assert.equal(calls.filter((args) => args.includes("diff")).length, 3);
+  assert.equal(calls.filter((args) => args.includes("diff-tree")).length, 3);
 });
 
 test("viewer refreshes a revised inventory without discarding unrelated immutable diffs", async (t) => {
@@ -380,7 +381,7 @@ test("viewer refreshes a revised inventory without discarding unrelated immutabl
   const source = createViewerDataSource(repository.root);
   const counting = createViewerDataSource(repository.root, {
     gitCapture(cwd, args) {
-      if (args.includes("diff")) gitCalls++;
+      if (args.includes("diff-tree")) gitCalls++;
       return execFileSync("git", args, { cwd, encoding: "utf8" });
     },
   });
@@ -1250,4 +1251,40 @@ test("file and line feedback on paths with line breaks is sent and its line snap
   const [line, whole] = result.exported.map((item) => readFeedbackThread(repository.root, item.threadId).target);
   assert.deepEqual([line.kind, line.path, line.side, line.line], ["line", name, "new", 2]);
   assert.deepEqual([whole.kind, whole.path], ["file", name]);
+});
+
+test("the viewer lists and shows a stage's changes as its inventory does, whatever the user's Git configuration", async (t) => {
+  const repository = submoduleAndRenamesStage(t);
+  const { baseRevision: base, headRevision: head } = repository.artifact.stage("implementation").change;
+  const commitOf = (revision) => `Subproject commit ${repository.git("rev-parse", `${revision}:sub`)}`;
+  const changed = (lines) => lines.filter((line) => line.t !== "ctx").map(({ t, o, n, s }) => ({ t, o, n, s }));
+  const shown = {
+    "renamed-first.txt": [{ t: "add", o: undefined, n: 41, s: "edited" }],
+    "renamed-second.txt": [
+      { t: "del", o: 1, n: undefined, s: "second line 0" },
+      { t: "add", o: undefined, n: 1, s: "changed" },
+      { t: "add", o: undefined, n: 41, s: "edited" },
+    ],
+    sub: [{ t: "del", o: 1, n: undefined, s: commitOf(base) }, { t: "add", o: undefined, n: 1, s: commitOf(head) }],
+  };
+  for (const group of Object.keys(HOSTILE_GIT)) {
+    await withHostileGit(repository.root, group, async () => {
+      const source = createViewerDataSource(repository.root);
+      const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+      assert.deepEqual(stage.files.map(({ path, kind, previousPath, additions, deletions, binary }) => ({ path, kind, previousPath, additions, deletions, binary })), [
+        { ...UPDATE_AND_RENAMES[0], additions: 1, deletions: 0, binary: false },
+        { ...UPDATE_AND_RENAMES[1], additions: 2, deletions: 1, binary: false },
+        { ...UPDATE_AND_RENAMES[2], previousPath: undefined, additions: 1, deletions: 1, binary: false },
+      ], group);
+      // A small stage's patches, and a page of a file's whole content.
+      for (const mode of ["changes", "full"]) {
+        for (const file of stage.files) {
+          const { lines } = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
+          assert.deepEqual(changed(lines), shown[file.path], `${group}, ${mode}: ${file.path}`);
+          // The empty line before the last one is context, on both sides.
+          if (file.path !== "sub") assert.ok(lines.some((line) => line.t === "ctx" && line.s === "" && line.o === 39 && line.n === 39), `${group}, ${mode}: ${file.path}`);
+        }
+      }
+    });
+  }
 });

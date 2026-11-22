@@ -3,6 +3,7 @@
 // stage's content stays the same, so the head says nothing about one line. The
 // line is followed through Git's diff from the snapshot the thread is anchored
 // to; the stored anchor itself never changes.
+import { diffTree } from "./diff-settings.js";
 import { gitRaw } from "./git.js";
 
 /** The immutable anchor of a line thread. */
@@ -41,19 +42,19 @@ export function storedLineTargetPath(
   return stage.files.find((file) => file.previousPath === target.path)?.path ?? target.path;
 }
 
-/** Runs Git with standard input; null when it fails. */
-export type LineAnchorGit = (args: string[], input: string) => string | null;
+/** Runs Git with standard input and variables on top of the CLI's Git
+ * environment; null when it fails. */
+export type LineAnchorGit = (args: string[], input: string, env?: NodeJS.ProcessEnv) => string | null;
 
 /** Results kept by input, for callers that locate the same anchors again. */
 export type LineAnchorCache = Map<string, number | null>;
 
-const defaultGit = (root: string): LineAnchorGit => (args, input) => gitRaw(args, { cwd: root, input, allowFailure: true });
+const defaultGit = (root: string): LineAnchorGit => (args, input, env) => gitRaw(args, { cwd: root, input, env, allowFailure: true });
 
 interface Hunk { oldStart: number; oldCount: number; newStart: number; newCount: number }
 interface Section { oldPath: string; newPath: string; oldBlob: string; newBlob: string; binary: boolean; hunks: Hunk[] }
 
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const ALGORITHMS = new Set(["myers", "minimal", "patience", "histogram", "default"]);
 
 /** Git's C-style quoted path, unquoted; the prefix `a/` or `b/` removed. */
 function patchPath(value: string): string {
@@ -166,11 +167,11 @@ const anchoredName = (anchor: LineAnchor) => anchor.side === "new" ? `${anchor.s
  *
  * While the stage head is the anchored one, the line is where it was written.
  * Otherwise the line is followed by diffs of one path at a time, so each result
- * depends only on its own input, as the viewer's diff shows lines: with text
- * conversion and the configured diff algorithm. The removed lines of a file the
+ * depends only on its own input, as the viewer's diff shows lines (see
+ * diff-settings.ts). The removed lines of a file the
  * stage renames are not followed. Superseded heads stay reachable as parents of
  * the artifact snapshot; one that cannot be read leaves its line without a row.
- * Inputs without a cached result are read together, with three Git processes.
+ * Inputs without a cached result are read together, with two Git processes.
  */
 export function locateLineAnchors(
   root: string,
@@ -211,14 +212,6 @@ function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], 
     const [id, type] = line.trim().split(" ");
     if (type === "commit" && OBJECT_ID.test(id) && names[index]) resolved.set(names[index], id);
   });
-  // The viewer's diff reads the configured algorithm; plumbing does not. The last setting wins.
-  const config = runGit(["config", "--get-regexp", "^diff\\.(algorithm|indentheuristic)$"], "") ?? "";
-  let algorithm = "", indentHeuristic = true;
-  for (const line of config.split("\n")) {
-    const [key, value = ""] = line.trim().split(/\s+/, 2);
-    if (key === "diff.algorithm" && ALGORITHMS.has(value.toLowerCase())) algorithm = value.toLowerCase();
-    if (key === "diff.indentheuristic") indentHeuristic = !/^(false|no|off|0)$/i.test(value);
-  }
   // Each pair is diffed once; diff-tree reads a commit and then its parent.
   const pairs: string[] = [], paths = new Set<string>();
   const pairIndex = (from: string, to: string) => {
@@ -236,12 +229,9 @@ function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], 
     return { current: pairIndex(stage.baseRevision, stage.headRevision), anchored: from === to ? null : pairIndex(from, to) };
   });
   // Without rename detection, a path's diff does not depend on the other paths.
-  const output = pairs.length ? runGit([
-    "-c", "core.quotePath=false", "--literal-pathspecs", "diff-tree", "--stdin", "--always", "-p", "-U0", "--no-renames", "--full-index",
-    "--textconv", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/",
-    ...(algorithm ? [`--diff-algorithm=${algorithm}`] : []), ...(indentHeuristic ? [] : ["--no-indent-heuristic"]),
-    "--", ...paths,
-  ], `${pairs.join("\n")}\n`) : "";
+  const command = diffTree(["--stdin", "--always", "-p", "-U0", "--no-renames", "--full-index", "--", ...paths],
+    { objectIdLength: inputs[indexes[0]].stage.headRevision.length });
+  const output = pairs.length ? runGit(command.args, `${pairs.join("\n")}\n`, command.env) : "";
   const parsedBlocks = output === null ? null : parseBlocks(output);
   const blocks = parsedBlocks && parsedBlocks.length === pairs.length ? parsedBlocks : null;
   return indexes.map((index, position) => {
