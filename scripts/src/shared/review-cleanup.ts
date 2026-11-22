@@ -18,7 +18,11 @@ type Category = { label: string; detail: string; bytes: number };
  * change time and identity still change with every write, so the fingerprint
  * does too; recording it keeps whole-review deletion possible, and the readers
  * that need the content, such as cleanup's feedback check, report it. */
-const unreadable = (error: unknown, stat: fs.Stats) => `unreadable:${errorCode(error) ?? "unknown"}:${stat.dev}:${stat.ino}:${stat.ctimeMs}`;
+function unreadable(error: unknown, stat: fs.Stats): string {
+  // A file in use for a moment is reported, with the processes using it, as before.
+  if (errorCode(error) === "EBUSY") throw error;
+  return `unreadable:${errorCode(error) ?? "unknown"}:${stat.dev}:${stat.ino}:${stat.ctimeMs}`;
+}
 /** A document's hash, so the fingerprint changes with its content. */
 function contentHash(file: string, stat: fs.Stats): string {
   try { return digest(fs.readFileSync(file)); }
@@ -114,7 +118,8 @@ function submittedFeedback(directory: string) {
   const listed = new Set(manifest.value.threads), threadsKind = probe(threadFolder);
   let found: string[] = [];
   if (threadsKind === "directory") {
-    try { found = fs.readdirSync(threadFolder).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((id) => !listed.has(id)).sort(); }
+    // The feedback commands ignore folders there too.
+    try { found = fs.readdirSync(threadFolder, { withFileTypes: true }).filter((entry) => !entry.isDirectory() && entry.name.endsWith(".json")).map((entry) => entry.name.slice(0, -5)).filter((id) => !listed.has(id)).sort(); }
     catch (error) { return disabled(`feedback/threads cannot be read because ${readProblem(error)}`); }
   } else if (threadsKind !== "missing") return disabled(folderProblem("feedback/threads", threadsKind));
   for (const id of [...listed, ...found]) {

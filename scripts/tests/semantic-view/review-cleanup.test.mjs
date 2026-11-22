@@ -701,6 +701,7 @@ test('unused cleanup is disabled while the feedback manifest or a thread it list
 test('unused cleanup does not remove the attachments of threads it finds but the manifest does not list', (t) => {
   const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
   fs.writeFileSync(path.join(feedback, 'manifest.json'), JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(feedback, 'manifest.json'), 'utf8')), threads: [] }));
+  fs.mkdirSync(path.join(feedback, 'threads', 'backup.json'));
   const current = preview(review); assert.equal(current.referenceError, ''); assert.deepEqual(current.unused, []);
   fs.writeFileSync(path.join(feedback, 'threads', 'first.json'), '{'); assertCleanupKeeps(review, file, /feedback thread first cannot be read because it is not valid JSON/);
 });
