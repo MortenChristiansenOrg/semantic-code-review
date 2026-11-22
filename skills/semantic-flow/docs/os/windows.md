@@ -58,14 +58,13 @@ PowerShell 7 can pipe a here-string to commands accepting `--input -`:
 ```
 
 For Windows PowerShell 5.1, or whenever JSON contains non-ASCII text, prefer a
-temporary UTF-8 file without a byte-order mark. This also supports commands
-that require a JSON filename. With the JSON document already held in `$json`:
+temporary UTF-8 file. This also supports commands that require a JSON
+filename. With the JSON document already held in `$json`:
 
 ```powershell
 $platformInput = [System.IO.Path]::GetTempFileName()
-$utf8WithoutBom = [System.Text.UTF8Encoding]::new($false)
 try {
-  [System.IO.File]::WriteAllText($platformInput, $json, $utf8WithoutBom)
+  Set-Content -LiteralPath $platformInput -Value $json -Encoding utf8
   node $semanticFlow implementation stage organize --file $platformInput
 }
 finally {
@@ -73,6 +72,7 @@ finally {
 }
 ```
 
-Do not use Windows PowerShell 5.1's default `Set-Content -Encoding utf8` for
-CLI JSON because it writes a byte-order mark, which the CLI rejects. Do not
-place transient command input inside the target repository.
+Windows PowerShell 5.1 writes a byte-order mark with `-Encoding utf8`; the CLI
+accepts one in JSON given as a file or on standard input. Artifact and feedback
+documents may not contain one. Do not place transient command input inside the
+target repository.

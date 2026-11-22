@@ -34,14 +34,28 @@ function findDuplicateKeys(
   }
 }
 
-export function readJson(file: string): unknown {
-  let text: string;
+function readText(file: string): string {
   try {
-    text = fs.readFileSync(file, "utf8");
+    return fs.readFileSync(file, "utf8");
   } catch (error) {
     fail(`Cannot read ${file}: ${errorMessage(error)}`);
   }
-  return parseJsonDocument(text, file);
+}
+
+export function readJson(file: string): unknown {
+  return parseJsonDocument(readText(file), file);
+}
+
+/** Drops the byte-order mark that some editors and shells, such as Windows
+ * PowerShell 5.1, write. Only command input may carry one; stored documents may not. */
+export function withoutByteOrderMark(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/** Reads a JSON file given to the CLI as input, as strictly as a stored
+ * document except that it may start with a byte-order mark. */
+export function readJsonInput(file: string): unknown {
+  return parseJsonDocument(withoutByteOrderMark(readText(file)), file);
 }
 
 /** Parses the text of a stored JSON document, which label names in errors.

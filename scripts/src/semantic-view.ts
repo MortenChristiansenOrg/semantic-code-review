@@ -3210,6 +3210,11 @@ export async function runViewerCommand(argv: string[]): Promise<void> {
   try {
     const { positionals, options } = parseArguments(argv);
     const [command, ...paths] = positionals;
+    if (options.has("help")) {
+      console.log(VIEWER_USAGE);
+      await startupWorker?.close();
+      return;
+    }
     if (command !== "serve") fail(VIEWER_USAGE);
     assertKnownOptions(options, new Set(["review", "generation"]));
     const reviewOption = option(options, "review"), generation = option(options, "generation");

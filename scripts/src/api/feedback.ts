@@ -55,8 +55,11 @@ export declare function addFeedbackThread(
 export interface AddFeedbackThreadsOptions {
   /** Commits valid items together and emits JSON accepted/rejected indexes; global failures still abort. */
   partial?: true;
-  /** JSON array of feedback thread inputs using the same fields as `thread add`. */
-  threads: string;
+  /**
+   * One object per thread, with the options of `thread add` as kebab-case keys.
+   * In `--input` JSON, give the array itself: `{"threads": [{...}]}`. Only `--threads` on the command line takes it as JSON text.
+   */
+  threads: readonly object[] | string;
 }
 
 /**
@@ -119,8 +122,11 @@ export declare function replyFeedbackThread(
 export interface ReplyFeedbackThreadsOptions {
   /** Commits valid replies together and emits JSON accepted/rejected indexes; global failures still abort. */
   partial?: true;
-  /** JSON array of reply inputs using the same fields as `thread reply`. */
-  replies: string;
+  /**
+   * One object per reply, with the options of `thread reply` as kebab-case keys.
+   * In `--input` JSON, give the array itself: `{"replies": [{...}]}`. Only `--replies` on the command line takes it as JSON text.
+   */
+  replies: readonly object[] | string;
   /** Round for every agent reply that does not name its own `claim`. */
   claim?: string;
 }

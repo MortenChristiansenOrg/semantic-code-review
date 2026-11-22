@@ -296,8 +296,11 @@ export interface RecordStageBatchOptions {
   stage?: string;
   /** Updates a finalized stage; requires its explicit ID. */
   finalized?: true;
-  /** JSON array of insight options or validation options with kind=validation, excluding stage/finalized. */
-  items: string;
+  /**
+   * Insight options, or validation options with `kind: "validation"`, one object per item, excluding stage/finalized.
+   * In `--input` JSON, give the array itself: `{"items": [{...}]}`. Only `--items` on the command line takes it as JSON text.
+   */
+  items: readonly object[] | string;
 }
 /** Atomically records multiple observed insights and validation evidence for one stage.
  * @cli semantic-flow.mjs
