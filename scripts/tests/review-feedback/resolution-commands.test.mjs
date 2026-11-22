@@ -694,21 +694,51 @@ test("a removed line of a renamed file is named by the file's path in the stage"
   assert.deepEqual(lineViews(repository), { agent: { "removed-line": current }, reviewer: { "removed-line": current } });
 });
 
-test("a removed line stored by the previous path of a renamed file is read by the file's path", (t) => {
-  const repository = renamingStage(t);
-  addRenamedLineThread(repository, "stored-earlier", "new.txt");
-  // Earlier versions stored the line by the file's previous path.
+/** Adds a thread on the removed second line as earlier versions stored it: by the file's previous path. */
+function addStoredEarlier(repository, filePath, previousPath) {
+  addRenamedLineThread(repository, "stored-earlier", filePath);
   const file = repository.feedbackPath("threads/stored-earlier.json");
   const stored = repository.readAbsoluteJson(file);
-  stored.target.path = "old.txt";
+  stored.target.path = previousPath;
   repository.writeAbsolute(file, `${JSON.stringify(stored, null, 2)}\n`);
   repository.feedback("validate");
+  return file;
+}
+
+test("a removed line stored by the previous path of a renamed file is read by the file's path", (t) => {
+  const repository = renamingStage(t);
+  const file = addStoredEarlier(repository, "new.txt", "old.txt");
 
   const current = { stale: false, currentLine: 2, path: "new.txt" };
   assert.deepEqual(lineViews(repository), { agent: { "stored-earlier": current }, reviewer: { "stored-earlier": current } });
   // The next write of the thread stores the file's path.
   repository.feedback("thread", "reply", "--id", "stored-earlier", "--comment-id", "stored-earlier-reply", "--body", "Noted.", "--author", "agent");
   assert.equal(repository.readAbsoluteJson(file).target.path, "new.txt");
+});
+
+test("a file renamed onto a path an earlier stage deleted keeps its rename for the agent and the viewer", (t) => {
+  const repository = createRepository(t);
+  const lines = Array.from({ length: 10 }, (_, index) => `line ${index + 1}\n`);
+  repository.commitFile("old.txt", lines.join(""), "Add file");
+  repository.commitFile("new.txt", "an unrelated file\n", "Add another file");
+  initializeImplementation(repository);
+  beginStage(repository, { id: "removal" });
+  repository.git("rm", "--quiet", "new.txt");
+  repository.git("commit", "-m", "Remove file");
+  organizeStage(repository, { id: "removal" });
+  repository.semantic("stage", "finish", "--id", "removal");
+  beginStage(repository, { dependencies: ["removal"] });
+  repository.git("mv", "old.txt", "new.txt");
+  repository.commitFile("new.txt", lines.map((line, index) => index === 1 ? "line two\n" : line).join(""), "Rename and change file");
+  organizeStage(repository);
+  repository.semantic("stage", "finish", "--id", "implementation");
+  repository.feedback("init");
+  const shown = createViewerDataSource(repository.root).implementationData().stages.find((stage) => stage.id === "implementation").files;
+  assert.deepEqual(shown.map(({ path, previousPath }) => ({ path, previousPath })), [{ path: "new.txt", previousPath: "old.txt" }]);
+
+  addStoredEarlier(repository, "new.txt", "old.txt");
+  const current = { stale: false, currentLine: 2, path: "new.txt" };
+  assert.deepEqual(lineViews(repository), { agent: { "stored-earlier": current }, reviewer: { "stored-earlier": current } });
 });
 
 test("a stage that renames a file and adds one at its old path changes the file at that path", (t) => {

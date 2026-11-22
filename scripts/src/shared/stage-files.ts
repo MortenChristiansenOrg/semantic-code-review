@@ -23,7 +23,8 @@ export function shownStageFiles<File extends InventoryFile>(
   const previous = new Map<string, { stageId: string; headRevision: string; path: string; previousPaths: string[] }>();
   return stages.map((stage) => {
     const files = stage.change.files.map((file): ShownFile<File> => {
-      const last = (file.previousPath && previous.get(file.previousPath)) || previous.get(file.path);
+      // A file renamed onto a path an earlier stage deleted continues the file it was renamed from.
+      const last = previous.get(file.previousPath ?? file.path);
       const { previousPath: ignored, ...current } = file;
       const oldPath = last ? last.path : file.previousPath;
       const previousPaths = [...new Set([oldPath, ...(last?.previousPaths || [])].filter((item): item is string => Boolean(item) && item !== file.path))];
