@@ -39,7 +39,7 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw } from "./shared/git.js";
-import { locateLineAnchors } from "./shared/line-anchors.js";
+import { locateLineAnchors, storedLineTargetPath } from "./shared/line-anchors.js";
 import { shownStageFiles } from "./shared/stage-files.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { errorMessage, isRecord, isStringArray } from "./shared/narrow.js";
@@ -297,32 +297,31 @@ function readLineCount(root: string, revision: string, repositoryPath: string): 
   return contents.at(-1) === 0x0a ? lineBreaks : lineBreaks + 1;
 }
 
+/** A line target names its file by the file's path in the stage, on both
+ * sides; the side says which revision counts the line. */
 function validateLineTarget(target: LineTarget, stage: Stage, root: string): void {
-  const file = changedFileAt(stage, target.path);
-  if (!file) return;
-
-  const oldPath = file.previousPath ?? file.path;
-  const snapshot =
-    target.side === "old"
-      ? {
-          revision: stage.change.baseRevision,
-          path: oldPath,
-          missing: file.kind === "added",
-        }
-      : {
-          revision: stage.change.headRevision,
-          path: file.path,
-          missing: file.kind === "deleted",
-        };
-  if (snapshot.missing || target.path !== snapshot.path) {
+  const file = stage.change.files.find((item) => item.path === target.path);
+  const missing = !file || (target.side === "old" ? file.kind === "added" : file.kind === "deleted");
+  if (missing) {
+    const renamed = stage.change.files.find((item) => item.previousPath === target.path);
+    if (renamed) {
+      fail(
+        `Feedback line target ${target.path} is the previous path of ${renamed.path}, which stage ${target.stageId} renames. Name a line of a renamed file by its path in the stage, ${renamed.path}; --side old counts the line in the file before the rename.`,
+      );
+    }
+    if (!file) fail(`Feedback path ${target.path} is not changed by ${target.stageId}.`);
     fail(
       `Feedback ${target.side} line target ${target.path} does not exist on that diff side.`,
     );
   }
+  const snapshot =
+    target.side === "old"
+      ? { revision: stage.change.baseRevision, path: file.previousPath ?? file.path }
+      : { revision: stage.change.headRevision, path: file.path };
   const lineCount = lineCountAtRevision(root, snapshot.revision, snapshot.path);
   if (target.line > lineCount) {
     fail(
-      `Feedback line ${target.line} exceeds ${snapshot.path}'s ${lineCount} line(s) on the ${target.side} side.`,
+      `Feedback line ${target.line} exceeds ${target.path}'s ${lineCount} line(s) on the ${target.side} side.`,
     );
   }
 }
@@ -368,7 +367,7 @@ function validateTarget(target: Target, semantic: SemanticArtifact, root: string
       `Feedback insight ${target.stageId}/${target.collection}/${target.itemId} does not exist.`,
     );
   }
-  if ((target.kind === "file" || target.kind === "line") && !changedFileAt(stage, target.path)) {
+  if (target.kind === "file" && !changedFileAt(stage, target.path)) {
     fail(`Feedback path ${target.path} is not changed by ${target.stageId}.`);
   }
   if (target.kind === "line") {
@@ -419,6 +418,12 @@ function validateFeedback(
     const removed = removedStageOf(thread, semantic);
     if (removed !== undefined && thread.status !== "resolved") {
       fail(`Feedback thread ${id} is open on removed stage ${removed}; only a resolved thread may refer to a removed stage.`);
+    }
+    const lineStage = thread.target.kind === "line" ? semantic.stages.get(thread.target.stageId) : undefined;
+    if (thread.target.kind === "line" && lineStage) {
+      // Read a target stored by the previous path of a renamed file as the path
+      // it names now; the next write of the thread stores that path.
+      thread.target.path = storedLineTargetPath(thread.target, lineStage.change);
     }
     if (thread.target.stageId === undefined || !semantic.removedStages.has(thread.target.stageId)) {
       validateTarget(thread.target, semantic, paths.root);

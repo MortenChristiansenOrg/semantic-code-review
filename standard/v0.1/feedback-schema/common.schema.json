@@ -147,6 +147,7 @@
           "$ref": "#/$defs/repositoryPath"
         },
         "side": {
+          "description": "Line targets: the diff side whose revision counts the line, the stage's base (old) or head (new). A line target's path is the file's path in the stage on both sides, also for a removed line of a file the stage renames.",
           "enum": [
             "old",
             "new"

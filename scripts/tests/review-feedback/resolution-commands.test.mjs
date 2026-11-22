@@ -641,6 +641,104 @@ test("a line thread stays on its line until the line changes, for the agent and 
   assert.equal(stored.target.stageHead, written);
 });
 
+/** A stage that renames old.txt to new.txt and changes its second line. */
+function renamingStage(t) {
+  const repository = createRepository(t);
+  const lines = Array.from({ length: 10 }, (_, index) => `line ${index + 1}\n`);
+  repository.commitFile("old.txt", lines.join(""), "Add file");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("mv", "old.txt", "new.txt");
+  repository.commitFile("new.txt", lines.map((line, index) => index === 1 ? "line two\n" : line).join(""), "Rename and change file");
+  organizeStage(repository);
+  repository.semantic("stage", "finish", "--id", "implementation");
+  assert.deepEqual(repository.artifact.stage("implementation").change.files, [{ path: "new.txt", kind: "renamed", previousPath: "old.txt" }]);
+  repository.feedback("init");
+  return repository;
+}
+
+const addRenamedLineThread = (repository, id, filePath, side = "old") => repository.feedback(
+  "thread", "add", "--id", id, "--comment-id", `${id}-note`, "--body", "About the removed line.",
+  "--label", `${filePath}:2`, "--target-kind", "line", "--stage", "implementation",
+  "--path", filePath, "--side", side, "--line", "2",
+);
+
+/** Each thread's stale state and current line, for the agent and the viewer. */
+function lineViews(repository) {
+  const agent = Object.fromEntries(JSON.parse(repository.feedback("next", "--json", "--compact"))
+    .flatMap((group) => group.threads).map(({ id, stale, currentLine, target }) => [id, { stale, currentLine, path: target.path }]));
+  const reviewer = Object.fromEntries(createViewerDataSource(repository.root).implementationData().feedback
+    .map(({ id, anchorStale, currentLine, target }) => [id, { stale: anchorStale, currentLine: currentLine ?? undefined, path: target.path }]));
+  return { agent, reviewer };
+}
+
+test("a removed line of a renamed file is named by the file's path in the stage", (t) => {
+  const repository = renamingStage(t);
+  addRenamedLineThread(repository, "removed-line", "new.txt");
+  assert.equal(repository.readAbsoluteJson(repository.feedbackPath("threads/removed-line.json")).target.path, "new.txt");
+  repository.expectFeedbackFailure(
+    "Feedback line target old.txt is the previous path of new.txt, which stage implementation renames. Name a line of a renamed file by its path in the stage, new.txt",
+    "thread", "add", "--id", "by-old-path", "--comment-id", "by-old-path-note", "--body", "Old path.",
+    "--label", "old.txt:2", "--target-kind", "line", "--stage", "implementation",
+    "--path", "old.txt", "--side", "old", "--line", "2",
+  );
+  repository.expectFeedbackFailure(
+    "exceeds new.txt's 10 line(s) on the old side",
+    "thread", "add", "--id", "past-end", "--comment-id", "past-end-note", "--body", "Past the end.",
+    "--label", "new.txt:11", "--target-kind", "line", "--stage", "implementation",
+    "--path", "new.txt", "--side", "old", "--line", "11",
+  );
+
+  // The thread is on its line while the stage head is the anchored one.
+  const current = { stale: false, currentLine: 2, path: "new.txt" };
+  assert.deepEqual(lineViews(repository), { agent: { "removed-line": current }, reviewer: { "removed-line": current } });
+});
+
+test("a removed line stored by the previous path of a renamed file is read by the file's path", (t) => {
+  const repository = renamingStage(t);
+  addRenamedLineThread(repository, "stored-earlier", "new.txt");
+  // Earlier versions stored the line by the file's previous path.
+  const file = repository.feedbackPath("threads/stored-earlier.json");
+  const stored = repository.readAbsoluteJson(file);
+  stored.target.path = "old.txt";
+  repository.writeAbsolute(file, `${JSON.stringify(stored, null, 2)}\n`);
+  repository.feedback("validate");
+
+  const current = { stale: false, currentLine: 2, path: "new.txt" };
+  assert.deepEqual(lineViews(repository), { agent: { "stored-earlier": current }, reviewer: { "stored-earlier": current } });
+  // The next write of the thread stores the file's path.
+  repository.feedback("thread", "reply", "--id", "stored-earlier", "--comment-id", "stored-earlier-reply", "--body", "Noted.", "--author", "agent");
+  assert.equal(repository.readAbsoluteJson(file).target.path, "new.txt");
+});
+
+test("a stage that renames a file and adds one at its old path changes the file at that path", (t) => {
+  const repository = createRepository(t);
+  const lines = Array.from({ length: 10 }, (_, index) => `line ${index + 1}\n`);
+  repository.commitFile("a.txt", lines.join(""), "Add file");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.git("mv", "a.txt", "b.txt");
+  repository.commitFile("a.txt", "a new file\nat the old path\n", "Rename and replace file");
+  organizeStage(repository);
+  repository.semantic("stage", "finish", "--id", "implementation");
+  // Git reports a.txt as changed in place and b.txt as added, so a.txt names
+  // one file on both sides.
+  assert.deepEqual(repository.artifact.stage("implementation").change.files, [
+    { path: "a.txt", kind: "modified" },
+    { path: "b.txt", kind: "added" },
+  ]);
+  repository.feedback("init");
+  addRenamedLineThread(repository, "a-old", "a.txt", "old");
+  addRenamedLineThread(repository, "a-new", "a.txt", "new");
+  addRenamedLineThread(repository, "b-new", "b.txt", "new");
+  repository.expectFeedbackFailure(
+    "Feedback old line target b.txt does not exist on that diff side.",
+    "thread", "add", "--id", "b-old", "--comment-id", "b-old-note", "--body", "Old side of b.",
+    "--label", "b.txt:2", "--target-kind", "line", "--stage", "implementation",
+    "--path", "b.txt", "--side", "old", "--line", "2",
+  );
+});
+
 test("threads of a removed stage stay valid and read-only", (t) => {
   const { repository, commits } = createImplementationWithStages(t, ["policy", "api"]);
   repository.feedback("init");

@@ -30,7 +30,8 @@ function reservePort() {
 }
 
 let home, env;
-const reviews = { a: { id: 'review-a', title: 'Review A' }, b: { id: 'review-b', title: 'Review B' }, c: { id: 'review-c', title: 'Review C' } };
+const reviews = { a: { id: 'review-a', title: 'Review A' }, b: { id: 'review-b', title: 'Review B' }, c: { id: 'review-c', title: 'Review C' },
+  renamed: { id: 'review-renamed', title: 'Review Renamed', rename: true } };
 
 /** The viewer's record, as the CLI stores it. */
 function record(review) {
@@ -475,4 +476,37 @@ test('a page from another local server cannot read the viewer, and the viewer re
     await context.close();
     other.close();
   }
+});
+
+test('a note on a removed line of a renamed file is sent and stays on its line', async ({ browser }) => {
+  const { context, page, errors } = await openPage(browser);
+  await page.goto(reviews.renamed.launchUrl);
+  await expect(page.getByRole('heading', { name: 'Review Renamed', exact: true })).toBeVisible();
+  if (!await page.locator('.stage[data-stage="implementation"]').evaluate((el) => el.classList.contains('is-open')))
+    await page.locator('.stage-title[data-id="implementation"]').click();
+  const details = page.locator('details[data-node="implementation-change"]');
+  if (!await details.evaluate((el) => el.open)) await details.locator('summary').click();
+  if (!await details.locator('.cinema-diff').count()) await details.locator('.frow-open').click();
+  // The removed second line, named by the file's path in the stage.
+  const row = details.locator('.drow[data-line-id="l:implementation:old:2:new.txt"]');
+  await expect(row).toContainText('line 2');
+  await row.locator('[data-action="line-note"]').click();
+  await page.locator('.nc-opt').filter({ hasText: 'Feedback' }).click();
+  await page.locator('textarea[name="nc-body"]').fill('Keep the removed line');
+  await page.locator('textarea[name="nc-body"]').press('Control+Enter');
+  const toggle = page.locator('.tb-btn[data-action="toggle-notes"]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  await page.getByRole('button', { name: /Prepare feedback/ }).click();
+  // The thread is shown on the line, current, and stored by the file's path in the stage.
+  await expect(details.locator('.line-thread [data-thread-id]')).toContainText('Keep the removed line');
+  await expect(row).toHaveClass(/has-line-note/);
+  await expect(page.locator('.side.notes')).not.toContainText('No notes could be exported');
+  await expect(page.locator('.side.notes .tthread-stale')).toHaveCount(0);
+  await expect(page.locator('.side.notes [data-action="jump-to"][data-kind="line"]')).toHaveCount(1);
+  const next = spawnSync(process.execPath, [flowCli, 'feedback', 'next', '--json', '--compact'], { cwd: reviews.renamed.root, encoding: 'utf8', env });
+  expect(next.status, next.stderr).toBe(0);
+  expect(JSON.parse(next.stdout).flatMap((group) => group.threads).map(({ stale, currentLine, target }) => ({ stale, currentLine, path: target.path, side: target.side, line: target.line })))
+    .toEqual([{ stale: false, currentLine: 2, path: 'new.txt', side: 'old', line: 2 }]);
+  expect(errors).toEqual([]);
+  await context.close();
 });
