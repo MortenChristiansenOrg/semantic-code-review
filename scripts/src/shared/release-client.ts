@@ -1,4 +1,4 @@
-import { assetName, compareVersions, parseVersion, RELEASE_REPOSITORY } from "./release-version.js";
+import { assetName, compareVersions, isPrerelease, normalVersion, parseVersion, RELEASE_REPOSITORY } from "./release-version.js";
 import { MAX_ARCHIVE_BYTES, sha256 } from "./distribution.js";
 import { parseJson } from "./json.js";
 import { isRecord, stringField } from "./narrow.js";
@@ -9,8 +9,10 @@ export interface ReleaseAsset { name: string; url: string; }
 export interface GithubRelease {
   /** Empty when GitHub reported no tag; such a release is never eligible. */
   tag_name: string;
+  /** True unless GitHub reported `false`, so a release of unknown state is never installed. */
   draft: boolean;
-  prerelease: boolean;
+  /** Null when GitHub reported no boolean; such a release is never installed. */
+  prerelease: boolean | null;
   body: string | null;
   /** Null when GitHub reported no asset list; such a release cannot be installed. */
   assets: ReleaseAsset[] | null;
@@ -25,8 +27,8 @@ function parseRelease(value: unknown): GithubRelease {
   if (!isRecord(value)) throw new Error("Invalid GitHub release list.");
   return {
     tag_name: stringField(value, "tag_name") ?? "",
-    draft: Boolean(value.draft),
-    prerelease: Boolean(value.prerelease),
+    draft: value.draft !== false,
+    prerelease: typeof value.prerelease === "boolean" ? value.prerelease : null,
     body: stringField(value, "body") ?? null,
     assets: Array.isArray(value.assets) ? value.assets.map(parseAsset) : null,
   };
@@ -79,9 +81,26 @@ export async function listReleases(): Promise<GithubRelease[]> {
   return releases;
 }
 
-export function releaseVersion(release: GithubRelease): string | null {
-  if (release.draft || release.prerelease || typeof release.tag_name !== "string" || !release.tag_name.startsWith("v")) return null;
+/** Why a published GitHub release cannot be installed although its tag names a version, or null. */
+function flagMismatch(release: GithubRelease, version: string): string | null {
+  if (release.prerelease === isPrerelease(version)) return null;
+  if (release.prerelease === null) return `GitHub reported no valid prerelease flag for release ${release.tag_name}; it cannot be installed.`;
+  return release.prerelease
+    ? `Release ${release.tag_name} is marked as a GitHub prerelease, but its version is a normal release; it cannot be installed.`
+    : `Release ${release.tag_name} has a prerelease version but is not marked as a GitHub prerelease; it cannot be installed.`;
+}
+
+/** The version a release's tag names, or null when it is a draft or its tag is not a release version. */
+function taggedVersion(release: GithubRelease): string | null {
+  if (release.draft || typeof release.tag_name !== "string" || !release.tag_name.startsWith("v")) return null;
   try { parseVersion(release.tag_name.slice(1)); return release.tag_name.slice(1); } catch { return null; }
+}
+
+/** The version of an installable release: published, with a release version as its
+ * tag, and marked as a GitHub prerelease exactly when that version is a prerelease. */
+export function releaseVersion(release: GithubRelease): string | null {
+  const version = taggedVersion(release);
+  return version === null || flagMismatch(release, version) ? null : version;
 }
 
 /** Releases eligible for installation with their versions, newest first. */
@@ -92,12 +111,36 @@ function eligibleReleases(releases: GithubRelease[]): Array<{ release: GithubRel
   }).sort((a, b) => compareVersions(b.version, a.version));
 }
 
-export function selectRelease(releases: GithubRelease[], requested?: string): GithubRelease {
+/** Published releases whose tags name a release version, newest first: with
+ * `prerelease` all of them, otherwise those GitHub does not mark as prereleases. */
+function candidates(releases: GithubRelease[], prerelease: boolean): Array<{ release: GithubRelease; version: string }> {
+  return releases.flatMap((release) => {
+    const version = taggedVersion(release);
+    return version === null || (!prerelease && release.prerelease === true) ? [] : [{ release, version }];
+  }).sort((a, b) => compareVersions(b.version, a.version));
+}
+
+/** The version plain `update` (or with `prerelease`, `update --prerelease`) would
+ * choose, before checking that release; null when there is none. */
+export function newestVersion(releases: GithubRelease[], prerelease = false): string | null {
+  return candidates(releases, prerelease)[0]?.version ?? null;
+}
+
+/**
+ * The release to install: the one `requested` names, whether a normal release or
+ * a prerelease, or else the newest release not marked as a GitHub prerelease, or
+ * with `prerelease` the newest of all. The chosen release must be marked as a
+ * GitHub prerelease exactly when its version is one, and have valid assets.
+ */
+export function selectRelease(releases: GithubRelease[], options: { requested?: string; prerelease?: boolean } = {}): GithubRelease {
+  const { requested } = options;
   if (requested) parseVersion(requested);
-  const eligible = eligibleReleases(releases);
-  const selected = requested ? eligible.find(({ version }) => version === requested) : eligible[0];
+  const listed = candidates(releases, Boolean(options.prerelease) || Boolean(requested));
+  const selected = requested ? listed.find(({ version }) => version === requested) : listed[0];
   if (!selected) throw new Error(requested ? `No published release v${requested} exists.` : "No published release is available.");
   // A malformed newest release is an error, not permission to install older code.
+  const mismatch = flagMismatch(selected.release, selected.version);
+  if (mismatch) throw new Error(mismatch);
   releaseAssets(selected.release);
   return selected.release;
 }
@@ -125,12 +168,21 @@ export async function downloadRelease(release: GithubRelease): Promise<Buffer> {
   return bytes;
 }
 
+/**
+ * The notes of the releases on the path from `previous` (exclusive) to `target`,
+ * oldest first. A normal release's notes cover everything since the normal
+ * release before it, so the notes of a prerelease are shown only when no normal
+ * release of the same or a later version is shown.
+ */
 export function upgradeNotes(releases: GithubRelease[], previous: string, target: string): string {
   let known = true;
   try { parseVersion(previous); } catch { known = false; }
-  return eligibleReleases(releases).filter(({ version: v }) =>
+  const path = eligibleReleases(releases).filter(({ version: v }) =>
     compareVersions(v, target) <= 0 && (!known || compareVersions(v, previous) > 0 || v === target),
-  ).sort((a, b) => compareVersions(a.version, b.version))
+  );
+  const newestNormal = path.find(({ version }) => !isPrerelease(version))?.version;
+  return path.filter(({ version }) => !isPrerelease(version) || newestNormal === undefined || compareVersions(normalVersion(version), newestNormal) > 0)
+    .sort((a, b) => compareVersions(a.version, b.version))
     .map(({ release }) => `${release.tag_name}: https://github.com/${RELEASE_REPOSITORY}/releases/tag/${release.tag_name}\n${release.body || "Release notes are missing; review this release before updating."}`)
     .join("\n\n");
 }

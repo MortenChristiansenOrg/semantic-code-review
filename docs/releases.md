@@ -30,12 +30,25 @@ transition, freeze and document supported data contracts. Subsequent incompatibl
 format changes require distinct format identifiers, an explicit support/upgrade
 policy, and a major product release. Routine releases do not create new formats.
 
-Normal `0.x` releases are published releases, not GitHub prereleases. The updater
-chooses the highest numeric `vMAJOR.MINOR.PATCH` among non-draft, non-prerelease
-releases, regardless of publication date. A broken latest release is reported;
-the updater does not silently fall back to an older release. Preview tags are
-excluded. The publisher marks a release latest only if no higher published
-version exists, so a late maintenance release cannot move users backward.
+A release is either a normal release, `MAJOR.MINOR.PATCH`, or a prerelease of
+one, `MAJOR.MINOR.PATCH-rc.N` with `N` counted from 1 without leading zeros.
+Versions order numerically, and the prereleases of a version come before it:
+`0.14.0 < 0.15.0-rc.1 < 0.15.0-rc.2 < 0.15.0`. No other suffix is a release
+version. A prerelease is less tested than a normal release; it lets users who
+ask for it try a version before everyone gets it.
+
+A normal release is published as a normal GitHub release, and a prerelease as a
+GitHub prerelease that is never marked latest. Plain `update` chooses the
+highest version among the published releases not marked as GitHub prereleases,
+as before. `update --prerelease` chooses the highest of all published releases,
+for that run only: nothing is stored, and the next plain `update` is back on
+normal releases. Both choose by version, regardless of publication date, and
+ignore drafts and tags that are not release versions. The updater installs a
+release only when its GitHub prerelease flag agrees with its version. When the
+newest release on the chosen path disagrees or is otherwise broken, the updater
+reports it and does not silently fall back to an older release. The publisher marks a
+normal release latest only if no higher normal release exists, so a late
+maintenance release cannot move users backward.
 
 ## Installing and updating
 
@@ -47,7 +60,8 @@ Node.js nor Git; offline or broken-runtime diagnosis can preserve a draft. Older
 standalone report/repair installations are no longer distributed or required.
 
 Download `semantic-flow-X.Y.Z.zip` and `semantic-flow-X.Y.Z.zip.sha256` from the
-same release. Use the uploaded asset, rather than GitHub's source-code archive.
+same release (for a prerelease, `X.Y.Z` includes its suffix, as in
+`semantic-flow-0.15.0-rc.1.zip`). Use the uploaded asset, rather than GitHub's source-code archive.
 On Linux, verify with `sha256sum -c semantic-flow-X.Y.Z.zip.sha256`; on macOS use
 `shasum -a 256 -c semantic-flow-X.Y.Z.zip.sha256`. On Windows, compare
 `(Get-FileHash .\semantic-flow-X.Y.Z.zip -Algorithm SHA256).Hash` with the digest
@@ -75,6 +89,15 @@ for a source-based installation. The same applies to a local build of this
 repository: the old updater's `update --source` rejects it too, so replace the
 folder by hand. Later updates use `/semantic-flow update` again.
 
+Updaters up to 0.14.0 do not know prereleases. They ignore a published
+prerelease, so plain `update` neither installs it nor fails because of it, and
+no option of theirs installs one (`--version 0.15.0-rc.1` is rejected as not a
+release version, and `--prerelease` is an unknown option). To try the first
+prerelease from such a version, install it once by hand as described above:
+download and verify `semantic-flow-X.Y.Z-rc.N.zip` from the prerelease, stop the
+viewer, and replace the skill folder. Later prereleases then come with
+`/semantic-flow update -p`.
+
 After installation, ask for `/semantic-flow update`. It displays release notes,
 including skipped versions, verifies the download and all file digests, and then
 replaces the installed directory. A matching viewer is stopped only after
@@ -82,8 +105,26 @@ validation and restarted on the same port. Open pages then need a fresh link: ru
 the review again to get one. Drafts saved by the viewer stay in place.
 Repository code, artifact files, and feedback files are untouched.
 
+To include prereleases, ask for `/semantic-flow update -p` (or
+`/semantic-flow update --prerelease`); the skill runs `update --prerelease`.
+It installs the newest prerelease or normal release, whichever is higher. A
+plain `update` on a prerelease installation moves it only to a normal release of
+the same version or newer (`0.15.0-rc.2` to `0.15.0`). While the installed
+prerelease is newer than every normal release, plain `update` changes nothing
+and says that `update --prerelease` gets later prereleases.
+
+Update notes cover the releases on your path. The notes of a normal release
+describe everything since the normal release before it, so the notes of
+prereleases are shown only when no normal release of the same or a later version
+is shown: updating `0.14.0` to `0.15.0-rc.2` shows the notes of `0.15.0-rc.1`
+and `0.15.0-rc.2`; updating `0.15.0-rc.2` to `0.15.0` shows only those of
+`0.15.0`.
+
 For a chosen version, run `node /path/to/semantic-flow/scripts/semantic-flow.mjs update --version X.Y.Z`.
-Downgrading additionally requires `--allow-downgrade`; this restores tooling, not
+An explicit version can be a prerelease (`--version 0.15.0-rc.2`) without
+`--prerelease`. Downgrading additionally requires `--allow-downgrade`, also when
+going from a normal release to one of its prereleases (`0.15.0` to
+`0.15.0-rc.2`); this restores tooling, not
 data that a later version changed. Equal release versions are a no-op; an
 equal-version source build is replaced with the official release. Locally newer
 installations are never implicitly downgraded. Use `GH_TOKEN` or `GITHUB_TOKEN` if
@@ -97,7 +138,8 @@ Downloads and extraction failures leave the old installation and viewer running.
 
 Contributors may explicitly use `update --source /path/to/semantic-code-review`.
 This preserves source validation, fast-forward pulls, local builds, and the
-approved `--use-current-source` override. It is never an automatic fallback.
+approved `--use-current-source` override. It is never an automatic fallback and
+cannot be combined with `--version`, `--allow-downgrade` or `--prerelease`.
 
 ## Maintainer workflow: “bump the version”
 
@@ -124,11 +166,13 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
 2. Explain the highest-impact change classification. Run `npm run release --prefix scripts -- next breaking`
    (or `feature`, `fix`, `none`) to preview, then `npm run release --prefix scripts -- bump breaking`
    to update metadata. `none` stops instead of inventing an empty release.
-   Use `--stable` only for an explicitly requested 1.0 transition. For an explicit
+   Use `--stable` only for an explicitly requested 1.0 transition. Add
+   `--prerelease` for a prerelease; see “Prereleases” below. For an explicit
    experimental patch correction, edit package/lockfile versions together and
    rebuild; document why the default minor increment was overridden. Never move
    an existing release tag.
-3. Write `releases/X.Y.Z.md` using `releases/TEMPLATE.md`. Write a fresh summary
+3. Write `releases/X.Y.Z.md` (for a prerelease `releases/X.Y.Z-rc.N.md`) using
+   `releases/TEMPLATE.md`. Write a fresh summary
    of user-visible changes in simple language. Group related changes, explain
    technical terms, and omit internal churn and empty optional sections. Keep
    Overview, Breaking changes (write “None” when appropriate), and Updating.
@@ -170,6 +214,15 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    setting, a low `diff.renameLimit` or attributes that marked a file binary hid
    them, and ignores replacement refs, so such a stage's nodes may need to
    assign those paths.
+   The first release with prerelease support must say under Updating that
+   `/semantic-flow update -p` (or `--prerelease`) installs the newest version
+   including prereleases, which are less tested, that plain `update` stays on
+   normal releases, and that updaters up to 0.14.0 cannot install a prerelease,
+   so trying one from them needs a single install by hand as described in
+   “Installing and updating”. When that first release is a prerelease, the first
+   prerelease and the normal release after it both carry these statements, as
+   they do the statements of any other change they contain, because users on
+   normal releases never see the prerelease notes.
    Generated GitHub notes are
    research input, not the finished changelog. The publisher removes only the
    leading version/date heading (and following blank space) from the committed
@@ -200,7 +253,8 @@ Pushing a commit to the default branch runs Checks but does not publish a releas
    GitHub Actions needs `contents: write` for publication; local publication
    additionally needs an authenticated `gh` CLI with repository write access.
 7. Verify the workflow, release URL, notes, downloadable archive, installed version,
-   and latest-release selection. Report the version choice and validation outcome.
+   and latest-release selection (a prerelease must be marked as one and not be
+   latest). Report the version choice and validation outcome.
 
 Publication creates a draft, uploads the archive/checksum, downloads and compares
 them with the tested files, verifies the committed notes, then publishes. Retry a
@@ -209,6 +263,46 @@ releases are refused. If a published release needs a fix, make a new version.
 If publication succeeded but a final check failed, inspect the existing release
 instead of recreating it. Never delete a published release or move its tag as a
 recovery step. Concurrent release jobs are serialized.
+
+## Prereleases
+
+A prerelease goes through the same steps as a normal release; only the version,
+the notes and the GitHub flag differ. The change classification always
+describes everything since the last normal release.
+
+- **First prerelease.** `npm run release --prefix scripts -- bump feature --prerelease`
+  makes `0.15.0-rc.1` from `0.14.0`. Write `releases/0.15.0-rc.1.md`: its notes
+  describe everything since the last normal release, say that it is a
+  prerelease, less tested than a normal release, and how to get it
+  (`/semantic-flow update -p`). Validation requires the word “prerelease” in the
+  Overview of a prerelease's notes, outside HTML comments. Validate, package, commit, push and tag `v0.15.0-rc.1` as
+  in steps 4–6. The Release workflow publishes it as a GitHub prerelease that is
+  not latest, and refuses to publish it if GitHub does not mark it as one.
+- **Further prerelease.** `bump feature --prerelease` makes `0.15.0-rc.2` from
+  `0.15.0-rc.1`. Its notes `releases/0.15.0-rc.2.md` describe what changed since
+  the previous prerelease.
+- **Normal release.** `bump feature` without `--prerelease` makes `0.15.0` from
+  `0.15.0-rc.2`. Its notes describe everything since the last normal release,
+  including what the prereleases introduced, because users on normal releases
+  never saw the prerelease notes. It is published as a normal release and
+  becomes latest as usual.
+
+`none` stops as for any release, also with `--stable`. During `0.x`, a prerelease keeps its normal
+version whatever the change class. From 1.0 on, a change class that needs a
+larger increment than the prerelease's normal version already has over the last
+normal release moves the target to that increment and restarts the count:
+`bump breaking --prerelease` makes `2.0.0-rc.1` from `1.3.0-rc.1`, while
+`bump fix --prerelease` makes `1.3.0-rc.2`. `--stable` targets `1.0.0` while the
+current version is below it, which includes the `1.0.0` prereleases; combined
+with `--prerelease` it gives the next `1.0.0` prerelease (`1.0.0-rc.1` from
+`0.x`, `1.0.0-rc.2` from `1.0.0-rc.1`). A published version, prerelease or not,
+is never replaced; fix a broken prerelease with the next one.
+
+Users opt in per run with `/semantic-flow update -p`. Users of an updater up to
+0.14.0 install the first prerelease once by hand (see “Installing and
+updating”): download `semantic-flow-0.15.0-rc.1.zip` and its `.sha256` from the
+`v0.15.0-rc.1` release, verify the checksum, stop the viewer, and replace the
+skill folder.
 
 ## Experimental compatibility audit (0.2.0, issue #7)
 
