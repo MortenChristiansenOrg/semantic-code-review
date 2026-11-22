@@ -93,7 +93,7 @@ import { errorCode, errorMessage, isRecord, isStringArray, type JsonRecord } fro
 import { parseDocument } from "./shared/schema-validation.js";
 import { feedbackDirectory, gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
 import { describeFinalizedStages, emptyStageIds, stageThreads } from "./shared/stage-report.js";
-import { readAgentState, roundRefusal, touchAgent, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
+import { claimActive, readAgentState, roundRefusal, touchAgent, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
 const linearRangeFacts = factCache<number>();
@@ -2477,8 +2477,9 @@ function emptyStageCommit(root: string, stage: Pick<EditableStage, "title" | "su
 
 /** The feedback round the running command changes the implementation for. */
 let commandRound: RoundIdentity = null;
-/** Set while a command only undoes what a round left behind, which a replaced round may still do. */
-let recovering = false;
+/** Set while a command only undoes what a round left behind: it may go ahead, even for a
+ * replaced round, when this says so for the agent state read under the review lock. */
+let recovery: ((state: AgentState, now: number) => boolean) | undefined;
 
 function withRound<T>(round: RoundIdentity, operation: () => T): T {
   const previous = commandRound;
@@ -2489,8 +2490,9 @@ function withRound<T>(round: RoundIdentity, operation: () => T): T {
 
 /** Fails when the command's round may not change the implementation of review now. */
 function assertRoundMayChange(review: string): void {
-  if (recovering) return;
-  const refusal = roundRefusal(readAgentState(review), Date.now(), commandRound);
+  const state = readAgentState(review), now = Date.now();
+  if (recovery?.(state, now)) return;
+  const refusal = roundRefusal(state, now, commandRound);
   if (refusal) fail(refusal);
 }
 
@@ -2501,9 +2503,8 @@ function withArtifactLock<T>(workspace: Workspace, implementationId: string, wri
   const review = reviewId(workspace.root, implementationId);
   return withReviewLock(review, () => {
     assertRoundMayChange(review);
-    const result = write();
-    updateAgentState(review, renewCommandRound);
-    return result;
+    // Every write here commits through commitArtifact, which renews the round.
+    return write();
   });
 }
 
@@ -3386,9 +3387,13 @@ function abortRestack(workspace: Workspace): void {
   draft.remove(PENDING_RESTACK_FILE);
   // Aborting changes no stage, so the round that started the restack may still
   // discard it after another agent took that round over. Any other abort is a change like any other.
-  recovering = pending?.claim !== undefined && commandRound !== null && "claim" in commandRound && pending.claim === commandRound.claim;
+  // Only while no other round runs: one that does may be resolving this restack itself.
+  const owner = pending?.claim;
+  recovery = owner !== undefined && commandRound !== null && "claim" in commandRound && owner === commandRound.claim
+    ? (state, now) => !state.claims.some((claim) => claim.id !== owner && claimActive(claim, now))
+    : undefined;
   try { withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft)); }
-  finally { recovering = false; }
+  finally { recovery = undefined; }
   // Only the folder restacks of this implementation use is ever deleted.
   const location = ScratchWorktree.location(workspace.root, implementationId);
   const canonical = pending === undefined || ScratchWorktree.isCanonical(workspace.root, implementationId, pending.worktree);

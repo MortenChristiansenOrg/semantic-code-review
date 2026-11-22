@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { semanticImplementationApi } from "../../src/command-api.ts";
 import { feedbackDirectory, reviewHome } from "../../src/shared/review-store.ts";
-import { startSession, updateAgentState } from "../../src/shared/agent-session.ts";
+import { createClaim, releaseClaims, startSession, updateAgentState } from "../../src/shared/agent-session.ts";
 import { createImplementationWithStages, flowCli, semanticCli, sourceLoader } from "../helpers/repository.mjs";
 
 const reviewDirectory = (repository) => path.dirname(feedbackDirectory(repository.root));
@@ -108,11 +108,19 @@ test("a replaced round cannot continue its pending restack but can still abort i
   repository.commitFile("upper.txt", "base wants this\n", "Conflicting correction");
   repository.expectSemanticFailure("stopped at a conflict", "restack", "--from", "base", "--claim", replaced.claim);
   assert.ok(repository.artifact.exists(".work/restack.json"));
-  updateAgentState(reviewIdOf(repository), (state, now) => { startSession(state, now); });
+  // The new agent's round may be resolving the restack itself, so it is not aborted meanwhile.
+  const review = reviewIdOf(repository);
+  const session = updateAgentState(review, (state, now) => {
+    const started = startSession(state, now);
+    createClaim(state, now, started.id, [{ id: "conflict", through: "conflict-note" }]);
+    return started.id;
+  });
 
   const before = implementationState(repository);
   repository.expectSemanticFailure("was replaced", "restack", "--continue", "--claim", replaced.claim);
+  repository.expectSemanticFailure("was replaced", "restack", "--abort", "--claim", replaced.claim);
   assert.deepEqual(implementationState(repository), before);
+  updateAgentState(review, (state) => releaseClaims(state, session));
   repository.semantic("restack", "--abort", "--claim", replaced.claim);
   assert.equal(repository.artifact.exists(".work/restack.json"), false);
 });
@@ -215,6 +223,28 @@ test("a standalone round's open question goes when a listening agent takes the r
   const takeover = await waitAsync(repository, "--timeout", "5");
   assert.deepEqual(threadIds(takeover), ["rename"]);
   assert.deepEqual(agentState(repository).requests, []);
+});
+
+test("a round whose lease ran out may still check itself, and feedback names why it does not restack meanwhile", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "rename");
+  addThread(repository, "later");
+  const round = await waitAsync(repository, "--timeout", "5");
+  const file = path.join(reviewDirectory(repository), "agent.json");
+  const state = agentState(repository);
+  state.claims[0].activityAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(state));
+  assert.match(repository.feedback("agent", "progress", "--claim", round.claim, "--body", "Committing"), /no longer running.*may continue/s);
+
+  // A running listener's round keeps feedback without listening from restacking onto an advanced target.
+  const listening = await waitAsync(repository, "--session", round.session, "--timeout", "5");
+  assert.ok(listening.claim);
+  const main = repository.git("rev-parse", "main");
+  repository.git("update-ref", "refs/heads/main", repository.git("commit-tree", `${main}^{tree}`, "-p", main, "-m", "Advance target"));
+  const refused = repository.result(process.execPath, [flowCli, "feedback", "--json"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /restacked onto it only once the round is finished/);
 });
 
 test("a new agent takes over at once while the replaced round is still working", async (t) => {

@@ -93,9 +93,10 @@ it succeeds.
 
 If any command reports that the round was replaced, another agent started
 listening and took over its threads. Stop at once: no commit, restack, stage
-change, question, or reply for this round. If the refusal came from `restack
---continue`, first discard this round's pending restack with `<semantic-flow>
-implementation restack --abort --claim <claim>`. Leave other edits as they are. End with one
+change, question, or reply for this round. If this round left a restack
+pending, first discard it with `<semantic-flow> implementation restack --abort
+--claim <claim>`; when that is refused, the new agent handles it. Leave other
+edits as they are. End with one
 short line in the chat, naming any uncommitted edits you left.
 
 ## Ask in the viewer

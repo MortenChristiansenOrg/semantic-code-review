@@ -1134,14 +1134,16 @@ function reportProgress(paths: FeedbackPaths, options: Options): void {
   const body = option(options, "body", { required: true }).trim();
   if (!body || body.length > 200) fail("--body must contain 1 to 200 characters.");
   const claimId = option(options, "claim");
-  updateAgentState(paths.reviewId, (state, now) => {
+  const shown = updateAgentState(paths.reviewId, (state, now) => {
     const claims = state.claims.filter((claim) => claimActive(claim, now));
     let claim: AgentClaim | undefined;
     if (claimId !== undefined) {
       // A replaced round's note would otherwise show as the new agent's.
       const refusal = roundRefusal(state, now, { claim: claimId });
       if (refusal) fail(refusal);
-      claim = claims.find((item) => item.id === claimId) ?? fail(`Round ${claimId} is no longer in progress.`);
+      // A round that ended without being taken over may still change the implementation, so the check passes; nothing shows it.
+      claim = claims.find((item) => item.id === claimId);
+      if (!claim) return false;
     } else {
       if (liveSession(state)) fail("An agent is listening to this review. Pass the claim of your round with --claim.");
       claim = claims.filter((item) => item.sessionId === null).at(-1);
@@ -1149,8 +1151,9 @@ function reportProgress(paths: FeedbackPaths, options: Options): void {
     if (!claim) fail("No feedback round is in progress.");
     claim.note = body;
     touchAgent(state, now, [claim.id]);
+    return true;
   });
-  console.log("Updated the viewer's progress note.");
+  console.log(shown ? "Updated the viewer's progress note." : `Round ${claimId} is no longer running, so the viewer does not show the note. It was not taken over, so its work may continue.`);
 }
 
 function resolveThread(paths: FeedbackPaths, options: Options): void {

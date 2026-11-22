@@ -818,7 +818,7 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate, round: RoundIde
   }
   // Refused before the checkout is touched; the restack checks again under the review lock.
   const refusal = roundRefusal(readAgentState(reviewId(candidate.worktree, candidate.implementationId)), Date.now(), round);
-  if (refusal) fail(refusal);
+  if (refusal) fail(round ? refusal : `Target branch ${candidate.targetBranch} advanced, but a listening agent is answering a feedback round of this review, so the implementation is restacked onto it only once the round is finished. Run this command again then.`);
   // Load the service first, so a failed import never leaves the branch detached.
   const { restackOntoTarget } = await implementationService();
   // A checked-out stage branch is detached while the restack rewrites it.

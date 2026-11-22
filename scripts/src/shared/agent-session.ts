@@ -329,7 +329,9 @@ export function roundSession(state: AgentState, now: number, claimId: string): s
   const refusal = roundRefusal(state, now, { claim: claimId });
   if (refusal) throw new Error(refusal);
   const claim = state.claims.find((item) => item.id === claimId) ?? state.retiredClaims.find((item) => item.id === claimId);
-  return claim?.sessionId ?? null;
+  // A session that ended collects no more answers, so its round's question is asked outside any session.
+  const sessionId = claim?.sessionId ?? null;
+  return sessionId !== null && liveSession(state)?.id === sessionId ? sessionId : null;
 }
 
 /** The comment a named round answers in a thread, even after the round was released. */
