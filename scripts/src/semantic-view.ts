@@ -1,5 +1,5 @@
 import { resolveCodeTarget } from "./shared/insight-targets.js";
-import { locateLineAnchors, type LineAnchorCache } from "./shared/line-anchors.js";
+import { locateLineAnchors, storedLineTargetPath, type LineAnchorCache } from "./shared/line-anchors.js";
 import { shownStageFiles } from "./shared/stage-files.js";
 export { captureCodeTarget, resolveCodeTarget } from "./shared/insight-targets.js";
 /**
@@ -1534,6 +1534,11 @@ function buildFeedbackThreads(repoRoot: string, stages: Wire.Stage[], implementa
   });
   const currentHeads = new Map(stages.map((s) => [s.id, s.headRevision]));
   const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  // A target stored by the previous path of a renamed file names the file's path now.
+  for (const thread of storedThreads) {
+    const stage = thread.target.kind === "line" ? stageById.get(thread.target.stageId) : undefined;
+    if (thread.target.kind === "line" && stage) thread.target = { ...thread.target, path: storedLineTargetPath(thread.target, stage) };
+  }
   // Every line anchor is followed with one batch of Git reads.
   const lineThreads = storedThreads.flatMap((thread) => {
     const target = thread.target;

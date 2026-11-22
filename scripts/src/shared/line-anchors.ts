@@ -24,6 +24,23 @@ export interface LineAnchorInput {
   file?: { previousPath?: string };
 }
 
+/**
+ * The path a stored line target names. A line target names a line by the
+ * file's path in its stage on both sides; its side says which revision counts
+ * the line. Earlier versions named a removed line of a file the stage renames
+ * by the file's previous path. While such a target's stage head is the anchored
+ * one, and no file of the stage at that path has removed lines, it names the
+ * file renamed from that path.
+ */
+export function storedLineTargetPath(
+  target: { path: string; side: "old" | "new"; stageHead: string },
+  stage: { headRevision: string; files: readonly { path: string; kind?: unknown; previousPath?: string }[] },
+): string {
+  if (target.side !== "old" || target.stageHead !== stage.headRevision) return target.path;
+  if (stage.files.some((file) => file.path === target.path && file.kind !== "added")) return target.path;
+  return stage.files.find((file) => file.previousPath === target.path)?.path ?? target.path;
+}
+
 /** Runs Git with standard input; null when it fails. */
 export type LineAnchorGit = (args: string[], input: string) => string | null;
 
