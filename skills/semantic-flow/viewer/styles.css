@@ -69,7 +69,8 @@ html, .side.notes .notes-list { scroll-padding-top: calc(var(--sticky-inset, 0px
 :root[data-header-scrolls] :is(.topbar-wrap, .fresh-link-notice) { position: relative; top: 0; }
 :root[data-header-scrolls] .fresh-link-notice { z-index: auto; }
 :root[data-header-scrolls] .side { top: 0; height: 100vh; }
-:root[data-header-scrolls] :is(.agent-questions, .agent-questions-show) { top: 12px; }
+:root[data-header-scrolls] .agent-questions { top: 12px; }
+:root[data-header-scrolls] .agent-questions-show { position: relative; top: 0; left: 0; translate: none; display: block; margin: 12px auto 0; }
 :root[data-header-scrolls] .agent-questions { max-height: calc(100dvh - 24px); }
 html:has(.review-list[open]) { overflow: hidden; }
 

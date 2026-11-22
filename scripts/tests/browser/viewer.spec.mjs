@@ -2865,6 +2865,42 @@ test('in a short window the fresh-link notice and the top bar scroll away with t
     await expect.poll(() => page.locator(cover).evaluate((el) => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(0);
 });
 
+test('a focused top bar control returns into view when the notice makes the header scroll away', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 320 });
+  await mount(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  const reviews = page.locator('.tb-btn[data-action="toggle-reviews"]');
+  await reviews.focus();
+  await loseAccess(page);
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  await expect.poll(() => reviews.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+  await expect(reviews).toBeFocused();
+  // The saved reviews dialog returns focus to it in view.
+  await reviews.click();
+  await expect(page.locator('.review-list[open]')).toHaveCount(1);
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  await page.keyboard.press('Escape');
+  await expect(reviews).toBeFocused();
+  await expect.poll(() => reviews.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+});
+
+test('in a short window minimized agent questions leave the top bar controls uncovered', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 175 });
+  const now = new Date().toISOString();
+  await mount(page, { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] } });
+  await page.locator('[data-action="minimize-agent-questions"]').click();
+  await expect(page.locator('.agent-questions-show')).toBeVisible();
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  for (const control of await page.locator('.topbar button').all()) {
+    expect(await control.evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+    })).toBe(true);
+  }
+});
+
 test('a thread focused in the notes panel is not hidden under its filter switch', async ({ page }) => {
   const data = fixture();
   data.feedback = Array.from({ length: 12 }, (_, i) => thread(`open-${i}`));

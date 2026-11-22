@@ -12,6 +12,7 @@ import { pendingReplies, usableNotes } from "./threads";
 import { cssEsc, focusable, reduced, storageSize } from "./util";
 import { reviewCleanupView, reviewsPanelView, type ReviewsPanelView } from "./views/reviews";
 import { render as renderLit } from "lit-html";
+import { revealFocus } from "./sticky-insets";
 
 export let reviewsOpen = false;
 /** A review that ended starts with the saved reviews open. */
@@ -150,7 +151,7 @@ export function setReviewsOpen(open: boolean): void {
     dialog.classList.add("is-closing");
     reviewsCloseTimer = setTimeout(() => {
       dialog.close(); dialog.remove(); reviewsDialog = null;
-      if (!reviewEnded) focusable(document.querySelector('.topbar [data-action="toggle-reviews"]'))?.focus({ preventScroll: true });
+      if (!reviewEnded) { focusable(document.querySelector('.topbar [data-action="toggle-reviews"]'))?.focus({ preventScroll: true }); revealFocus(); }
     }, reduced() ? 0 : 180);
   }
 }

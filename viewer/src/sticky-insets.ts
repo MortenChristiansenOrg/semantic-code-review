@@ -41,6 +41,7 @@ function measure(): void {
   const root = document.documentElement;
   const height = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().height ?? 0;
   const notice = height("#fresh-link-notice"), header = notice + height(".topbar-wrap");
+  const scrolls = root.hasAttribute("data-header-scrolls");
   root.toggleAttribute("data-header-scrolls", header > window.innerHeight / 3);
   setLength(root, "--fresh-link-inset", notice);
   setLength(root, "--topbar-bottom", header);
@@ -49,17 +50,19 @@ function measure(): void {
     const scroller = document.querySelector(area.scroller);
     if (scroller instanceof HTMLElement) setLength(scroller, "--sticky-inset", Math.max(0, ...[...scroller.querySelectorAll(area.covers)].map(coverBottom)));
   }
-  const inset = parseFloat(root.style.getPropertyValue("--sticky-inset")) || 0;
-  if (inset > pageInset) revealFocus(inset);
-  pageInset = inset;
+  const grew = (parseFloat(root.style.getPropertyValue("--sticky-inset")) || 0) > pageInset;
+  pageInset = parseFloat(root.style.getPropertyValue("--sticky-inset")) || 0;
+  if (grew || scrolls !== root.hasAttribute("data-header-scrolls")) revealFocus();
 }
 
-/** Scrolls the focused review element back out from under covers that grew over it, such as an appearing notice. */
-function revealFocus(inset: number): void {
+/** Scrolls the focused element back into view when the header left it hidden: a review element under covers that
+ * grew over it, such as an appearing notice, or a top bar control above the window once the header scrolls away. */
+export function revealFocus(): void {
   const focused = document.activeElement;
-  if (!(focused instanceof HTMLElement || focused instanceof SVGElement) || !focused.closest(".shell")) return;
+  if (!(focused instanceof HTMLElement || focused instanceof SVGElement)) return;
   const box = focused.getBoundingClientRect();
-  if (box.top < inset && box.bottom > 0) focused.scrollIntoView({ block: "nearest" });
+  const hidden = focused.closest(".topbar-wrap") ? box.bottom <= 0 : focused.closest(".shell") ? box.top < pageInset && box.bottom > 0 : false;
+  if (hidden) focused.scrollIntoView({ block: "nearest" });
 }
 
 /** Follows the size of the covers now shown, and measures again when they changed. */
