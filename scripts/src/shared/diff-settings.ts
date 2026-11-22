@@ -30,12 +30,13 @@ const EMPTY_TREES: Record<number, string> = {
  * is not read (Git reads /dev/null as the null device on every platform), and
  * without attributes Git uses the "default" diff driver, whose binary setting
  * is restored to detection. A file larger than core.bigFileThreshold would be
- * binary too; the threshold is Git's default. Patch headers name non-ASCII
- * paths as they are. */
+ * binary too; the threshold is Git's default. Files read from outside the
+ * repository keep their line endings. Patch headers name non-ASCII paths as
+ * they are. */
 function globalOptions(literalPathspecs: boolean): string[] {
   return ["--no-replace-objects", ...(literalPathspecs ? ["--literal-pathspecs"] : []),
     "-c", "core.attributesFile=/dev/null", "-c", "diff.default.binary=auto", "-c", "core.bigFileThreshold=512m",
-    "-c", "core.quotePath=false", "-c", "diff.suppressBlankEmpty=false"];
+    "-c", "core.quotePath=false", "-c", "diff.suppressBlankEmpty=false", "-c", "core.autocrlf=false"];
 }
 
 /** The environment a diff runs in, on top of the CLI's isolated Git
@@ -87,11 +88,12 @@ export function diffTree(options: readonly string[], { objectIdLength = 40, lite
 }
 
 /** Porcelain `git diff` or `git log` with these settings followed by
- * `options`, for diffs plumbing cannot run. A missing diff.orderFile would
- * make porcelain fail; /dev/null orders nothing. */
+ * `options`, for diffs plumbing cannot run. Patches have plumbing's three lines
+ * of context unless `options` say otherwise, instead of diff.context. A missing
+ * diff.orderFile would make porcelain fail; /dev/null orders nothing. */
 export function porcelainDiff(command: "diff" | "log", options: readonly string[], { objectIdLength = 40, literalPathspecs = true }: DiffCommandOptions = {}): DiffCommand {
   return {
-    args: [...globalOptions(literalPathspecs), command, ...DIFF_OPTIONS, ...PATCH_FORMAT, "-O/dev/null", ...options],
+    args: [...globalOptions(literalPathspecs), command, ...DIFF_OPTIONS, ...PATCH_FORMAT, "-U3", "-O/dev/null", ...options],
     env: diffEnvironment(objectIdLength),
   };
 }

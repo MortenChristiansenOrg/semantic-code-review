@@ -158,9 +158,12 @@ test("archive pins the publication under a ref and records landing by ancestry",
 
 test("archive records an unknown landing, suggests a squash commit, and takes the reviewer's commit later", (t) => {
   const repository = createRepository(t);
+  // A file changed in its middle, so its patch has context lines.
+  const lines = (middle) => Array.from({ length: 20 }, (_, index) => (index === 10 ? middle : `line ${index}`)).join("\n") + "\n";
+  repository.commitFile("code.txt", lines("before"), "Add code");
   initializeImplementation(repository, { implementationId: "squashed" });
   beginStage(repository);
-  const stageTip = finalizeStage(repository);
+  const stageTip = finalizeStage(repository, { file: "code.txt", contents: lines("after") });
   repository.semantic("publish");
   // The remote squash-merged the stage and the target moved on.
   repository.git("switch", "main");
@@ -174,6 +177,8 @@ test("archive records an unknown landing, suggests a squash commit, and takes th
   repository.expectSemanticFailure(/./, "archive", "--landed", "no-such-revision");
   assert.equal(repository.artifact.present(), true);
 
+  // Both patches are compared with the same context whatever diff.context says.
+  repository.git("config", "diff.context", "8");
   const archived = repository.semantic("archive");
   assert.match(archived, /landing unknown/);
   assert.match(archived, new RegExp(`Target commit ${squash} matches the implementation's changes`));

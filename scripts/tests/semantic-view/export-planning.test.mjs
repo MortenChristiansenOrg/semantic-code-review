@@ -1305,3 +1305,24 @@ test("the viewer pages a file's own diff, not that of files below a directory of
   assert.deepEqual(await shown("gone.txt"), "abcdefghij".split("").map((s) => ({ t: "del", s })));
   assert.deepEqual(await shown("old.txt/child.txt"), [{ t: "add", s: "child" }]);
 });
+
+test("the viewer shows changed lines that look like patch headers", async (t) => {
+  const repository = createRepository(t);
+  repository.commitFile("query.sql", "-- legacy\nselect 1;\n", "Add query");
+  initializeImplementation(repository);
+  beginStage(repository);
+  repository.commitFile("query.sql", "++ new\nselect 1;\n", "Change query");
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const file = stage.files[0];
+  for (const mode of ["changes", "full"]) {
+    const { lines } = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
+    assert.deepEqual(lines.map(({ t, o, n, s }) => ({ t, o, n, s })), [
+      { t: "del", o: 1, n: undefined, s: "-- legacy" },
+      { t: "add", o: undefined, n: 1, s: "++ new" },
+      { t: "ctx", o: 2, n: 2, s: "select 1;" },
+    ], mode);
+  }
+});

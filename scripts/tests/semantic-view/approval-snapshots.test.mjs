@@ -67,6 +67,16 @@ test('comparison pages preserve all changed rows including source header-like te
   assert.equal(rows.length, 1806); assert.equal(rows[1].s, '++ header-like source'); assert.equal(rows.at(-1).n, 1805);
 });
 
+test('a comparison shows changed line endings whatever core.autocrlf says', (t) => {
+  const { repo, context } = setup(t);
+  repo.commitFile('code.txt', 'a\r\nb\r\n', 'Windows line endings');
+  const saved = captureApprovalSnapshot(context, endpoint(repo));
+  repo.commitFile('code.txt', 'a\nb\n', 'Unix line endings');
+  repo.git('config', 'core.autocrlf', 'true');
+  const rows = compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo), 0, 'changes', 'all').lines;
+  assert.deepEqual(rows.map((row) => [row.t, row.s]), [['del', 'a\r'], ['del', 'b\r'], ['add', 'a'], ['add', 'b']]);
+});
+
 test('saving approval removal releases only unreferenced snapshots and rejects missing content', (t) => {
   const { repo, review, context } = setup(t);
   repo.commitFile('code.txt', 'approved\n', 'Approved');

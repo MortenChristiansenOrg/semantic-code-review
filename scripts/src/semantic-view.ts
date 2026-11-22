@@ -716,8 +716,14 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
   }
 
   for (const line of src) {
+    if (line.startsWith("diff --git")) {
+      started = false;
+      continue;
+    }
+    // Once inside a hunk, +++/--- and the other header prefixes can be actual source lines.
     if (
-      line.startsWith("diff --git") ||
+      !started && (
+      line.startsWith("index ") ||
       line.startsWith("index ") ||
       line.startsWith("--- ") ||
       line.startsWith("+++ ") ||
@@ -726,11 +732,11 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
       line.startsWith("similarity ") ||
       line.startsWith("rename ") ||
       line.startsWith("old mode") ||
-      line.startsWith("new mode")
+      line.startsWith("new mode"))
     ) {
       continue;
     }
-    if (line.startsWith("Binary files")) {
+    if (!started && line.startsWith("Binary files")) {
       binary = true;
       continue;
     }
