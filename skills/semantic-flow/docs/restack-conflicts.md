@@ -58,7 +58,8 @@ its worktree stay while you await the answer.
 
 If `--continue` reports that a ref or the artifact changed since the restack
 began, inspect what changed instead of retrying. `<semantic-flow>
-implementation restack --abort` discards the pending restack and its worktree;
+implementation restack --abort` (with the round's `--claim <claim>` in a feedback
+round) discards the pending restack and its worktree;
 no ref has moved, so start the restack again from the current state. It also
 switches back a stage branch that `sync` or `feedback` detached. If the
 artifact worktree is still detached after `--continue` or `--abort`, for

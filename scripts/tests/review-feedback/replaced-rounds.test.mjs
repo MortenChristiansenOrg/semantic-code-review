@@ -61,7 +61,11 @@ test("every command that changes the implementation refuses a replaced round bef
   repository.commitFile("implementation.txt", "implementation v2\n", "Address feedback");
   const before = implementationState(repository);
 
-  // Kept by hand, so a new command that changes the implementation without taking a claim is noticed.
+  // Every command is listed by hand as reading, changing nothing a round works on, or
+  // changing it for a round, so a new command that changes it without a claim is noticed.
+  const noRound = ["init", "export", "validate", "validate-stack", "publish", "prepare-branch", "stage plan", "archive", "archive landing", "archive share"];
+  const all = semanticImplementationApi.commands.map(({ command }) => command);
+  assert.deepEqual(all.filter((command) => !noRound.includes(command)).sort(), changingCommands.map((words) => words.join(" ")).sort());
   assert.deepEqual(changingCommands.map((words) => words.join(" ")).sort(), [
     "restack", "specification add", "stage begin", "stage discard", "stage evidence", "stage evidence-remove",
     "stage finish", "stage no-evidence", "stage organize", "stage record", "stage record-batch", "stage remove",
