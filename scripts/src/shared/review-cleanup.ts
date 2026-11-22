@@ -5,6 +5,8 @@ import { cleanupFailure } from "./cleanup-diagnostics.js";
 import { createHash, randomUUID } from "node:crypto";
 import { attachmentIds, beginReviewDeletion, completeReviewDeletion, pathMissing, pendingDeletionDirectory, markReviewIdRetired, readReview, recoverInterruptedDeletion, retireReviewId, reviewDeletionPending, reviewDirectory, rollBackReviewDeletion, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
+import { FEEDBACK_MANIFEST_SCHEMA_ID, THREAD_SCHEMA_ID } from "./documents.js";
+import { isDocument, type DocumentTypes, type SchemaId } from "./schema-validation.js";
 import { errorCode, errorMessage, isRecord, stringField } from "./narrow.js";
 import type { ApiSuccess, ReviewCleanResponse, ReviewDeleteResponse, ReviewStorage } from "./viewer-protocol.js";
 
@@ -26,21 +28,57 @@ function inventory(directory: string): Entry[] {
   for (const name of fs.readdirSync(directory).sort()) visit(name);
   return entries;
 }
+/** Why a feedback document cannot be read, in plain words, or its value. */
+function readFeedbackDocument<K extends SchemaId>(schema: K, file: string): { value: DocumentTypes[K] } | { problem: string } {
+  let text: string;
+  try { text = fs.readFileSync(file, "utf8"); }
+  catch (error) {
+    const code = errorCode(error);
+    return { problem: code === "ENOENT" ? "its file is missing" : code === "EISDIR" ? "it is a folder" : `its file cannot be read (${errorMessage(error)})` };
+  }
+  let value: unknown;
+  try { value = parseJson(text); }
+  catch { return { problem: "its file is not valid JSON" }; }
+  return isDocument(schema, value) ? { value } : { problem: "its file does not match the feedback format" };
+}
+/** The submitted feedback whose attachments cleanup keeps: the threads the
+ * feedback manifest lists, which are those the viewer and the feedback commands
+ * read, and any other thread file found. Cleanup cannot know which attachments
+ * are used while any of it cannot be read, or while part of it is reached
+ * through a link (a symbolic link or a Windows junction), which the inventory
+ * never follows; error then says why and no attachment counts as unused. */
+function submittedFeedback(directory: string, entries: Entry[]) {
+  const refs = new Set<string>();
+  let threads = 0, unresolved = 0;
+  const disabled = (problem: string) => ({ refs, threads, unresolved, error: `Clean unused files is disabled, so that no attachment of submitted feedback is removed: ${problem}.` });
+  const link = entries.find((entry) => entry.link && (entry.name === "feedback" || entry.name.startsWith("feedback/")));
+  if (link) return disabled(`${link.name} in the review's storage is a symbolic link or junction, which cleanup does not follow`);
+  const folder = entries.find((entry) => entry.name === "feedback");
+  const manifestFile = path.join(directory, "feedback", "manifest.json");
+  if (!entries.some((entry) => entry.name === "feedback/manifest.json")) {
+    // No feedback was submitted: the folder is missing or empty.
+    if (!folder || folder.directory && !entries.some((entry) => entry.name.startsWith("feedback/"))) return { refs, threads, unresolved, error: "" };
+    return disabled("feedback/manifest.json is missing, so the threads it should list are unknown");
+  }
+  const manifest = readFeedbackDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifestFile);
+  if ("problem" in manifest) return disabled(`feedback/manifest.json cannot be read because ${manifest.problem}`);
+  const listed = new Set(manifest.value.threads);
+  const found = entries.flatMap((entry) => /^feedback\/threads\/([^/]+)\.json$/.exec(entry.name)?.[1] ?? []).filter((id) => !listed.has(id));
+  for (const id of [...listed, ...found]) {
+    const thread = readFeedbackDocument(THREAD_SCHEMA_ID, path.join(directory, "feedback", "threads", `${id}.json`));
+    if ("problem" in thread) return disabled(`feedback thread ${id}${listed.has(id) ? ", listed in feedback/manifest.json," : ""} cannot be read because ${thread.problem}`);
+    if (listed.has(id)) { threads++; if (thread.value.status !== "resolved") unresolved++; }
+    for (const attachment of attachmentIds(thread.value)) refs.add(attachment);
+  }
+  return { refs, threads, unresolved, error: "" };
+}
 function inspect(id: string, generation: string) {
   const review = readReview(id);
   if (review.generation !== generation) throw new Error("The selected review was replaced. Refresh Saved reviews.");
   const directory = reviewDirectory(id), entries = inventory(directory), state = review.state;
   const refs = attachmentIds(state), snapshots = new Set(Object.values(isRecord(state.approvals) ? state.approvals : {}).map((value) => stringField(value, "snapshotId")));
-  let feedbackThreads = 0, unresolved = 0, referenceError = "";
-  for (const entry of entries.filter((item) => item.name.startsWith("feedback/threads/") && item.name.endsWith(".json"))) {
-    try {
-      if (entry.link) throw new Error("Feedback is a symbolic link.");
-      const thread = parseJson(fs.readFileSync(path.join(directory, entry.name), "utf8"));
-      if (!isRecord(thread) || !Array.isArray(thread.comments)) throw new Error("Invalid feedback comments.");
-      feedbackThreads++; if (thread.status !== "resolved") unresolved++;
-      for (const id of attachmentIds(thread)) refs.add(id);
-    } catch { referenceError = "Some feedback cannot be read. Unused-file cleanup is disabled to preserve its attachments."; }
-  }
+  const feedback = submittedFeedback(directory, entries), referenceError = feedback.error, { threads: feedbackThreads, unresolved } = feedback;
+  for (const id of feedback.refs) refs.add(id);
   const unused: Array<{ path: string; bytes: number }> = [];
   if (!referenceError) for (const entry of entries) {
     let eligible = false, lastUse = entry.modified;

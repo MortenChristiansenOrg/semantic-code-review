@@ -63,10 +63,10 @@ test('storage previews count drafts and feedback; confirmed deletion preserves o
   const file = oldAttachment(review, 'context.log');
   const otherFile = storeAttachment(other.id, other.generation, 'context.log', 'text/plain', Buffer.from('context'));
   patchReviewState(review.id, review.generation, [change('comments', [{ mode: 'feedback', body: 'Unsent', attachments: [file] }, { mode: 'personal', body: 'Personal' }]), change('editor', { compose: { body: 'Typing' } })]);
-  const threads = path.join(reviewDirectory(review.id), 'feedback', 'threads'); fs.mkdirSync(threads);
-  fs.writeFileSync(path.join(threads, 'one.json'), JSON.stringify({ status: 'open', comments: [{ attachments: [file] }] }));
+  const feedback = submitFeedback(review, { one: [file], two: [] }), thread = path.join(feedback, 'threads', 'one.json');
+  fs.writeFileSync(thread, JSON.stringify({ ...JSON.parse(fs.readFileSync(thread, 'utf8')), status: 'open', resolvedAt: undefined }));
   const before = preview(review);
-  assert.equal(before.drafts, 2); assert.equal(before.unresolved, 1); assert.equal(before.unusedBytes, 0);
+  assert.equal(before.drafts, 2); assert.equal(before.unresolved, 1); assert.equal(before.unusedBytes, 0); assert.equal(before.referenceError, '');
   assert.ok(before.bytes > file.size); assert.equal(before.categories.reduce((sum, item) => sum + item.bytes, 0), before.bytes);
   assert.equal(deleteReviewData(review.id, review.generation, before.fingerprint).deleted, true);
   assert.throws(() => readReview(review.id), /deleted/);
@@ -638,6 +638,77 @@ test('unused cleanup rejects a preview when an upload has aged into a candidate 
   assert.throws(() => cleanUnusedReviewFiles(review.id, review.generation, before.fingerprint), /changed since/);
   assert.ok(resolveAttachment(review.id, recent.id));
   assert.equal(preview(review).unused.length, 1);
+});
+
+/** Submits feedback as the feedback commands store it: a manifest listing threads that each use their attachments. */
+function submitFeedback(review, threads) {
+  const feedback = path.join(reviewDirectory(review.id), 'feedback');
+  fs.mkdirSync(path.join(feedback, 'threads'), { recursive: true });
+  const at = '2026-01-01T00:00:00Z', head = 'a'.repeat(40);
+  for (const [id, attachments] of Object.entries(threads)) fs.writeFileSync(path.join(feedback, 'threads', id + '.json'), JSON.stringify({
+    $schema: 'https://semantic-code-review.dev/schemas/feedback/v0.1/thread.schema.json', id, status: 'resolved', resolvedAt: at,
+    comments: [{ id: 'c1', author: 'user', body: 'See the log.', createdAt: at, attachments }],
+    target: { kind: 'stage', label: 'Stage one', stageId: 'one', stageBranch: 'feature/stages/one', stageHead: head }, assignedStageId: 'one', stageHead: head, createdAt: at }));
+  fs.writeFileSync(path.join(feedback, 'manifest.json'), JSON.stringify({ $schema: 'https://semantic-code-review.dev/schemas/feedback/v0.1/manifest.schema.json', formatVersion: '0.1', implementationId: 'same-id', threads: Object.keys(threads) }));
+  return feedback;
+}
+/** Cleanup must neither offer nor remove the attachment, and must say why. */
+function assertCleanupKeeps(review, file, reason) {
+  const current = preview(review);
+  assert.match(current.referenceError, reason); assert.match(current.referenceError, /^Clean unused files is disabled/);
+  assert.deepEqual(current.unused, []);
+  assert.throws(() => cleanUnusedReviewFiles(review.id, review.generation, current.fingerprint), reason);
+  assert.ok(fs.existsSync(resolveAttachment(review.id, file.id).localPath));
+  return current;
+}
+
+test('unused cleanup keeps the attachments of every thread the feedback manifest lists', (t) => {
+  const { review } = setup(t), used = oldAttachment(review, 'used.log'), unused = oldAttachment(review, 'unused.log');
+  submitFeedback(review, { first: [used], second: [] });
+  const current = preview(review);
+  assert.equal(current.referenceError, ''); assert.equal(current.categories.find((item) => item.label === 'Submitted feedback').detail, '2 threads · 0 unresolved');
+  assert.deepEqual(current.unused.map((item) => item.path), ['attachments/' + unused.id]);
+  cleanUnusedReviewFiles(review.id, review.generation, current.fingerprint);
+  assert.ok(fs.existsSync(resolveAttachment(review.id, used.id).localPath));
+  assert.throws(() => resolveAttachment(review.id, unused.id));
+});
+
+test('unused cleanup is disabled while the feedback manifest or a thread it lists cannot be read, and deletion still works', (t) => {
+  const { review } = setup(t), file = oldAttachment(review, 'context.log');
+  const feedback = submitFeedback(review, { first: [file] }), manifestFile = path.join(feedback, 'manifest.json'), thread = path.join(feedback, 'threads', 'first.json');
+  const manifestText = fs.readFileSync(manifestFile, 'utf8'), threadText = fs.readFileSync(thread, 'utf8');
+  fs.writeFileSync(manifestFile, '{"threads": ['); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because its file is not valid JSON/);
+  fs.writeFileSync(manifestFile, '{"threads": ["first"]}'); assertCleanupKeeps(review, file, /feedback\/manifest\.json cannot be read because its file does not match the feedback format/);
+  fs.rmSync(manifestFile); assertCleanupKeeps(review, file, /feedback\/manifest\.json is missing/);
+  fs.writeFileSync(manifestFile, manifestText); fs.rmSync(thread);
+  assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file is missing/);
+  fs.writeFileSync(thread, '{'); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file is not valid JSON/);
+  fs.writeFileSync(thread, JSON.stringify({ ...JSON.parse(threadText), comments: [] })); assertCleanupKeeps(review, file, /feedback thread first, listed in feedback\/manifest\.json, cannot be read because its file does not match the feedback format/);
+  fs.rmSync(thread); fs.mkdirSync(thread); assertCleanupKeeps(review, file, /cannot be read because it is a folder/);
+  fs.rmSync(thread, { recursive: true }); fs.writeFileSync(thread, '{');
+  // Deleting the whole review does not depend on reading its feedback.
+  assert.equal(deleteReviewData(review.id, review.generation, assertCleanupKeeps(review, file, /not valid JSON/).fingerprint).deleted, true);
+  assert.equal(fs.existsSync(reviewDirectory(review.id)), false);
+});
+
+test('unused cleanup does not remove the attachments of threads it finds but the manifest does not list', (t) => {
+  const { review } = setup(t), file = oldAttachment(review, 'context.log'), feedback = submitFeedback(review, { first: [file] });
+  fs.writeFileSync(path.join(feedback, 'manifest.json'), JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(feedback, 'manifest.json'), 'utf8')), threads: [] }));
+  const current = preview(review); assert.equal(current.referenceError, ''); assert.deepEqual(current.unused, []);
+  fs.writeFileSync(path.join(feedback, 'threads', 'first.json'), '{'); assertCleanupKeeps(review, file, /feedback thread first cannot be read because its file is not valid JSON/);
+});
+
+for (const linked of ['feedback', 'feedback/threads']) test(`unused cleanup is disabled while ${linked} is a link, and deletion keeps the linked files`, (t) => {
+  const { root, review } = setup(t), file = oldAttachment(review, 'context.log');
+  const feedback = submitFeedback(review, { first: [file] }), storage = reviewDirectory(review.id), moved = path.join(root, 'linked-' + linked.replace('/', '-'));
+  fs.renameSync(path.join(storage, linked), moved);
+  // A junction, which Windows creates without privileges, is a directory symbolic link elsewhere.
+  fs.symlinkSync(moved, path.join(storage, linked), 'junction');
+  assert.equal(fs.existsSync(path.join(feedback, 'threads', 'first.json')), true);
+  const current = assertCleanupKeeps(review, file, new RegExp(`: ${linked.replace('/', '\\/')} in the review's storage is a symbolic link or junction`));
+  assert.equal(deleteReviewData(review.id, review.generation, current.fingerprint).deleted, true);
+  assert.equal(fs.existsSync(storage), false);
+  assert.ok(fs.readdirSync(moved).length > 0);
 });
 
 test('stale process writes cannot resurrect a deleted review', async (t) => {
