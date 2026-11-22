@@ -2832,6 +2832,39 @@ test('the fresh-link notice leaves the top bar and the side panels uncovered', a
   await expect.poll(() => uncovered(page.locator('.side.notes .side-head button[data-action="toggle-notes"]'))).toBe(true);
 });
 
+test('a focused link stays uncovered when the fresh-link notice appears above the top bar', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const data = fixture(); data.stages[0].files[0].path = 'README.md';
+  await mount(page, data);
+  const links = Array.from({ length: 30 }, (_, i) => `Paragraph ${i} with [link ${i}](https://example.com/${i}).`).join('\n\n');
+  await page.route('**/api/file-content*', route => route.fulfill({ json: { ok: true, content: `# Document\n\n${links}`, revision: 'b'.repeat(40), side: 'head' } }));
+  await openFile(page);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const link = page.locator('.markdown-preview a').first();
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await link.focus();
+  // How far the link's top lies below the covers.
+  const offset = () => link.evaluate((el) => el.getBoundingClientRect().top - Math.max(...[...document.querySelectorAll('.topbar-wrap, #fresh-link-notice')].map((cover) => cover.getBoundingClientRect().bottom)));
+  await expect.poll(async () => {
+    const now = await offset();
+    await page.evaluate((by) => window.scrollBy({ top: by, behavior: 'instant' }), now - 20);
+    return Math.round(now);
+  }).toBe(20);
+  await loseAccess(page);
+  await expect.poll(offset).toBeGreaterThanOrEqual(0);
+  await expect(link).toBeFocused();
+});
+
+test('in a short window the fresh-link notice and the top bar scroll away with the page', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 256 });
+  await mount(page);
+  await loseAccess(page);
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
+  for (const cover of ['.topbar-wrap', '#fresh-link-notice'])
+    await expect.poll(() => page.locator(cover).evaluate((el) => el.getBoundingClientRect().bottom)).toBeLessThanOrEqual(0);
+});
+
 test('a thread focused in the notes panel is not hidden under its filter switch', async ({ page }) => {
   const data = fixture();
   data.feedback = Array.from({ length: 12 }, (_, i) => thread(`open-${i}`));

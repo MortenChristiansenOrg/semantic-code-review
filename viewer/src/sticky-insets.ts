@@ -8,6 +8,9 @@
 // The root also holds `--fresh-link-inset`, the height of the fresh-link
 // notice, which the top bar and the side panels start below, and
 // `--topbar-bottom`, where the top bar ends, which the agent questions start below.
+// When the notice and the top bar would take more than a third of the window,
+// as in a short or zoomed window, `data-header-scrolls` on the root lets them
+// scroll away with the page instead.
 
 /** Scroll areas, the root standing for the window, and what covers their top. */
 const areas: { scroller: string; covers: string }[] = [
@@ -19,9 +22,11 @@ const areas: { scroller: string; covers: string }[] = [
 const resizes = new ResizeObserver(measure);
 let observed: Element[] = [];
 
-/** How far below the top of its scroll area a cover reaches while it covers it. */
+/** How far below the top of its scroll area a cover reaches while it covers it; one that scrolls away covers nothing. */
 function coverBottom(cover: Element): number {
-  return (parseFloat(getComputedStyle(cover).top) || 0) + cover.getBoundingClientRect().height;
+  const style = getComputedStyle(cover);
+  if (style.position !== "sticky" && style.position !== "fixed") return 0;
+  return (parseFloat(style.top) || 0) + cover.getBoundingClientRect().height;
 }
 
 function setLength(element: HTMLElement, property: string, length: number): void {
@@ -29,17 +34,32 @@ function setLength(element: HTMLElement, property: string, length: number): void
   if (element.style.getPropertyValue(property) !== value) element.style.setProperty(property, value);
 }
 
+/** The window's inset when last measured. */
+let pageInset = 0;
+
 function measure(): void {
   const root = document.documentElement;
   const height = (selector: string) => document.querySelector(selector)?.getBoundingClientRect().height ?? 0;
-  const notice = height("#fresh-link-notice");
+  const notice = height("#fresh-link-notice"), header = notice + height(".topbar-wrap");
+  root.toggleAttribute("data-header-scrolls", header > window.innerHeight / 3);
   setLength(root, "--fresh-link-inset", notice);
-  setLength(root, "--topbar-bottom", notice + height(".topbar-wrap"));
-  // The covers' positions read below follow the lengths set above.
+  setLength(root, "--topbar-bottom", header);
+  // The covers' positions read below follow the attribute and lengths set above.
   for (const area of areas) {
     const scroller = document.querySelector(area.scroller);
     if (scroller instanceof HTMLElement) setLength(scroller, "--sticky-inset", Math.max(0, ...[...scroller.querySelectorAll(area.covers)].map(coverBottom)));
   }
+  const inset = parseFloat(root.style.getPropertyValue("--sticky-inset")) || 0;
+  if (inset > pageInset) revealFocus(inset);
+  pageInset = inset;
+}
+
+/** Scrolls the focused review element back out from under covers that grew over it, such as an appearing notice. */
+function revealFocus(inset: number): void {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement || focused instanceof SVGElement) || !focused.closest(".shell")) return;
+  const box = focused.getBoundingClientRect();
+  if (box.top < inset && box.bottom > 0) focused.scrollIntoView({ block: "nearest" });
 }
 
 /** Follows the size of the covers now shown, and measures again when they changed. */
@@ -55,5 +75,7 @@ export function updateStickyInsets(): void {
 /** Follows covers that appear outside a render, such as the fresh-link notice. */
 export function installStickyInsets(): void {
   new MutationObserver(updateStickyInsets).observe(document.body, { childList: true });
+  // The share of the window the covers take changes with its height.
+  window.addEventListener("resize", measure);
   updateStickyInsets();
 }
