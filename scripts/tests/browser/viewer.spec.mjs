@@ -2870,7 +2870,7 @@ test('a focused top bar control returns into view when the notice makes the head
   await mount(page);
   await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
   await page.evaluate(() => window.scrollTo({ top: 600, behavior: 'instant' }));
-  const reviews = page.locator('.tb-btn[data-action="toggle-reviews"]');
+  const reviews = page.locator('.topbar [data-action="toggle-reviews"]');
   await reviews.focus();
   await loseAccess(page);
   await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
@@ -2899,6 +2899,23 @@ test('in a short window minimized agent questions leave the top bar controls unc
       return el.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
     })).toBe(true);
   }
+});
+
+test('focused minimized agent questions return into view when a shorter window makes the header scroll away', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 500 });
+  const now = new Date().toISOString();
+  await mount(page, { ...fixture(), agent: { session: true, listening: true, stopRequested: false, working: null, lastRound: null, serverTime: now,
+    requests: [{ id: 'refund-email', body: 'Should refunds skip the email?', choices: ['Yes', 'No'], createdAt: now }] } });
+  await page.addStyleTag({ content: '#app { padding-bottom: 100vh; }' });
+  await page.evaluate(() => window.scrollTo({ top: 400, behavior: 'instant' }));
+  await page.locator('[data-action="minimize-agent-questions"]').focus();
+  await page.keyboard.press('Enter');
+  const show = page.locator('.agent-questions-show');
+  await expect(show).toBeFocused();
+  await page.setViewportSize({ width: 720, height: 175 });
+  await expect(page.locator(':root[data-header-scrolls]')).toHaveCount(1);
+  await expect.poll(() => show.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
+  await expect(show).toBeFocused();
 });
 
 test('a thread focused in the notes panel is not hidden under its filter switch', async ({ page }) => {

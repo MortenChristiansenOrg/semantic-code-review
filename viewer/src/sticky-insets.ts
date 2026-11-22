@@ -56,12 +56,13 @@ function measure(): void {
 }
 
 /** Scrolls the focused element back into view when the header left it hidden: a review element under covers that
- * grew over it, such as an appearing notice, or a top bar control above the window once the header scrolls away. */
+ * grew over it, such as an appearing notice, or a top bar control or the minimized agent questions above the
+ * window once the header scrolls away. */
 export function revealFocus(): void {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLElement || focused instanceof SVGElement)) return;
   const box = focused.getBoundingClientRect();
-  const hidden = focused.closest(".topbar-wrap") ? box.bottom <= 0 : focused.closest(".shell") ? box.top < pageInset && box.bottom > 0 : false;
+  const hidden = focused.closest(".topbar-wrap, .agent-questions-show") ? box.bottom <= 0 : focused.closest(".shell") ? box.top < pageInset && box.bottom > 0 : false;
   if (hidden) focused.scrollIntoView({ block: "nearest" });
 }
 
