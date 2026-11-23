@@ -1230,6 +1230,24 @@ test('approving a large group makes a request and a save per 200 files, and rend
   await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
 });
 
+test('group approvals started together are captured and saved one after the other', async ({ page }) => {
+  await mount(page, folderFixture());
+  const events = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/approval-snapshots') events.push(`capture ${request.postDataJSON().files.map((file) => file.path).join(' ')}`);
+    if (pathname === '/api/review-state' && request.method() === 'POST' && request.postDataJSON().changes.some((change) => change.path[0] === 'approvals')) {
+      events.push(`save ${[...new Set(request.postDataJSON().changes.filter((change) => change.path[0] === 'approvals').map((change) => JSON.parse(change.path[1].slice(2))[2]))].sort().join(' ')}`);
+    }
+  });
+  const { node, web, api } = await openFolders(page);
+  await web.locator('.fg-approve').click();
+  await api.locator('.fg-approve').click();
+  await expect(node.locator('.frow.is-approved')).toHaveCount(5);
+  await expect(page.locator('#save-status')).toBeHidden();
+  expect(events).toEqual(['capture web/a.js web/b.js web/c.js web/d.js', 'save web/a.js web/b.js web/c.js web/d.js', 'capture api/e.js', 'save api/e.js']);
+});
+
 test('a group whose files have large ownerships is approved in requests small enough to save', async ({ page }) => {
   const data = bulkFixture(150);
   // About 12 KB of line ranges per file: a request of 200 such files would make a save of several MiB.

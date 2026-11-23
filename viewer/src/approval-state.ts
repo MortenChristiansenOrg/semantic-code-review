@@ -126,7 +126,9 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
   if (!approvals.length) return;
   /** The approvals not finished yet: neither failed alone nor stored. */
   const pending = new Set(approvals);
-  const operation = Promise.resolve().then(async () => {
+  // Approvals made while others are captured wait for them, so that no save
+  // carries the approvals of more than one request.
+  const operation = fileApprovals.then(async () => {
     try {
       for (const batch of approvalRequests(approvals)) {
         let results: ApprovalSnapshotResult[];
@@ -192,9 +194,12 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
     }
     finally { approvals.forEach(({ id }) => approvalOps.delete(id)); reconcileApprovals(); render(); }
   });
+  fileApprovals = operation.catch(() => undefined);
   approvals.forEach(({ id }) => approvalOps.set(id, operation)); render();
   return operation;
 }
+/** The last file approval started; it settles once it is stored or failed. */
+let fileApprovals: Promise<void> = Promise.resolve();
 // Approvals follow the implementation they were given for. Run whenever the
 // implementation or the approvals change: when the viewer starts, adopts a
 // snapshot, or finishes an approval change.
