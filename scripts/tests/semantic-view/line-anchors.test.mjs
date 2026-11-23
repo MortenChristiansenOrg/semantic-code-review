@@ -40,9 +40,9 @@ function history(t) {
 /** Locates anchors and lists the Git commands it ran. */
 function locate(repository, inputs, cache) {
   const runs = [];
-  const result = locateLineAnchors(repository.root, inputs, { cache, runGit: (args, input) => {
-    runs.push(args.find((arg) => ["cat-file", "config", "diff-tree"].includes(arg)));
-    return gitRaw(args, { cwd: repository.root, input, allowFailure: true });
+  const result = locateLineAnchors(repository.root, inputs, { cache, runGit: (args, input, env) => {
+    runs.push(args.find((arg) => ["cat-file", "diff-tree"].includes(arg)));
+    return gitRaw(args, { cwd: repository.root, input, env, allowFailure: true });
   } });
   return { result, runs };
 }
@@ -73,8 +73,8 @@ test("a line thread follows its unchanged line through new heads and moves", (t)
   const cache = new Map();
   const { result, runs } = locate(repository, inputs, cache);
   assert.deepEqual(result, [2, 4, 4, 5, null]);
-  // One read resolves the anchored snapshots, one the diff settings, and one diff serves every line.
-  assert.deepEqual(runs, ["cat-file", "config", "diff-tree"]);
+  // One read resolves the anchored snapshots, and one diff serves every line.
+  assert.deepEqual(runs, ["cat-file", "diff-tree"]);
   // Locating them again runs no Git.
   const again = locate(repository, inputs, cache);
   assert.deepEqual(again.result, result);
@@ -141,6 +141,20 @@ test("rows of renamed files and unusual paths are followed", (t) => {
   assert.deepEqual(result, [6, null, 3, 2]);
 });
 
+test("a removed line is followed from the anchored head's own parent, whatever replacement refs say", (t) => {
+  const { repository, root, commit } = history(t);
+  const base = commit(root, { "app.js": lines("a", "b", "c") });
+  const head = commit(base, { "app.js": lines("a", "c") });
+  const restackedBase = commit(root, { "app.js": lines("x", "a", "b", "c") });
+  const restacked = commit(restackedBase, { "app.js": lines("x", "a", "c") });
+  // A replacement whose parent has another line above.
+  const decoyBase = commit(root, { "app.js": lines("y", "z", "a", "b", "c") });
+  repository.git("replace", head, commit(decoyBase, { "app.js": lines("y", "z", "a", "c") }));
+  const stage = { baseRevision: restackedBase, headRevision: restacked };
+  const { result } = locate(repository, [{ anchor: { stageHead: head, path: "app.js", side: "old", line: 2 }, stage, file: modified }]);
+  assert.deepEqual(result, [3]);
+});
+
 test("removed lines that look like diff headers do not confuse the reading", (t) => {
   const { repository, root, commit } = history(t);
   const tricky = ["--- a/app.js", "+++ b/app.js", "diff --git a/x b/x", "@@ -1 +1 @@", "a".repeat(40)];
@@ -156,26 +170,25 @@ test("removed lines that look like diff headers do not confuse the reading", (t)
   assert.deepEqual(result, [6, 2]);
 });
 
-test("lines are compared as the viewer's diff shows them", (t) => {
+test("lines are compared as the viewer's diff shows them, whatever the user's Git configuration", (t) => {
   const { repository, root, commit } = history(t);
-  // The viewer's diff shows a text conversion: here, the file without its first line.
+  // The viewer's diff shows no text conversion and uses Git's default algorithm.
   repository.git("config", "diff.drop.textconv", "sed 1d");
+  repository.git("config", "diff.algorithm", "patience");
   fs.writeFileSync(path.join(repository.root, ".gitattributes"), "*.txt diff=drop\n");
   const base = commit(root, { "app.txt": lines("hidden", "a", "b") });
   const head = commit(base, { "app.txt": lines("hidden", "a", "B") });
-  // Raw line 1 stays; shown line 1 changes.
+  // Raw line 1 stays; it would change in the text conversion.
   const corrected = commit(base, { "app.txt": lines("hidden", "c", "B") });
   const stage = { baseRevision: base, headRevision: corrected };
   const anchor = { stageHead: head, path: "app.txt", side: "new", line: 1 };
-  assert.deepEqual(locate(repository, [{ anchor, stage, file: modified }]).result, [null]);
-  // The configured diff algorithm applies too.
-  repository.git("config", "diff.algorithm", "patience");
   const runs = [];
-  locateLineAnchors(repository.root, [{ anchor, stage, file: modified }], { runGit: (args, input) => {
+  const result = locateLineAnchors(repository.root, [{ anchor, stage, file: modified }], { runGit: (args, input, env) => {
     runs.push(args);
-    return gitRaw(args, { cwd: repository.root, input, allowFailure: true });
+    return gitRaw(args, { cwd: repository.root, input, env, allowFailure: true });
   } });
-  assert.ok(runs.filter((args) => args.includes("diff-tree")).every((args) => args.includes("--diff-algorithm=patience")));
+  assert.deepEqual(result, [1]);
+  assert.ok(runs.filter((args) => args.includes("diff-tree")).every((args) => args.includes("--diff-algorithm=myers")));
 });
 
 test("a line stays where it was written while the stage head is the anchored one", (t) => {

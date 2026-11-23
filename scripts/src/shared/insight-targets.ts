@@ -1,5 +1,6 @@
 import type { CodeTarget } from "./documents.js";
-import { git } from "./git.js";
+import { diffTree, FIND_RENAMES, porcelainDiff, type DiffCommand } from "./diff-settings.js";
+import { git, gitRaw } from "./git.js";
 import { factCache } from "./validation-context.js";
 import type { ResolvedCodeTarget } from "./viewer-protocol.js";
 
@@ -7,6 +8,9 @@ const treeFacts = factCache<string | null>();
 const blobLineFacts = factCache<string[] | null>();
 const renameFacts = factCache<string | null>();
 const patchFacts = factCache<string | null>();
+
+/** Runs a diff with the stage inventory's settings; null when it fails. */
+const run = (root: string, { args, env }: DiffCommand) => gitRaw(args, { cwd: root, env, allowFailure: true });
 
 /** Immutable authoring anchor. Context survives publication and pruning of old commits. */
 export type { CodeTarget };
@@ -69,7 +73,7 @@ export function resolveCodeTarget(root: string, target: CodeTarget, head: string
   // Follow Git's rename identity even if another file now occupies the old path.
   if (head !== target.revision) {
     const changes = renameFacts(JSON.stringify([root, target.revision, head]), () =>
-      git(["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames=50%", target.revision, head, "--"], { cwd: root, allowFailure: true }));
+      run(root, diffTree(["--name-status", "-z", ...FIND_RENAMES, target.revision, head, "--"], { objectIdLength: head.length })));
     if (changes === null) return stale("Original revision unavailable; inspect the saved context and retarget.");
     const fields = changes.split("\0");
     for (let i = 0; i < fields.length && fields[i];) {
@@ -94,7 +98,7 @@ export function resolveCodeTarget(root: string, target: CodeTarget, head: string
     };
     if (occurrences(originalLines) > 1 || occurrences(lines) > 1) return stale("Repeated code makes the line mapping ambiguous.", currentPath);
     const patch = patchFacts(JSON.stringify([root, target.blobId, blob]), () =>
-      git(["diff", "--no-ext-diff", "--no-textconv", "--unified=0", target.blobId, blob], { cwd: root, allowFailure: true }));
+      run(root, porcelainDiff("diff", ["--unified=0", target.blobId, blob], { objectIdLength: blob.length })));
     if (patch === null) return stale("Cannot compare the original and current file.", currentPath);
     let shift = 0;
     for (const match of patch.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {

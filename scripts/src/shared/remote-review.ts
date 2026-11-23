@@ -9,6 +9,7 @@ import { jsonBytes, parseJson } from "./json.js";
 import { hasFile, readPublishedArtifact, replaceArtifactDirectory, type ArtifactFiles, type GitRunner } from "./artifact-store.js";
 import { isDocument } from "./schema-validation.js";
 import { reviewEnvironment } from "./review-context.js";
+import { diffTree, FIND_RENAMES } from "./diff-settings.js";
 import { SUBPROCESS_MAX_BUFFER } from "./subprocess.js";
 import { MAX_EVIDENCE_ATTACHMENT_BYTES, MAX_EVIDENCE_TOTAL_BYTES, sha256Hex } from "./evidence.js";
 
@@ -42,7 +43,9 @@ function branchName(root: string, name: string, run = git) {
   return name;
 }
 function files(root: string, base: string, head: string) {
-  const fields = git(root, ["diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "-M", base, head]).split("\0");
+  // The stage inventory's settings, so the files are those a local review of the range lists.
+  const command = diffTree(["--name-status", "-z", ...FIND_RENAMES, base, head, "--"], { objectIdLength: head.length });
+  const fields = sourceGit(root, [...checkoutRepository(root), ...command.args], command.env).split("\0");
   const result = [];
   for (let i = 0; fields[i];) {
     const status = fields[i++], oldPath = fields[i++], renamed = status.startsWith("R"), file = renamed ? fields[i++] : oldPath;

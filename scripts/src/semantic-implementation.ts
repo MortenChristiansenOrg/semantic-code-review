@@ -50,6 +50,8 @@ import {
 import { fail } from "./shared/errors.js";
 import { factCache, withValidationContext } from "./shared/validation-context.js";
 import { git, gitRaw, type GitOptions, type GitRawOptions } from "./shared/git.js";
+import { diffTree, FIND_RENAMES, porcelainDiff } from "./shared/diff-settings.js";
+import { patchSections } from "./shared/line-anchors.js";
 import { parseJson, readJsonInput } from "./shared/json.js";
 import {
   changedFiles,
@@ -434,37 +436,17 @@ function diffChangeShape(root: string, parent: string, commit: string, file: Fil
 
 function readDiffChangeShape(root: string, parent: string, commit: string, file: FileChange): DiffChangeShape {
   const paths = [...new Set([file.previousPath, file.path].filter((value): value is string => Boolean(value)))];
-  const patch = gitRaw(
-    [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "--no-ext-diff",
-      "--find-renames=50%",
-      "--unified=0",
-      parent,
-      commit,
-      "--",
-      ...paths,
-    ],
-    { cwd: root },
-  );
-  const hunks: DiffHunk[] = [];
-  for (const line of patch.split(/\r?\n/)) {
-    const match = line.match(
-      /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
-    );
-    if (!match) continue;
-    hunks.push({
-      oldStart: Number(match[1]),
-      oldCount: match[2] === undefined ? 1 : Number(match[2]),
-      newStart: Number(match[3]),
-      newCount: match[4] === undefined ? 1 : Number(match[4]),
-    });
-  }
+  // The viewer's patch settings, so selectors name the hunks it shows. A path
+  // also selects the files below a directory of that name, which Git could
+  // pair with the file as a rename: renames are found only for a file the
+  // inventory renames, and only the file's own section counts.
+  const renames = file.kind === "renamed" ? FIND_RENAMES : ["--no-renames"];
+  const command = diffTree(["-p", "--unified=0", ...renames, parent, commit, "--", ...paths], { objectIdLength: commit.length });
+  const own = patchSections(gitRaw(command.args, { cwd: root, env: command.env }))
+    .filter((section) => (section.newPath || section.oldPath) === file.path);
   return {
-    binary: /(?:Binary files|GIT binary patch)/.test(patch),
-    hunks,
+    binary: own.some((section) => section.binary),
+    hunks: own.flatMap((section) => section.hunks),
   };
 }
 
@@ -3410,8 +3392,9 @@ function abortRestack(workspace: Workspace): void {
 }
 
 function changedPathNames(root: string, from: string, to: string): string[] {
-  const output = git(["diff", "--name-only", from, to, "--"], { cwd: root });
-  return output ? output.split(/\r?\n/).filter(Boolean) : [];
+  const command = diffTree(["--name-only", "-z", "--no-renames", from, to, "--"], { objectIdLength: to.length });
+  // Bytes, since text output is trimmed and a path can start with white space.
+  return gitRaw(command.args, { cwd: root, env: command.env, encoding: "buffer" }).toString("utf8").split("\0").filter(Boolean);
 }
 
 function lastStageHead(artifact: Artifact): string {
@@ -3887,8 +3870,9 @@ function landingRecord(root: string, subject: LandingSubject, landed: string | u
 }
 
 /** Patch IDs of the commits a `git log -p` range lists, oldest first. */
-function commitPatchIds(root: string, range: string[]): Array<{ commit: string; patchId: string }> {
-  const log = gitRawBuffer(["log", "--no-merges", "--no-renames", "--no-ext-diff", "--no-textconv", "--reverse", "-p", "--format=commit %H", ...range], { cwd: root });
+function commitPatchIds(root: string, range: string[], objectIdLength: number): Array<{ commit: string; patchId: string }> {
+  const command = porcelainDiff("log", ["--no-merges", "--no-renames", "--reverse", "-p", "--format=commit %H", ...range], { objectIdLength });
+  const log = gitRawBuffer(command.args, { cwd: root, env: command.env });
   if (log.length === 0) return [];
   const ids = new Map(gitRaw(["patch-id", "--stable"], { cwd: root, input: log }).split(/\r?\n/).filter(Boolean).map((line) => {
     const [patchId, commit] = line.split(" ");
@@ -3916,13 +3900,14 @@ function matchingLanding(root: string, subject: LandingSubject): string | null {
   const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${subject.targetBranch}^{commit}`], { cwd: root });
   if (!targetHead) return null;
   // The most recent commits only, so a long-lived archive stays quick to check.
-  const candidates = commitPatchIds(root, ["--max-count=1000", targetHead, `^${subject.finalHeadRevision}`, `^${subject.baseRevision}`]);
+  const candidates = commitPatchIds(root, ["--max-count=1000", targetHead, `^${subject.finalHeadRevision}`, `^${subject.baseRevision}`], subject.finalHeadRevision.length);
   if (candidates.length === 0) return null;
-  const cumulative = gitRawBuffer(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", subject.baseRevision, subject.finalHeadRevision, "--"], { cwd: root });
+  const command = diffTree(["-p", "--no-renames", subject.baseRevision, subject.finalHeadRevision, "--"], { objectIdLength: subject.finalHeadRevision.length });
+  const cumulative = gitRawBuffer(command.args, { cwd: root, env: command.env });
   const cumulativeId = cumulative.length === 0 ? undefined : gitRaw(["patch-id", "--stable"], { cwd: root, input: cumulative }).split(" ")[0];
   const squash = candidates.find((candidate) => candidate.patchId === cumulativeId);
   if (squash) return squash.commit;
-  const own = commitPatchIds(root, [`${subject.baseRevision}..${subject.finalHeadRevision}`]).map((entry) => entry.patchId);
+  const own = commitPatchIds(root, [`${subject.baseRevision}..${subject.finalHeadRevision}`], subject.finalHeadRevision.length).map((entry) => entry.patchId);
   if (own.length === 0) return null;
   for (let start = 0; start + own.length <= candidates.length; start++) {
     const run = candidates.slice(start, start + own.length);

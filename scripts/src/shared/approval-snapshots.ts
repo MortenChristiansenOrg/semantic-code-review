@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import { assertReviewContext, runReviewCommand, type ReviewContext } from "./review-context.js";
 import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
+import { porcelainDiff } from "./diff-settings.js";
 import { capturedOutput, exitStatus, isRecord, isStringArray, stringField, type JsonRecord } from "./narrow.js";
 import type { ApiSuccess, ApprovalComparisonResponse, ApprovalFileEndpoint, ApprovalSnapshotResponse, DiffLine, DiffMode } from "./viewer-protocol.js";
 
@@ -153,7 +154,10 @@ export function compareApprovalSnapshot(context: ReviewContext, snapshotId: stri
       const oldFile = path.join(temporary, "approved"), newFile = path.join(temporary, "current");
       fs.writeFileSync(oldFile, comparedBytes); fs.writeFileSync(newFile, currentBytes);
       let patch: string;
-      try { patch = git(context, ["-c", "color.ui=false", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile]).toString("utf8"); }
+      // The settings of the viewer's diffs, so the lines read the same whatever the user's Git configuration.
+      const command = porcelainDiff("diff", ["--no-index", "--text", mode === "full" ? "-U2147483647" : "-U3", "--", oldFile, newFile],
+        { objectIdLength: current.headRevision.length });
+      try { patch = runReviewCommand(context, "git", command.args, { encoding: null, environment: command.env }).toString("utf8"); }
       catch (error) {
         const stdout = capturedOutput(error, "stdout");
         if (exitStatus(error) !== 1 || !stdout) throw error;

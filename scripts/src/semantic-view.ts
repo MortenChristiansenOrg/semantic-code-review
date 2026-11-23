@@ -61,7 +61,8 @@ import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isFeedbackId, type CodeTarget, type InsightCollection, type Thread } from "./shared/documents.js";
 import { parseJson, readJson } from "./shared/json.js";
 import { activeImplementationId, hasFile, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
-import { git } from "./shared/git.js";
+import { git, gitRaw } from "./shared/git.js";
+import { diffTree, FIND_RENAMES, type DiffCommand } from "./shared/diff-settings.js";
 import { readUnvalidatedImplementation, removedStageFile } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
@@ -119,10 +120,10 @@ function resolveRepositoryRoot(positional: string[]) {
   fail(`no active semantic implementation found for ${start}.`);
 }
 
-function gitCapture(cwd: string, args: string[]): string {
+function gitCapture(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
   return execFileSync("git", args, {
     cwd,
-    env: reviewEnvironment(),
+    env: { ...reviewEnvironment(), ...env },
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: SUBPROCESS_MAX_BUFFER,
@@ -147,15 +148,10 @@ function checkGitPathExists(repoRoot: string, revision: string, filePath: string
 function renamedPathBetween(repoRoot: string, fromRevision: string, toRevision: string, filePath: string): string | null {
   let raw: string;
   try {
-    raw = renameFacts(JSON.stringify([repoRoot, fromRevision, toRevision]), () => gitCapture(repoRoot, [
-      "--no-pager",
-      "diff",
-      "--name-status",
-      "-z",
-      "--find-renames=50%",
-      fromRevision,
-      toRevision,
-    ]));
+    raw = renameFacts(JSON.stringify([repoRoot, fromRevision, toRevision]), () => {
+      const command = diffTree(["--name-status", "-z", ...FIND_RENAMES, fromRevision, toRevision, "--"], { objectIdLength: toRevision.length });
+      return gitCapture(repoRoot, command.args, command.env);
+    });
   } catch {
     return null;
   }
@@ -720,8 +716,14 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
   }
 
   for (const line of src) {
+    if (line.startsWith("diff --git")) {
+      started = false;
+      continue;
+    }
+    // Once inside a hunk, +++/--- and the other header prefixes can be actual source lines.
     if (
-      line.startsWith("diff --git") ||
+      !started && (
+      line.startsWith("index ") ||
       line.startsWith("index ") ||
       line.startsWith("--- ") ||
       line.startsWith("+++ ") ||
@@ -730,11 +732,11 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
       line.startsWith("similarity ") ||
       line.startsWith("rename ") ||
       line.startsWith("old mode") ||
-      line.startsWith("new mode")
+      line.startsWith("new mode"))
     ) {
       continue;
     }
-    if (line.startsWith("Binary files")) {
+    if (!started && line.startsWith("Binary files")) {
       binary = true;
       continue;
     }
@@ -837,18 +839,9 @@ function stageDiffKey(stage: ViewerStage) {
 }
 
 function buildStageStats(repoRoot: string, stage: DiffRange, captureGit: GitCapture = gitCapture): Map<string, FileStats> {
-  const raw = captureGit(repoRoot, [
-    "--no-pager",
-    "diff",
-    "--no-ext-diff",
-    "--find-renames=50%",
-    "--raw",
-    "--numstat",
-    "--no-abbrev",
-    "-z",
-    stage.change.baseRevision,
-    stage.change.headRevision,
-  ]);
+  const command = diffTree(["--raw", "--numstat", "--no-abbrev", "-z", ...FIND_RENAMES, stage.change.baseRevision, stage.change.headRevision, "--"],
+    { objectIdLength: stage.change.headRevision.length });
+  const raw = captureGit(repoRoot, command.args, command.env);
   const stats = new Map<string, FileStats>();
   const fields = raw.split("\0");
   const blobs = new Map<string, Omit<FileStats, "additions" | "deletions" | "binary">>();
@@ -945,19 +938,11 @@ function indexPatchSections(raw: string, expectedPaths: string[]): Map<string, s
 }
 
 function buildStageDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, FileStats>, captureGit: GitCapture = gitCapture): Map<string, ParsedDiff> {
-  const args = (unified: number) => [
-    "-c",
-    "core.quotePath=false",
-    "--no-pager",
-    "diff",
-    "--no-ext-diff",
-    "--find-renames=50%",
-    `-U${unified}`,
-    stage.change.baseRevision,
-    stage.change.headRevision,
-  ];
-  const full = captureGit(repoRoot, args(3));
-  const selector = captureGit(repoRoot, args(0));
+  const command = (unified: number) => diffTree(["-p", `-U${unified}`, ...FIND_RENAMES, stage.change.baseRevision, stage.change.headRevision, "--"],
+    { objectIdLength: stage.change.headRevision.length });
+  const capture = ({ args, env }: DiffCommand) => captureGit(repoRoot, args, env);
+  const full = capture(command(3));
+  const selector = capture(command(0));
   const expectedPaths = stage.change.files.map((file) => file.path);
   const changedPaths = expectedPaths.filter((filePath) => stats.has(filePath));
   const fullByPath = indexPatchSections(full, changedPaths);
@@ -974,10 +959,10 @@ function buildStageDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, 
   );
 }
 
-async function* gitLines(repoRoot: string, args: string[]): AsyncGenerator<string> {
+async function* gitLines(repoRoot: string, { args, env }: DiffCommand): AsyncGenerator<string> {
   const child = spawn("git", args, {
     cwd: repoRoot,
-    env: reviewEnvironment(),
+    env: { ...reviewEnvironment(), ...env },
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -1007,8 +992,11 @@ async function* gitLines(repoRoot: string, args: string[]): AsyncGenerator<strin
 async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
   targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
-  const args = (context: number) => ["-c", "core.quotePath=false", "--no-pager", "diff", "--no-ext-diff", "--find-renames=50%", `-U${context}`,
-    stage.change.baseRevision, stage.change.headRevision, "--", ...paths];
+  // A path also selects the files below a directory of that name, which Git
+  // could pair with the file as a rename; renames are found only for a renamed file.
+  const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
+  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
+    { objectIdLength: stage.change.headRevision.length });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
   let selected = false, previousPath = "";
@@ -1231,7 +1219,8 @@ function changesNothing(root: string, base: string, head: string): boolean {
   if (!lines[0]?.startsWith("tree ")) return false;
   for (const line of lines.slice(1)) { if (!line.startsWith("parent ")) break; parents.push(line.slice("parent ".length)); }
   if (parents.length !== 1 || parents[0] !== base) return false;
-  return git(["--no-replace-objects", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", base, head, "--", ".", ":(exclude).semantic-review"], { cwd: root, allowFailure: true }) !== null;
+  const command = diffTree(["--quiet", "--no-renames", base, head, "--", ".", ":(exclude).semantic-review"], { objectIdLength: head.length, literalPathspecs: false });
+  return gitRaw(command.args, { cwd: root, env: command.env, allowFailure: true }) !== null;
 }
 
 function buildImplementationData(repoRoot: string, statsForStage: (stage: ViewerStage) => Map<string, FileStats>, snapshot: ViewerRevision, captureGit: GitCapture,

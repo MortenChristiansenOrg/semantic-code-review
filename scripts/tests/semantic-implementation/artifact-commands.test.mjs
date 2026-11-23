@@ -10,6 +10,7 @@ import {
   initializeImplementation,
   organizeStage,
 } from "../helpers/repository.mjs";
+import { HOSTILE_GIT, PATH_PREFIX_CHANGES, pathPrefixStage, submoduleAndRenamesStage, UPDATE_AND_RENAMES, withHostileGit } from "../helpers/hostile-git.mjs";
 import { readArtifact } from "../../src/shared/artifact-store.ts";
 import { changedFilesOfRanges, readUnvalidatedImplementation } from "../../src/shared/implementation.ts";
 
@@ -1116,6 +1117,35 @@ test("a stage's inventory is the same alone and batched whatever the user's Git 
   const ranges = [[base, lower], [lower, upper]];
   assert.deepEqual(changedFilesOfRanges(repository.root, ranges), expected);
   assert.deepEqual(ranges.map((range) => changedFilesOfRanges(repository.root, [range])[0]), expected);
+});
+
+test("stage plan generates the selectors of a stage's inventory as the viewer shows them, whatever the user's Git configuration", async (t) => {
+  const repository = submoduleAndRenamesStage(t);
+  const shape = (...hunks) => ({ binary: false, hunks: hunks.map(([oldStart, oldCount, newStart, newCount]) => ({ oldStart, oldCount, newStart, newCount })) });
+  const expected = [
+    { ...UPDATE_AND_RENAMES[0], selectors: shape([40, 0, 41, 1]) },
+    { ...UPDATE_AND_RENAMES[1], selectors: shape([1, 1, 1, 1], [40, 0, 41, 1]) },
+    { ...UPDATE_AND_RENAMES[2], selectors: shape([1, 1, 1, 1]) },
+    { ...UPDATE_AND_RENAMES[3], selectors: shape([40, 0, 41, 1]) },
+  ];
+  for (const group of Object.keys(HOSTILE_GIT)) {
+    await withHostileGit(repository.root, group, () => {
+      const plan = JSON.parse(repository.semantic("stage", "plan", "--finalized", "--stage", "implementation", "--selectors"));
+      assert.deepEqual(plan.files, expected, group);
+    });
+  }
+});
+
+test("stage plan gives a file the hunks of its own diff, not those of files below a directory of the same name", (t) => {
+  const repository = pathPrefixStage(t);
+  const hunks = (...items) => ({ binary: false, hunks: items.map(([oldStart, oldCount, newStart, newCount]) => ({ oldStart, oldCount, newStart, newCount })) });
+  const plan = JSON.parse(repository.semantic("stage", "plan", "--stage", "implementation", "--selectors"));
+  assert.deepEqual(plan.files, PATH_PREFIX_CHANGES.map((file) => ({ ...file, selectors: hunks(...{
+    "gone.txt": [[1, 10, 0, 0]],
+    "gone.txt/child.txt": [],
+    "old.txt/child.txt": [[0, 0, 1, 1]],
+    "renamed.txt": [],
+  }[file.path]) })));
 });
 
 test("a base revision that is not a commit ID never reaches Git", (t) => {
