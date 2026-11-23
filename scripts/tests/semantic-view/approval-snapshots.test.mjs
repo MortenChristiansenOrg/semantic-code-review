@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { createRepository, initializeImplementation } from '../helpers/repository.mjs';
-import { registerReview, captureReviewContext, captureApprovalSnapshot, compareApprovalSnapshot, patchReviewState, reviewDirectory } from '../../src/semantic-view.ts';
+import { registerReview, captureReviewContext, captureApprovalSnapshot, captureApprovalSnapshots, compareApprovalSnapshot, patchReviewState, reviewDirectory } from '../../src/semantic-view.ts';
 
 function setup(t) {
   const repo = createRepository(t, 'approved-snapshot-'); initializeImplementation(repo);
@@ -36,6 +36,36 @@ test('approved content survives loss of the original Git objects and compares ac
   const chained = compareApprovalSnapshot(context, saved.snapshotId, { ...endpoint(repo, undefined, 'third.txt'), previousPath: 'renamed.txt' });
   assert.equal(chained.approved.path, 'code.txt'); assert.equal(chained.current.path, 'third.txt');
   assert.throws(() => compareApprovalSnapshot(context, saved.snapshotId, endpoint(repo, undefined, 'unrelated.txt')), /another file review/);
+});
+
+test('a batch retains each file as a single capture would, and a file that cannot be read fails alone', (t) => {
+  const { repo, context } = setup(t);
+  const base = repo.commitFile('old name.txt', 'before\n', 'Base');
+  // Enough long paths that listing them takes more than one ls-tree run.
+  const many = Array.from({ length: 300 }, (_, i) => `nested/${'long-directory-name-'.repeat(3)}/file-${i}.txt`);
+  for (const file of many) fs.mkdirSync(path.join(repo.root, path.dirname(file)), { recursive: true }), fs.writeFileSync(path.join(repo.root, file), `content ${file}\n`);
+  repo.git('add', '.'); repo.git('mv', 'old name.txt', 'new name.txt');
+  fs.writeFileSync(path.join(repo.root, 'copy.txt'), 'shared\n'); fs.writeFileSync(path.join(repo.root, 'same.txt'), 'shared\n');
+  fs.writeFileSync(path.join(repo.root, 'binary.bin'), Buffer.from([0, 1, 2]));
+  repo.git('add', '.'); repo.git('commit', '-m', 'Head');
+  const head = repo.git('rev-parse', 'HEAD');
+  const at = (file, extra = {}) => ({ ...endpoint(repo, head, file), baseRevision: base, ...extra });
+  const endpoints = [at('new name.txt', { previousPath: 'old name.txt' }), at('copy.txt'), at('same.txt'), at('binary.bin'), at('absent.txt'),
+    at('code.txt', { headRevision: '0'.repeat(40) }), ...many.map((file) => at(file))];
+  const results = captureApprovalSnapshots(context, endpoints);
+  assert.equal(results.length, endpoints.length);
+  assert.match(results[5].error, /0{40}/);
+  assert.ok(results.every((result, index) => index === 5 || /^[a-f0-9]{32}$/.test(result.snapshotId)));
+  const stored = (result) => JSON.parse(fs.readFileSync(path.join(reviewDirectory(context.reviewId), 'snapshots', result.snapshotId + '.json'), 'utf8'));
+  [0, 1, 2, 3, 4, endpoints.length - 1].forEach((index) => {
+    const item = endpoints[index], batched = stored(results[index]), single = stored(captureApprovalSnapshot(context, item));
+    assert.deepEqual({ ...batched, id: '', createdAt: '' }, { ...single, id: '', createdAt: '' }, item.path);
+  });
+  assert.equal(stored(results[0]).baseIdentity, `100644 blob ${repo.git('rev-parse', `${base}:old name.txt`)}`);
+  assert.equal(Buffer.from(stored(results[2]).content.bytes, 'base64').toString(), 'shared\n');
+  assert.equal(stored(results[3]).content.binary, true);
+  assert.equal(stored(results[4]).content.exists, false);
+  assert.equal(Buffer.from(stored(results.at(-1)).content.bytes, 'base64').toString(), `content ${many.at(-1)}\n`);
 });
 
 test('comparisons distinguish added, deleted, empty, and binary file states', (t) => {
