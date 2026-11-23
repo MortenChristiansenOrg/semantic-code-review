@@ -694,6 +694,26 @@ test("a removed line of a renamed file is named by the file's path in the stage"
   assert.deepEqual(lineViews(repository), { agent: { "removed-line": current }, reviewer: { "removed-line": current } });
 });
 
+test("a removed line of a renamed file stays on its line after a fold, for the agent and the viewer alike", (t) => {
+  const repository = renamingStage(t);
+  addRenamedLineThread(repository, "removed-line", "new.txt");
+  const head = () => repository.artifact.stage("implementation").change.headRevision;
+  const written = head();
+
+  // A fold that leaves the file as it was gives the stage a new head only.
+  repository.commitFile("notes.txt", "unrelated\n", "Add notes");
+  repository.semantic("restack", "--from", "implementation");
+  assert.notEqual(head(), written);
+  const current = { stale: false, currentLine: 2, path: "new.txt" };
+  assert.deepEqual(lineViews(repository), { agent: { "removed-line": current }, reviewer: { "removed-line": current } });
+
+  // A correction keeps the line, so the stage no longer removes it.
+  repository.commitFile("new.txt", Array.from({ length: 10 }, (_, index) => `line ${index + 1}\n`).join("") + "line 11\n", "Keep the second line");
+  repository.semantic("restack", "--from", "implementation");
+  const stale = { stale: true, currentLine: undefined, path: "new.txt" };
+  assert.deepEqual(lineViews(repository), { agent: { "removed-line": stale }, reviewer: { "removed-line": stale } });
+});
+
 /** Adds a thread on the removed second line as earlier versions stored it: by the file's previous path. */
 function addStoredEarlier(repository, filePath, previousPath) {
   addRenamedLineThread(repository, "stored-earlier", filePath);

@@ -3,7 +3,7 @@
 // stage's content stays the same, so the head says nothing about one line. The
 // line is followed through Git's diff from the snapshot the thread is anchored
 // to; the stored anchor itself never changes.
-import { diffTree } from "./diff-settings.js";
+import { diffTree, FIND_RENAMES } from "./diff-settings.js";
 import { gitRaw } from "./git.js";
 
 /** The immutable anchor of a line thread. */
@@ -176,10 +176,14 @@ const anchoredName = (anchor: LineAnchor) => anchor.side === "new" ? `${anchor.s
  * While the stage head is the anchored one, the line is where it was written.
  * Otherwise the line is followed by diffs of one path at a time, so each result
  * depends only on its own input, as the viewer's diff shows lines (see
- * diff-settings.ts). The removed lines of a file the
- * stage renames are not followed. Superseded heads stay reachable as parents of
- * the artifact snapshot; one that cannot be read leaves its line without a row.
- * Inputs without a cached result are read together, with two Git processes.
+ * diff-settings.ts). A removed line of a file the stage renames is counted in
+ * the file's previous path. It is followed along that path while the anchored
+ * head renamed the file from it too, and has a row while the stage's diff,
+ * which pairs the two paths as its inventory does, still removes it.
+ * Superseded heads stay reachable as parents of the artifact snapshot; one that
+ * cannot be read leaves its line without a row. Inputs without a cached result
+ * are read together, with two Git processes, and a third for removed lines of
+ * renamed files.
  */
 export function locateLineAnchors(
   root: string,
@@ -194,7 +198,6 @@ export function locateLineAnchors(
     if (!input.file) return;
     // A thread is written on a row of the stage's diff at its head.
     if (input.anchor.stageHead === input.stage.headRevision) { results[index] = input.anchor.line; return; }
-    if (input.anchor.side === "old" && input.file?.previousPath) return;
     const cached = cache?.get(keys[index]);
     if (cached !== undefined) results[index] = cached;
     else pending.push(index);
@@ -210,9 +213,16 @@ export function locateLineAnchors(
   return results;
 }
 
+/** Whether an input is a removed line of a file the stage renames. */
+const renamedOld = (input: LineAnchorInput) => input.anchor.side === "old" && Boolean(input.file?.previousPath);
+
 /** Locates the inputs at `indexes`; undefined where Git could not answer. */
 function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], runGit: LineAnchorGit): (number | null | undefined)[] {
-  const names = [...new Set(indexes.map((index) => anchoredName(inputs[index].anchor)))];
+  const anchoredHead = (anchor: LineAnchor) => `${anchor.stageHead}^{commit}`;
+  const names = [...new Set(indexes.flatMap((index) => {
+    const { anchor } = inputs[index];
+    return renamedOld(inputs[index]) ? [anchoredName(anchor), anchoredHead(anchor)] : [anchoredName(anchor)];
+  }))];
   // Replacement refs would name another parent than the diff below reads.
   const resolvedOutput = runGit(["--no-replace-objects", "cat-file", "--batch-check=%(objectname) %(objecttype)"], `${names.join("\n")}\n`);
   if (resolvedOutput === null) return indexes.map(() => undefined);
@@ -222,32 +232,55 @@ function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], 
     if (type === "commit" && OBJECT_ID.test(id) && names[index]) resolved.set(names[index], id);
   });
   // Each pair is diffed once; diff-tree reads a commit and then its parent.
-  const pairs: string[] = [], paths = new Set<string>();
-  const pairIndex = (from: string, to: string) => {
+  const pairs: string[] = [], renamePairs: string[] = [], paths = new Set<string>();
+  const pairIndex = (list: string[], from: string, to: string) => {
     const pair = `${to} ${from}`;
-    const index = pairs.indexOf(pair);
-    return index < 0 ? pairs.push(pair) - 1 : index;
+    const index = list.indexOf(pair);
+    return index < 0 ? list.push(pair) - 1 : index;
   };
-  const plans = indexes.map((index) => {
+  type Plan = { current: number; anchored: number | null }
+    | { previousPath: string; anchored: number | null; renamedThen: number; renamedNow: number };
+  const plans = indexes.map((index): Plan | null => {
     const { anchor, stage, file } = inputs[index];
     const from = resolved.get(anchoredName(anchor));
     if (!from) return null;
+    const to = anchor.side === "new" ? stage.headRevision : stage.baseRevision;
+    if (renamedOld(inputs[index])) {
+      const head = resolved.get(anchoredHead(anchor));
+      if (!head) return null;
+      // The line is counted in the previous path, which the stage's diff pairs with the file.
+      const previousPath = file?.previousPath ?? "";
+      paths.add(previousPath);
+      return { previousPath, anchored: from === to ? null : pairIndex(pairs, from, to),
+        renamedThen: pairIndex(renamePairs, from, head), renamedNow: pairIndex(renamePairs, stage.baseRevision, stage.headRevision) };
+    }
     paths.add(anchor.path);
     if (file?.previousPath) paths.add(file.previousPath);
-    const to = anchor.side === "new" ? stage.headRevision : stage.baseRevision;
-    return { current: pairIndex(stage.baseRevision, stage.headRevision), anchored: from === to ? null : pairIndex(from, to) };
+    return { current: pairIndex(pairs, stage.baseRevision, stage.headRevision), anchored: from === to ? null : pairIndex(pairs, from, to) };
   });
+  const objectIdLength = inputs[indexes[0]].stage.headRevision.length;
   // Without rename detection, a path's diff does not depend on the other paths.
-  const command = diffTree(["--stdin", "--always", "-p", "-U0", "--no-renames", "--full-index", "--", ...paths],
-    { objectIdLength: inputs[indexes[0]].stage.headRevision.length });
-  const output = pairs.length ? runGit(command.args, `${pairs.join("\n")}\n`, command.env) : "";
-  const parsedBlocks = output === null ? null : parseBlocks(output);
-  const blocks = parsedBlocks && parsedBlocks.length === pairs.length ? parsedBlocks : null;
+  const command = diffTree(["--stdin", "--always", "-p", "-U0", "--no-renames", "--full-index", "--", ...paths], { objectIdLength });
+  const blocks = readBlocks(runGit, command, pairs);
+  // Renames are detected over the whole tree, as the stage inventory detects
+  // them; only renamed files are written.
+  const renameCommand = diffTree(["--stdin", "--always", "-p", "-U0", ...FIND_RENAMES, "--diff-filter=R", "--full-index"], { objectIdLength });
+  const renameBlocks = readBlocks(runGit, renameCommand, renamePairs);
   return indexes.map((index, position) => {
     const plan = plans[position];
     if (!plan) return null;
     if (!blocks) return undefined;
     const { anchor, file } = inputs[index];
+    if ("previousPath" in plan) {
+      if (!renameBlocks) return undefined;
+      const renamed = (block: Section[]) => block.find((item) => item.newPath === anchor.path && item.oldPath === plan.previousPath);
+      // The anchored line was counted in the same file.
+      if (!renamed(renameBlocks[plan.renamedThen])) return null;
+      const line = plan.anchored === null ? anchor.line : followLine(blocks[plan.anchored], plan.previousPath, anchor.line);
+      const shown = renamed(renameBlocks[plan.renamedNow]);
+      if (line === null || !shown || shown.binary) return null;
+      return shown.hunks.some((hunk) => line >= hunk.oldStart && line < hunk.oldStart + hunk.oldCount) ? line : null;
+    }
     const shown = shownSection(blocks[plan.current], anchor.path, file?.previousPath);
     // An added file has no old side, a deleted one no new side.
     if (!shown || !(anchor.side === "new" ? shown.newPath : shown.oldPath)) return null;
@@ -256,6 +289,15 @@ function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], 
     // Old rows are the lines the stage removes.
     return shown.hunks.some((hunk) => line >= hunk.oldStart && line < hunk.oldStart + hunk.oldCount) ? line : null;
   });
+}
+
+/** The file sections of each diffed pair, read with one Git process; null
+ * when Git failed. */
+function readBlocks(runGit: LineAnchorGit, command: { args: string[]; env: NodeJS.ProcessEnv }, pairs: readonly string[]): Section[][] | null {
+  if (!pairs.length) return [];
+  const output = runGit(command.args, `${pairs.join("\n")}\n`, command.env);
+  const blocks = output === null ? null : parseBlocks(output);
+  return blocks && blocks.length === pairs.length ? blocks : null;
 }
 
 /** The section of the stage's current diff for the file at `filePath`, while
