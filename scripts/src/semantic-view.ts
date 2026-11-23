@@ -62,7 +62,7 @@ import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isF
 import { parseJson, readJson } from "./shared/json.js";
 import { activeImplementationId, hasFile, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
 import { git, gitRaw } from "./shared/git.js";
-import { diffTree, FIND_RENAMES, type DiffCommand } from "./shared/diff-settings.js";
+import { diffTree, FIND_RENAMES, porcelainDiff, type DiffCommand } from "./shared/diff-settings.js";
 import { readUnvalidatedImplementation, removedStageFile } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
@@ -789,8 +789,8 @@ function parseDiffPatch(raw: string, selectorRaw: string, stats: FileStats | und
   };
 }
 
-/** Files follow their last occurrence in the ordered review, independently of
- * intervening stages. */
+/** Each file is labelled with its last occurrence in the ordered review,
+ * independently of intervening stages (see `shownStageFiles`). */
 function readViewerStages(artifact: ViewerArtifact): ViewerStage[] {
   const stages = artifact.manifest.stages.map((id) => artifact.stage(id));
   const files = shownStageFiles(stages);
@@ -802,42 +802,27 @@ interface DiffRange {
   change: { baseRevision: string; headRevision: string };
 }
 
-/** Files diffed over one range; a file's own base overrides the range's. */
-interface DiffGroup extends DiffRange {
-  change: { baseRevision: string; headRevision: string; files: { path: string; baseRevision?: string }[] };
-}
-
-function fileDiffGroups(stage: DiffGroup): DiffGroup[] {
-  const groups = new Map<string, DiffGroup["change"]["files"]>();
-  for (const file of stage.change.files) {
-    const base = file.baseRevision || stage.change.baseRevision;
-    let group = groups.get(base);
-    if (!group) groups.set(base, group = []);
-    group.push(file);
-  }
-  return [...groups].map(([baseRevision, files]) => ({ change: { ...stage.change, baseRevision, files } }));
-}
-function stageFileStats(repoRoot: string, stage: DiffGroup, captureGit: GitCapture): Map<string, FileStats> {
-  const stats = new Map<string, FileStats>();
-  for (const group of fileDiffGroups(stage)) {
-    const grouped = buildStageStats(repoRoot, group, captureGit);
-    for (const file of group.change.files) {
-      const fileStats = grouped.get(file.path);
-      if (fileStats) stats.set(file.path, fileStats);
-    }
-  }
-  return stats;
-}
-function stageFileDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, FileStats>, captureGit: GitCapture): Map<string, ParsedDiff> {
-  const diffs = new Map<string, ParsedDiff>();
-  for (const group of fileDiffGroups(stage)) for (const [file, diff] of buildStageDiffs(repoRoot, group, stats, captureGit)) diffs.set(file, diff);
-  return diffs;
+/** A stage with the files its diff shows. */
+interface DiffStage extends DiffRange {
+  change: { baseRevision: string; headRevision: string; files: { path: string }[] };
 }
 
 function stageDiffKey(stage: ViewerStage) {
   return JSON.stringify([stage.id, stage.change.baseRevision, stage.change.headRevision, stage.change.files.map((file) => [file.path, file.previousPath, file.baseRevision])]);
 }
 
+// A file's comparison: what the viewer shows of it, counts and fingerprints.
+//
+// Every file of a stage is compared over the stage's own range, from its base
+// to its head, with the inventory's rename detection: the range and settings
+// the inventory was derived from, so a file is paired with the file the
+// inventory says it was renamed from, and any other file with itself. The
+// review shows a file compared with the head of the last stage that changed it
+// (`ViewerFile.baseRevision`); no stage in between changed the file's old path,
+// so while each stage builds on the head of the one below, its old side there
+// is the same as at the stage's base. A diff from that earlier head would see
+// the files intervening stages added or deleted, and Git could pair the file
+// with one of them instead.
 function buildStageStats(repoRoot: string, stage: DiffRange, captureGit: GitCapture = gitCapture): Map<string, FileStats> {
   const command = diffTree(["--raw", "--numstat", "--no-abbrev", "-z", ...FIND_RENAMES, stage.change.baseRevision, stage.change.headRevision, "--"],
     { objectIdLength: stage.change.headRevision.length });
@@ -937,7 +922,7 @@ function indexPatchSections(raw: string, expectedPaths: string[]): Map<string, s
   return indexed;
 }
 
-function buildStageDiffs(repoRoot: string, stage: DiffGroup, stats: Map<string, FileStats>, captureGit: GitCapture = gitCapture): Map<string, ParsedDiff> {
+function buildStageDiffs(repoRoot: string, stage: DiffStage, stats: Map<string, FileStats>, captureGit: GitCapture = gitCapture): Map<string, ParsedDiff> {
   const command = (unified: number) => diffTree(["-p", `-U${unified}`, ...FIND_RENAMES, stage.change.baseRevision, stage.change.headRevision, "--"],
     { objectIdLength: stage.change.headRevision.length });
   const capture = ({ args, env }: DiffCommand) => captureGit(repoRoot, args, env);
@@ -988,19 +973,37 @@ async function* gitLines(repoRoot: string, { args, env }: DiffCommand): AsyncGen
   }
 }
 
+/** The modes of a regular file, an executable and a symbolic link, whose objects are blobs. */
+const FILE_MODES = new Set(["100644", "100755", "120000"]);
+
 // Stream one page rather than buffering unrelated files or a full large patch.
 async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
   targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
+  // A renamed file is diffed as the two files its stage's diff paired: named by
+  // path, Git would detect renames again among the paths, and a path also
+  // selects the files below a directory of that name. A submodule's object is
+  // a commit, not a file, so a renamed submodule is diffed by its paths.
+  const renamed = file.previousPath && stats?.kind === "renamed" && stats.oldBlob && stats.newBlob ? stats : null;
+  // A file moved unchanged, or one whose stage diff found it binary, shows no lines.
+  if (renamed && (renamed.binary || (renamed.oldBlob === renamed.newBlob && renamed.oldMode === renamed.newMode))) {
+    return { lines: [], additions: renamed.additions, deletions: renamed.deletions, binary: renamed.binary,
+      truncated: false, nextOffset: null, offset, mode };
+  }
+  const pair = renamed && [renamed.oldMode, renamed.newMode].every((item) => item !== undefined && FILE_MODES.has(item)) ? renamed : null;
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
-  // A path also selects the files below a directory of that name, which Git
-  // could pair with the file as a rename; renames are found only for a renamed file.
   const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
-  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
-    { objectIdLength: stage.change.headRevision.length });
+  // Attributes would match the object IDs as paths, so the pair is text, as its
+  // stage diff found it.
+  const args = (context: number) => pair
+    ? porcelainDiff("diff", [`-U${context}`, "--text", pair.oldBlob ?? "", pair.newBlob ?? "", "--"], { objectIdLength: stage.change.headRevision.length })
+    : diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
+      { objectIdLength: stage.change.headRevision.length });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-  let selected = false, previousPath = "";
+  // The diff of a pair holds only that file.
+  let selected = Boolean(pair), previousPath = "";
   const selectSection = (line: string) => {
+    if (pair) return;
     if (line.startsWith("diff --git ")) { selected = false; previousPath = ""; }
     else if (line.startsWith("--- ")) previousPath = decodePatchPath(line.slice(4));
     else if (line.startsWith("+++ ")) selected = (decodePatchPath(line.slice(4)) || previousPath) === file.path;
@@ -1177,9 +1180,11 @@ function buildInsights(stage: InsightLists & DiffRange, repoRoot: string): Wire.
   });
 }
 
-function fileRevision(stage: DiffRange, file: { path: string; previousPath?: string; baseRevision?: string }, stats: FileStats | undefined): string {
+/** The fingerprint of a file's comparison (see `buildStageStats`): a line
+ * draft or approval made on it holds while it is the same. */
+function fileRevision(stage: DiffRange, file: { path: string; previousPath?: string }, stats: FileStats | undefined): string {
   const hash = createHash("sha256")
-    .update(stats?.oldBlob || file.baseRevision || stage.change.baseRevision)
+    .update(stats?.oldBlob || stage.change.baseRevision)
     .update("\0")
     .update(stats?.newBlob || stage.change.headRevision)
     .update("\0")
@@ -1343,7 +1348,7 @@ export function createViewerDataSource(
     let record = stageCache.get(key);
     if (!record) {
       record = {
-        stats: stageFileStats(repoRoot, stage, captureGit),
+        stats: buildStageStats(repoRoot, stage, captureGit),
         diffs: null,
         stage,
         pages: new Map(),
@@ -1361,6 +1366,10 @@ export function createViewerDataSource(
         record.pages.clear();
       }
       record.stage = stage;
+      // The newest record of a stage is the one its latest build used, which
+      // fileDiff looks for first.
+      stageCache.delete(key);
+      stageCache.set(key, record);
     }
     return record;
   };
@@ -1426,7 +1435,8 @@ export function createViewerDataSource(
       if (!file || file.baseRevision !== baseRevision || stage.change.headRevision !== headRevision) throw new Error("File revision changed; reload the viewer.");
       if (!/\.(md|markdown)$/i.test(file.path)) throw new Error("Preview requires a Markdown file.");
       const deleted = stageRecord(stage).stats.get(file.path)?.kind === "deleted";
-      const revision = deleted ? file.baseRevision : stage.change.headRevision;
+      // A deleted file is shown as it was at the stage's base, as its diff shows it.
+      const revision = deleted ? stage.change.baseRevision : stage.change.headRevision;
       const displayedPath = deleted ? file.previousPath || file.path : file.path;
       const resourcePath = targetPath ?? displayedPath;
       if (!resourcePath || resourcePath.includes("\\") || resourcePath.includes("\0") || resourcePath.startsWith("/") || resourcePath.split("/").some((part) => part === ".." || part === "." || !part)) throw new Error("Invalid repository path.");
@@ -1470,7 +1480,7 @@ export function createViewerDataSource(
       const small = stage.change.files.length <= 40 && [...current.stats.values()].reduce((sum, stat) => sum + stat.additions + stat.deletions, 0) <= 2000;
       if (small && mode === "changes" && offset === 0 && !side) {
         try {
-          if (!current.diffs) current.diffs = stageFileDiffs(repoRoot, stage, current.stats, captureGit);
+          if (!current.diffs) current.diffs = buildStageDiffs(repoRoot, stage, current.stats, captureGit);
           const diff = current.diffs.get(filePath);
           if (diff) return { ...diff, truncated: false, nextOffset: diff.truncated ? diff.lines.length : null, mode };
         } catch { /* An unusually wide patch uses the bounded streaming path. */ }
@@ -1478,7 +1488,7 @@ export function createViewerDataSource(
       const key = JSON.stringify([filePath, mode, offset, side, targetLine]);
       let page = current.pages.get(key);
       if (!page) {
-        page = pagedFileDiff(repoRoot, { ...stage, change: { ...stage.change, baseRevision: file.baseRevision } }, file, current.stats.get(filePath), mode, offset, side, targetLine)
+        page = pagedFileDiff(repoRoot, stage, file, current.stats.get(filePath), mode, offset, side, targetLine)
           .catch((error: unknown) => { current.pages.delete(key); throw error; });
         current.pages.set(key, page);
         // Bound retained pages; in-flight consumers retain their own Promise.
@@ -1753,7 +1763,7 @@ export function buildFeedbackTargetData(repoRoot: string): FeedbackTargets {
     implementationId: manifest.implementationId,
     stages: manifest.stages.map((stageId) => {
       const stage = artifact.stage(stageId);
-      const stats = stageFileStats(repoRoot, stage, gitCapture);
+      const stats = buildStageStats(repoRoot, stage);
       return {
         id: stage.id,
         title: stage.title,
@@ -1796,6 +1806,10 @@ function cliErrorMessage(error: unknown): string {
 
 // Upgrade commit-only line snapshots without moving their original anchors.
 // Unavailable history stays unresolved and is conservatively rejected on export.
+// Such drafts were written on pages that diffed a file from its shown base, the
+// snapshot's base, so that range says what the reviewer saw. Where it pairs the
+// file as its stage's own range does, the revision is the file's current one;
+// where Git paired it with another file, the draft is refused.
 export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[]): Note[] {
   return notes.map((note): Note => {
     if (!isRecord(note) || note.kind !== "line") return note;
@@ -2197,7 +2211,8 @@ function approvedFileEndpoint(input: ReceivedApprovalEndpoint, data: Implementat
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
   if (file.revision !== fileRevision || !isDeepStrictEqual(ownership, shownOwnership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
   return { stageId: stage.id, nodeId: ownership.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
-    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+    // The base the file's comparison starts from (see `buildStageStats`).
+    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
 export function registeredReviews(): Wire.ReviewSummary[] {

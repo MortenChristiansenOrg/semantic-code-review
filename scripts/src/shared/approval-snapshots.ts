@@ -162,10 +162,13 @@ function readContent(context: ReviewContext, endpoint: RecordedEndpoint): Conten
   const [file] = headFiles(context, [endpoint]), blob = blobToRead(file);
   return orThrow(contentOf(file, readBlobContents(context, blob ? [blob.id] : [])));
 }
+/** A base file's mode, type and object; empty where the base has no file
+ * there. A directory of that name is not the file. */
+const fileIdentity = (record: string) => record.split(" ")[1] === "tree" ? "" : record;
 /** The tree entry each endpoint's file had at its base, empty when the base lacks it. */
 function baseIdentities(context: ReviewContext, endpoints: readonly RecordedEndpoint[]): (string | Error)[] {
   return entriesAt(context, endpoints, (endpoint) => endpoint.baseRevision, (endpoint) => endpoint.previousPath || endpoint.path)
-    .map((entry) => entry ?? "");
+    .map((entry) => entry === undefined ? "" : entry instanceof Error ? entry : fileIdentity(entry));
 }
 function baseIdentity(context: ReviewContext, endpoint: RecordedEndpoint): string {
   return orThrow(baseIdentities(context, [endpoint])[0]);
@@ -175,7 +178,7 @@ function orThrow<T>(value: T | Error): T {
   return value;
 }
 function approvedBaseIdentity(context: ReviewContext, snapshot: Snapshot): string | null {
-  try { return snapshot.baseIdentity ?? baseIdentity(context, snapshot.endpoint); }
+  try { return snapshot.baseIdentity !== undefined ? fileIdentity(snapshot.baseIdentity) : baseIdentity(context, snapshot.endpoint); }
   // Older snapshots may outlive their original Git objects.
   catch { return null; }
 }

@@ -965,12 +965,31 @@ test("repeated files compare with their last stage across gaps and renames", asy
     const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
     assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['first', 'second']);
   }
+  // The feedback targets and a draft saved before drafts held the file's
+  // revision, compared from the stage's own base, give the file's revision.
+  assert.equal(buildFeedbackTargetData(repository.root).stages[2].files[0].revision, file.revision);
+  const legacy = { kind: 'line', id: `l:${stage.id}:new:1:repeat.txt`, body: 'Check this line', snapshot: { base: file.baseRevision, head: stage.headRevision } };
+  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy])[0].snapshot.fileRevision, file.revision);
   const renameFile = data.stages[3].files[0], lastFile = data.stages[4].files[0];
   assert.equal(renameFile.baseRevision, second); assert.equal(renameFile.previousPath, 'repeat.txt');
   assert.equal(lastFile.baseRevision, renamed); assert.equal(lastFile.previousPath, undefined);
   assert.equal(lastFile.kind, 'modified');
   const diff = await source.fileDiff('last', lastFile.path, lastFile.baseRevision, last);
   assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['second', 'third']);
+});
+
+test("a file's diff follows its stage's base when the base changes back while the head stays", async (t) => {
+  const repository = seededStages(t, { "f.txt": "zero\n" }, { first: writeFile("f.txt", "one\n"), second: writeFile("f.txt", "two\n") });
+  const source = createViewerDataSource(repository.root);
+  const manifest = repository.artifact.readJson("manifest.json");
+  const data = () => implementationFromScript(source.implementationDataScript());
+  const stage = data().stages[1], [file] = stage.files;
+  // Recorded on another base, as after a lower stage's new head, then back.
+  repository.artifact.write("manifest.json", { ...manifest, stages: manifest.stages.map((entry) => entry.id === "second" ? { ...entry, baseRevision: manifest.baseRevision } : entry) });
+  assert.equal(data().stages[1].baseRevision, manifest.baseRevision);
+  repository.artifact.write("manifest.json", manifest);
+  assert.equal(data().stages[1].baseRevision, stage.baseRevision);
+  assert.deepEqual(changedRows(await source.fileDiff("second", "f.txt", file.baseRevision, stage.headRevision)), ["-one", "+two"]);
 });
 
 test("a rename follows its source history when the destination was previously deleted", async (t) => {
@@ -1005,6 +1024,186 @@ test("a rename follows its source history when the destination was previously de
   assert.deepEqual(diff.lines, []);
 });
 
+
+const twentyLines = Array.from({ length: 20 }, (_, index) => `line ${index + 1}\n`);
+const editedLines = twentyLines.map((line, index) => index < 6 ? `edited ${index + 1}\n` : line).join("");
+
+/** Seeds the stages of `changes` on a repository holding the given files;
+ * each change commits its stage's change and returns the paths it changed. */
+function seededStages(t, files, changes) {
+  const repository = createRepository(t);
+  for (const [file, contents] of Object.entries(files)) repository.commitFile(file, contents, `Add ${file}`);
+  initializeImplementation(repository);
+  const [[firstId, first], ...rest] = Object.entries(changes);
+  beginStage(repository);
+  const firstPaths = first(repository);
+  organizeStage(repository);
+  repository.semantic("stage", "finish");
+  const stages = [[firstId, repository.git("rev-parse", "HEAD"), firstPaths], ...rest.map(([id, change]) => {
+    const paths = change(repository);
+    return [id, repository.git("rev-parse", "HEAD"), paths];
+  })];
+  seedStages(repository, stages);
+  repository.feedback("init");
+  return repository;
+}
+
+const removeFile = (file) => (repository) => {
+  repository.git("rm", "--quiet", file);
+  repository.git("commit", "-m", `Remove ${file}`);
+  return [file];
+};
+const writeFile = (file, contents) => (repository) => {
+  repository.commitFile(file, contents, `Write ${file}`);
+  return [file];
+};
+
+/** The changed rows of a diff page, removed lines with "-" and added with "+". */
+const changedRows = (diff) => diff.lines.filter((line) => line.t !== "ctx").map((line) => `${line.t === "add" ? "+" : "-"}${line.s}`);
+
+const renamedLines = twentyLines.map((line, index) => index === 0 ? "edited 1\n" : index === 19 ? "line twenty\n" : line).join("");
+
+// Diffed from the head of the last stage that changed a.txt, the whole tree
+// also holds what the stage in between added or deleted, and Git paired b.txt
+// with that instead of a.txt. In the last case, a diff of the paths a.txt and
+// b.txt alone also selects the file below the directory b.txt, which the last
+// stage moves away.
+for (const [between, files, change, alsoMove = []] of [
+  ["deletes a similar file", { "c.txt": twentyLines.map((line, index) => index === 15 ? "C-only line sixteen\n" : line).join("") }, removeFile("c.txt")],
+  ["adds a copy", {}, writeFile("copy.txt", editedLines)],
+  ["deletes the file at the new path", { "b.txt": "an unrelated file\n" }, removeFile("b.txt")],
+  ["adds a similar file below a directory of the new path", {}, writeFile("b.txt/x.txt", renamedLines.replace("line twenty", "line 20")), ["b.txt/x.txt", "x.txt"]],
+]) test(`a renamed file is compared with the file it was renamed from when a stage in between ${between}`, async (t) => {
+  const repository = seededStages(t, { "a.txt": twentyLines.join(""), ...files }, {
+    first: writeFile("a.txt", editedLines),
+    between: change,
+    last: (repository) => {
+      if (alsoMove.length) {
+        repository.git("mv", ...alsoMove);
+        fs.rmSync(path.join(repository.root, path.dirname(alsoMove[0])), { recursive: true });
+      }
+      repository.git("mv", "a.txt", "b.txt");
+      // Most of the first stage's edit is undone, so b.txt is less like a.txt there.
+      return [...alsoMove.slice(1), ...writeFile("b.txt", renamedLines)(repository)];
+    },
+  });
+  assert.deepEqual(repository.artifact.stage("last").change.files.find((item) => item.path === "b.txt"), { path: "b.txt", kind: "renamed", previousPath: "a.txt" });
+  const source = createViewerDataSource(repository.root);
+  const stages = implementationFromScript(source.implementationDataScript()).stages;
+  const stage = stages.find((item) => item.id === "last");
+  const file = stage.files.find((item) => item.path === "b.txt");
+  const { kind, previousPath, previousStageId, baseRevision, additions, deletions } = file;
+  assert.deepEqual({ kind, previousPath, previousStageId, baseRevision, additions, deletions },
+    { kind: "renamed", previousPath: "a.txt", previousStageId: "first", baseRevision: stages[0].headRevision, additions: 6, deletions: 6 });
+  const expected = [2, 3, 4, 5, 6].map((line) => `-edited ${line}`).concat([2, 3, 4, 5, 6].map((line) => `+line ${line}`), ["-line 20", "+line twenty"]);
+  for (const mode of ["changes", "full"]) {
+    assert.deepEqual(changedRows(await source.fileDiff("last", "b.txt", file.baseRevision, stage.headRevision, mode)), expected, mode);
+  }
+  const implementation = buildFeedbackTargetData(repository.root);
+  assert.equal(implementation.stages.find((item) => item.id === "last").files.find((item) => item.path === "b.txt").revision, file.revision);
+  const snapshot = { base: file.baseRevision, head: stage.headRevision };
+  const note = (side, line, fileRevision) => ({ kind: "line", id: `l:last:${side}:${line}:b.txt`, body: `About ${side} line ${line}.`, clientId: `${side}-${line}`,
+    snapshot: fileRevision === undefined ? snapshot : { ...snapshot, fileRevision } });
+  const result = exportFeedback({ repoRoot: repository.root, implementation }, [note("old", 2, file.revision), note("new", 20, file.revision)]);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.exported.length, 2);
+  // A draft saved before drafts held the file's revision was written where the
+  // file was shown compared with another file, so its line cannot be trusted.
+  const legacy = exportFeedback({ repoRoot: repository.root, implementation }, [note("old", 20)]);
+  assert.equal(legacy.ok, false);
+  assert.match(legacy.skipped[0].reason, /file changed since this line draft was written/);
+});
+
+test("the full view of a file renamed below a directory of its old path shows the rename", async (t) => {
+  const repository = seededStages(t, { "a.txt": twentyLines.join("") }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt", "moved");
+      fs.mkdirSync(path.join(repository.root, "a.txt"));
+      repository.git("mv", "moved", "a.txt/b.txt");
+      return writeFile("a.txt/b.txt", twentyLines.join("").replace("line 20\n", "line twenty\n"))(repository);
+    },
+  });
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const [file] = stage.files;
+  assert.deepEqual([file.path, file.kind, file.previousPath], ["a.txt/b.txt", "renamed", "a.txt"]);
+  for (const mode of ["changes", "full"]) {
+    assert.deepEqual(changedRows(await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode)), ["-line 20", "+line twenty"], mode);
+  }
+});
+
+test("the full view of a file renamed out of a directory of its new path compares it with its own source", async (t) => {
+  const renamed = twentyLines.join("").replace("line 20\n", "line twenty\n");
+  // c.txt is more like the new a.txt than b.txt is, and leaves for outside.txt.
+  const repository = seededStages(t, {
+    "a.txt/b.txt": twentyLines.join("").replace("line 19\n", "line 19 old\n"),
+    "a.txt/c.txt": renamed.replace("line 1\n", "first\n"),
+  }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt/c.txt", "outside.txt");
+      repository.git("mv", "a.txt/b.txt", "moved");
+      fs.rmSync(path.join(repository.root, "a.txt"), { recursive: true });
+      repository.git("mv", "moved", "a.txt");
+      return [...writeFile("a.txt", renamed)(repository), "outside.txt"];
+    },
+  });
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const file = stage.files.find((item) => item.path === "a.txt");
+  assert.deepEqual([file.kind, file.previousPath], ["renamed", "a.txt/b.txt"]);
+  for (const mode of ["changes", "full"]) {
+    assert.deepEqual(changedRows(await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode)),
+      ["-line 19 old", "-line 20", "+line 19", "+line twenty"], mode);
+  }
+});
+
+test("the full view of a renamed file agrees with its stage diff whatever attributes and worktree files name its objects", async (t) => {
+  const repository = seededStages(t, { "a.txt": twentyLines.join("") }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt", "b.txt");
+      return writeFile("b.txt", twentyLines.join("").replace("line 20\n", "line twenty\n"))(repository);
+    },
+  });
+  const views = async () => {
+    const source = createViewerDataSource(repository.root);
+    const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+    const [file] = stage.files;
+    return Promise.all(["changes", "full"].map(async (mode) => {
+      const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
+      return { binary: diff.binary, rows: changedRows(diff) };
+    }));
+  };
+  const [oldBlob, newBlob] = ["HEAD~1:a.txt", "HEAD:b.txt"].map((name) => repository.git("rev-parse", name));
+  // Attributes for the objects' IDs, and untracked files named like them.
+  const attributes = path.join(repository.root, ".git", "info", "attributes");
+  fs.mkdirSync(path.dirname(attributes), { recursive: true });
+  fs.writeFileSync(attributes, `${oldBlob} -diff\n${newBlob} -diff\n`);
+  for (const name of [oldBlob, newBlob]) fs.writeFileSync(path.join(repository.root, name), "untracked\n");
+  const text = { binary: false, rows: ["-line 20", "+line twenty"] };
+  assert.deepEqual(await views(), [text, text]);
+  // Attributes for the paths make the stage diff binary, and so the full view.
+  fs.writeFileSync(attributes, "a.txt -diff\nb.txt -diff\n");
+  const binary = { binary: true, rows: [] };
+  assert.deepEqual(await views(), [binary, binary]);
+});
+
+test("a file added again is not compared with a similar file a stage in between deleted", async (t) => {
+  const similar = twentyLines.map((line, index) => index === 0 ? "first\n" : line).join("");
+  const repository = seededStages(t, { "p.txt": "an unrelated file\n", "q.txt": similar }, {
+    first: removeFile("p.txt"),
+    between: removeFile("q.txt"),
+    last: writeFile("p.txt", similar.replace("line 20\n", "line twenty\n")),
+  });
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages.find((item) => item.id === "last");
+  const [file] = stage.files;
+  const { kind, previousPath, previousStageId, additions, deletions } = file;
+  assert.deepEqual({ kind, previousPath, previousStageId, additions, deletions }, { kind: "added", previousPath: undefined, previousStageId: "first", additions: 20, deletions: 0 });
+  const diff = await source.fileDiff("last", "p.txt", file.baseRevision, stage.headRevision);
+  assert.equal(changedRows(diff).length, 20);
+  assert.ok(changedRows(diff).every((row) => row.startsWith("+")));
+  assert.equal(buildFeedbackTargetData(repository.root).stages.find((item) => item.id === "last").files[0].revision, file.revision);
+});
 
 test("file revisions detect base and head mode changes without blob changes", (t) => {
   const repository = createRepository(t);
