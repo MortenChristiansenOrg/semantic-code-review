@@ -978,6 +978,20 @@ test("repeated files compare with their last stage across gaps and renames", asy
   assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['second', 'third']);
 });
 
+test("a file's diff follows its stage's base when the base changes back while the head stays", async (t) => {
+  const repository = seededStages(t, { "f.txt": "zero\n" }, { first: writeFile("f.txt", "one\n"), second: writeFile("f.txt", "two\n") });
+  const source = createViewerDataSource(repository.root);
+  const manifest = repository.artifact.readJson("manifest.json");
+  const data = () => implementationFromScript(source.implementationDataScript());
+  const stage = data().stages[1], [file] = stage.files;
+  // Recorded on another base, as after a lower stage's new head, then back.
+  repository.artifact.write("manifest.json", { ...manifest, stages: manifest.stages.map((entry) => entry.id === "second" ? { ...entry, baseRevision: manifest.baseRevision } : entry) });
+  assert.equal(data().stages[1].baseRevision, manifest.baseRevision);
+  repository.artifact.write("manifest.json", manifest);
+  assert.equal(data().stages[1].baseRevision, stage.baseRevision);
+  assert.deepEqual(changedRows(await source.fileDiff("second", "f.txt", file.baseRevision, stage.headRevision)), ["-one", "+two"]);
+});
+
 test("a rename follows its source history when the destination was previously deleted", async (t) => {
   const repository = createRepository(t);
   initializeImplementation(repository);

@@ -1359,6 +1359,10 @@ export function createViewerDataSource(
         record.pages.clear();
       }
       record.stage = stage;
+      // The newest record of a stage is the one its latest build used, which
+      // fileDiff looks for first.
+      stageCache.delete(key);
+      stageCache.set(key, record);
     }
     return record;
   };
