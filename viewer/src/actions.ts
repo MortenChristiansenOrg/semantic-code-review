@@ -11,7 +11,7 @@ import { openFileSearch } from "./file-search-dialog";
 import { fileCodeInsights, insightFingerprint, insightReviewState } from "./insights";
 import { activeFileNodeId, approvalEntry, fileById, insightKey, stageOf } from "./lookups";
 import { animateStageToggle, applyNotesFilter, cinemaHolder, collapseThenRender, jumpToElement, toggleCinema } from "./navigation";
-import { refreshRemote, refreshingRemote } from "./polling";
+import { refreshRemote, refreshingRemote, setRefreshNotice } from "./polling";
 import { popOwner, showPop } from "./popover";
 import { render } from "./render";
 import { dismissReplyToast, dismissReplyToasts, showReplyToast, toggleReplyToasts } from "./reply-toasts";
@@ -96,6 +96,8 @@ export function installActions(): void {
       dismissReplyToasts();
     } else if (a === "toggle-reply-toasts") {
       toggleReplyToasts();
+    } else if (a === "dismiss-refresh-notice") {
+      setRefreshNotice(""); render();
     } else if (a === "refresh-reviews") {
       if (!reviewListBusy) void refreshReviews();
     } else if (a === "open-review" || a === "complete-review") {

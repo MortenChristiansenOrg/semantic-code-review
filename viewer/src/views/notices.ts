@@ -73,6 +73,6 @@ export function noticesView(view: NoticesView): TemplateResult {
   const shown = view.approvalErrors.length || view.replies.items.length || view.refresh;
   // The status region stays in the page, so screen readers announce the text it receives.
   return html`<div class="visually-hidden" role="status">${view.replies.announcement}</div>${shown
-    ? html`<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status">${view.refresh}</div>` : nothing}${view.replies.items.length ? replyToasts(view.replies) : nothing}</div>`
+    ? html`<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status"><span>${view.refresh}</span><button type="button" class="review-update-dismiss" data-action="dismiss-refresh-notice" aria-label="Dismiss" data-tooltip="Dismiss">×</button></div>` : nothing}${view.replies.items.length ? replyToasts(view.replies) : nothing}</div>`
     : nothing}`;
 }

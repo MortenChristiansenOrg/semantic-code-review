@@ -56,18 +56,24 @@ export function updateReplyToasts(): void {
   if (toasts.length <= TOAST_GROUP_AFTER) expanded = false;
 }
 
-/** The first line of a reply's text, without its Markdown marks, or of its code when it has only code. */
+/** Plain text for a line of Markdown: emphasis marks dropped outside code spans and links. */
+function plain(line: string): string {
+  return line.replace(/^(#+|[-*+>]|\d+[.)])\s+/, "").split(/(`+[^`]*?`+|<?https?:\/\/[^\s>]+>?)/).map((part, index) => {
+    if (index % 2) return part.replace(/^`+|`+$/g, "").replace(/^<|>$/g, "");
+    return part.replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2").replace(/(^|[^\w*])([*_])(?=\S)(.+?)(?<=\S)\2(?![\w*])/g, "$1$3");
+  }).join("");
+}
+/** The first line of a reply's text as plain text, or of its code when it has only code. */
 function excerpt(body: string): string {
-  let fenced = false;
+  let fence: string | null = null;
   const prose: string[] = [], code: string[] = [];
   for (const text of body.split(/\r?\n/).map((item) => item.trim())) {
-    if (/^(```|~~~)/.test(text)) fenced = !fenced;
-    else if (text) (fenced ? code : prose).push(text);
+    const marker = /^(`{3,}|~{3,})/.exec(text)?.[1];
+    // A fence closes only with a fence of its own mark, at least as long.
+    if (marker && (!fence ? true : marker[0] === fence[0] && marker.length >= fence.length && !text.slice(marker.length).trim())) { fence = fence ? null : marker; continue; }
+    if (text) (fence ? code : prose).push(text);
   }
-  const line = prose[0] ?? code[0] ?? "";
-  if (!prose.length) return line;
-  return line.replace(/^(#+|[-*+>]|\d+[.)])\s+/, "")
-    .replace(/`([^`]+)`/g, "$1").replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2").replace(/(^|\W)([*_])(?=\S)(.+?)(?<=\S)\2(?=\W|$)/g, "$1$3");
+  return prose.length ? plain(prose[0]) : code[0] ?? "";
 }
 
 export function replyToastsModel(): ReplyToastsView {

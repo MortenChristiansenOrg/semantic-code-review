@@ -2579,6 +2579,8 @@ test('remote reviews offer only personal notes and refresh approved files in pla
   await page.route('**/api/remote/refresh*', route => route.fulfill({ status: 409, json: { ok: false, error: 'Remote unavailable' } }));
   await page.getByRole('button', { name: 'Refresh branch', exact: true }).click();
   await expect(page.locator('.review-update')).toContainText('Refresh failed: Remote unavailable');
+  await page.locator('.review-update [data-action="dismiss-refresh-notice"]').click();
+  await expect(page.locator('.review-update')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Refresh branch', exact: true })).toBeEnabled();
 });
 
