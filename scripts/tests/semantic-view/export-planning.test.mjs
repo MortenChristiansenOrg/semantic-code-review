@@ -1118,6 +1118,31 @@ test("the full view of a file renamed below a directory of its old path shows th
   }
 });
 
+test("the full view of a file renamed out of a directory of its new path compares it with its own source", async (t) => {
+  const renamed = twentyLines.join("").replace("line 20\n", "line twenty\n");
+  // c.txt is more like the new a.txt than b.txt is, and leaves for outside.txt.
+  const repository = seededStages(t, {
+    "a.txt/b.txt": twentyLines.join("").replace("line 19\n", "line 19 old\n"),
+    "a.txt/c.txt": renamed.replace("line 1\n", "first\n"),
+  }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt/c.txt", "outside.txt");
+      repository.git("mv", "a.txt/b.txt", "moved");
+      fs.rmSync(path.join(repository.root, "a.txt"), { recursive: true });
+      repository.git("mv", "moved", "a.txt");
+      return [...writeFile("a.txt", renamed)(repository), "outside.txt"];
+    },
+  });
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const file = stage.files.find((item) => item.path === "a.txt");
+  assert.deepEqual([file.kind, file.previousPath], ["renamed", "a.txt/b.txt"]);
+  for (const mode of ["changes", "full"]) {
+    assert.deepEqual(changedRows(await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode)),
+      ["-line 19 old", "-line 20", "+line 19", "+line twenty"], mode);
+  }
+});
+
 test("a file added again is not compared with a similar file a stage in between deleted", async (t) => {
   const similar = twentyLines.map((line, index) => index === 0 ? "first\n" : line).join("");
   const repository = seededStages(t, { "p.txt": "an unrelated file\n", "q.txt": similar }, {

@@ -62,7 +62,7 @@ import { FEEDBACK_MANIFEST_SCHEMA_ID, INSIGHT_COLLECTIONS, THREAD_SCHEMA_ID, isF
 import { parseJson, readJson } from "./shared/json.js";
 import { activeImplementationId, hasFile, preloadActiveRefs, readArtifactJson, readingActiveRefsOnce, selectImplementation, type ActiveRefReads, type ArtifactSnapshot } from "./shared/artifact-store.js";
 import { git, gitRaw } from "./shared/git.js";
-import { diffTree, FIND_RENAMES, type DiffCommand } from "./shared/diff-settings.js";
+import { diffTree, FIND_RENAMES, porcelainDiff, type DiffCommand } from "./shared/diff-settings.js";
 import { readUnvalidatedImplementation, removedStageFile } from "./shared/implementation.js";
 import { capturedOutput, errorCode, errorMessage, isRecord, isStringArray, numberField, stringField, type JsonRecord } from "./shared/narrow.js";
 import { isDocument, parseDocument } from "./shared/schema-validation.js";
@@ -973,23 +973,30 @@ async function* gitLines(repoRoot: string, { args, env }: DiffCommand): AsyncGen
   }
 }
 
+/** The modes of a regular file, an executable and a symbolic link, whose objects are blobs. */
+const FILE_MODES = new Set(["100644", "100755", "120000"]);
+
 // Stream one page rather than buffering unrelated files or a full large patch.
 async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
   targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
+  // A renamed file is diffed as the two files its stage's diff paired: named by
+  // path, Git would detect renames again among the paths, and a path also
+  // selects the files below a directory of that name. A submodule's object is
+  // a commit, not a file, so a renamed submodule is diffed by its paths.
+  const pair = file.previousPath && stats?.kind === "renamed" && stats.oldBlob && stats.newBlob &&
+    [stats.oldMode, stats.newMode].every((item) => item !== undefined && FILE_MODES.has(item)) ? stats : null;
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
-  // Only the file and the one it was renamed from take part, so Git can pair
-  // only those two: a path alone would also select the files below a directory
-  // of that name. An exclusion wins over every inclusion, so a directory that
-  // holds the other path is not excluded. Renames are found only for a renamed file.
-  const pathspecs = paths.flatMap((item) => [`:(literal)${item}`,
-    ...paths.some((other) => other.startsWith(`${item}/`)) ? [] : [`:(exclude,literal)${item}/`]]);
   const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
-  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...pathspecs],
-    { objectIdLength: stage.change.headRevision.length, literalPathspecs: false });
+  const args = (context: number) => pair
+    ? porcelainDiff("diff", [`-U${context}`, pair.oldBlob ?? "", pair.newBlob ?? ""], { objectIdLength: stage.change.headRevision.length })
+    : diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
+      { objectIdLength: stage.change.headRevision.length });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-  let selected = false, previousPath = "";
+  // The diff of a pair holds only that file.
+  let selected = Boolean(pair), previousPath = "";
   const selectSection = (line: string) => {
+    if (pair) return;
     if (line.startsWith("diff --git ")) { selected = false; previousPath = ""; }
     else if (line.startsWith("--- ")) previousPath = decodePatchPath(line.slice(4));
     else if (line.startsWith("+++ ")) selected = (decodePatchPath(line.slice(4)) || previousPath) === file.path;
