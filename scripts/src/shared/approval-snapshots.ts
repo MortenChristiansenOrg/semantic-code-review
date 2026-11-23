@@ -57,7 +57,13 @@ function treeEntries(context: ReviewContext, revision: string, paths: readonly s
   const entries = new Map<string, string>(), wanted = new Set(paths);
   // ls-tree does not list a tree whose paths are listed too, so a path that
   // names a directory of another wanted path is listed on its own.
-  const directories = new Set([...wanted].flatMap((entryPath) => entryPath.split("/").slice(0, -1).map((_, index, parts) => parts.slice(0, index + 1).join("/"))));
+  const directories = new Set<string>();
+  for (const entryPath of wanted) {
+    for (let slash = entryPath.indexOf("/"); slash > 0; slash = entryPath.indexOf("/", slash + 1)) {
+      const directory = entryPath.slice(0, slash);
+      if (wanted.has(directory)) directories.add(directory);
+    }
+  }
   const list = (chunk: string[]) => {
     for (const line of git(context, ["ls-tree", "-z", revision, "--", ...chunk]).toString("utf8").split("\0")) {
       const tab = line.indexOf("\t"), entryPath = line.slice(tab + 1);
@@ -94,14 +100,21 @@ function headFiles(context: ReviewContext, endpoints: readonly RecordedEndpoint[
   const entries = entriesAt(context, endpoints, (endpoint) => endpoint.headRevision, (endpoint) => endpoint.path);
   const blobs = [...new Set(entries.flatMap((entry) => typeof entry === "string" && entry.split(" ")[1] === "blob" ? [entry.split(" ")[2]] : []))];
   const sizes = new Map<string, number>();
-  // An object that cannot be read leaves its files, and only them, failed.
-  if (blobs.length) try {
-    const lines = git(context, ["cat-file", "--batch-check"], Buffer.from(blobs.map((id) => id + "\n").join(""), "utf8")).toString("utf8").split("\n");
-    blobs.forEach((id, index) => {
+  const check = (ids: string[]) => {
+    const lines = git(context, ["cat-file", "--batch-check"], Buffer.from(ids.map((id) => id + "\n").join(""), "utf8")).toString("utf8").split("\n");
+    ids.forEach((id, index) => {
       const [, type, size] = (lines[index] ?? "").split(" ");
       if (type === "blob") sizes.set(id, Number(size));
     });
-  } catch { /* Each file reports its object unavailable. */ }
+  };
+  // An object that cannot be read, such as one a partial clone cannot fetch,
+  // leaves its files, and only them, failed: when the check of all fails, each is checked alone.
+  if (blobs.length) try { check(blobs); }
+  catch {
+    if (blobs.length > 1) for (const id of blobs) {
+      try { check([id]); } catch { /* Its files report the object unavailable. */ }
+    }
+  }
   return entries.map((entry) => entry instanceof Error ? entry : { entry, size: entry ? sizes.get(entry.split(" ")[2]) : undefined });
 }
 /** The blob a file's content is read from, and its size: none for a file without

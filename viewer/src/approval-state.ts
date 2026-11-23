@@ -90,16 +90,17 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
 }
 /** Files per snapshot request, which the server accepts at most, and per save. */
 const APPROVALS_PER_REQUEST = 200;
-/** JSON characters of the files' endpoints per request: a save carries each
- * approval's endpoint, and a re-approval its previous one too, so this keeps a
- * save well within the 8 MiB the server accepts. */
+/** JSON characters per request of the files' endpoints and the approvals they
+ * replace, both of which a save carries: this keeps a save well within the
+ * 8 MiB the server accepts. */
 const ENDPOINT_CHARS_PER_REQUEST = 1024 * 1024;
-/** The approvals split into requests of at most 200 files and 1 MiB of endpoints. */
+/** The approvals split into requests of at most 200 files and 1 MiB of endpoints and replaced approvals. */
 function approvalRequests(approvals: readonly FileApproval[]): FileApproval[][] {
   const requests: FileApproval[][] = [];
   let current: FileApproval[] = [], chars = 0;
+  const replaced = (id: string | null) => id && Object.hasOwn(state.approvals, id) ? JSON.stringify(state.approvals[id]).length : 0;
   for (const approval of approvals) {
-    const size = JSON.stringify(approvalEndpoint(approval.entry)).length;
+    const size = JSON.stringify(approvalEndpoint(approval.entry)).length + replaced(approval.id) + replaced(approval.previousId);
     if (current.length && (current.length === APPROVALS_PER_REQUEST || chars + size > ENDPOINT_CHARS_PER_REQUEST)) { requests.push(current); current = []; chars = 0; }
     current.push(approval); chars += size;
   }
@@ -143,6 +144,9 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
           for (const approval of batch) { pending.delete(approval); approvalErrors.set(approval.id, `${approval.entry.file.path}: ${errorMessage(error)}`); }
           continue;
         }
+        // The review ended while the content was retained; nothing saves it now,
+        // and the notice of the ended review lists what was not saved.
+        if (reviewEnded) throw new ApprovalCutOff();
         const retained = batch.flatMap((approval, index) => {
           const result = results[index];
           if (result && !("error" in result)) return [{ approval, snapshotId: result.snapshotId }];
@@ -150,8 +154,6 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
           approvalErrors.set(approval.id, `${approval.entry.file.path}: ${result?.error || "Could not retain approved content."}`);
           return [];
         });
-        // The review ended while the content was retained; nothing saves it now.
-        if (reviewEnded) throw new ApprovalCutOff();
         const recorded = retained.map(({ approval, snapshotId }) => {
           const { id, entry, rev, previousId } = approval;
           if (previousId) delete state.approvals[previousId];
