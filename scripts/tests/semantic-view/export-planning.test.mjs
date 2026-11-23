@@ -1157,6 +1157,36 @@ test("the full view of a file renamed out of a directory of its new path compare
   }
 });
 
+test("the full view of a renamed file agrees with its stage diff whatever attributes and worktree files name its objects", async (t) => {
+  const repository = seededStages(t, { "a.txt": twentyLines.join("") }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt", "b.txt");
+      return writeFile("b.txt", twentyLines.join("").replace("line 20\n", "line twenty\n"))(repository);
+    },
+  });
+  const views = async () => {
+    const source = createViewerDataSource(repository.root);
+    const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+    const [file] = stage.files;
+    return Promise.all(["changes", "full"].map(async (mode) => {
+      const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
+      return { binary: diff.binary, rows: changedRows(diff) };
+    }));
+  };
+  const [oldBlob, newBlob] = ["HEAD~1:a.txt", "HEAD:b.txt"].map((name) => repository.git("rev-parse", name));
+  // Attributes for the objects' IDs, and untracked files named like them.
+  const attributes = path.join(repository.root, ".git", "info", "attributes");
+  fs.mkdirSync(path.dirname(attributes), { recursive: true });
+  fs.writeFileSync(attributes, `${oldBlob} -diff\n${newBlob} -diff\n`);
+  for (const name of [oldBlob, newBlob]) fs.writeFileSync(path.join(repository.root, name), "untracked\n");
+  const text = { binary: false, rows: ["-line 20", "+line twenty"] };
+  assert.deepEqual(await views(), [text, text]);
+  // Attributes for the paths make the stage diff binary, and so the full view.
+  fs.writeFileSync(attributes, "a.txt -diff\nb.txt -diff\n");
+  const binary = { binary: true, rows: [] };
+  assert.deepEqual(await views(), [binary, binary]);
+});
+
 test("a file added again is not compared with a similar file a stage in between deleted", async (t) => {
   const similar = twentyLines.map((line, index) => index === 0 ? "first\n" : line).join("");
   const repository = seededStages(t, { "p.txt": "an unrelated file\n", "q.txt": similar }, {

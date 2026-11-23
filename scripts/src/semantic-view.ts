@@ -983,12 +983,19 @@ async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFil
   // path, Git would detect renames again among the paths, and a path also
   // selects the files below a directory of that name. A submodule's object is
   // a commit, not a file, so a renamed submodule is diffed by its paths.
-  const pair = file.previousPath && stats?.kind === "renamed" && stats.oldBlob && stats.newBlob &&
-    [stats.oldMode, stats.newMode].every((item) => item !== undefined && FILE_MODES.has(item)) ? stats : null;
+  const renamed = file.previousPath && stats?.kind === "renamed" && stats.oldBlob && stats.newBlob ? stats : null;
+  // A file moved unchanged, or one whose stage diff found it binary, shows no lines.
+  if (renamed && (renamed.binary || (renamed.oldBlob === renamed.newBlob && renamed.oldMode === renamed.newMode))) {
+    return { lines: [], additions: renamed.additions, deletions: renamed.deletions, binary: renamed.binary,
+      truncated: false, nextOffset: null, offset, mode };
+  }
+  const pair = renamed && [renamed.oldMode, renamed.newMode].every((item) => item !== undefined && FILE_MODES.has(item)) ? renamed : null;
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
   const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
+  // Attributes would match the object IDs as paths, so the pair is text, as its
+  // stage diff found it.
   const args = (context: number) => pair
-    ? porcelainDiff("diff", [`-U${context}`, pair.oldBlob ?? "", pair.newBlob ?? ""], { objectIdLength: stage.change.headRevision.length })
+    ? porcelainDiff("diff", [`-U${context}`, "--text", pair.oldBlob ?? "", pair.newBlob ?? "", "--"], { objectIdLength: stage.change.headRevision.length })
     : diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
       { objectIdLength: stage.change.headRevision.length });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
