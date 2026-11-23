@@ -4520,9 +4520,17 @@ test('a toast whose reply is read goes away', async ({ page }) => {
   data.feedback[0].comments.push(agentReply('a1', 'Answered.'));
   await publish(page, data, 'replied');
   await expect(page.locator('.reply-toast')).toHaveCount(1);
+  const status = page.locator('.visually-hidden[role="status"]');
+  const announced = await status.textContent();
+  expect(announced.trim()).toBe('Agent replied about stage Stage first.');
   // The reply shows beside its stage, in view, and is read after a moment.
   await expect(page.locator('.stage[data-stage="first"] .tmsg-agent')).toBeInViewport();
   await expect(page.locator('.reply-toast')).toHaveCount(0, { timeout: 8000 });
+  // Another reply about the same stage is announced again: the region's text changes.
+  data.feedback[0].comments.push(agentReply('a2', 'Answered again.'));
+  await publish(page, data, 'replied-again');
+  await expect.poll(() => status.textContent()).not.toBe(announced);
+  expect((await status.textContent()).trim()).toBe('Agent replied about stage Stage first.');
   expect(errors).toEqual([]);
 });
 
@@ -4531,16 +4539,18 @@ test('Show reaches a reply at the end of a long conversation, and a reply whose 
   const data = fixture();
   const long = thread('long');
   for (let i = 0; i < 30; i++) long.comments.push({ id: `c${i}`, author: i % 2 ? 'agent' : 'user', body: `Message ${i}`, attachments: [], createdAt: '2026-09-08T10:00:00Z' });
-  // A resolved thread about a file that left the review, and another thread with an unread reply.
+  // A resolved thread about a file that left the review, a thread about a removed step, and another thread with an unread reply.
   const gone = thread('gone', 'resolved', { kind: 'file', stageId: 'first', path: 'gone.js', label: 'gone.js' });
-  data.feedback = [long, gone, thread('other')];
+  const step = thread('step', 'open', { kind: 'node', stageId: 'first', nodeId: 'first-removed', label: 'Removed step' });
+  data.feedback = [long, gone, thread('other'), step];
   const errors = await mountListening(page, data);
   long.comments.push(agentReply('last', 'The last answer.'));
   gone.comments.push(agentReply('a1', 'About the removed file.'));
   data.feedback[2].comments.push(agentReply('a1', 'About something else.'));
+  step.comments.push(agentReply('a1', 'About the removed step.'));
   await publish(page, data, 'replied');
   const toasts = page.locator('.reply-toast');
-  await expect(toasts).toHaveCount(3);
+  await expect(toasts).toHaveCount(4);
   await toasts.nth(0).getByRole('button', { name: 'Show' }).click();
   const last = page.locator('main.shell .tmsg-agent', { hasText: 'The last answer.' });
   await expect(last).toBeInViewport();
@@ -4550,6 +4560,9 @@ test('Show reaches a reply at the end of a long conversation, and a reply whose 
   const reply = page.locator('.side.notes .tmsg-agent', { hasText: 'About the removed file.' });
   await expect(reply).toBeInViewport();
   await expect(reply).toBeFocused();
+  await page.locator('.reply-toast', { hasText: 'About the removed step.' }).getByRole('button', { name: 'Show' }).click();
+  await expect(page.locator('.side.notes [data-action="notes-filter"][data-filter="active"]')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.side.notes .tmsg-agent', { hasText: 'About the removed step.' })).toBeFocused();
   await expect(toasts).toHaveCount(1);
   expect(errors).toEqual([]);
 });

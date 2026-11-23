@@ -23,6 +23,10 @@ let known: Set<string> | null = null;
 let expanded = false;
 /** What screen readers announce about the latest replies; the status region keeps it until new replies replace it. */
 let announcement = "";
+/** Counts announcements, so one that repeats the last still changes the region's text and is read. */
+let announcements = 0;
+/** Stops the reveal of the reply a Show is waiting for. */
+let stopReveal: (() => void) | null = null;
 /** The last element focused outside the toasts, which takes focus back when the last toast goes. */
 let focusBefore: Element | null = null;
 
@@ -43,8 +47,8 @@ export function updateReplyToasts(): void {
   if (known) {
     const arrived = all.filter(({ thread, comment, key }) => !known?.has(key) && isUnreadReply(thread, comment) && !toasts.includes(key));
     toasts.push(...arrived.map((reply) => reply.key));
-    if (arrived.length === 1) announcement = `Agent replied about ${about(arrived[0].thread)}.`;
-    else if (arrived.length) announcement = `Agent sent ${arrived.length} replies.`;
+    const text = arrived.length === 1 ? `Agent replied about ${about(arrived[0].thread)}.` : arrived.length ? `Agent sent ${arrived.length} replies.` : "";
+    if (text) announcement = text + (++announcements % 2 ? "" : "\u00a0");
   }
   known = new Set(all.map((reply) => reply.key));
   const unread = new Set(all.filter(({ thread, comment }) => isUnreadReply(thread, comment)).map((reply) => reply.key));
@@ -87,13 +91,18 @@ export function restoreToastFocus(focus: ToastFocus | null): void {
   const shown = [...app.querySelectorAll(".notice-stack .reply-toast")];
   const toast = shown[Math.min(focus.index, shown.length - 1)];
   const next = toast?.querySelector(`[data-action="${cssEsc(focus.action)}"]`) || app.querySelector(".notice-stack button");
-  const target = focusable(next) || (focusBefore?.isConnected ? focusable(focusBefore) : null);
+  const inToasts = focusable(next);
+  const target = inToasts || (focusBefore?.isConnected ? focusable(focusBefore) : null);
   target?.focus({ preventScroll: true });
+  // A list of toasts that scrolls shows the control focused in it.
+  inToasts?.scrollIntoView({ block: "nearest", behavior: "instant" });
 }
 export function installReplyToasts(): void {
   document.addEventListener("focusin", (event) => {
     if (event.target instanceof Element && !event.target.closest(".notice-stack")) focusBefore = event.target;
   });
+  // Whatever the reviewer does next takes over from a Show still waiting for its reply.
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"]) document.addEventListener(type, () => stopReveal?.(), { capture: true, passive: true });
 }
 
 export function dismissReplyToast(key: string): void {
@@ -109,22 +118,25 @@ export function toggleReplyToasts(): void {
   render();
 }
 
-/** Scrolls to the reply once the navigation that shows it finished, and focuses it. */
+/** Scrolls to the reply once the navigation that shows it finished, however long its
+ * diff takes to load, and focuses it, unless the reviewer did something else meanwhile. */
 function revealReply(key: string, where: string): void {
-  let frames = 0;
+  stopReveal?.();
+  let frames = 0, frame = 0;
+  const stop = stopReveal = () => { cancelAnimationFrame(frame); if (stopReveal === stop) stopReveal = null; };
   const step = () => {
     frames += 1;
     const reply = app.querySelector(`${where} .tmsg[data-reply-key="${cssEsc(key)}"]`);
     // The navigation scrolls to the thread two frames on, or once its diff page loaded.
-    if (frames < 3 || lazyJumpPending() || !reply?.getClientRects().length) {
-      if (frames < 300) requestAnimationFrame(step);
-      return;
-    }
+    if (frames < 3 || lazyJumpPending() || !reply?.getClientRects().length) { frame = requestAnimationFrame(step); return; }
+    stop();
     reply.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    // The button pressed went away with its toast; focus elsewhere was the reviewer's choice.
+    if (document.activeElement && document.activeElement !== document.body) return;
     if (!reply.hasAttribute("tabindex")) reply.setAttribute("tabindex", "-1");
     if (reply instanceof HTMLElement) reply.focus({ preventScroll: true });
   };
-  requestAnimationFrame(step);
+  frame = requestAnimationFrame(step);
 }
 
 /** Takes the reviewer to the reply where its thread shows in the code, or in the notes
@@ -133,9 +145,16 @@ export function showReplyToast(key: string): void {
   const reply = replies().find((item) => item.key === key);
   toasts = toasts.filter((item) => item !== key);
   if (!reply) { render(); return; }
+  // Focus goes to the reply, not to the next toast.
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && focused.closest(".notice-stack")) focused.blur();
   if (threadCollapsed(reply.thread)) { state.threadCollapsed = { ...(state.threadCollapsed || {}), [reply.thread.id]: false }; persist(); }
+  // A thread shows beside its element, and a line thread whose line left the diff beside its
+  // file. One whose element is gone, so that it would jump to the stage holding it, shows in the notes panel.
+  const kind = reply.thread.target?.kind;
   const ref = threadElementRef(reply.thread);
-  if (ref) jumpToElement(ref.kind, ref.id, ref.stageId, ref.nodeId);
+  const inCode = ref && (ref.kind === kind || kind === "line" && ref.kind === "file");
+  if (inCode) jumpToElement(ref.kind, ref.id, ref.stageId, ref.nodeId);
   else showThreadInNotes(reply.thread);
-  revealReply(key, ref ? "main.shell" : ".side.notes");
+  revealReply(key, inCode ? "main.shell" : ".side.notes");
 }

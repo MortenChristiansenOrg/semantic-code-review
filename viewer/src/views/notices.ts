@@ -70,8 +70,9 @@ function replyToasts(view: ReplyToastsView): TemplateResult {
 
 export function noticesView(view: NoticesView): TemplateResult {
   const approvals = repeat(view.approvalErrors, (error) => error.id, (error) => html`<div class="review-update" role="alert">Approval was not saved: ${error.message}</div>`);
+  const shown = view.approvalErrors.length || view.replies.items.length || view.refresh;
   // The status region stays in the page, so screen readers announce the text it receives.
-  const status = html`<div class="visually-hidden" role="status">${view.replies.announcement}</div>`;
-  if (!view.approvalErrors.length && !view.replies.items.length && !view.refresh) return status;
-  return html`${status}<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status">${view.refresh}</div>` : nothing}${view.replies.items.length ? replyToasts(view.replies) : nothing}</div>`;
+  return html`<div class="visually-hidden" role="status">${view.replies.announcement}</div>${shown
+    ? html`<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status">${view.refresh}</div>` : nothing}${view.replies.items.length ? replyToasts(view.replies) : nothing}</div>`
+    : nothing}`;
 }
