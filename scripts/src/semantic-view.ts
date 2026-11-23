@@ -977,11 +977,13 @@ async function* gitLines(repoRoot: string, { args, env }: DiffCommand): AsyncGen
 async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFile, stats: FileStats | undefined, mode: DiffMode, offset: number,
   targetSide: "old" | "new" | null = null, targetLine: number | null = null): Promise<DiffPage> {
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
-  // A path also selects the files below a directory of that name, which Git
-  // could pair with the file as a rename; renames are found only for a renamed file.
+  // Only the file and the one it was renamed from take part, so Git can pair
+  // only those two: a path alone would also select the files below a directory
+  // of that name. Renames are found only for a renamed file.
+  const pathspecs = paths.flatMap((item) => [`:(literal)${item}`, `:(exclude,literal)${item}/`]);
   const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
-  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...paths],
-    { objectIdLength: stage.change.headRevision.length });
+  const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...pathspecs],
+    { objectIdLength: stage.change.headRevision.length, literalPathspecs: false });
   const shapes: { old: number; oldCount: number; new: number; newCount: number }[] = [];
   const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
   let selected = false, previousPath = "";
@@ -1785,10 +1787,12 @@ function cliErrorMessage(error: unknown): string {
 // Upgrade commit-only line snapshots without moving their original anchors.
 // Unavailable history stays unresolved and is conservatively rejected on export.
 // A snapshot's base is the file's shown base, which can be the head of an
-// earlier stage; the file's comparison is over its stage's own range, and a
-// stage is one commit on its base, so that range ends at the head and starts
-// at its first parent.
-export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[]): Note[] {
+// earlier stage, while the file's comparison is over its stage's own range.
+// While the stage's head is still the snapshot's, that range is the stage's
+// current one; otherwise the snapshot's own range stands for it, and a file
+// whose revision differs from the current one is refused.
+export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[],
+  stages: readonly { id: string; baseRevision: string; headRevision: string }[]): Note[] {
   return notes.map((note): Note => {
     if (!isRecord(note) || note.kind !== "line") return note;
     const snapshot = note.snapshot;
@@ -1797,7 +1801,8 @@ export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[])
     const match = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(stringField(note, "id") ?? "");
     if (!match || typeof base !== "string" || typeof head !== "string" || ![base, head].every(rev => /^[a-f0-9]{40,64}$/.test(rev))) return note;
     try {
-      const stage = { change: { baseRevision: `${head}^1`, headRevision: head } };
+      const current = stages.find((item) => item.id === match[1] && item.headRevision === head);
+      const stage = { change: { baseRevision: current ? current.baseRevision : base, headRevision: head } };
       const stats = stageStatsFacts(JSON.stringify([repoRoot, stage.change.baseRevision, head]), () => buildStageStats(repoRoot, stage));
       const fileStats = stats.get(match[4]);
       if (!fileStats) return note;
@@ -1892,7 +1897,7 @@ function exportReceivedFeedback({ repoRoot, implementation, context = null }: Ex
   if (notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
-  const { planned, skipped } = planReceivedThreads(resolveLineDraftSnapshots(repoRoot, notes), implementation);
+  const { planned, skipped } = planReceivedThreads(resolveLineDraftSnapshots(repoRoot, notes, implementation.stages), implementation);
   if (planned.length === 0) {
     return { ok: false, error: "No notes could be exported.", skipped };
   }
@@ -2189,7 +2194,8 @@ function approvedFileEndpoint(input: ReceivedApprovalEndpoint, data: Implementat
   if (!stage || !file || !ownership) throw new Error("This file review no longer exists. Refresh the viewer.");
   if (file.revision !== fileRevision || !isDeepStrictEqual(ownership, shownOwnership)) throw new Error("The file or its ownership changed. Refresh the viewer before approving or comparing it.");
   return { stageId: stage.id, nodeId: ownership.nodeId, path: file.path, previousPath: file.previousPath, previousPaths: file.previousPaths,
-    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
+    // The base the file's comparison starts from (see `buildStageStats`).
+    baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership };
 }
 
 export function registeredReviews(): Wire.ReviewSummary[] {
@@ -2980,7 +2986,7 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
     resolveDraftSnapshots: (implementationId: string, fields: JsonRecord): (Wire.DraftSnapshot | null)[] => {
       implementation(implementationId);
       const notes = parseDraftSnapshotNotes(fields);
-      const resolved = resolveLineDraftSnapshots(root, notes.filter((note) => note !== null));
+      const resolved = resolveLineDraftSnapshots(root, notes.filter((note) => note !== null), source.implementationData().stages);
       let next = 0;
       return notes.map((note) => note ? resolved[next++].snapshot ?? null : null);
     },
