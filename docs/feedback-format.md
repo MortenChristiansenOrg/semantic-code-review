@@ -72,8 +72,11 @@ same line stands unchanged at the same path and on the same side, and the
 current diff shows it there; its current line number may differ from the stored
 one. Otherwise the thread is stale: the line changed or was removed, the file
 moved or left the stage, its diff shows no lines, or the line is no longer shown
-on that side. Removed lines of a file the stage renames are not followed once
-the head moves. The viewer and `feedback next --compact` give the same answer.
+on that side. A removed line of a file the stage renames is followed along the
+file's previous path while the anchored head renamed the file from that path
+too, and is current while the stage's diff, which pairs the two paths as the
+stage inventory does, still removes it. The viewer and `feedback next
+--compact` give the same answer.
 
 ## Agent processing
 
