@@ -78,18 +78,22 @@ type FileScrolls = Map<string, FileScroll>;
 /** The innermost element that begins at the top of the part of a diff the window
  * shows below the top bar, such as a code row, a message of a line thread or an
  * inline insight. An element that begins above, such as the container of a line's
- * discussions, can grow inside without moving, so it is passed over. */
+ * discussions, can grow inside without moving, so it is passed over while another
+ * begins in view. */
 function firstRowInView(scroller: Element): { row: Element; offset: number } | null {
   if (!scroller.matches(".diff-scroll")) return null;
   const box = scroller.getBoundingClientRect();
   const covered = parseFloat(document.documentElement.style.getPropertyValue("--sticky-inset")) || 0;
   const top = Math.max(box.top, covered), bottom = Math.min(box.bottom, window.innerHeight);
+  // Without one, as in a message taller than the part shown, the innermost element at its top.
+  let fallback: Element | null = null;
   for (let y = top + 2; y < bottom; y += 12) {
     const row = document.elementsFromPoint(box.left + box.width / 2, y).find((hit) => hit !== scroller && scroller.contains(hit));
     const rect = row?.getBoundingClientRect();
     if (row && rect && rect.top >= top && rect.height < bottom - top) return { row, offset: rect.top - box.top };
+    fallback ??= row ?? null;
   }
-  return null;
+  return fallback ? { row: fallback, offset: fallback.getBoundingClientRect().top - box.top } : null;
 }
 export function captureFileScrolls(): FileScrolls {
   const scrolls: FileScrolls = new Map();

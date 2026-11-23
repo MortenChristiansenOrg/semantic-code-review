@@ -5296,6 +5296,34 @@ test('a reply to the first discussion on a line leaves a later one on that line,
   expect(errors).toEqual([]);
 });
 
+test('a reply above a message taller than the diff leaves the part of it in view where it is', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  const data = fixture();
+  const file = data.stages[0].files[0];
+  file.lines = Array.from({ length: 60 }, (_, i) => ({ t: 'add', n: i + 1, s: `const v${i + 1} = ${i};`, h: 1 }));
+  file.additions = 60; file.memberships = [{ nodeId: 'first-one', classification: 'behavior', hunks: [1] }];
+  const lineId = 'l:first:new:5:shared.js';
+  const target = { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 5, label: 'shared.js:5' };
+  data.feedback = [thread('earlier', 'open', target), thread('later', 'open', target)];
+  data.feedback[1].comments[0].body = Array.from({ length: 80 }, (_, i) => `Line ${i} of a long message`).join('\n');
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  const scroller = page.locator('.cinema-diff .diff-scroll');
+  const long = page.locator('.cinema-diff [data-thread-id="later"] .tmsg').first();
+  await scroller.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  // The middle of the long message fills the part of the diff in view.
+  await long.evaluate((el) => { const scroller = el.closest('.diff-scroll'); scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + 400; });
+  const measure = () => long.evaluate((el) => ({ top: el.getBoundingClientRect().top, page: window.scrollY }));
+  const before = await measure();
+  data.feedback[0].comments.push({ author: 'agent', body: 'A late answer.\n\nWith a second paragraph.', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'replied';
+  await expect(page.locator('.cinema-diff [data-thread-id="earlier"]')).toContainText('A late answer.');
+  const after = await measure();
+  expect(after.top).toBeCloseTo(before.top, 0);
+  expect(after.page).toBe(before.page);
+  expect(errors).toEqual([]);
+});
+
 test('an agent reply waits while a code selection runs through its line thread, then appears', async ({ page }) => {
   const data = fixture();
   const lineId = 'l:first:new:1:shared.js';
