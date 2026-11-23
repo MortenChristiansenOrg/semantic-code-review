@@ -80,7 +80,7 @@ function entriesAt<T>(context: ReviewContext, items: readonly T[], revisionOf: (
   for (const item of items) byRevision.set(revisionOf(item), byRevision.get(revisionOf(item)) ?? new Map());
   for (const revision of byRevision.keys()) {
     try { byRevision.set(revision, treeEntries(context, revision, items.filter((item) => revisionOf(item) === revision).map(pathOf))); }
-    catch (error) { byRevision.set(revision, error instanceof Error ? error : new Error(String(error))); }
+    catch { byRevision.set(revision, new Error(`Git revision ${revision} cannot be read.`)); }
   }
   return items.map((item) => {
     const entries = byRevision.get(revisionOf(item));
@@ -206,6 +206,8 @@ export function captureApprovalSnapshots(context: ReviewContext, endpoints: read
     }
     const group = Array.from({ length: end - start }, (_, offset) => start + offset);
     const contents = readBlobContents(context, group.flatMap((index) => blobToRead(files[index])?.id ?? []));
+    // A review that changed or ended meanwhile is why its blobs could not be read.
+    assertReviewContext(context);
     const snapshots: { index: number; snapshot: Snapshot }[] = [];
     for (const index of group) {
       const content = contentOf(files[index], contents), base = bases[index];

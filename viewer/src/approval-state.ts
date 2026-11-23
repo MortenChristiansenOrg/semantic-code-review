@@ -1,6 +1,6 @@
 // Approvals of files, steps and stages: whether each still holds for the
 // implementation as it now stands, and the changes the reviewer makes to them.
-import type { ApprovalEndpoint, ApprovalRecord, ChangeNode } from "../../scripts/src/shared/viewer-protocol";
+import type { ApprovalEndpoint, ApprovalRecord, ApprovalSnapshotResult, ChangeNode } from "../../scripts/src/shared/viewer-protocol";
 import * as api from "./api";
 import { aggregateApprovalState, type ApprovalState } from "./approvals";
 import { data } from "./context";
@@ -127,28 +127,39 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
   const operation = Promise.resolve().then(async () => {
     try {
       for (const batch of approvalRequests(approvals)) {
-        const response = await api.captureApprovalSnapshots(batch.map(({ entry }) => approvalEndpoint(entry)));
-        const retained = await response.json();
-        if (!response.ok || !retained.ok) {
-          const failure = failureOf(retained), end = reviewEndOf(failure);
-          if (end) { markReviewEnded(end, true); throw new ApprovalCutOff(); }
-          throw new Error(failure.error || "Could not retain approved content.");
+        let results: ApprovalSnapshotResult[];
+        try {
+          const response = await api.captureApprovalSnapshots(batch.map(({ entry }) => approvalEndpoint(entry)));
+          const body = await response.json();
+          if (!response.ok || !body.ok) {
+            const failure = failureOf(body), end = reviewEndOf(failure);
+            if (end) { markReviewEnded(end, true); throw new ApprovalCutOff(); }
+            throw new Error(failure.error || "Could not retain approved content.");
+          }
+          results = body.results;
+        } catch (error) {
+          if (error instanceof ApprovalCutOff || reviewEnded) throw error;
+          // A request that failed fails its own files; the next request may succeed.
+          for (const approval of batch) { pending.delete(approval); approvalErrors.set(approval.id, `${approval.entry.file.path}: ${errorMessage(error)}`); }
+          continue;
         }
+        const retained = batch.flatMap((approval, index) => {
+          const result = results[index];
+          if (result && !("error" in result)) return [{ approval, snapshotId: result.snapshotId }];
+          pending.delete(approval);
+          approvalErrors.set(approval.id, `${approval.entry.file.path}: ${result?.error || "Could not retain approved content."}`);
+          return [];
+        });
         // The review ended while the content was retained; nothing saves it now.
         if (reviewEnded) throw new ApprovalCutOff();
-        const recorded = batch.filter((approval, index) => {
-          const { id, entry, rev, previousId } = approval, result = retained.results[index];
-          if (!result || "error" in result) {
-            pending.delete(approval);
-            approvalErrors.set(id, `${entry.file.path}: ${result?.error || "Could not retain approved content."}`);
-            return false;
-          }
+        const recorded = retained.map(({ approval, snapshotId }) => {
+          const { id, entry, rev, previousId } = approval;
           if (previousId) delete state.approvals[previousId];
-          state.approvals[id] = { rev, at: Date.now(), ...approvalEndpoint(entry), snapshotId: result.snapshotId } satisfies ApprovalRecord;
+          state.approvals[id] = { rev, at: Date.now(), ...approvalEndpoint(entry), snapshotId } satisfies ApprovalRecord;
           delete state.approvalComparisons[id];
           approvalErrors.delete(id);
           if (previousId) approvalErrors.delete(previousId);
-          return true;
+          return approval;
         });
         if (!recorded.length) continue;
         persist();

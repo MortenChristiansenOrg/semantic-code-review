@@ -1248,31 +1248,32 @@ test('a group whose files have large ownerships is approved in requests small en
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
 });
 
-test('a large group approval keeps what was retained when a file or a later request fails', async ({ page }) => {
-  await mount(page, bulkFixture(250));
+test('a large group approval keeps what was retained when a file or a request fails', async ({ page }) => {
+  await mount(page, bulkFixture(450));
   const counted = countApprovalRequests(page);
   let requests = 0;
-  await page.route('**/api/approval-snapshots*', (route) => ++requests === 1
-    ? snapshotResults(route, 'a'.repeat(32), (file) => file.path === 'bulk/file-007.js' ? 'The file changed. Refresh before approving.' : '')
-    : route.fulfill({ status: 500, json: { ok: false, error: 'Snapshot storage unavailable' } }));
+  await page.route('**/api/approval-snapshots*', (route) => ++requests === 2
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Snapshot storage unavailable' } })
+    : snapshotResults(route, 'a'.repeat(32), (file) => file.path === 'bulk/file-007.js' ? 'The file changed. Refresh before approving.' : ''));
   const { node } = await openFolders(page);
   const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
   await bulk.locator('.fg-approve').click();
-  // The first 200 files but one are approved and saved; the rest each show why not.
-  await expect(bulk.locator('.fg-done')).toHaveText('199/250');
-  await expect(page.locator('[role="alert"]')).toHaveCount(51);
+  // The first request's files but one, and the third's, are approved and saved; the rest each show why not.
+  await expect(bulk.locator('.fg-done')).toHaveText('249/450');
+  await expect(page.locator('[role="alert"]')).toHaveCount(201);
   await expect(page.locator('[role="alert"]').filter({ hasText: 'bulk/file-007.js: The file changed' })).toHaveCount(1);
-  await expect(page.locator('[role="alert"]').filter({ hasText: 'Snapshot storage unavailable' })).toHaveCount(50);
+  await expect(page.locator('[role="alert"]').filter({ hasText: 'Snapshot storage unavailable' })).toHaveCount(200);
   await expect(bulk.locator('.frow-wrap', { hasText: 'file-007.js' }).locator('.frow')).not.toHaveClass(/is-approved/);
   await expect(bulk.locator('.frow-wrap', { hasText: 'file-200.js' }).locator('.frow')).not.toHaveClass(/is-approved/);
-  expect(counted.snapshots).toEqual([200, 50]);
-  expect(counted.saves).toBe(1);
+  await expect(bulk.locator('.frow-wrap', { hasText: 'file-400.js' }).locator('.frow')).toHaveClass(/is-approved/);
+  expect(counted.snapshots).toEqual([200, 200, 50]);
+  expect(counted.saves).toBe(2);
   // Approving the group again retries only the files that failed.
   await page.unroute('**/api/approval-snapshots*');
   await bulk.locator('.fg-approve').click();
-  await expect(bulk.locator('.fg-done')).toHaveText('✓ 250/250');
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
-  expect(counted.snapshots).toEqual([200, 50, 51]);
+  expect(counted.snapshots).toEqual([200, 200, 50, 200, 1]);
 });
 
 for (const legacy of [false, true]) test(`file approvals survive unchanged restacks (${legacy ? 'existing' : 'new'} record)`, async ({ page }) => {
