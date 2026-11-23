@@ -8,7 +8,7 @@ import { activeFileNodeId, approvalEntry, fileApprovalKey, fileBaseRevision, fla
 import { errorMessage, failureOf, isRecord } from "./narrow";
 import { render } from "./render";
 import { markReviewEnded } from "./saved-reviews";
-import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state } from "./state";
+import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state, stateChanges } from "./state";
 import type { MembershipEntry, ViewerFile, ViewerStage } from "./types";
 
 /** Approval changes in progress, by approval ID. */
@@ -90,18 +90,19 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
 }
 /** Files per snapshot request, which the server accepts at most, and per save. */
 const APPROVALS_PER_REQUEST = 200;
-/** JSON characters per request of the files' endpoints and the approvals they
- * replace, both of which a save carries: this keeps a save well within the
- * 8 MiB the server accepts. */
-const ENDPOINT_CHARS_PER_REQUEST = 1024 * 1024;
-/** The approvals split into requests of at most 200 files and 1 MiB of endpoints and replaced approvals. */
+/** JSON characters per request of the changes that saving its approvals sends,
+ * which keeps a save well within the 8 MiB the server accepts. */
+const SAVED_CHARS_PER_REQUEST = 2 * 1024 * 1024;
+/** The approvals split into requests of at most 200 files and 2 MiB of changes to save. */
 function approvalRequests(approvals: readonly FileApproval[]): FileApproval[][] {
   const requests: FileApproval[][] = [];
   let current: FileApproval[] = [], chars = 0;
-  const replaced = (id: string | null) => id && Object.hasOwn(state.approvals, id) ? JSON.stringify(state.approvals[id]).length : 0;
+  const saved = (id: string | null) => id && Object.hasOwn(state.approvals, id) ? { [id]: state.approvals[id] } : {};
   for (const approval of approvals) {
-    const size = JSON.stringify(approvalEndpoint(approval.entry)).length + replaced(approval.id) + replaced(approval.previousId);
-    if (current.length && (current.length === APPROVALS_PER_REQUEST || chars + size > ENDPOINT_CHARS_PER_REQUEST)) { requests.push(current); current = []; chars = 0; }
+    // The changes this approval's save sends, with a stand-in for the snapshot ID.
+    const after = { rev: approval.rev, at: Date.now(), ...approvalEndpoint(approval.entry), snapshotId: "0".repeat(32) } satisfies ApprovalRecord;
+    const size = JSON.stringify(stateChanges({ ...saved(approval.previousId), ...saved(approval.id) }, { [approval.id]: after }, ["approvals"])).length;
+    if (current.length && (current.length === APPROVALS_PER_REQUEST || chars + size > SAVED_CHARS_PER_REQUEST)) { requests.push(current); current = []; chars = 0; }
     current.push(approval); chars += size;
   }
   if (current.length) requests.push(current);
