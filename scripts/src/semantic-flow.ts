@@ -1093,10 +1093,12 @@ async function waitForFeedback(options: Options): Promise<void> {
         // Work a round that ended or was taken over left behind goes to this round
         // to record. The target is restacked only once it is recorded.
         const leftoverWork = (await implementationService()).hasLeftoverWork(found.worktree);
+        const otherRound = otherRoundRunning(review, session);
         // While another round runs, the work may be its own in progress: keep listening until it finishes.
-        if (!leftoverWork || !otherRoundRunning(review, session)) {
+        if (!leftoverWork || !otherRound) {
           const { candidate: current, targetRestack } = leftoverWork ? { candidate: found, targetRestack: null } : await refreshAdvancedTarget(found, { session });
-          const result = await feedbackSnapshot(current, targetRestack, { session }, { leftoverWork });
+          // Work left meanwhile is handed over too, rather than failing the wait.
+          const result = await feedbackSnapshot(current, targetRestack, { session }, { leftoverWork: !otherRound });
           if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
           // Another run claimed the threads first; keep listening.
         }

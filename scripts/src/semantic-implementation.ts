@@ -990,7 +990,7 @@ function reportEvidenceWarnings(stages: Iterable<Stage>): void {
 /** Work the implementation does not record yet, which a round that ended or was
  * taken over, or the reviewer, left behind. */
 export interface LeftoverWork {
-  /** Finalized stages whose branch moved from the head the implementation records. */
+  /** Finalized stages whose branch has commits after the head the implementation records. */
   movedStages: { stageId: string; branch: string; recordedHead: string; head: string }[];
   /** A restack that stopped at a conflict: the stage it stopped at and the worktree holding the conflict. */
   pendingRestack: { stageId: string; worktree: string } | null;
@@ -1006,7 +1006,9 @@ function findLeftoverWork(workspace: Workspace): LeftoverWork | null {
     const movedStages = artifact.manifest.stages.flatMap((stageId) => {
       const { branch, headRevision } = finalizedStage(artifact, stageId).change;
       const recordedHead = commit(headRevision), head = commit(`refs/heads/${branch}`);
-      return recordedHead && head && head !== recordedHead ? [{ stageId, branch, recordedHead, head }] : [];
+      // Only commits added after the recorded head are work to keep; a branch reset
+      // back or moved elsewhere still fails validation.
+      return recordedHead && head && head !== recordedHead && isAncestor(workspace.root, recordedHead, head) ? [{ stageId, branch, recordedHead, head }] : [];
     });
     if (!pending && !movedStages.length) return null;
     return { movedStages, pendingRestack: pending ? { stageId: pending.conflict.id, worktree: pending.worktree } : null };

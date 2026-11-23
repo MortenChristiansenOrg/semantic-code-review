@@ -103,7 +103,8 @@ short line in the chat, naming any uncommitted edits you left.
 
 A listening wait's `leftoverWork` is not null when a round that ended or was
 replaced, or the reviewer, left work the implementation does not record:
-`movedStages` lists each stage branch with commits after its `recordedHead`, and
+`movedStages` lists each stage branch with commits after its `recordedHead` in
+stage order, and
 `pendingRestack` names the stage and `worktree` of a restack stopped at a
 conflict. Keep that work. It may be the reviewer's, and it is most likely a start
 on this round's threads. Never discard it on your own. Before answering the
@@ -118,9 +119,11 @@ threads, with this round's claim:
    when it cannot be continued, after saving the resolution staged in its
    worktree (`git diff --cached`) to an OS temporary file for the restack that
    stops at the same conflict again. Its stage commits stay on their branches.
-4. Check out the lowest stage branch that still has commits after its recorded
-   head and run `implementation restack --from <stage-id> --claim <claim>`.
-   `<semantic-flow> implementation validate` names any stage still moved.
+4. Check out the lowest stage in `movedStages` that no restack in step 3 listed,
+   and run `implementation restack --from <stage-id> --claim <claim>`; that
+   records every moved stage above it too. When the branch is checked out in
+   another worktree, ask in the viewer. An advanced target branch is restacked
+   with the next round; leave it.
 5. Run `<semantic-flow> feedback next --json --compact`. For this round's
    threads, its stage groups replace the round's `stages`: `stageBase`,
    `stageHead`, `stale`, and `currentLine` now describe the recorded stages.

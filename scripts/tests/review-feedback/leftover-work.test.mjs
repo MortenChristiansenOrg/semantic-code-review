@@ -260,6 +260,18 @@ test("other validation failures still fail a first wait, with or without leftove
   assert.equal(readAgentState(reviewIdOf(repository)).session.endReason, "failed");
 });
 
+test("a stage branch reset back is not work to keep, and still fails a first wait", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  addThread(repository, "change");
+  repository.git("reset", "--hard", "HEAD~1");
+
+  const failed = await waitRun(repository);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /Stage implementation branch .* moved from/);
+  assert.equal(readAgentState(reviewIdOf(repository)).session.endReason, "failed");
+});
+
 test("a wait that continues its session fails on its own round's unrecorded work but keeps the session", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
