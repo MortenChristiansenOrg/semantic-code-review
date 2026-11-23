@@ -159,6 +159,33 @@ one-commit stages) and after, Linux, Node 24.20.0, two runs each:
 
 A restack in which every stage already sits on its parent creates no worktree.
 
+## Approving a group of files (#266)
+
+"Approve all files" in a group approved each file as if it were clicked: one
+request to retain its content, which ran about six Git processes and took the
+review lock, and two renders of the whole page. The renders made the page's time
+grow with the square of the group's size. The viewer now sends the files 200 at a
+time in one request (fewer when their ownerships are large), records the
+approvals whose content was retained, and saves them in one save per request.
+The server lists the files with one `ls-tree` per revision (per few hundred
+paths), reads their sizes with one `cat-file --batch-check`, and reads their
+content with one `cat-file --batch` per 32 MiB, outside the review lock; it
+writes each such group's snapshots under one hold of the lock. A file that
+cannot be read or stored fails alone. A single file approval goes the same way.
+
+A stage of one group of files, from the click until the group shows every file
+approved, Linux, Node 24.20.0, other test suites running meanwhile:
+
+| Files | Before | After |
+| --- | ---: | ---: |
+| 50 | 50 requests, 4 saves, 307 Git runs, 2.1 s | 1 request, 1 save, 7 Git runs, 0.3 s |
+| 300 | 300 requests, 3 saves, 1,805 Git runs, 21–27 s | 2 requests, 2 saves, 15 Git runs, 1.0–1.2 s |
+| 1,000 | not measured | 5 requests, 5 saves, 40 Git runs, 3.8–4.0 s |
+
+`viewer-git-runs.test.mjs` checks that a request for 61 files runs the same Git
+commands as one for a single file, and the browser tests count the requests and
+saves of a 450-file group.
+
 ## Functional effects and limits
 
 - API references are grouped under `scripts/api/`; `API.d.ts` is the small index

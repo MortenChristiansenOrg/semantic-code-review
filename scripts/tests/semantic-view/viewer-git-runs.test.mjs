@@ -45,8 +45,9 @@ function exited(pid) {
 }
 
 /** Starts the review of a one-stage implementation with Git tracing every
- * process it starts to a file; stops it after the test. */
-async function startTracedViewer(t) {
+ * process it starts to a file; stops it after the test. The stage changes
+ * `implementation.md` and `extraFiles` more files. */
+async function startTracedViewer(t, { extraFiles = 0 } = {}) {
   const viewer = {};
   t.after(async () => {
     if (!viewer.port || exited(viewer.pid)) return;
@@ -56,6 +57,11 @@ async function startTracedViewer(t) {
   const repository = createRepository(t);
   initializeImplementation(repository);
   beginStage(repository);
+  if (extraFiles) {
+    fs.mkdirSync(path.join(repository.root, "many"));
+    for (let index = 0; index < extraFiles; index++) fs.writeFileSync(path.join(repository.root, "many", `file-${index}.txt`), `File ${index}\n`);
+    repository.git("add", "many");
+  }
   finalizeStage(repository, { file: "implementation.md", contents: "# Implementation\n\nDetails.\n" });
   // Line threads are located with batched reads.
   repository.feedback("init");
@@ -239,4 +245,25 @@ test("the jobs after a request body share one read of the active refs", async (t
   assert.equal(checks.length, 3, reads.join("\n"));
   assert.equal(reads.filter(rechecking).length, 1, reads.join("\n"));
   assert.equal(reads.filter(archiveChecking).length, 1, reads.join("\n"));
+});
+
+test("approving many files at once runs Git as often as approving one", async (t) => {
+  const viewer = await startTracedViewer(t, { extraFiles: 60 });
+  const { response } = await viewer.get("/api/implementation");
+  const stage = response.json.implementation.stages[0];
+  assert.equal(stage.files.length, 61);
+  const endpoints = stage.files.map((file) => ({ stageId: stage.id, nodeId: file.memberships[0].nodeId, path: file.path,
+    baseRevision: file.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership: file.memberships[0] }));
+  /** The Git commands that retaining the files' content ran. */
+  const approve = async (files) => {
+    const before = viewer.runs().length;
+    const result = await send(viewer.port, { method: "POST", path: `/api/approval-snapshots?${viewer.scope()}`,
+      headers: { "content-type": "application/json", [KEY_HEADER]: viewer.key }, body: { files } });
+    assert.equal(result.status, 200, result.text);
+    assert.equal(result.json.results.filter((item) => item.snapshotId).length, files.length, result.text);
+    return viewer.runs().slice(before).map((line) => line.replace(/^.* trace: built-in: git /, "").split(" ").slice(0, 2).join(" "));
+  };
+  const one = await approve(endpoints.slice(0, 1)), all = await approve(endpoints);
+  t.diagnostic(`one file: ${one.length} Git runs; ${endpoints.length} files: ${all.length} Git runs`);
+  assert.deepEqual(all, one);
 });

@@ -881,12 +881,13 @@ test("concurrent review services isolate commands and reopen registered worktree
   const implementation = await request(third, "api/implementation").then((r) => r.json());
   const stage = implementation.implementation.stages[0], file = stage.files[0];
   const approval = { stageId: stage.id, nodeId: file.memberships[0].nodeId, path: file.path, baseRevision: stage.baseRevision, headRevision: stage.headRevision, fileRevision: file.revision, ownership: file.memberships[0] };
-  const snapshot = await request(third, "api/approval-snapshots", approval).then((r) => r.json());
-  assert.equal(snapshot.ok, true, JSON.stringify(snapshot));
+  const captured = await request(third, "api/approval-snapshots", { files: [approval] }).then((r) => r.json());
+  assert.equal(captured.ok, true, JSON.stringify(captured));
+  const [snapshot] = captured.results;
   const comparison = await request(third, "api/approval-comparison", { ...approval, snapshotId: snapshot.snapshotId }).then((r) => r.json());
   assert.equal(comparison.ok, true, JSON.stringify(comparison)); assert.deepEqual(comparison.lines, []);
-  assert.equal((await request(third, "api/approval-snapshots", { ...approval, fileRevision: 'outdated' })).status, 409);
-  assert.equal((await request(third, "api/approval-snapshots", { ...approval, ownership: {} })).status, 409);
+  const refused = await request(third, "api/approval-snapshots", { files: [{ ...approval, fileRevision: 'outdated' }, { ...approval, ownership: {} }] }).then((r) => r.json());
+  assert.deepEqual(refused.results.map((result) => /changed/.test(result.error)), [true, true], JSON.stringify(refused));
   const upload = { filename: "screenshot.png", mediaType: "image/png", data: Buffer.from([137,80,78,71,13,10,26,10]).toString("base64") };
   const attached = await request(third, "api/attachments", upload).then((r) => r.json());
   assert.equal(attached.ok, true, JSON.stringify(attached));

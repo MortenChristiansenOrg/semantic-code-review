@@ -199,6 +199,16 @@ export function parseApprovalEndpoint(fields: JsonRecord): ReceivedApprovalEndpo
   };
 }
 
+/** Files per approval snapshot request: enough for a large group in a few
+ * requests, few enough that one request holds the data worker only briefly. */
+export const MAX_APPROVAL_FILES = 200;
+/** The files an approval snapshot request names. */
+export function parseApprovalEndpoints(fields: JsonRecord): ReceivedApprovalEndpoint[] {
+  const files = fields.files;
+  if (!isList(files) || !files.length || files.length > MAX_APPROVAL_FILES) throw new Error(`Name between 1 and ${MAX_APPROVAL_FILES} files to approve.`);
+  return files.map((file) => parseApprovalEndpoint(isRecord(file) ? file : {}));
+}
+
 /** The comparison options of an approval comparison request, read after its file is checked. */
 export function parseApprovalComparison(fields: JsonRecord): Required<Omit<Wire.ApprovalComparisonRequest, keyof Wire.ApprovalEndpoint>> {
   const offset = fields.offset, mode = fields.mode ?? "changes", scope = fields.scope ?? "stage";

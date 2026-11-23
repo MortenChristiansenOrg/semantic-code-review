@@ -177,7 +177,7 @@ test("a running viewer answers every JSON route with the shared protocol types",
 
   const endpoint = { stageId: stage.id, nodeId: ownership.nodeId, path: file.path, baseRevision: file.baseRevision,
     headRevision: stage.headRevision, fileRevision: file.revision, ownership };
-  const { snapshotId } = await post("ApprovalSnapshotResponse", "api/approval-snapshots", endpoint);
+  const { results: [{ snapshotId }] } = await post("ApprovalSnapshotsResponse", "api/approval-snapshots", { files: [endpoint] });
   await post("ApprovalComparisonResponse", "api/approval-comparison", { ...endpoint, snapshotId });
   await post("DraftSnapshotsResponse", "api/draft-snapshots", { notes: [
     { kind: "line", id: `l:${stage.id}:new:1:${file.path}`, snapshot: { base: stage.baseRevision, head: stage.headRevision } },
@@ -255,8 +255,10 @@ test("the viewer accepts and rejects requests as before it read them into protoc
   // The shown ownership must equal the server's exactly; a missing file is reported first.
   const endpoint = { stageId: stage.id, nodeId: ownership.nodeId, path: file.path, baseRevision: file.baseRevision,
     headRevision: stage.headRevision, fileRevision: file.revision, ownership };
-  const extra = await post("ApiFailure", "api/approval-snapshots", { ...endpoint, ownership: { ...ownership, other: 1 } }, 409);
+  const { results: [extra, retained] } = await post("ApprovalSnapshotsResponse", "api/approval-snapshots", { files: [{ ...endpoint, ownership: { ...ownership, other: 1 } }, endpoint] });
   assert.match(extra.error, /ownership changed/);
+  assert.match(retained.snapshotId, /^[a-f0-9]{32}$/);
+  for (const files of [[], Array(201).fill(endpoint), endpoint]) assert.match((await post("ApiFailure", "api/approval-snapshots", { files }, 409)).error, /between 1 and 200 files/);
   const missing = await post("ApiFailure", "api/approval-comparison", { ...endpoint, stageId: "missing", ownership: null, mode: "bogus" }, 409);
   assert.match(missing.error, /no longer exists/);
   const view = await post("ApiFailure", "api/approval-comparison", { ...endpoint, snapshotId: "", mode: "bogus" }, 409);
@@ -330,8 +332,8 @@ test("a review whose artifact the viewer cannot fully read still opens", async (
   const [file] = served.files;
   assert.deepEqual(served.files.map(({ path, memberships }) => [path, memberships]),
     [["implementation.md", expected.flatMap(([nodeId, fields]) => fields ? [{ nodeId, ...fields }] : [])]]);
-  await post("ApprovalSnapshotResponse", "api/approval-snapshots", { stageId: served.id, nodeId: "implementation-change", path: file.path,
-    baseRevision: file.baseRevision, headRevision: served.headRevision, fileRevision: file.revision, ownership: file.memberships[0] });
+  await post("ApprovalSnapshotsResponse", "api/approval-snapshots", { files: [{ stageId: served.id, nodeId: "implementation-change", path: file.path,
+    baseRevision: file.baseRevision, headRevision: served.headRevision, fileRevision: file.revision, ownership: file.memberships[0] }] });
   // Each insight takes the code target of its own item, not of another with its ID.
   const risks = served.insights.filter((insight) => insight.collection === "risks");
   assert.deepEqual(risks.map((risk) => [risk.title, risk.codeTarget?.status]), [["Targeted", "current"], ["Untargeted", undefined]]);

@@ -760,10 +760,23 @@ export type AttachmentQuery = {
   preview?: "1";
 };
 
-/** POST `/api/approval-snapshots` response; the request is an `ApprovalEndpoint`. */
-export type ApprovalSnapshotResponse = ApiResult<{
+/** POST `/api/approval-snapshots` request: the files to approve, as the page
+ * shows them, at most 200 per request. */
+export interface ApprovalSnapshotsRequest {
+  files: ApprovalEndpoint[];
+}
+/** A file's approved content, retained. */
+export interface ApprovalSnapshot {
   snapshotId: string;
   capturedAt: string;
+}
+/** One requested file's result: its retained content, or why it could not be retained. */
+export type ApprovalSnapshotResult = ApprovalSnapshot | { error: string };
+/** POST `/api/approval-snapshots` response: a result for each requested file, in
+ * order. A file that cannot be retained fails alone; the request fails as a whole
+ * when the review or the implementation changed. */
+export type ApprovalSnapshotsResponse = ApiResult<{
+  results: ApprovalSnapshotResult[];
 }>;
 
 /** POST `/api/approval-comparison` request. */

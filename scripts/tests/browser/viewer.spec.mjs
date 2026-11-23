@@ -11,6 +11,10 @@ const styles = fs.readFileSync(new URL('styles.css', viewer), 'utf8');
 const fileId = 'f:first:shared.js';
 const approvalKey = (stage, node, file = 'shared.js') => `m:${JSON.stringify([stage, node, file])}`;
 const firstMembershipRevision = JSON.stringify(['rev', 'a'.repeat(40), 'behavior', [1], null]);
+/** Answers an approval snapshot request with a result for each file: `failure(file)`
+ * names why a file's content could not be retained, or nothing when it was. */
+const snapshotResults = (route, snapshotId = 'a'.repeat(32), failure = () => '') => route.fulfill({ json: { ok: true,
+  results: route.request().postDataJSON().files.map((file) => failure(file) ? { error: failure(file) } : { snapshotId, capturedAt: new Date().toISOString() }) } });
 function fixture() {
   return {
     implementationId: 'browser-review', title: 'Review fixes', summary: 'Browser fixture',
@@ -119,7 +123,7 @@ async function mount(page, data = fixture(), saved = {}, other = [], { csp } = {
       if (!saved) return route.fulfill({ status: 404 });
       return route.fulfill({ contentType: saved?.attachment.mediaType || 'application/octet-stream', body: saved?.bytes || Buffer.alloc(0) });
     }
-    if (url.pathname === '/api/approval-snapshots') return json({ ok: true, snapshotId: 'a'.repeat(32), capturedAt: new Date().toISOString() });
+    if (url.pathname === '/api/approval-snapshots') return snapshotResults(route);
     if (url.pathname === '/api/feedback/export') return json({ ok: true, exported: route.request().postDataJSON().notes.map((note) => ({ ref: note.ref, threadId: `thread-${note.ref}` })), skipped: [] });
     if (url.pathname === '/api/revision') return json({ ok: true, revision: currentData.viewerRevision, ...(currentData.agent ? { agent: currentData.agent } : {}) });
     if (url.pathname === '/api/agent/respond') {
@@ -1149,7 +1153,7 @@ test('folder approval approves its pending and stale files only', async ({ page 
   const done = { rev: JSON.stringify(['rev-web/d.js', 'behavior', null, null]), at: 1, path: 'web/d.js', snapshotId: 'd'.repeat(32) };
   await mount(page, folderFixture(), { approvals: { [staleKey]: { rev: JSON.stringify(['old', 'behavior', null, null]), at: 1, path: 'web/c.js' }, [doneKey]: done } });
   const captured = [];
-  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/approval-snapshots') captured.push(request.postDataJSON().path); });
+  page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/approval-snapshots') captured.push(...request.postDataJSON().files.map((file) => file.path)); });
   const { node, web, api } = await openFolders(page);
   await expect(web.locator('.fg-done')).toHaveText('1/4');
   await expect(web.locator('.frow.is-stale')).toHaveCount(1);
@@ -1169,9 +1173,7 @@ test('folder approval approves its pending and stale files only', async ({ page 
 
 test('a failed snapshot in folder approval leaves the other files approved', async ({ page }) => {
   await mount(page, folderFixture());
-  await page.route('**/api/approval-snapshots*', (route) => route.request().postDataJSON().path === 'web/b.js'
-    ? route.fulfill({ status: 409, json: { ok: false, error: 'The file changed. Refresh before approving.' } })
-    : route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  await page.route('**/api/approval-snapshots*', (route) => snapshotResults(route, 'a'.repeat(32), (file) => file.path === 'web/b.js' ? 'The file changed. Refresh before approving.' : ''));
   const { web } = await openFolders(page);
   await web.locator('.fg-approve').click();
   await expect(page.locator('[role="alert"]')).toContainText('web/b.js');
@@ -1181,6 +1183,115 @@ test('a failed snapshot in folder approval leaves the other files approved', asy
   await web.locator('.fg-approve').click();
   await expect(web.locator('.fg-done')).toHaveText('✓ 4/4');
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
+});
+
+/** The folder fixture with `count` more files in the "bulk" group. */
+function bulkFixture(count) {
+  const data = folderFixture();
+  for (let index = 0; index < count; index++) {
+    const path = `bulk/file-${String(index).padStart(3, '0')}.js`;
+    data.stages[0].files.push({ path, project: 'bulk', kind: 'modified', revision: `rev-${path}`, additions: 1, deletions: 0,
+      memberships: [{ nodeId: 'first-one', classification: 'behavior' }], lines: [{ t: 'add', n: 1, s: 'x', h: 1 }] });
+  }
+  return data;
+}
+/** Counts the approval snapshot requests, the files each named, and the saves of approvals. */
+function countApprovalRequests(page) {
+  const counted = { snapshots: [], saves: 0 };
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/approval-snapshots') counted.snapshots.push(request.postDataJSON().files.length);
+    if (pathname === '/api/review-state' && request.method() === 'POST' && request.postDataJSON().changes.some((change) => change.path[0] === 'approvals')) counted.saves++;
+  });
+  return counted;
+}
+
+test('approving a large group makes a request and a save per 200 files, and renders a bounded number of times', async ({ page }) => {
+  await mount(page, bulkFixture(450));
+  const counted = countApprovalRequests(page);
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  await expect(bulk.locator('.fg-done')).toHaveText('0/450');
+  // Each render of the group replaces its counter's text.
+  await page.evaluate(() => {
+    window.counterChanges = 0;
+    new MutationObserver((records) => { window.counterChanges += records.length; })
+      .observe(document.querySelector('.fgroup:has(.fg-approve[data-group="bulk"]) .fg-done'), { childList: true, characterData: true, subtree: true });
+  });
+  await saveAction(page, () => bulk.locator('.fg-approve').click(), (state) =>
+    Object.keys(state.approvals || {}).filter((key) => key.includes('bulk/')).length === 450);
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
+  await expect(bulk.locator('.frow.is-approved')).toHaveCount(450);
+  expect(counted.snapshots).toEqual([200, 200, 50]);
+  expect(counted.saves).toBe(3);
+  expect(await page.evaluate(() => window.counterChanges)).toBeLessThanOrEqual(20);
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
+  await reload(page);
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
+});
+
+test('group approvals started together are captured and saved one after the other', async ({ page }) => {
+  await mount(page, folderFixture());
+  const events = [];
+  page.on('request', (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/api/approval-snapshots') events.push(`capture ${request.postDataJSON().files.map((file) => file.path).join(' ')}`);
+    if (pathname === '/api/review-state' && request.method() === 'POST' && request.postDataJSON().changes.some((change) => change.path[0] === 'approvals')) {
+      events.push(`save ${[...new Set(request.postDataJSON().changes.filter((change) => change.path[0] === 'approvals').map((change) => JSON.parse(change.path[1].slice(2))[2]))].sort().join(' ')}`);
+    }
+  });
+  const { node, web, api } = await openFolders(page);
+  await web.locator('.fg-approve').click();
+  await api.locator('.fg-approve').click();
+  await expect(node.locator('.frow.is-approved')).toHaveCount(5);
+  await expect(page.locator('#save-status')).toBeHidden();
+  expect(events).toEqual(['capture web/a.js web/b.js web/c.js web/d.js', 'save web/a.js web/b.js web/c.js web/d.js', 'capture api/e.js', 'save api/e.js']);
+});
+
+test('a group whose files have large ownerships is approved in requests small enough to save', async ({ page }) => {
+  const data = bulkFixture(150);
+  // About 12 KB of line ranges per file: a request of 200 such files would make a save of several MiB.
+  const ranges = Array.from({ length: 300 }, (_, index) => ({ new: { start: index * 2 + 1, end: index * 2 + 1 } }));
+  for (const file of data.stages[0].files) if (file.project === 'bulk') file.memberships = [{ nodeId: 'first-one', classification: 'behavior', lineRanges: ranges }];
+  await mount(page, data);
+  const counted = countApprovalRequests(page);
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  await bulk.locator('.fg-approve').click();
+  // The test server takes its time over saves this large.
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 150/150', { timeout: 30_000 });
+  expect(counted.snapshots.length).toBeGreaterThan(1);
+  expect(counted.snapshots.reduce((sum, files) => sum + files, 0)).toBe(150);
+  expect(counted.saves).toBe(counted.snapshots.length);
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
+});
+
+test('a large group approval keeps what was retained when a file or a request fails', async ({ page }) => {
+  await mount(page, bulkFixture(450));
+  const counted = countApprovalRequests(page);
+  let requests = 0;
+  await page.route('**/api/approval-snapshots*', (route) => ++requests === 2
+    ? route.fulfill({ status: 500, json: { ok: false, error: 'Snapshot storage unavailable' } })
+    : snapshotResults(route, 'a'.repeat(32), (file) => file.path === 'bulk/file-007.js' ? 'The file changed. Refresh before approving.' : ''));
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  await bulk.locator('.fg-approve').click();
+  // The first request's files but one, and the third's, are approved and saved; the rest each show why not.
+  await expect(bulk.locator('.fg-done')).toHaveText('249/450');
+  await expect(page.locator('[role="alert"]')).toHaveCount(201);
+  await expect(page.locator('[role="alert"]').filter({ hasText: 'bulk/file-007.js: The file changed' })).toHaveCount(1);
+  await expect(page.locator('[role="alert"]').filter({ hasText: 'Snapshot storage unavailable' })).toHaveCount(200);
+  await expect(bulk.locator('.frow-wrap', { hasText: 'file-007.js' }).locator('.frow')).not.toHaveClass(/is-approved/);
+  await expect(bulk.locator('.frow-wrap', { hasText: 'file-200.js' }).locator('.frow')).not.toHaveClass(/is-approved/);
+  await expect(bulk.locator('.frow-wrap', { hasText: 'file-400.js' }).locator('.frow')).toHaveClass(/is-approved/);
+  expect(counted.snapshots).toEqual([200, 200, 50]);
+  expect(counted.saves).toBe(2);
+  // Approving the group again retries only the files that failed.
+  await page.unroute('**/api/approval-snapshots*');
+  await bulk.locator('.fg-approve').click();
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
+  expect(counted.snapshots).toEqual([200, 200, 50, 200, 1]);
 });
 
 for (const legacy of [false, true]) test(`file approvals survive unchanged restacks (${legacy ? 'existing' : 'new'} record)`, async ({ page }) => {
@@ -1449,7 +1560,7 @@ test('failed snapshot capture does not approve a file', async ({ page }) => {
   await expect(page.locator('[role="alert"]')).toContainText('Approval was not saved');
   await expect(page.locator('.frow.is-approved')).toHaveCount(0);
   await expect(page.locator('.cinema-diff')).toBeVisible();
-  await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  await page.route('**/api/approval-snapshots*', (route) => snapshotResults(route));
   await page.locator('details[data-node="first-two"] summary').click();
   await page.locator('details[data-node="first-two"] .mini-approve').click();
   await expect(page.locator('[role="alert"]')).toContainText('Approval was not saved');
@@ -1463,7 +1574,7 @@ test('switching waits for an in-flight approval capture and its state save', asy
   await mount(page, a, {}, [b]); await openFile(page);
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
-  await page.route('**/api/approval-snapshots*', async (route) => { await pending; await route.fulfill({ json: { ok: true, snapshotId: 'b'.repeat(32) } }); });
+  await page.route('**/api/approval-snapshots*', async (route) => { await pending; await snapshotResults(route, 'b'.repeat(32)); });
   await page.locator('details[data-node="first-one"] .mini-approve').click();
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
   await page.locator('[data-review="b"]').getByRole('button', { name: 'Open review', exact: true }).click();
@@ -1503,7 +1614,7 @@ test('failed approvals follow renamed files and clear when the retry succeeds', 
   const file = data.stages[0].files[0];
   file.previousPath = file.path; file.path = 'renamed.js'; file.kind = 'renamed'; data.viewerRevision = 'renamed-error';
   await expect(one.locator('.frow')).toContainText('renamed.js');
-  await page.route('**/api/approval-snapshots*', (route) => route.fulfill({ json: { ok: true, snapshotId: 'a'.repeat(32) } }));
+  await page.route('**/api/approval-snapshots*', (route) => snapshotResults(route));
   await one.locator('.mini-approve').click();
   await expect(one.locator('.frow')).toHaveClass(/is-approved/);
   await expect(page.locator('[role="alert"]')).toHaveCount(0);
@@ -1717,7 +1828,7 @@ test('an approval whose content is retained after the archive notice is listed a
   const saved = [];
   page.on('request', (request) => { if (archived && new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST') saved.push(request.postData()); });
   await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
-  await page.route('**/api/approval-snapshots*', async (route) => { await pending; await route.fulfill({ json: { ok: true, snapshotId: 'b'.repeat(32) } }); });
+  await page.route('**/api/approval-snapshots*', async (route) => { await pending; await snapshotResults(route, 'b'.repeat(32)); });
   await page.locator('details[data-node="first-one"] .mini-approve').click();
   // With the saved reviews already open, the notice's heading takes focus, so screen readers announce it.
   await page.getByRole('button', { name: 'Reviews', exact: true }).click();
@@ -1733,6 +1844,32 @@ test('an approval whose content is retained after the archive notice is listed a
   expect(saved).toEqual([]);
   // Only unsent text makes leaving ask.
   expect(await warnsBeforeLeaving(page)).toBe(false);
+});
+
+test('a group approval whose first save lands after the archive notice lists the files it never saved', async ({ page }) => {
+  await mount(page, bulkFixture(250));
+  const counted = countApprovalRequests(page);
+  let archived = false, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  // The first save of approvals is stored, but its answer arrives only after the page learned of the archive.
+  await page.route('**/api/review-state?*', async (route) => {
+    if (route.request().method() !== 'POST' || !route.request().postDataJSON().changes.some((change) => change.path[0] === 'approvals')) return route.fallback();
+    await held; return route.fallback();
+  });
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  const firstSave = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await bulk.locator('.fg-approve').click();
+  await firstSave;
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  release();
+  await expect(page.locator('.ended-review')).toContainText('These approval changes were not saved:');
+  await expect(page.locator('.ended-review li')).toHaveCount(50);
+  await expect(page.locator('.ended-review li').first()).toHaveText('bulk/file-200.js');
+  expect(counted.snapshots).toEqual([200]);
 });
 
 /** Holds the page's next saves of review state until released, then refuses
@@ -2452,7 +2589,7 @@ test('remote stages have no cumulative view and use file-specific diff and appro
   expect(new URL((await diffRequest).url()).searchParams.get('base')).toBe('c'.repeat(40));
   const approval = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/approval-snapshots');
   await page.locator('details[data-node="first-one"] .mini-approve').click();
-  expect((await approval).postDataJSON().baseRevision).toBe('c'.repeat(40));
+  expect((await approval).postDataJSON().files.map((file) => file.baseRevision)).toEqual(['c'.repeat(40)]);
 });
 
 test('the newest remote commit retains an earlier approval after rewritten history and chained renames', async ({ page }) => {

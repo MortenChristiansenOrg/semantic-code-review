@@ -58,7 +58,7 @@ export function assertReviewContext(context: ReviewContext, artifactCheck: Artif
 
 /** Internal command runner; executable/args are selected by server handlers,
  * never by a general-purpose shell endpoint. Future viewer CLI actions use this. */
-type ReviewCommandOptions = { input?: string; workingWorktree?: string; environment?: NodeJS.ProcessEnv };
+type ReviewCommandOptions = { input?: string | Buffer; workingWorktree?: string; environment?: NodeJS.ProcessEnv };
 export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options: ReviewCommandOptions & { encoding: null }): Buffer;
 export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options?: ReviewCommandOptions & { encoding?: BufferEncoding }): string;
 export function runReviewCommand(context: ReviewContext, executable: string, args: string[], options: ReviewCommandOptions & { encoding?: BufferEncoding | null } = {}): string | Buffer {

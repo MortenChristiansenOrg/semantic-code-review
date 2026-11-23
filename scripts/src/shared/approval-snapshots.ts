@@ -7,8 +7,9 @@ import { assertReviewContext, runReviewCommand, type ReviewContext } from "./rev
 import { atomicJson, readReview, reviewDirectory, withReviewLock } from "./review-store.js";
 import { parseJson } from "./json.js";
 import { porcelainDiff } from "./diff-settings.js";
-import { capturedOutput, exitStatus, isRecord, isStringArray, stringField, type JsonRecord } from "./narrow.js";
-import type { ApiSuccess, ApprovalComparisonResponse, ApprovalFileEndpoint, ApprovalSnapshotResponse, DiffLine, DiffMode } from "./viewer-protocol.js";
+import { readBlobs } from "./artifact-store.js";
+import { capturedOutput, errorMessage, exitStatus, isRecord, isStringArray, stringField, type JsonRecord } from "./narrow.js";
+import type { ApiSuccess, ApprovalComparisonResponse, ApprovalFileEndpoint, ApprovalSnapshot, ApprovalSnapshotResult, DiffLine, DiffMode } from "./viewer-protocol.js";
 
 /** The current file endpoint, as the server resolves it. */
 export type FileEndpoint = ApprovalFileEndpoint;
@@ -43,34 +44,138 @@ export function approvalSnapshotPath(reviewId: string, snapshotId: string) {
   if (!/^[a-f0-9]{32}$/.test(snapshotId)) throw new Error("Invalid approval snapshot identity.");
   return path.join(reviewDirectory(reviewId), "snapshots", snapshotId + ".json");
 }
-function git(context: ReviewContext, args: string[]): Buffer {
-  return runReviewCommand(context, "git", ["--literal-pathspecs", ...args], { encoding: null });
+function git(context: ReviewContext, args: string[], input?: Buffer): Buffer {
+  return runReviewCommand(context, "git", ["--literal-pathspecs", ...args], { encoding: null, input });
 }
-function readContent(context: ReviewContext, endpoint: RecordedEndpoint): Content {
-  // ls-tree distinguishes an absent file from an unavailable commit/blob.
-  const tree = git(context, ["ls-tree", "-z", endpoint.headRevision, "--", endpoint.path]).toString("utf8");
-  const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === endpoint.path);
-  const [mode, type, objectId] = record ? record.slice(0, record.indexOf("\t")).split(" ") : [];
-  const unsupported = record && type !== "blob" ? "Git submodules do not have file content to compare." : "";
-  if (record && !unsupported) {
-    const size = Number(git(context, ["cat-file", "-s", objectId]).toString("utf8").trim());
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error("Invalid Git blob size.");
+/** Characters of paths per `ls-tree` run, which keeps its command line well
+ * within the shortest platform limit (Windows: 32,767). */
+const MAX_PATHSPEC_CHARS = 16_000;
+/** The tree entries ("<mode> <type> <object>") of `paths` at `revision`, by path,
+ * read with one `ls-tree` per several hundred paths. A path the revision lacks
+ * has no entry. ls-tree distinguishes an absent file from an unavailable commit. */
+function treeEntries(context: ReviewContext, revision: string, paths: readonly string[]): Map<string, string> {
+  const entries = new Map<string, string>(), wanted = new Set(paths);
+  // ls-tree does not list a tree whose paths are listed too, so a path that
+  // names a directory of another wanted path is listed on its own.
+  const directories = new Set<string>();
+  for (const entryPath of wanted) {
+    for (let slash = entryPath.indexOf("/"); slash > 0; slash = entryPath.indexOf("/", slash + 1)) {
+      const directory = entryPath.slice(0, slash);
+      if (wanted.has(directory)) directories.add(directory);
+    }
+  }
+  const list = (chunk: string[]) => {
+    for (const line of git(context, ["ls-tree", "-z", revision, "--", ...chunk]).toString("utf8").split("\0")) {
+      const tab = line.indexOf("\t"), entryPath = line.slice(tab + 1);
+      if (tab >= 0 && wanted.has(entryPath)) entries.set(entryPath, line.slice(0, tab));
+    }
+  };
+  let chunk: string[] = [], chars = 0;
+  for (const entryPath of wanted) {
+    if (directories.has(entryPath)) { list([entryPath]); continue; }
+    if (chunk.length && chars + entryPath.length > MAX_PATHSPEC_CHARS) { list(chunk); chunk = []; chars = 0; }
+    chunk.push(entryPath); chars += entryPath.length + 1;
+  }
+  if (chunk.length) list(chunk);
+  return entries;
+}
+/** Each item's tree entry, read with the paths wanted at each distinct revision
+ * together, or the error that reading its revision failed with. */
+function entriesAt<T>(context: ReviewContext, items: readonly T[], revisionOf: (item: T) => string, pathOf: (item: T) => string): (string | undefined | Error)[] {
+  const byRevision = new Map<string, Map<string, string> | Error>();
+  for (const item of items) byRevision.set(revisionOf(item), byRevision.get(revisionOf(item)) ?? new Map());
+  for (const revision of byRevision.keys()) {
+    try { byRevision.set(revision, treeEntries(context, revision, items.filter((item) => revisionOf(item) === revision).map(pathOf))); }
+    catch { byRevision.set(revision, new Error(`Git revision ${revision} cannot be read.`)); }
+  }
+  return items.map((item) => {
+    const entries = byRevision.get(revisionOf(item));
+    return entries instanceof Error ? entries : entries?.get(pathOf(item));
+  });
+}
+/** A file at its head revision: its tree entry, if it has one, and its blob's size. */
+interface HeadFile { entry: string | undefined; size?: number }
+/** Each endpoint's file at its head, read with a few Git runs for all of them. */
+function headFiles(context: ReviewContext, endpoints: readonly RecordedEndpoint[]): (HeadFile | Error)[] {
+  const entries = entriesAt(context, endpoints, (endpoint) => endpoint.headRevision, (endpoint) => endpoint.path);
+  const blobs = [...new Set(entries.flatMap((entry) => typeof entry === "string" && entry.split(" ")[1] === "blob" ? [entry.split(" ")[2]] : []))];
+  const sizes = new Map<string, number>();
+  const check = (ids: string[]) => {
+    const lines = git(context, ["cat-file", "--batch-check"], Buffer.from(ids.map((id) => id + "\n").join(""), "utf8")).toString("utf8").split("\n");
+    ids.forEach((id, index) => {
+      const [, type, size] = (lines[index] ?? "").split(" ");
+      if (type === "blob") sizes.set(id, Number(size));
+    });
+  };
+  // An object that cannot be read, such as one a partial clone cannot fetch,
+  // leaves its files, and only them, failed: when the check of all fails, each is checked alone.
+  if (blobs.length) try { check(blobs); }
+  catch {
+    if (blobs.length > 1) for (const id of blobs) {
+      try { check([id]); } catch { /* Its files report the object unavailable. */ }
+    }
+  }
+  return entries.map((entry) => entry instanceof Error ? entry : { entry, size: entry ? sizes.get(entry.split(" ")[2]) : undefined });
+}
+/** The blob a file's content is read from, and its size: none for a file without
+ * readable content within the snapshot limit. */
+function blobToRead(file: HeadFile | Error): { id: string; size: number } | null {
+  if (file instanceof Error || !file.entry || file.size === undefined || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > MAX_APPROVED_BYTES) return null;
+  const [, type, id] = file.entry.split(" ");
+  return type === "blob" ? { id, size: file.size } : null;
+}
+/** The content of the blobs, read with one Git run. When that fails, each blob is
+ * read alone, so only the files of a blob that cannot be read fail. */
+function readBlobContents(context: ReviewContext, ids: readonly string[]): Map<string, Buffer> {
+  const run = (args: string[], input?: Buffer) => git(context, args, input);
+  const unique = [...new Set(ids)];
+  if (!unique.length) return new Map();
+  try { return readBlobs(run, unique); }
+  catch {
+    const contents = new Map<string, Buffer>();
+    if (unique.length > 1) for (const id of unique) {
+      try { for (const [read, content] of readBlobs(run, [id])) contents.set(read, content); }
+      catch { /* The file reports its object unavailable. */ }
+    }
+    return contents;
+  }
+}
+/** A file's content from its head entry and the blobs read for it. */
+function contentOf(file: HeadFile | Error, contents: ReadonlyMap<string, Buffer>): Content | Error {
+  if (file instanceof Error) return file;
+  const { entry, size } = file;
+  const [mode, type, objectId] = entry ? entry.split(" ") : [];
+  const unsupported = entry && type !== "blob" ? "Git submodules do not have file content to compare." : "";
+  if (entry && !unsupported) {
+    if (size === undefined) return new Error(`Git object ${objectId} is unavailable.`);
+    if (!Number.isSafeInteger(size) || size < 0) return new Error("Invalid Git blob size.");
     if (size > MAX_APPROVED_BYTES) return { exists: true, mode, objectId, binary: false, bytes: "", size, sha256: null,
       unsupported: "File content exceeds the 20 MiB approval snapshot limit. Size and Git object identity are retained; a line comparison is unavailable." };
   }
-  const bytes = record && !unsupported ? git(context, ["cat-file", "blob", objectId]) : Buffer.alloc(0);
-  const text = bytes.toString("utf8");
-  return { exists: Boolean(record), mode: mode || null, objectId: objectId || null, unsupported,
-    binary: bytes.includes(0) || !Buffer.from(text, "utf8").equals(bytes), bytes: bytes.toString("base64"), size: bytes.length, sha256: digest(bytes) };
+  const content = entry && !unsupported ? contents.get(objectId) : Buffer.alloc(0);
+  if (!content) return new Error(`Git object ${objectId} is unavailable.`);
+  const text = content.toString("utf8");
+  return { exists: Boolean(entry), mode: mode || null, objectId: objectId || null, unsupported,
+    binary: content.includes(0) || !Buffer.from(text, "utf8").equals(content), bytes: content.toString("base64"), size: content.length, sha256: digest(content) };
+}
+function readContent(context: ReviewContext, endpoint: RecordedEndpoint): Content {
+  const [file] = headFiles(context, [endpoint]), blob = blobToRead(file);
+  return orThrow(contentOf(file, readBlobContents(context, blob ? [blob.id] : [])));
 }
 /** A base file's mode, type and object; empty where the base has no file
  * there. A directory of that name is not the file. */
 const fileIdentity = (record: string) => record.split(" ")[1] === "tree" ? "" : record;
+/** The tree entry each endpoint's file had at its base, empty when the base lacks it. */
+function baseIdentities(context: ReviewContext, endpoints: readonly RecordedEndpoint[]): (string | Error)[] {
+  return entriesAt(context, endpoints, (endpoint) => endpoint.baseRevision, (endpoint) => endpoint.previousPath || endpoint.path)
+    .map((entry) => entry === undefined ? "" : entry instanceof Error ? entry : fileIdentity(entry));
+}
 function baseIdentity(context: ReviewContext, endpoint: RecordedEndpoint): string {
-  const filePath = endpoint.previousPath || endpoint.path;
-  const tree = git(context, ["ls-tree", "-z", endpoint.baseRevision, "--", filePath]).toString("utf8");
-  const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === filePath);
-  return record ? fileIdentity(record.slice(0, record.indexOf("\t"))) : "";
+  return orThrow(baseIdentities(context, [endpoint])[0]);
+}
+function orThrow<T>(value: T | Error): T {
+  if (value instanceof Error) throw value;
+  return value;
 }
 function approvedBaseIdentity(context: ReviewContext, snapshot: Snapshot): string | null {
   try { return snapshot.baseIdentity !== undefined ? fileIdentity(snapshot.baseIdentity) : baseIdentity(context, snapshot.endpoint); }
@@ -96,13 +201,51 @@ function approvedOnCurrentBase(context: ReviewContext, approved: Buffer, previou
   try { return git(context, ["merge-file", "-p", approvedFile, previousFile, currentFile]); }
   catch { return null; }
 }
-export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint): ApiSuccess<ApprovalSnapshotResponse> {
-  return withReviewLock(context.reviewId, () => {
+/** Files whose content is read with one Git run and written under one hold of the
+ * review lock, and the content bytes they may have together: this bounds the
+ * memory a capture holds and how long other requests and the agent's commands
+ * wait for the lock. */
+const MAX_GROUP_FILES = 200, MAX_GROUP_BYTES = 32 * 1024 * 1024;
+/** Retains the content of each approved file. The files are read in groups,
+ * outside the review lock: their revisions are immutable. A file that cannot be
+ * read or stored fails alone; a review that changed or ended fails the whole capture. */
+export function captureApprovalSnapshots(context: ReviewContext, endpoints: readonly FileEndpoint[]): ApprovalSnapshotResult[] {
+  const files = headFiles(context, endpoints), bases = baseIdentities(context, endpoints);
+  // A review that changed or ended while the files were read fails as a whole,
+  // not as files that could not be read.
+  assertReviewContext(context);
+  const results: ApprovalSnapshotResult[] = [];
+  for (let start = 0, end = 0; start < endpoints.length; start = end) {
+    let bytes = 0;
+    while (end < endpoints.length && end - start < MAX_GROUP_FILES && (end === start || bytes + (blobToRead(files[end])?.size ?? 0) <= MAX_GROUP_BYTES)) {
+      bytes += blobToRead(files[end++])?.size ?? 0;
+    }
+    const group = Array.from({ length: end - start }, (_, offset) => start + offset);
+    const contents = readBlobContents(context, group.flatMap((index) => blobToRead(files[index])?.id ?? []));
+    // A review that changed or ended meanwhile is why its blobs could not be read.
     assertReviewContext(context);
-    const snapshot: Snapshot = { id: randomUUID().replaceAll("-", ""), endpoint, createdAt: new Date().toISOString(), baseIdentity: baseIdentity(context, endpoint), content: readContent(context, endpoint) };
-    atomicJson(approvalSnapshotPath(context.reviewId, snapshot.id), snapshot);
-    return { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
-  });
+    const snapshots: { index: number; snapshot: Snapshot }[] = [];
+    for (const index of group) {
+      const content = contentOf(files[index], contents), base = bases[index];
+      if (content instanceof Error || base instanceof Error) { results[index] = { error: errorMessage(content instanceof Error ? content : base) }; continue; }
+      snapshots.push({ index, snapshot: { id: randomUUID().replaceAll("-", ""), endpoint: endpoints[index], createdAt: new Date().toISOString(), baseIdentity: base, content } });
+    }
+    if (snapshots.length) withReviewLock(context.reviewId, () => {
+      assertReviewContext(context);
+      for (const { index, snapshot } of snapshots) {
+        try {
+          atomicJson(approvalSnapshotPath(context.reviewId, snapshot.id), snapshot);
+          results[index] = { snapshotId: snapshot.id, capturedAt: snapshot.createdAt };
+        } catch (error) { results[index] = { error: `Could not store the approved content: ${errorMessage(error)}` }; }
+      }
+    });
+  }
+  return results;
+}
+export function captureApprovalSnapshot(context: ReviewContext, endpoint: FileEndpoint): ApprovalSnapshot {
+  const [captured] = captureApprovalSnapshots(context, [endpoint]);
+  if ("error" in captured) throw new Error(captured.error);
+  return captured;
 }
 export function compareApprovalSnapshot(context: ReviewContext, snapshotId: string, current: FileEndpoint, offset = 0, mode: DiffMode = "changes", scope: "stage" | "all" = "stage"): ApiSuccess<ApprovalComparisonResponse> {
   if (!["changes", "full"].includes(mode)) throw new Error("Invalid comparison view.");

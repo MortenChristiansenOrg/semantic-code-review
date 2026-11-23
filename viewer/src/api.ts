@@ -11,7 +11,8 @@ import type {
   ApprovalComparisonRequest,
   ApprovalComparisonResponse,
   ApprovalEndpoint,
-  ApprovalSnapshotResponse,
+  ApprovalSnapshotsRequest,
+  ApprovalSnapshotsResponse,
   AttachmentQuery,
   AttachmentUploadRequest,
   AttachmentUploadResponse,
@@ -253,8 +254,9 @@ export const getFileContent = (url: FileContentJsonUrl) => request(url) as Promi
 /* ---- approvals --------------------------------------------------------- */
 const approvalEndpoint = ({ stageId, nodeId, path, baseRevision, headRevision, fileRevision, ownership }: ApprovalEndpoint): ApprovalEndpoint =>
   ({ stageId, nodeId, path, baseRevision, headRevision, fileRevision, ownership }) satisfies Body<ApprovalEndpoint>;
-export const captureApprovalSnapshot = (endpoint: ApprovalEndpoint) =>
-  postJson<ApprovalSnapshotResponse>("/api/approval-snapshots", approvalEndpoint(endpoint));
+/** Retains the approved content of up to 200 files, with a result for each. */
+export const captureApprovalSnapshots = (endpoints: ApprovalEndpoint[]) =>
+  postJson<ApprovalSnapshotsResponse>("/api/approval-snapshots", { files: endpoints.map(approvalEndpoint) } satisfies Body<ApprovalSnapshotsRequest>);
 export const compareApproval = ({ snapshotId, offset, mode, scope, ...endpoint }: ApprovalComparisonRequest) =>
   postJson<ApprovalComparisonResponse>("/api/approval-comparison", { ...approvalEndpoint(endpoint), snapshotId, offset, mode, scope } satisfies Body<ApprovalComparisonRequest>);
 

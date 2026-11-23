@@ -172,7 +172,7 @@ test("the read token opens only the browser-loaded resources, and only with GET"
   for (const route of [`/api/implementation?${viewer.scope}`, `/api/review-state?${viewer.scope}`, `/api/revision?${viewer.scope}`, "/api/whoami", "/api/bootstrap"]) {
     refusedForKey(await viewer.get(withRead(route), {}), route);
   }
-  for (const route of [`/api/attachments?${viewer.scope}`, `/api/review-state?${viewer.scope}`, "/api/shutdown", "/api/launch"]) {
+  for (const route of [`/api/attachments?${viewer.scope}`, `/api/review-state?${viewer.scope}`, `/api/approval-snapshots?${viewer.scope}`, "/api/shutdown", "/api/launch"]) {
     refusedForKey(await viewer.post(withRead(route), {}, {}), `POST ${route}`);
   }
   assert.equal((await send(viewer.port, { method: "HEAD", path: withRead(`/api/attachments/${attachment.id}?${viewer.scope}`) })).status, 403, "HEAD attachment");
@@ -194,6 +194,7 @@ test("requests from other origins are refused even with the key", async (t) => {
       await viewer.get(`/api/implementation?${viewer.scope}`, { ...keyed, ...headers }),
       await viewer.get("/api/bootstrap", { ...keyed, ...headers }),
       await viewer.post(`/api/review-state?${viewer.scope}`, {}, { ...keyed, ...headers }),
+      await viewer.post(`/api/approval-snapshots?${viewer.scope}`, { files: [] }, { ...keyed, ...headers }),
       await viewer.post("/api/shutdown", {}, { ...keyed, ...headers }),
       await viewer.post("/api/session", { code: "unused" }, headers),
     ]) {

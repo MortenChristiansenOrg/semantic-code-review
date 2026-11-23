@@ -50,9 +50,9 @@ import { inspectReviewStorage, deleteReviewData, cleanUnusedReviewFiles } from "
 export { storeAttachment, resolveAttachment } from "./shared/review-attachments.js";
 import { storeAttachment, resolveAttachment, imageMediaType, MAX_ATTACHMENT_BYTES } from "./shared/review-attachments.js";
 export { evidenceRange } from "./shared/evidence.js";
-export { captureApprovalSnapshot, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
+export { captureApprovalSnapshot, captureApprovalSnapshots, compareApprovalSnapshot } from "./shared/approval-snapshots.js";
 import { evidenceMediaTypeMatches, evidenceRange, resolveEvidenceFile, sha256Hex } from "./shared/evidence.js";
-import { captureApprovalSnapshot, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
+import { captureApprovalSnapshots, compareApprovalSnapshot, type FileEndpoint } from "./shared/approval-snapshots.js";
 
 export { startRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
 import { prepareRemoteReview, refreshRemoteReview } from "./shared/remote-review.js";
@@ -71,7 +71,7 @@ import { assertKnownOptions, flag, option, parseArguments } from "./shared/argum
 import { reviewFeedback, type PartialBatchResult, type ReviewFeedback } from "./review-feedback.js";
 import type * as Wire from "./shared/viewer-protocol.js";
 import {
-  isClassification, isEvidenceKind, isHunkNumber, lineRangeOf, parseAgentResponse, parseApprovalComparison, parseApprovalEndpoint, parseAttachmentQuery,
+  isClassification, isEvidenceKind, isHunkNumber, lineRangeOf, parseAgentResponse, parseApprovalComparison, parseApprovalEndpoint, parseApprovalEndpoints, parseAttachmentQuery,
   parseAttachmentUpload, parseCompletion, parseDiffQuery, parseDraftSnapshotNotes, parseFeedbackExport, parseFeedbackNotes, parseFeedbackReplies,
   parseFeedbackReply, parseFileContentQuery, parseReviewTarget, parseStatePatch, parseStorageAction, parseThreadAction,
   type QueryText, type Received, type ReceivedApprovalEndpoint, type ReceivedFeedbackExport, type ReceivedQuery, type Skipped,
@@ -2541,8 +2541,8 @@ function serveViewer({
       try {
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
         const fields = await readRequestFields(request);
-        sendJson<Wire.ApprovalSnapshotResponse>(response, 200, { ok: true, ...await jobs.call("captureApproval", implementationId, fields) });
-      } catch (error) { failure(409, error); }
+        sendJson<Wire.ApprovalSnapshotsResponse>(response, 200, { ok: true, results: await jobs.call("captureApprovals", implementationId, fields) });
+      } catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
     }
     if (request.method === "POST" && pathname === "/api/approval-comparison") {
@@ -3009,9 +3009,19 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
     },
     // Approval requests are read here, after the implementation check, and their
     // comparison options after the file, as each was checked before.
-    captureApproval: (implementationId: string, fields: JsonRecord) => {
+    /** Retains each named file's content; a file the page shows differently from
+     * the server, or whose content cannot be read, fails alone. */
+    captureApprovals: (implementationId: string, fields: JsonRecord): Wire.ApprovalSnapshotResult[] => {
       implementation(implementationId);
-      return captureApprovalSnapshot(context, approvedFileEndpoint(parseApprovalEndpoint(fields), source.implementationData()));
+      const data = source.implementationData();
+      const endpoints = parseApprovalEndpoints(fields).map((input) => {
+        try { return approvedFileEndpoint(input, data); }
+        catch (error) { return { error: errorMessage(error) }; }
+      });
+      const resolved = endpoints.filter((endpoint): endpoint is FileEndpoint => !("error" in endpoint));
+      const captured = captureApprovalSnapshots(context, resolved);
+      let next = 0;
+      return endpoints.map((endpoint) => "error" in endpoint ? endpoint : captured[next++]);
     },
     compareApproval: (implementationId: string, fields: JsonRecord) => {
       implementation(implementationId);

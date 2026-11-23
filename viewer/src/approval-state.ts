@@ -1,6 +1,6 @@
 // Approvals of files, steps and stages: whether each still holds for the
 // implementation as it now stands, and the changes the reviewer makes to them.
-import type { ApprovalEndpoint, ApprovalRecord, ChangeNode } from "../../scripts/src/shared/viewer-protocol";
+import type { ApprovalEndpoint, ApprovalRecord, ApprovalSnapshotResult, ChangeNode } from "../../scripts/src/shared/viewer-protocol";
 import * as api from "./api";
 import { aggregateApprovalState, type ApprovalState } from "./approvals";
 import { data } from "./context";
@@ -8,7 +8,7 @@ import { activeFileNodeId, approvalEntry, fileApprovalKey, fileBaseRevision, fla
 import { errorMessage, failureOf, isRecord } from "./narrow";
 import { render } from "./render";
 import { markReviewEnded } from "./saved-reviews";
-import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state } from "./state";
+import { endedElsewhere, persist, persistedState, reviewEnded, reviewEndOf, saveError, saveState, saveTimer, state, stateChanges } from "./state";
 import type { MembershipEntry, ViewerFile, ViewerStage } from "./types";
 
 /** Approval changes in progress, by approval ID. */
@@ -72,36 +72,107 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
   const entry = approvalEntry(id), rev = revisionFor(id), previousId = previousApprovalId(id);
   if (!stage && !rev) return;
   const remove = approvalState(id) === "approved";
-  const operation = Promise.resolve().then(async () => {
+  // Approving a file retains its content first.
+  if (entry && !remove) return approveFiles([id]);
+  const operation = Promise.resolve().then(() => {
     try {
-      let snapshotId: string | undefined;
-      if (entry && !remove) {
-        const response = await api.captureApprovalSnapshot(approvalEndpoint(entry));
-        const retained = await response.json();
-        if (!response.ok || !retained.ok) {
-          const failure = failureOf(retained), end = reviewEndOf(failure);
-          if (end) { markReviewEnded(end, true); throw new ApprovalCutOff(); }
-          throw new Error(failure.error || "Could not retain approved content.");
-        }
-        snapshotId = retained.snapshotId;
-        // The review ended while the content was retained; nothing saves it now.
-        if (reviewEnded) throw new ApprovalCutOff();
-      }
       if (previousId) delete state.approvals[previousId];
       if (remove) delete state.approvals[id];
-      else {
-        state.approvals[id] = { rev, at: Date.now(), ...(entry ? {
-          ...approvalEndpoint(entry), snapshotId,
-        } : {}) } satisfies ApprovalRecord;
-        delete state.approvalComparisons[id];
-      }
+      else state.approvals[id] = { rev, at: Date.now() } satisfies ApprovalRecord;
       approvalErrors.delete(id);
       if (previousId) approvalErrors.delete(previousId);
       persist();
-      if (entry && !remove) {
-        // An older save may already be in flight. Wait until this approval
-        // is stored before collapsing its diff; a failed save leaves it open.
-        const stored = () => JSON.stringify(storedApproval(id)) === JSON.stringify(state.approvals[id]);
+    } catch (error) { approvalErrors.set(id, `${stage?.title || id}: ${errorMessage(error)}`); }
+    finally { approvalOps.delete(id); reconcileApprovals(); render(); }
+  });
+  approvalOps.set(id, operation); render();
+  return operation;
+}
+/** Files per snapshot request, which the server accepts at most, and per save. */
+const APPROVALS_PER_REQUEST = 200;
+/** JSON characters per request of the changes that saving its approvals sends,
+ * which keeps a save well within the 8 MiB the server accepts. */
+const SAVED_CHARS_PER_REQUEST = 2 * 1024 * 1024;
+/** The approvals split into requests of at most 200 files and 2 MiB of changes to save. */
+function approvalRequests(approvals: readonly FileApproval[]): FileApproval[][] {
+  const requests: FileApproval[][] = [];
+  let current: FileApproval[] = [], chars = 0;
+  const saved = (id: string | null) => id && Object.hasOwn(state.approvals, id) ? { [id]: state.approvals[id] } : {};
+  for (const approval of approvals) {
+    // The changes this approval's save sends, with a stand-in for the snapshot ID.
+    const after = { rev: approval.rev, at: Date.now(), ...approvalEndpoint(approval.entry), snapshotId: "0".repeat(32) } satisfies ApprovalRecord;
+    const size = JSON.stringify(stateChanges({ ...saved(approval.previousId), ...saved(approval.id) }, { [approval.id]: after }, ["approvals"])).length;
+    if (current.length && (current.length === APPROVALS_PER_REQUEST || chars + size > SAVED_CHARS_PER_REQUEST)) { requests.push(current); current = []; chars = 0; }
+    current.push(approval); chars += size;
+  }
+  if (current.length) requests.push(current);
+  return requests;
+}
+/** A file approval being made. */
+interface FileApproval { id: string; entry: MembershipEntry; rev: string; previousId: string | null }
+/**
+ * Approves files, up to 200 at a time: retains their content with one request, records
+ * each approval whose content was retained, and saves them together. A file whose
+ * content could not be retained stays unapproved with its error shown, while the
+ * others are approved. Files approved or being changed already are skipped. Each
+ * approved file's diff collapses once its approval is stored; a review that ended
+ * meanwhile saves nothing more, and its approvals are listed as not saved.
+ */
+export function approveFiles(ids: readonly string[]): Promise<void> | undefined {
+  const approvals = ids.flatMap((id): FileApproval[] => {
+    const entry = approvalEntry(id), rev = revisionFor(id);
+    return entry && rev && !approvalOps.has(id) && approvalState(id) !== "approved" ? [{ id, entry, rev, previousId: previousApprovalId(id) }] : [];
+  });
+  if (!approvals.length) return;
+  /** The approvals not finished yet: neither failed alone nor stored. */
+  const pending = new Set(approvals);
+  // Approvals made while others are captured wait for them, so that no save
+  // carries the approvals of more than one request.
+  const operation = fileApprovals.then(async () => {
+    try {
+      // The review ended while these approvals waited for others.
+      if (reviewEnded) throw new ApprovalCutOff();
+      for (const batch of approvalRequests(approvals)) {
+        let results: ApprovalSnapshotResult[];
+        try {
+          const response = await api.captureApprovalSnapshots(batch.map(({ entry }) => approvalEndpoint(entry)));
+          const body = await response.json();
+          if (!response.ok || !body.ok) {
+            const failure = failureOf(body), end = reviewEndOf(failure);
+            if (end) { markReviewEnded(end, true); throw new ApprovalCutOff(); }
+            throw new Error(failure.error || "Could not retain approved content.");
+          }
+          results = body.results;
+        } catch (error) {
+          if (error instanceof ApprovalCutOff || reviewEnded) throw error;
+          // A request that failed fails its own files; the next request may succeed.
+          for (const approval of batch) { pending.delete(approval); approvalErrors.set(approval.id, `${approval.entry.file.path}: ${errorMessage(error)}`); }
+          continue;
+        }
+        // The review ended while the content was retained; nothing saves it now,
+        // and the notice of the ended review lists what was not saved.
+        if (reviewEnded) throw new ApprovalCutOff();
+        const retained = batch.flatMap((approval, index) => {
+          const result = results[index];
+          if (result && !("error" in result)) return [{ approval, snapshotId: result.snapshotId }];
+          pending.delete(approval);
+          approvalErrors.set(approval.id, `${approval.entry.file.path}: ${result?.error || "Could not retain approved content."}`);
+          return [];
+        });
+        const recorded = retained.map(({ approval, snapshotId }) => {
+          const { id, entry, rev, previousId } = approval;
+          if (previousId) delete state.approvals[previousId];
+          state.approvals[id] = { rev, at: Date.now(), ...approvalEndpoint(entry), snapshotId } satisfies ApprovalRecord;
+          delete state.approvalComparisons[id];
+          approvalErrors.delete(id);
+          if (previousId) approvalErrors.delete(previousId);
+          return approval;
+        });
+        if (!recorded.length) continue;
+        persist();
+        // An older save may already be in flight. Wait until these approvals are
+        // stored before collapsing their diffs; a failed save leaves them open.
+        const stored = () => recorded.every(({ id }) => JSON.stringify(storedApproval(id)) === JSON.stringify(state.approvals[id]));
         do {
           clearTimeout(saveTimer);
           await saveState();
@@ -109,22 +180,28 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
           if (reviewEnded && !stored()) throw new ApprovalCutOff();
           if (saveError) throw new Error(saveError);
         } while (!stored());
-        // A review that ended after the save shows no diff to collapse.
-        if (reviewEnded) return;
-        if (activeFileNodeId(entry.id) === entry.nodeId) {
-          delete state.activeFiles[entry.id];
-          persist();
-        }
+        recorded.forEach((approval) => pending.delete(approval));
+        // A review that ended after the save shows no diff to collapse, and saves no more approvals.
+        if (reviewEnded) { if (pending.size) throw new ApprovalCutOff(); return; }
+        let collapsed = false;
+        for (const { entry } of recorded) if (activeFileNodeId(entry.id) === entry.nodeId) { delete state.activeFiles[entry.id]; collapsed = true; }
+        if (collapsed) persist();
+        if (pending.size) render();
       }
     } catch (error) {
-      if (error instanceof ApprovalCutOff || reviewEnded) approvalsNotSaved.set(id, entry?.file.path || stage?.title || id);
-      else approvalErrors.set(id, `${entry?.file.path || id}: ${errorMessage(error)}`);
+      for (const { id, entry } of pending) {
+        if (error instanceof ApprovalCutOff || reviewEnded) approvalsNotSaved.set(id, entry.file.path);
+        else approvalErrors.set(id, `${entry.file.path}: ${errorMessage(error)}`);
+      }
     }
-    finally { approvalOps.delete(id); reconcileApprovals(); render(); }
+    finally { approvals.forEach(({ id }) => approvalOps.delete(id)); reconcileApprovals(); render(); }
   });
-  approvalOps.set(id, operation); render();
+  fileApprovals = operation.catch(() => undefined);
+  approvals.forEach(({ id }) => approvalOps.set(id, operation)); render();
   return operation;
 }
+/** The last file approval started; it settles once it is stored or failed. */
+let fileApprovals: Promise<void> = Promise.resolve();
 // Approvals follow the implementation they were given for. Run whenever the
 // implementation or the approvals change: when the viewer starts, adopts a
 // snapshot, or finishes an approval change.
@@ -256,9 +333,9 @@ export function groupPendingApprovals(stage: ViewerStage, node: ChangeNode, file
   return files.map((f) => fileApprovalKey(stage.id, node.id, f.path))
     .filter((id) => !approved(id) && revisionFor(id) && !approvalOps.has(id));
 }
-export function approveGroup(stageId: string | undefined, nodeId: string | undefined, group: string | undefined): Promise<unknown> | undefined {
+export function approveGroup(stageId: string | undefined, nodeId: string | undefined, group: string | undefined): Promise<void> | undefined {
   const stage = stageOf(stageId), node = stage?.nodes.find((n) => n.id === nodeId);
   if (!stage || !node) return;
   const files = nodeFileList(stage, node).filter((f) => (f.project || "Other") === group);
-  return Promise.all(groupPendingApprovals(stage, node, files).map((id) => changeApproval(id, "file")));
+  return approveFiles(groupPendingApprovals(stage, node, files));
 }
