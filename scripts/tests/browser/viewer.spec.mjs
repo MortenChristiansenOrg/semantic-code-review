@@ -4470,12 +4470,14 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   const data = fixture();
   const lineId = 'l:first:new:3:shared.js';
   data.feedback = [thread('stage'), thread('line', 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 3, label: 'shared.js:3' })];
-  // A reply shown when the page starts gets no toast.
+  // A reply shown when the page starts gets no toast, though it is still unread.
   data.feedback[0].comments.push({ ...agentReply('old', 'An earlier answer.'), createdAt: '2026-09-08T10:01:00Z' });
-  const errors = await mountListening(page, data);
-  await showNotes(page);
-  await expect(page.locator('.side.notes .tmsg-agent')).toHaveCount(1);
+  data.agent = { session: true, listening: true, stopRequested: false, working: null, requests: [], lastRound: null, serverTime: new Date().toISOString() };
+  const errors = await mount(page, data, { repliesSeenThrough: '2026-09-01T00:00:00Z' });
+  await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toBeVisible();
+  expect(await page.title()).toMatch(/^\(1\)/);
   await expect(page.locator('.reply-toast')).toHaveCount(0);
+  await showNotes(page);
 
   data.feedback[0].comments.push(agentReply('a1', '**Kept** the stage as it is.\n\nIt matches the plan.'));
   data.feedback[1].comments.push(agentReply('a1', 'Renamed the constant.'));
@@ -4488,6 +4490,7 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   await expect(toasts.nth(1).locator('.reply-toast-kind')).toHaveText('Line');
   await expect(toasts.nth(1).locator('.reply-toast-target')).toHaveText('shared.js:3');
   await expect(page.locator('[data-action="dismiss-reply-toasts"]')).toBeVisible();
+  await expect(page.locator('.visually-hidden[role="status"]')).toHaveText('Agent sent 2 replies.');
   // The generic refresh notice is gone.
   await expect(page.locator('.review-update')).toHaveCount(0);
 
@@ -4496,6 +4499,7 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   const reply = page.locator(`.cinema-diff .line-thread[data-thread="${lineId}"] .tmsg-agent`);
   await expect(reply).toContainText('Renamed the constant.');
   await expect(reply).toBeInViewport();
+  await expect(reply).toBeFocused();
   await expect(toasts).toHaveCount(1);
   // One toast left has nothing to dismiss together.
   await expect(page.locator('[data-action="dismiss-reply-toasts"]')).toHaveCount(0);
@@ -4515,9 +4519,76 @@ test('a toast whose reply is read goes away', async ({ page }) => {
   const errors = await mountListening(page, data, { openStages: { first: true }, openThreads: { first: true } });
   data.feedback[0].comments.push(agentReply('a1', 'Answered.'));
   await publish(page, data, 'replied');
+  await expect(page.locator('.reply-toast')).toHaveCount(1);
   // The reply shows beside its stage, in view, and is read after a moment.
   await expect(page.locator('.stage[data-stage="first"] .tmsg-agent')).toBeInViewport();
   await expect(page.locator('.reply-toast')).toHaveCount(0, { timeout: 8000 });
+  expect(errors).toEqual([]);
+});
+
+test('Show reaches a reply at the end of a long conversation, and a reply whose element is gone in its own thread', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 700 });
+  const data = fixture();
+  const long = thread('long');
+  for (let i = 0; i < 30; i++) long.comments.push({ id: `c${i}`, author: i % 2 ? 'agent' : 'user', body: `Message ${i}`, attachments: [], createdAt: '2026-09-08T10:00:00Z' });
+  // A resolved thread about a file that left the review, and another thread with an unread reply.
+  const gone = thread('gone', 'resolved', { kind: 'file', stageId: 'first', path: 'gone.js', label: 'gone.js' });
+  data.feedback = [long, gone, thread('other')];
+  const errors = await mountListening(page, data);
+  long.comments.push(agentReply('last', 'The last answer.'));
+  gone.comments.push(agentReply('a1', 'About the removed file.'));
+  data.feedback[2].comments.push(agentReply('a1', 'About something else.'));
+  await publish(page, data, 'replied');
+  const toasts = page.locator('.reply-toast');
+  await expect(toasts).toHaveCount(3);
+  await toasts.nth(0).getByRole('button', { name: 'Show' }).click();
+  const last = page.locator('main.shell .tmsg-agent', { hasText: 'The last answer.' });
+  await expect(last).toBeInViewport();
+  await expect(last).toBeFocused();
+  await page.locator('.reply-toast', { hasText: 'About the removed file.' }).getByRole('button', { name: 'Show' }).click();
+  await expect(page.locator('.side.notes [data-action="notes-filter"][data-filter="resolved"]')).toHaveAttribute('aria-selected', 'true');
+  const reply = page.locator('.side.notes .tmsg-agent', { hasText: 'About the removed file.' });
+  await expect(reply).toBeInViewport();
+  await expect(reply).toBeFocused();
+  await expect(toasts).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('keyboard focus moves along the toasts as they go, and back where it was after the last', async ({ page }) => {
+  const data = fixture();
+  data.feedback = ['one', 'two', 'three'].map((id) => thread(id, 'open', { kind: 'stage', stageId: 'second', label: `Stage second ${id}` }));
+  const errors = await mountListening(page, data);
+  const reviews = page.locator('.tb-btn[data-action="toggle-coverage"]');
+  await reviews.focus();
+  data.feedback.forEach((item) => item.comments.push(agentReply('a1', `Answered ${item.id}.`)));
+  await publish(page, data, 'replied');
+  const toasts = page.locator('.reply-toast');
+  await expect(toasts).toHaveCount(3);
+  await toasts.nth(1).getByRole('button', { name: 'Dismiss' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(toasts).toHaveCount(2);
+  await expect(toasts.nth(1).getByRole('button', { name: 'Dismiss' })).toBeFocused();
+  await expect(toasts.nth(1)).toContainText('Answered three.');
+  await page.locator('[data-action="dismiss-reply-toasts"]').focus();
+  await page.keyboard.press('Enter');
+  await expect(toasts).toHaveCount(0);
+  await expect(reviews).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test('toasts that do not fit a short window scroll, keeping their controls in reach', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 300 });
+  const data = fixture();
+  data.feedback = ['one', 'two', 'three', 'four', 'five'].map((id) => thread(id, 'open', { kind: 'stage', stageId: 'second', label: `Stage second ${id}` }));
+  const errors = await mountListening(page, data);
+  data.feedback.forEach((item) => item.comments.push(agentReply('a1', `Answered ${item.id}.`)));
+  await publish(page, data, 'replied');
+  const last = page.locator('.reply-toast').last();
+  await last.getByRole('button', { name: 'Dismiss' }).scrollIntoViewIfNeeded();
+  const box = await last.getByRole('button', { name: 'Dismiss' }).boundingBox();
+  expect(box.y + box.height).toBeLessThanOrEqual(300);
+  await last.getByRole('button', { name: 'Dismiss' }).click();
+  await expect(page.locator('.reply-toast')).toHaveCount(4);
   expect(errors).toEqual([]);
 });
 

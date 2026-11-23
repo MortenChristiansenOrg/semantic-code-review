@@ -83,6 +83,10 @@ export function showUnreadReplies(threadIds: string[]): void {
     || artifactThreads.find((item) => item.status === "open" && (item.comments || []).at(-1)?.author === "agent")
     || artifactThreads.find((item) => inRound(item) || unread(item));
   if (!thread) { render(); return; }
+  showThreadInNotes(thread);
+}
+/** Opens the notes panel on the list that holds `thread`, expanded, and scrolls to it. */
+export function showThreadInNotes(thread: FeedbackThread): void {
   state.notesOpen = true; state.coverageOpen = false;
   state.notesFilter = thread.status === "resolved" ? "resolved" : "active";
   if (!state.threadCollapsed) state.threadCollapsed = {};

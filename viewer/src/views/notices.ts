@@ -17,6 +17,8 @@ export interface ReplyToastView {
   targetTitle: string;
   /** The reply's first line. */
   excerpt: string;
+  /** Names the toast for assistive technology. */
+  label: string;
 }
 
 export interface ReplyToastsView {
@@ -26,19 +28,20 @@ export interface ReplyToastsView {
   grouped: boolean;
   /** The group shows each toast. */
   expanded: boolean;
+  /** What the status region announces about the latest replies. */
+  announcement: string;
 }
 
 export interface NoticesView {
   approvalErrors: readonly ApprovalErrorView[];
-  /** Agent replies the reviewer has not shown, dismissed or read; null without any. */
-  replies: ReplyToastsView | null;
+  /** Agent replies the reviewer has not shown, dismissed or read. */
+  replies: ReplyToastsView;
   /** A refresh or failure message. */
   refresh: string;
 }
 
 function replyToast(toast: ReplyToastView): TemplateResult {
-  const label = `Agent replied about ${toast.kind.toLowerCase()} ${toast.targetTitle}`;
-  return html`<div class="reply-toast" role="status" aria-label=${label}>
+  return html`<div class="reply-toast" role="group" aria-label=${toast.label}>
     <div class="reply-toast-text">
       <span class="reply-toast-about"><span class="reply-toast-kind">${toast.kind}</span><span class="reply-toast-target" data-tooltip=${toast.targetTitle}>${toast.target}</span></span>
       ${toast.excerpt ? html`<span class="reply-toast-excerpt">${toast.excerpt}</span>` : nothing}
@@ -55,7 +58,7 @@ function replyToasts(view: ReplyToastsView): TemplateResult {
   if (!view.grouped) return html`<div class="reply-toasts">${dismissAll}${repeat(view.items, (toast) => toast.key, replyToast)}</div>`;
   const summary = `${count} agent replies`;
   return html`<div class="reply-toasts is-grouped${view.expanded ? " is-expanded" : ""}">
-    <div class="reply-toast reply-toast-group" role="status">
+    <div class="reply-toast reply-toast-group" role="group" aria-label=${summary}>
       <button type="button" class="reply-toast-expand" data-action="toggle-reply-toasts" aria-expanded=${String(view.expanded)}>
         <span class="reply-toast-count">${summary}</span><span class="reply-toast-hint">${view.expanded ? "Collapse" : "Expand"}</span>
       </button>
@@ -67,6 +70,8 @@ function replyToasts(view: ReplyToastsView): TemplateResult {
 
 export function noticesView(view: NoticesView): TemplateResult {
   const approvals = repeat(view.approvalErrors, (error) => error.id, (error) => html`<div class="review-update" role="alert">Approval was not saved: ${error.message}</div>`);
-  if (!view.approvalErrors.length && !view.replies && !view.refresh) return html``;
-  return html`<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status">${view.refresh}</div>` : nothing}${view.replies ? replyToasts(view.replies) : nothing}</div>`;
+  // The status region stays in the page, so screen readers announce the text it receives.
+  const status = html`<div class="visually-hidden" role="status">${view.replies.announcement}</div>`;
+  if (!view.approvalErrors.length && !view.replies.items.length && !view.refresh) return status;
+  return html`${status}<div class="notice-stack">${approvals}${view.refresh ? html`<div class="review-update" role="status">${view.refresh}</div>` : nothing}${view.replies.items.length ? replyToasts(view.replies) : nothing}</div>`;
 }

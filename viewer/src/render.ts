@@ -7,7 +7,7 @@ import { forgetRemovedInsights, setRenderingPage } from "./insight-preview";
 import { fadePendingHighlight, resumePendingLazyJump } from "./navigation";
 import { agentBarModel, coverageModel, notesPanelModel, storyModel, topbarModel } from "./page-model";
 import { refreshNotice } from "./polling";
-import { replyToastsModel, updateReplyToasts } from "./reply-toasts";
+import { captureToastFocus, replyToastsModel, restoreToastFocus, updateReplyToasts } from "./reply-toasts";
 import { keepFocusedPop } from "./popover";
 import { captureFileScrolls, captureFocus, restoreFileScrolls, restoreFocus } from "./render-steps";
 import { reviewsDialog, reviewsOpen, setReviewsOpen, updateReviewList } from "./saved-reviews";
@@ -24,11 +24,12 @@ export const baseTitle = document.title;
 
 /* ---- render ----------------------------------------------------------- */
 export function render(): void {
-  const focus = captureFocus(), scrolls = captureFileScrolls();
+  const focus = captureFocus(), scrolls = captureFileScrolls(), toastFocus = captureToastFocus();
   renderView();
   restoreFileScrolls(scrolls);
   document.body.classList.toggle("no-scroll", state.notesOpen);
   restoreFocus(focus);
+  restoreToastFocus(toastFocus);
   keepFocusedPop();
   loadOpenDiffs();
   resumePendingLazyJump();
