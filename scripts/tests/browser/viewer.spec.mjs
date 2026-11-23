@@ -1230,6 +1230,24 @@ test('approving a large group makes a request and a save per 200 files, and rend
   await expect(bulk.locator('.fg-done')).toHaveText('✓ 450/450');
 });
 
+test('a group whose files have large ownerships is approved in requests small enough to save', async ({ page }) => {
+  const data = bulkFixture(150);
+  // About 12 KB of line ranges per file: a request of 200 such files would make a save of several MiB.
+  const ranges = Array.from({ length: 300 }, (_, index) => ({ new: { start: index * 2 + 1, end: index * 2 + 1 } }));
+  for (const file of data.stages[0].files) if (file.project === 'bulk') file.memberships = [{ nodeId: 'first-one', classification: 'behavior', lineRanges: ranges }];
+  await mount(page, data);
+  const counted = countApprovalRequests(page);
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  await bulk.locator('.fg-approve').click();
+  // The test server takes its time over saves this large.
+  await expect(bulk.locator('.fg-done')).toHaveText('✓ 150/150', { timeout: 30_000 });
+  expect(counted.snapshots.length).toBeGreaterThan(1);
+  expect(counted.snapshots.reduce((sum, files) => sum + files, 0)).toBe(150);
+  expect(counted.saves).toBe(counted.snapshots.length);
+  await expect(page.locator('[role="alert"]')).toHaveCount(0);
+});
+
 test('a large group approval keeps what was retained when a file or a later request fails', async ({ page }) => {
   await mount(page, bulkFixture(250));
   const counted = countApprovalRequests(page);
