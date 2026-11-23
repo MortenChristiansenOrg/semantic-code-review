@@ -208,3 +208,17 @@ test('an unchanged base reports no base changes', (t) => {
   assert.equal(comparison.baseChanged, false); assert.equal(comparison.baseChanges, 'none');
   assert.deepEqual(changed(comparison), [['del', 'one'], ['add', 'two']]);
 });
+
+test('a directory at the base path is no file there, so an approval of a file replacing it keeps an unchanged base', (t) => {
+  const { repo, context } = setup(t);
+  const absent = repo.commitFile('other.txt', 'other\n', 'No code.txt yet');
+  repo.commitFile('code.txt/leaf.txt', 'leaf\n', 'A directory named code.txt');
+  const directory = repo.git('rev-parse', 'HEAD');
+  repo.git('rm', '-r', '--quiet', 'code.txt'); repo.commitFile('code.txt', 'approved content\n', 'Replace the directory with a file');
+  const head = repo.git('rev-parse', 'HEAD');
+  // Approved while the file was compared from a base without code.txt.
+  const saved = captureApprovalSnapshot(context, { ...endpoint(repo, head), baseRevision: absent });
+  const comparison = compareApprovalSnapshot(context, saved.snapshotId, { ...endpoint(repo, head), baseRevision: directory });
+  assert.equal(comparison.baseChanged, false);
+  assert.equal(comparison.baseChanges, 'none');
+});

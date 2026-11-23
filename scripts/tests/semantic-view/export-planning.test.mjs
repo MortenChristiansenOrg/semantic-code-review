@@ -219,7 +219,7 @@ test("a line draft without a file revision is checked by its base and head revis
   const current = buildFeedbackTargetData(repository.root), [stage] = current.stages;
   const note = { kind: "line", id: "l:implementation:new:1:implementation.txt", body: "Check this line",
     snapshot: { base: stage.baseRevision, head: stage.headRevision, fileRevision: null } };
-  assert.equal(resolveLineDraftSnapshots(repository.root, [note], current.stages)[0].snapshot.fileRevision, stage.files[0].revision);
+  assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
   assert.deepEqual(planFeedbackThreads([note], current).skipped, []);
   const sent = exportFeedback({ repoRoot: repository.root, implementation: current }, [note, { ...note, snapshot: { ...note.snapshot, fileRevision: "" } }]);
   assert.equal(sent.ok, true, JSON.stringify(sent)); assert.equal(sent.exported.length, 2);
@@ -965,6 +965,11 @@ test("repeated files compare with their last stage across gaps and renames", asy
     const diff = await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode);
     assert.deepEqual(diff.lines.filter((line) => line.t !== 'ctx').map((line) => line.s), ['first', 'second']);
   }
+  // The feedback targets and a draft saved before drafts held the file's
+  // revision, compared from the stage's own base, give the file's revision.
+  assert.equal(buildFeedbackTargetData(repository.root).stages[2].files[0].revision, file.revision);
+  const legacy = { kind: 'line', id: `l:${stage.id}:new:1:repeat.txt`, body: 'Check this line', snapshot: { base: file.baseRevision, head: stage.headRevision } };
+  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy])[0].snapshot.fileRevision, file.revision);
   const renameFile = data.stages[3].files[0], lastFile = data.stages[4].files[0];
   assert.equal(renameFile.baseRevision, second); assert.equal(renameFile.previousPath, 'repeat.txt');
   assert.equal(lastFile.baseRevision, renamed); assert.equal(lastFile.previousPath, undefined);
@@ -1085,12 +1090,32 @@ for (const [between, files, change, alsoMove = []] of [
   const snapshot = { base: file.baseRevision, head: stage.headRevision };
   const note = (side, line, fileRevision) => ({ kind: "line", id: `l:last:${side}:${line}:b.txt`, body: `About ${side} line ${line}.`, clientId: `${side}-${line}`,
     snapshot: fileRevision === undefined ? snapshot : { ...snapshot, fileRevision } });
-  // A draft saved before drafts held the file's revision.
-  const legacy = note("old", 20);
-  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy], implementation.stages)[0].snapshot.fileRevision, file.revision);
-  const result = exportFeedback({ repoRoot: repository.root, implementation }, [note("old", 2, file.revision), note("new", 20, file.revision), legacy]);
+  const result = exportFeedback({ repoRoot: repository.root, implementation }, [note("old", 2, file.revision), note("new", 20, file.revision)]);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.exported.length, 3);
+  assert.equal(result.exported.length, 2);
+  // A draft saved before drafts held the file's revision was written where the
+  // file was shown compared with another file, so its line cannot be trusted.
+  const legacy = exportFeedback({ repoRoot: repository.root, implementation }, [note("old", 20)]);
+  assert.equal(legacy.ok, false);
+  assert.match(legacy.skipped[0].reason, /file changed since this line draft was written/);
+});
+
+test("the full view of a file renamed below a directory of its old path shows the rename", async (t) => {
+  const repository = seededStages(t, { "a.txt": twentyLines.join("") }, {
+    first: (repository) => {
+      repository.git("mv", "a.txt", "moved");
+      fs.mkdirSync(path.join(repository.root, "a.txt"));
+      repository.git("mv", "moved", "a.txt/b.txt");
+      return writeFile("a.txt/b.txt", twentyLines.join("").replace("line 20\n", "line twenty\n"))(repository);
+    },
+  });
+  const source = createViewerDataSource(repository.root);
+  const stage = implementationFromScript(source.implementationDataScript()).stages[0];
+  const [file] = stage.files;
+  assert.deepEqual([file.path, file.kind, file.previousPath], ["a.txt/b.txt", "renamed", "a.txt"]);
+  for (const mode of ["changes", "full"]) {
+    assert.deepEqual(changedRows(await source.fileDiff(stage.id, file.path, file.baseRevision, stage.headRevision, mode)), ["-line 20", "+line twenty"], mode);
+  }
 });
 
 test("a file added again is not compared with a similar file a stage in between deleted", async (t) => {
@@ -1148,7 +1173,7 @@ test("line drafts survive unrelated restacks and reject actual file changes", (t
   repository.git('switch', branch); repository.git('rebase', 'main');
   recordStageHead(repository, 'implementation', repository.git('rev-parse', 'HEAD'), base);
   const current = buildFeedbackTargetData(repository.root);
-  const migrated = resolveLineDraftSnapshots(repository.root, [legacy], current.stages)[0];
+  const migrated = resolveLineDraftSnapshots(repository.root, [legacy])[0];
   assert.deepEqual(migrated.snapshot, modern.snapshot, 'migration preserves the original commit anchor');
   assert.equal(planFeedbackThreads([modern, migrated], current).planned.length, 2);
   const result = exportFeedback({ repoRoot: repository.root, implementation: current }, [legacy, modern]);
@@ -1160,7 +1185,7 @@ test("line drafts survive unrelated restacks and reject actual file changes", (t
   assert.equal(rejected.ok, false); assert.equal(rejected.skipped.length, 2);
   assert.match(rejected.skipped[0].reason, /file changed/);
   const unavailable = { ...legacy, snapshot: { ...snapshot, head: 'f'.repeat(40) } };
-  assert.deepEqual(resolveLineDraftSnapshots(repository.root, [unavailable], current.stages), [unavailable]);
+  assert.deepEqual(resolveLineDraftSnapshots(repository.root, [unavailable]), [unavailable]);
   assert.equal(planFeedbackThreads([unavailable], current).planned.length, 0);
 });
 
@@ -1175,7 +1200,7 @@ for (const kind of ['modified', 'deleted', 'renamed']) test(`legacy line snapsho
   organizeStage(repository); repository.semantic('stage', 'finish');
   const stage = buildFeedbackTargetData(repository.root).stages[0];
   const note = { kind: 'line', id: `l:implementation:old:1:${stage.files[0].path}`, snapshot: { base: stage.baseRevision, head: stage.headRevision } };
-  assert.equal(resolveLineDraftSnapshots(repository.root, [note], buildFeedbackTargetData(repository.root).stages)[0].snapshot.fileRevision, stage.files[0].revision);
+  assert.equal(resolveLineDraftSnapshots(repository.root, [note])[0].snapshot.fileRevision, stage.files[0].revision);
 });
 
 test("a feedback thread that fails its schema does not hide the other threads", (t) => {
@@ -1349,7 +1374,7 @@ test("file and line feedback on paths with line breaks is sent and its line snap
   const stage = targets.stages[0];
   assert.equal(stage.files[0].path, name);
   const legacy = { kind: "line", id: `l:implementation:new:2:${name}`, body: "Check this line", snapshot: { base: stage.baseRevision, head: stage.headRevision } };
-  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy], targets.stages)[0].snapshot.fileRevision, stage.files[0].revision);
+  assert.equal(resolveLineDraftSnapshots(repository.root, [legacy])[0].snapshot.fileRevision, stage.files[0].revision);
   const file = { kind: "file", id: `f:implementation:${name}`, body: "Check this file" };
   const result = exportFeedback({ repoRoot: repository.root, implementation: targets }, [legacy, file]);
   assert.equal(result.ok, true, JSON.stringify(result));

@@ -979,8 +979,10 @@ async function pagedFileDiff(repoRoot: string, stage: DiffRange, file: ViewerFil
   const paths = [...new Set([file.previousPath, file.path].filter((item): item is string => Boolean(item)))];
   // Only the file and the one it was renamed from take part, so Git can pair
   // only those two: a path alone would also select the files below a directory
-  // of that name. Renames are found only for a renamed file.
-  const pathspecs = paths.flatMap((item) => [`:(literal)${item}`, `:(exclude,literal)${item}/`]);
+  // of that name. An exclusion wins over every inclusion, so a directory that
+  // holds the other path is not excluded. Renames are found only for a renamed file.
+  const pathspecs = paths.flatMap((item) => [`:(literal)${item}`,
+    ...paths.some((other) => other.startsWith(`${item}/`)) ? [] : [`:(exclude,literal)${item}/`]]);
   const renames = file.previousPath ? FIND_RENAMES : ["--no-renames"];
   const args = (context: number) => diffTree(["-p", `-U${context}`, ...renames, stage.change.baseRevision, stage.change.headRevision, "--", ...pathspecs],
     { objectIdLength: stage.change.headRevision.length, literalPathspecs: false });
@@ -1786,13 +1788,11 @@ function cliErrorMessage(error: unknown): string {
 
 // Upgrade commit-only line snapshots without moving their original anchors.
 // Unavailable history stays unresolved and is conservatively rejected on export.
-// A snapshot's base is the file's shown base, which can be the head of an
-// earlier stage, while the file's comparison is over its stage's own range.
-// While the stage's head is still the snapshot's, that range is the stage's
-// current one; otherwise the snapshot's own range stands for it, and a file
-// whose revision differs from the current one is refused.
-export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[],
-  stages: readonly { id: string; baseRevision: string; headRevision: string }[]): Note[] {
+// Such drafts were written on pages that diffed a file from its shown base, the
+// snapshot's base, so that range says what the reviewer saw. Where it pairs the
+// file as its stage's own range does, the revision is the file's current one;
+// where Git paired it with another file, the draft is refused.
+export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[]): Note[] {
   return notes.map((note): Note => {
     if (!isRecord(note) || note.kind !== "line") return note;
     const snapshot = note.snapshot;
@@ -1801,9 +1801,8 @@ export function resolveLineDraftSnapshots<Note>(repoRoot: string, notes: Note[],
     const match = /^l:([^:]+):(old|new):(\d+):([^]+)$/.exec(stringField(note, "id") ?? "");
     if (!match || typeof base !== "string" || typeof head !== "string" || ![base, head].every(rev => /^[a-f0-9]{40,64}$/.test(rev))) return note;
     try {
-      const current = stages.find((item) => item.id === match[1] && item.headRevision === head);
-      const stage = { change: { baseRevision: current ? current.baseRevision : base, headRevision: head } };
-      const stats = stageStatsFacts(JSON.stringify([repoRoot, stage.change.baseRevision, head]), () => buildStageStats(repoRoot, stage));
+      const stage = { change: { baseRevision: base, headRevision: head } };
+      const stats = stageStatsFacts(JSON.stringify([repoRoot, base, head]), () => buildStageStats(repoRoot, stage));
       const fileStats = stats.get(match[4]);
       if (!fileStats) return note;
       const revision = fileRevision(stage, { path: match[4], previousPath: fileStats.previousPath }, fileStats);
@@ -1897,7 +1896,7 @@ function exportReceivedFeedback({ repoRoot, implementation, context = null }: Ex
   if (notes.length === 0) {
     return { ok: false, error: "No feedback notes to export." };
   }
-  const { planned, skipped } = planReceivedThreads(resolveLineDraftSnapshots(repoRoot, notes, implementation.stages), implementation);
+  const { planned, skipped } = planReceivedThreads(resolveLineDraftSnapshots(repoRoot, notes), implementation);
   if (planned.length === 0) {
     return { ok: false, error: "No notes could be exported.", skipped };
   }
@@ -2986,7 +2985,7 @@ function viewerJobs(root: string, context: ReviewContext, source: ViewerDataSour
     resolveDraftSnapshots: (implementationId: string, fields: JsonRecord): (Wire.DraftSnapshot | null)[] => {
       implementation(implementationId);
       const notes = parseDraftSnapshotNotes(fields);
-      const resolved = resolveLineDraftSnapshots(root, notes.filter((note) => note !== null), source.implementationData().stages);
+      const resolved = resolveLineDraftSnapshots(root, notes.filter((note) => note !== null));
       let next = 0;
       return notes.map((note) => note ? resolved[next++].snapshot ?? null : null);
     },
