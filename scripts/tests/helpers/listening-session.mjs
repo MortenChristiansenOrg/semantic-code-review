@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { removeDirectory } from './directories.mjs';
 import { drive, preflight, prepare, verify } from '../../evaluations/adapters/review-listening.mjs';
 import { environment } from '../../evaluations/refinement/common.mjs';
 import { launch } from '../../evaluations/refinement/session.mjs';
@@ -14,7 +15,7 @@ const timing = { pollMs: 200, listenMinutes: 1, roundMinutes: 1.5, questionMinut
 
 export async function setup(t) {
   const workspace = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'review listening '));
-  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  t.after(() => removeDirectory(workspace));
   const root = path.join(workspace, 'case'); fs.mkdirSync(root);
   const env = environment(root);
   const capabilities = await preflight({ options: { timing }, workspace });
