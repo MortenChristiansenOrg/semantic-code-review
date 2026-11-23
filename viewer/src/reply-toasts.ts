@@ -91,8 +91,8 @@ export function replyToastsModel(): ReplyToastsView {
 /* ---- focus ------------------------------------------------------------
    A toast control that goes away while focused, as when its toast is
    dismissed or its reply read, passes focus to the same control of the toast
-   now in its place, else to the toasts' remaining controls, else back to where
-   focus was before it entered the toasts. */
+   now in its place, else back to where focus was before it entered the
+   toasts. */
 export interface ToastFocus { action: string; index: number }
 /** The toasts of single replies, without the summary of a group. */
 const toastSelector = ".notice-stack .reply-toast:not(.reply-toast-group)";
@@ -108,8 +108,8 @@ export function restoreToastFocus(focus: ToastFocus | null): void {
   if (!focus || document.activeElement && document.activeElement !== document.body) return;
   const shown = [...app.querySelectorAll(toastSelector)];
   const toast = shown[Math.min(focus.index, shown.length - 1)];
-  const next = toast?.querySelector(`[data-action="${cssEsc(focus.action)}"]`) || app.querySelector(".notice-stack button");
-  const inToasts = focusable(next);
+  // Never another control: a held key would act on it, and Dismiss all would clear every toast.
+  const inToasts = focusable(toast?.querySelector(`[data-action="${cssEsc(focus.action)}"]`));
   const target = inToasts || (usable(focusBefore) ? focusable(focusBefore) : null);
   target?.focus({ preventScroll: true });
   // A list of toasts that scrolls shows the control focused in it.
