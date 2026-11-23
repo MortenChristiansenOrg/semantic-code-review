@@ -130,6 +130,8 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
   // carries the approvals of more than one request.
   const operation = fileApprovals.then(async () => {
     try {
+      // The review ended while these approvals waited for others.
+      if (reviewEnded) throw new ApprovalCutOff();
       for (const batch of approvalRequests(approvals)) {
         let results: ApprovalSnapshotResult[];
         try {
