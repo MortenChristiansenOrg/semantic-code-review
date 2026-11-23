@@ -9,6 +9,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { removeDirectory } from '../helpers/directories.mjs';
 
 const scriptsRoot = fileURLToPath(new URL('../../', import.meta.url));
 const flowCli = fileURLToPath(new URL('../../../skills/semantic-flow/scripts/semantic-flow.mjs', import.meta.url));
@@ -30,6 +31,9 @@ function reservePort() {
 }
 
 let home, env;
+// Each review's `port` is reserved for its viewer and linked from its Markdown
+// file. Another process may take it before the viewer starts, which then starts
+// on a fallback port: the tests use the address the viewer reports, `base`.
 const reviews = { a: { id: 'review-a', title: 'Review A' }, b: { id: 'review-b', title: 'Review B' }, c: { id: 'review-c', title: 'Review C' },
   renamed: { id: 'review-renamed', title: 'Review Renamed', rename: true } };
 
@@ -45,17 +49,18 @@ function record(review) {
   throw new Error(`No review record for ${review.id}`);
 }
 
-/** Runs `review` for a fixture repository; returns the printed launch URL. */
+/** Runs `review` for a fixture repository; returns the printed launch URL. A
+ * restarted viewer asks for the port its predecessor had, so pages keep its origin. */
 function launch(review) {
+  const port = review.base ? new URL(review.base).port : String(review.port);
   const result = spawnSync(process.execPath, [flowCli, 'review'], {
     cwd: review.root, encoding: 'utf8', timeout: 30_000,
-    env: { ...env, SEMANTIC_VIEW_PORT: String(review.port) },
+    env: { ...env, SEMANTIC_VIEW_PORT: port },
   });
   expect(result.status, result.stderr).toBe(0);
   const url = /^Semantic review viewer: (\S+)$/m.exec(result.stdout)?.[1];
   expect(url, result.stdout).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#launch=[\w-]+$/);
   review.base = url.slice(0, url.indexOf('#'));
-  expect(review.base).toBe(`http://127.0.0.1:${review.port}/`);
   return url;
 }
 
@@ -113,8 +118,9 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   for (const review of Object.values(reviews)) await stop(review);
-  for (const review of Object.values(reviews)) if (review.root) fs.rmSync(review.root, { recursive: true, force: true });
-  if (home) fs.rmSync(home, { recursive: true, force: true });
+  // Windows may keep a directory locked a moment after its viewer exited.
+  for (const review of Object.values(reviews)) if (review.root) removeDirectory(review.root);
+  if (home) removeDirectory(home);
 });
 
 test('a launch link opens the review, leaves the address bar, and works once', async ({ browser }) => {
@@ -181,8 +187,9 @@ test('a Markdown image at the viewer\'s own address is refused while repository 
   await expect(pixel).toHaveAttribute('src', /[?&]read=/);
   await expect.poll(() => pixel.evaluate((image) => image.complete && image.naturalWidth)).toBe(1);
   expect(requests.some((url) => url.endsWith('/api/whoami'))).toBe(false);
-  // A link loads nothing until it is followed, so it keeps its target.
-  await expect(preview.getByRole('link', { name: 'Own link' })).toHaveAttribute('href', reviews.a.base);
+  // A link loads nothing until it is followed, so it keeps its target: the
+  // reserved port, the viewer's own unless it had to start on another.
+  await expect(preview.getByRole('link', { name: 'Own link' })).toHaveAttribute('href', `http://127.0.0.1:${reviews.a.port}/`);
   // Without the read token the server refuses the same image.
   const tokenless = await pixel.evaluate((image) => { const url = new URL(image.src); url.searchParams.delete('read'); return url.href; });
   expect(await page.evaluate((src) => new Promise((resolve) => {

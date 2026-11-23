@@ -7,10 +7,11 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
+import { removeDirectory } from "./directories.mjs";
 
 const testReviewHome = fs.mkdtempSync(path.join(os.tmpdir(), "semantic-test-user-data-"));
 process.env.SEMANTIC_FLOW_HOME = testReviewHome;
-process.on("exit", () => fs.rmSync(testReviewHome, { recursive: true, force: true }));
+process.on("exit", () => removeDirectory(testReviewHome));
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 export const scriptsDirectory = path.resolve(
@@ -49,7 +50,9 @@ function commandFailure(command, args, result) {
 
 export function createRepository(t, prefix = "semantic-flow-") {
   const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), prefix));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // Removed after the hooks registered before it, such as stopping a viewer that
+  // uses the repository; Windows may keep it locked a moment after that exits.
+  t.after(() => removeDirectory(root));
 
   function result(command, args) {
     return spawnSync(command, args, {
@@ -386,7 +389,8 @@ export function organizeStage(
       input,
     );
   } finally {
-    repository.remove(input);
+    // The CLI that read it has exited, yet Windows may still keep it locked.
+    removeDirectory(repository.path(input));
   }
 }
 
