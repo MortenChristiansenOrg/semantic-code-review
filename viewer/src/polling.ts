@@ -1,7 +1,7 @@
 // Live updates: polling the server for a new revision and adopting the
 // implementation it sends without reloading the page.
 import type { ImplementationData, ViewerSnapshot } from "../../scripts/src/shared/viewer-protocol";
-import { adoptAgentStatus, agent, roundNotice } from "./agent";
+import { adoptAgentStatus, agent } from "./agent";
 import * as api from "./api";
 import { approvalOps, reconcileApprovals } from "./approval-state";
 import { data } from "./context";
@@ -88,13 +88,11 @@ export async function pollViewerRevision(): Promise<void> {
       selectionRevision = payload.implementation.viewerRevision;
       if (diffRevisions(payload.implementation) === diffRevisions(data) && JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
         artifactThreads.splice(0, artifactThreads.length, ...feedback);
-        if (!roundNotice) refreshNotice = "Review updated";
         render();
       }
     } else {
       selectionRevision = null;
       adoptImplementation(payload.implementation);
-      if (!roundNotice) refreshNotice = "Review updated";
       render();
     }
     adoptAgentStatus(snapshot.agent);

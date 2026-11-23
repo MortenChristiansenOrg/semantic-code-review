@@ -13,13 +13,6 @@ import { showUnreadReplies } from "./unread-replies";
 
 // Listening-agent status from the server; null until the first poll answers.
 export let agent: AgentStatus | null = null;
-/** The latest round the agent finished, until the reviewer opens or dismisses it. */
-export interface RoundNotice {
-  count: number;
-  threadIds: string[];
-}
-export let roundNotice: RoundNotice | null = null;
-export function setRoundNotice(notice: RoundNotice | null): void { roundNotice = notice; }
 export let agentCommandCopied = false;
 export const agentAnswers = new Map<string, string>();
 export const agentAnswerOps = new Map<string, { busy: boolean; error: string }>();
@@ -106,7 +99,6 @@ export function adoptAgentStatus(received: AgentStatus | undefined): void {
 }
 export function announceRound(round: { threadIds: string[] }): void {
   const count = round.threadIds.length;
-  setRoundNotice({ count, threadIds: round.threadIds });
   setRefreshNotice("");
   if (document.hidden && "Notification" in window && Notification.permission === "granted") {
     const notice = new Notification("Agent replied", {

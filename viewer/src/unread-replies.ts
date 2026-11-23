@@ -1,6 +1,6 @@
 // Agent replies the reviewer has not read yet, and marking them read as they are seen.
 import type { FeedbackComment, FeedbackThread } from "../../scripts/src/shared/viewer-protocol";
-import { agentWorkingOn, awaitsAgent, roundNotice, setRoundNotice } from "./agent";
+import { agentWorkingOn, awaitsAgent } from "./agent";
 import { app, data } from "./context";
 import { artifactThreads } from "./lookups";
 import { render } from "./render";
@@ -73,8 +73,7 @@ export function installUnreadReplies(): void {
 }
 // Prefers an active thread from the announced round; resolved threads may hold
 // replies that stay unread because their list is out of view.
-export function showUnreadReplies(threadIds: string[] = roundNotice?.threadIds || []): void {
-  setRoundNotice(null);
+export function showUnreadReplies(threadIds: string[]): void {
   const inRound = (item: FeedbackThread) => threadIds.includes(item.id);
   const active = (item: FeedbackThread) => item.status !== "resolved";
   const unread = (item: FeedbackThread) => unreadReplies(item).length > 0;
