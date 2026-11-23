@@ -252,3 +252,22 @@ test("a removed line of a renamed file is followed while it stays removed from t
   // Each line's answer depends on its own thread only.
   assert.deepEqual(inputs.map((input) => locate(repository, [input]).result[0]), result);
 });
+
+test("a failed diff leaves only the lines that need it without an answer", (t) => {
+  const { repository, root, commit } = history(t);
+  const base = commit(root, { "old.js": lines("a", "b", "c"), "app.js": lines("x", "y") });
+  const head = commit(base, { "old.js": null, "new.js": lines("a", "c"), "app.js": lines("x", "Y") });
+  const refolded = commit(base, { "old.js": null, "new.js": lines("a", "c"), "app.js": lines("x", "Y"), "notes.txt": "notes\n" });
+  const stage = { baseRevision: base, headRevision: refolded };
+  const inputs = [
+    { anchor: { stageHead: head, path: "new.js", side: "old", line: 2 }, stage, file: { kind: "renamed", previousPath: "old.js" } },
+    { anchor: { stageHead: head, path: "app.js", side: "new", line: 2 }, stage, file: modified },
+  ];
+  const cache = new Map();
+  // Only the diff without rename detection fails.
+  const result = locateLineAnchors(repository.root, inputs, { cache, runGit: (args, input, env) =>
+    args.includes("--no-renames") ? null : gitRaw(args, { cwd: repository.root, input, env, allowFailure: true }) });
+  assert.deepEqual(result, [2, null]);
+  // The unanswered line is read again.
+  assert.deepEqual(locate(repository, inputs, cache), { result: [2, 2], runs: ["cat-file", "diff-tree"] });
+});

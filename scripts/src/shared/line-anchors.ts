@@ -269,18 +269,19 @@ function locate(inputs: readonly LineAnchorInput[], indexes: readonly number[], 
   return indexes.map((index, position) => {
     const plan = plans[position];
     if (!plan) return null;
-    if (!blocks) return undefined;
     const { anchor, file } = inputs[index];
     if ("previousPath" in plan) {
-      if (!renameBlocks) return undefined;
+      // A failed diff leaves only the lines that need it without an answer.
+      if (!renameBlocks || (plan.anchored !== null && !blocks)) return undefined;
       const renamed = (block: Section[]) => block.find((item) => item.newPath === anchor.path && item.oldPath === plan.previousPath);
       // The anchored line was counted in the same file.
       if (!renamed(renameBlocks[plan.renamedThen])) return null;
-      const line = plan.anchored === null ? anchor.line : followLine(blocks[plan.anchored], plan.previousPath, anchor.line);
+      const line = plan.anchored === null || !blocks ? anchor.line : followLine(blocks[plan.anchored], plan.previousPath, anchor.line);
       const shown = renamed(renameBlocks[plan.renamedNow]);
       if (line === null || !shown || shown.binary) return null;
       return shown.hunks.some((hunk) => line >= hunk.oldStart && line < hunk.oldStart + hunk.oldCount) ? line : null;
     }
+    if (!blocks) return undefined;
     const shown = shownSection(blocks[plan.current], anchor.path, file?.previousPath);
     // An added file has no old side, a deleted one no new side.
     if (!shown || !(anchor.side === "new" ? shown.newPath : shown.oldPath)) return null;
