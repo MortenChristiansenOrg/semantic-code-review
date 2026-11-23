@@ -389,7 +389,8 @@ export function organizeStage(
       input,
     );
   } finally {
-    repository.remove(input);
+    // The CLI that read it has exited, yet Windows may still keep it locked.
+    removeDirectory(repository.path(input));
   }
 }
 

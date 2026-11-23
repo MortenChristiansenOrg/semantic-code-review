@@ -12,12 +12,12 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
  * until `timeoutMs` passed, then throws the last error, so a process that keeps
  * it open still fails the test. Synchronous, so it also works in exit handlers. */
 export function removeDirectory(directory, { timeoutMs = 10_000, delayMs = 100, remove = fs.rmSync } = {}) {
-  for (const deadline = Date.now() + timeoutMs; ; pause(delayMs)) {
+  for (const deadline = performance.now() + timeoutMs; ; pause(delayMs)) {
     try {
       remove(directory, { recursive: true, force: true });
       return;
     } catch (error) {
-      if (!LOCKED.has(error?.code) || Date.now() + delayMs > deadline) throw error;
+      if (!LOCKED.has(error?.code) || performance.now() + delayMs > deadline) throw error;
     }
   }
 }
