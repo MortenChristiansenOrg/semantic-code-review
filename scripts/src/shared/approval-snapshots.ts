@@ -63,14 +63,17 @@ function readContent(context: ReviewContext, endpoint: RecordedEndpoint): Conten
   return { exists: Boolean(record), mode: mode || null, objectId: objectId || null, unsupported,
     binary: bytes.includes(0) || !Buffer.from(text, "utf8").equals(bytes), bytes: bytes.toString("base64"), size: bytes.length, sha256: digest(bytes) };
 }
+/** A base file's mode, type and object; empty where the base has no file
+ * there. A directory of that name is not the file. */
+const fileIdentity = (record: string) => record.split(" ")[1] === "tree" ? "" : record;
 function baseIdentity(context: ReviewContext, endpoint: RecordedEndpoint): string {
   const filePath = endpoint.previousPath || endpoint.path;
   const tree = git(context, ["ls-tree", "-z", endpoint.baseRevision, "--", filePath]).toString("utf8");
   const record = tree.split("\0").find((line) => line.slice(line.indexOf("\t") + 1) === filePath);
-  return record ? record.slice(0, record.indexOf("\t")) : "";
+  return record ? fileIdentity(record.slice(0, record.indexOf("\t"))) : "";
 }
 function approvedBaseIdentity(context: ReviewContext, snapshot: Snapshot): string | null {
-  try { return snapshot.baseIdentity ?? baseIdentity(context, snapshot.endpoint); }
+  try { return snapshot.baseIdentity !== undefined ? fileIdentity(snapshot.baseIdentity) : baseIdentity(context, snapshot.endpoint); }
   // Older snapshots may outlive their original Git objects.
   catch { return null; }
 }
