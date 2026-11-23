@@ -67,9 +67,34 @@ export function restoreFocus({ focused, selector, caret }: FocusCapture): void {
 }
 // The scrolling parts of an open file's diff. Only a visible scroller reports
 // its position, and only the same scroller, still visible, gets it back.
+// A diff the render kept scrolls instead by as much as what is above its
+// first element in view grew, as when an agent reply lands in a line thread above
+// it, so the rows in view stay in place.
 export const fileScrollers: string[] = [".diff-scroll", ".markdown-preview"];
+/** A saved scroll position, and for a diff its first row in view and that row's distance from the diff's top. */
+interface FileScroll { top: number; left: number; scroller: Element; row: Element | null; offset: number }
 /** Saved scroll positions, keyed by file ID and scroller selector. */
-type FileScrolls = Map<string, { top: number; left: number }>;
+type FileScrolls = Map<string, FileScroll>;
+/** The innermost element that begins at the top of the part of a diff the window
+ * shows below the top bar, such as a code row, a message of a line thread or an
+ * inline insight. An element that begins above, such as the container of a line's
+ * discussions, can grow inside without moving, so it is passed over while another
+ * begins in view. */
+function firstRowInView(scroller: Element): { row: Element; offset: number } | null {
+  if (!scroller.matches(".diff-scroll")) return null;
+  const box = scroller.getBoundingClientRect();
+  const covered = parseFloat(document.documentElement.style.getPropertyValue("--sticky-inset")) || 0;
+  const top = Math.max(box.top, covered), bottom = Math.min(box.bottom, window.innerHeight);
+  // Without one, as in a message taller than the part shown, the innermost element at its top.
+  let fallback: Element | null = null;
+  for (let y = top + 2; y < bottom; y += 12) {
+    const row = document.elementsFromPoint(box.left + box.width / 2, y).find((hit) => hit !== scroller && scroller.contains(hit));
+    const rect = row?.getBoundingClientRect();
+    if (row && rect && rect.top >= top && rect.height < bottom - top) return { row, offset: rect.top - box.top };
+    fallback ??= row ?? null;
+  }
+  return fallback ? { row: fallback, offset: fallback.getBoundingClientRect().top - box.top } : null;
+}
 export function captureFileScrolls(): FileScrolls {
   const scrolls: FileScrolls = new Map();
   Object.keys(state.activeFiles).forEach((fid) => {
@@ -78,7 +103,9 @@ export function captureFileScrolls(): FileScrolls {
     if (!holder?.classList.contains("cinema-diff")) return;
     for (const selector of fileScrollers) {
       const scroller = holder.querySelector(selector);
-      if (scroller?.getClientRects().length) scrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft });
+      if (!scroller?.getClientRects().length) continue;
+      const first = firstRowInView(scroller);
+      scrolls.set(`${fid}\0${selector}`, { top: scroller.scrollTop, left: scroller.scrollLeft, scroller, row: first?.row ?? null, offset: first?.offset ?? 0 });
     }
   });
   return scrolls;
@@ -91,7 +118,11 @@ export function restoreFileScrolls(scrolls: FileScrolls): void {
     for (const selector of fileScrollers) {
       const saved = scrolls.get(`${fid}\0${selector}`);
       const scroller = saved && holder?.querySelector(selector);
-      if (saved && scroller?.getClientRects().length) { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
+      if (!saved || !scroller?.getClientRects().length) continue;
+      if (scroller === saved.scroller && saved.row && scroller.contains(saved.row) && saved.row.getClientRects().length) {
+        const moved = saved.row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - saved.offset;
+        if (Math.abs(moved) >= 1) scroller.scrollTop += moved;
+      } else { scroller.scrollTop = saved.top; scroller.scrollLeft = saved.left; }
     }
   });
 }

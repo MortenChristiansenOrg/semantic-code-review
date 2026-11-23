@@ -292,6 +292,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   bottom: 24px;
   width: 2px;
   background: linear-gradient(180deg, transparent, var(--line) 8%, var(--line) 92%, transparent);
+  /* The line spans every stage. As the element the browser keeps in place when
+     content above the window grows, it would never move, and the content would. */
+  overflow-anchor: none;
 }
 
 .stage {
@@ -1245,6 +1248,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 .diff-close:hover { border-color: var(--signal); color: var(--text); }
 
 .diff-scroll {
+  /* The viewer keeps the rows in view in place itself (render-steps.ts). The
+     browser's anchoring would move them again, or the page around the diff. */
+  overflow-anchor: none;
   container-type: inline-size;
   /* Reserve classic scrollbar space before resolving container query units. */
   scrollbar-gutter: stable;
