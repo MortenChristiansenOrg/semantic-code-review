@@ -101,6 +101,41 @@ pending, first discard it with `<semantic-flow> implementation restack --abort
 edits as they are. End with one
 short line in the chat, naming any uncommitted edits you left.
 
+## Leftover work
+
+A listening wait's `leftoverWork` is not null when a round that ended or was
+replaced, or the reviewer, left work the implementation does not record:
+`movedStages` lists each stage branch with commits after its `recordedHead`, and
+`pendingRestack` names the stage and `worktree` of a restack stopped at a
+conflict. Keep that work. It may be the reviewer's, and it is most likely a start
+on this round's threads. Never discard it on your own. Before answering the
+threads, with this round's claim:
+
+1. Report progress, for example
+   `{"claim":"<claim>","body":"Recording the work an earlier round left"}`.
+2. Inspect it: `git diff <recordedHead> <head>` for each moved stage, and
+   `git status` in the pending restack's `worktree`.
+3. Finish a pending restack as `../docs/restack-conflicts.md` describes, with
+   `restack --continue --claim <claim>`. Abort it with `--claim <claim>` only
+   when it cannot be continued; its stage commits stay on their branches.
+4. Check out the lowest stage branch that still has commits after its recorded
+   head and run `implementation restack --from <stage-id> --claim <claim>`.
+   `<semantic-flow> implementation validate` names any stage still moved.
+5. Use the `--json` summary of each restack: a listed stage's `baseRevision` and
+   `nextHead` replace the round's `stageBase` and `stageHead` for it.
+
+The recorded work is the starting point of the round. Finish or correct it like
+any other change, and describe the result in the replies. Revert part of it
+only as a correction a thread asks for. If it cannot be recorded, ask in the
+viewer. A wait with `--session` reports the same work by failing on a moved
+stage branch or a pending restack, and keeps the session. Handle it the same
+way, with your last round's claim or none when no round ran, then wait again.
+
+Uncommitted edits in `worktreeChanges` can be leftover work too, or the
+reviewer's. Never commit, stash, or discard them. Ask about them in the viewer,
+naming the files, and meanwhile do only the work that needs no checkout or
+restack in that worktree.
+
 ## Ask in the viewer
 
 The reviewer works in the viewer. Ask every question there, never in the chat:
@@ -165,7 +200,7 @@ Handle all change requests assigned to one stage together:
 1. Inspect the thread targets and complete stage diff once.
 2. If the stage needs code changes, require `worktreeChanges` from preflight to
    be empty, report progress with the claim, then check out its recorded branch. Preserve unrelated user changes
-   and stop if the worktree is dirty. Ask about the affected edits in the viewer
+   and stop if the worktree is dirty, including edits an earlier round left. Ask about the affected edits in the viewer
    under `../docs/user-decisions.md`; do not ask whether to bypass the
    clean-worktree check.
 3. Apply all requested code corrections for the

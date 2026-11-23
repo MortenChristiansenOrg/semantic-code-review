@@ -987,22 +987,75 @@ function reportEvidenceWarnings(stages: Iterable<Stage>): void {
   }
 }
 
+/** Work the implementation does not record yet, which a round that ended or was
+ * taken over, or the reviewer, left behind. */
+export interface LeftoverWork {
+  /** Finalized stages whose branch moved from the head the implementation records. */
+  movedStages: { stageId: string; branch: string; recordedHead: string; head: string }[];
+  /** A restack that stopped at a conflict: the stage it stopped at and the worktree holding the conflict. */
+  pendingRestack: { stageId: string; worktree: string } | null;
+}
+
+/** The leftover work in workspace, or null when there is none or the artifact
+ * cannot be read; validation then reports why. */
+function findLeftoverWork(workspace: Workspace): LeftoverWork | null {
+  try {
+    const pending = readPendingRestack(workspace.snapshot);
+    const artifact = loadImplementation(workspace.root, workspace.snapshot, { includeWork: false });
+    const commit = (revision: string) => gitOptional(["rev-parse", "--verify", "--quiet", `${revision}^{commit}`], { cwd: workspace.root });
+    const movedStages = artifact.manifest.stages.flatMap((stageId) => {
+      const { branch, headRevision } = finalizedStage(artifact, stageId).change;
+      const recordedHead = commit(headRevision), head = commit(`refs/heads/${branch}`);
+      return recordedHead && head && head !== recordedHead ? [{ stageId, branch, recordedHead, head }] : [];
+    });
+    if (!pending && !movedStages.length) return null;
+    return { movedStages, pendingRestack: pending ? { stageId: pending.conflict.id, worktree: pending.worktree } : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the implementation in root holds leftover work. */
+export function hasLeftoverWork(root: string): boolean {
+  return withValidationContext(() => findLeftoverWork(openWorkspace(root)) !== null);
+}
+
+/** Validates the recorded implementation past its leftover work: moved stage
+ * branches count at their recorded heads, and a pending restack is allowed. The
+ * target may have advanced, since the leftover work keeps it from being restacked. */
+function leftoverValidation(workspace: Workspace, leftover: LeftoverWork): ArtifactValidationOptions {
+  const { baseRevision, targetBranch } = loadImplementation(workspace.root, workspace.snapshot, { includeWork: false }).manifest;
+  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}^{commit}`], { cwd: workspace.root });
+  return {
+    allowPendingRestack: leftover.pendingRestack !== null,
+    movingBranches: new Map(leftover.movedStages.map(({ branch, recordedHead }) => [branch, recordedHead])),
+    allowTargetDrift: targetHead !== undefined && isAncestor(workspace.root, baseRevision, targetHead),
+  };
+}
+
 export interface ImplementationValidation {
   /** The summary `implementation validate` prints. */
   message: string;
   warnings: string[];
   /** The marked empty finalized stages. */
   emptyStages: string[];
+  /** Leftover work the validation allowed, or null. */
+  leftoverWork: LeftoverWork | null;
 }
 
-/** Fully validates the implementation in root, as `implementation validate` does. */
-export function validateImplementation(root: string): ImplementationValidation {
+/** Fully validates the implementation in root, as `implementation validate` does.
+ * With leftoverWork, a moved stage branch and a pending restack are reported in
+ * the result instead of failing; every other failure still fails. */
+export function validateImplementation(root: string, { leftoverWork: allowLeftover = false }: { leftoverWork?: boolean } = {}): ImplementationValidation {
   return withValidationContext(() => {
-    const artifact = validateArtifact(openWorkspace(root), { quiet: true });
+    const workspace = openWorkspace(root);
+    const leftoverWork = allowLeftover ? findLeftoverWork(workspace) : null;
+    const artifact = validateArtifact(workspace, { quiet: true, ...(leftoverWork ? leftoverValidation(workspace, leftoverWork) : {}) });
     return {
       message: validationMessage(artifact, "full"),
       warnings: [...artifact.stages.values()].flatMap((stage) => evidenceWarnings(stage)),
       emptyStages: emptyStageIds(artifact.manifest.stages.map((id) => finalizedStage(artifact, id))),
+      leftoverWork,
     };
   });
 }

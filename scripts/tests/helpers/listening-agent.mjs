@@ -51,6 +51,9 @@ for (;;) {
     pending = null; continue;
   }
   rounds++;
+  // Work an earlier round left is recorded first; movedStages lists stages bottom-up.
+  const moved = result.leftoverWork?.movedStages ?? [];
+  if (moved.length) restack(moved[0].stageId, result.claim);
   const threads = result.stages.flatMap(stage => stage.threads.map(thread => ({ ...thread, stage: stage.stageId })));
   const last = thread => thread.comments.filter(comment => comment.author === 'user').at(-1).body;
   for (const thread of threads) if (last(thread).endsWith('?')) reply(thread.id, result.claim, 'It comes from the order ID passed to the template renderer.');

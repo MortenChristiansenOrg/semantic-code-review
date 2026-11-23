@@ -48,11 +48,11 @@ import {
 } from "./shared/viewer-lifecycle.js";
 import { startRemoteReview } from "./shared/remote-review.js";
 import { feedbackDirectory, listReviews, readReview, registerReview, reviewDirectory, reviewId } from "./shared/review-store.js";
-import { claimedThreadIds, endSession, readAgentState, roundRefusal, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
+import { claimActive, claimedThreadIds, endSession, readAgentState, roundRefusal, IDLE_LIMIT_MS, liveSession, renewSessionClaims, roundAwaitingAnswer, sendInProgress, settleSessionClaims, startSession, takeResponses, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 import { awaitsAgentReply } from "./shared/feedback-awaiting.js";
 import { setTimeout as delay } from "node:timers/promises";
 import type { CompactThread, FeedbackGroup, PendingFeedback } from "./review-feedback.js";
-import type { RestackSummary } from "./semantic-implementation.js";
+import type { LeftoverWork, RestackSummary } from "./semantic-implementation.js";
 
 /** The implementation and feedback services load only for the commands that use them. */
 const implementationService = () => import("./semantic-implementation.js");
@@ -337,16 +337,18 @@ function captureValidation(validate: () => string): CapturedValidation {
   }
 }
 
-async function checkImplementation(root: string): Promise<CapturedValidation & { emptyStages: string[] | null }> {
+async function checkImplementation(root: string, { leftoverWork: allowLeftover = false } = {}): Promise<CapturedValidation & { emptyStages: string[] | null; leftoverWork: LeftoverWork | null }> {
   const { validateImplementation } = await implementationService();
   // Unknown (null) unless the implementation validates.
   let emptyStages: string[] | null = null;
+  let leftoverWork: LeftoverWork | null = null;
   const captured = captureValidation(() => {
-    const validation = validateImplementation(root);
+    const validation = validateImplementation(root, { leftoverWork: allowLeftover });
     emptyStages = validation.emptyStages;
+    leftoverWork = validation.leftoverWork;
     return [validation.message, ...validation.warnings.map((warning) => `Warning: ${warning}`)].join("\n");
   });
-  return { ...captured, emptyStages };
+  return { ...captured, emptyStages, leftoverWork };
 }
 
 /** An empty stage and the threads on it that are not resolved; with none, `stage remove` can remove it. */
@@ -888,19 +890,22 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate, round: RoundIde
   };
 }
 
-/** Validates the implementation for a feedback command and returns its empty stages. */
-async function validateArtifactForFeedback(candidate: ArtifactCandidate): Promise<string[]> {
-  const artifactValidation = await checkImplementation(candidate.worktree);
+/** Validates the implementation for a feedback command and returns its empty
+ * stages, and the leftover work it allowed when leftoverWork is set. */
+async function validateArtifactForFeedback(candidate: ArtifactCandidate, { leftoverWork = false } = {}): Promise<{ emptyStages: string[]; leftoverWork: LeftoverWork | null }> {
+  const artifactValidation = await checkImplementation(candidate.worktree, { leftoverWork });
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
   }
-  return artifactValidation.emptyStages ?? [];
+  return { emptyStages: artifactValidation.emptyStages ?? [], leftoverWork: artifactValidation.leftoverWork };
 }
 
-/** Claiming marks the returned threads as one round so no other run answers them. */
-async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null) {
-  const emptyStages = await validateArtifactForFeedback(candidate);
+/** Claiming marks the returned threads as one round so no other run answers them.
+ * A listening wait passes leftoverWork when it may hand the round leftover work to
+ * record; the result then reports it as `leftoverWork`. */
+async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: TargetRestack | null, claim: { session: string | null } | null = null, listening?: { leftoverWork: boolean }) {
+  const { emptyStages, leftoverWork } = await validateArtifactForFeedback(candidate, { leftoverWork: listening?.leftoverWork ?? false });
 
   const worktreeStatus =
     git(["status", "--short"], { cwd: candidate.worktree }) ?? "";
@@ -960,6 +965,7 @@ async function feedbackSnapshot(candidate: ArtifactCandidate, targetRestack: Tar
     // Read after the round's threads were validated; an empty stage without any
     // is removable. Null when they cannot be read: sync has already moved refs.
     emptyStageThreads: knownEmptyStageThreads(feedbackRoot, emptyStages),
+    ...(listening ? { leftoverWork } : {}),
     ...(claim ? { claim: claimId, claimedElsewhere, responses } : {}),
   };
 }
@@ -975,6 +981,12 @@ function unclaimedFeedbackWaiting(candidate: ArtifactCandidate, claimed: Set<str
   if (!fs.existsSync(manifest)) return false;
   return readDocument(FEEDBACK_MANIFEST_SCHEMA_ID, manifest).threads.some((id) =>
     !claimed.has(id) && awaitsAgentReply(readDocument(THREAD_SCHEMA_ID, path.join(directory, "threads", `${id}.json`))));
+}
+
+/** Whether a round of another session, or one outside any session, still holds threads. */
+function otherRoundRunning(review: string, session: string): boolean {
+  const now = Date.now();
+  return readAgentState(review).claims.some((claim) => claim.sessionId !== session && claimActive(claim, now));
 }
 
 /** Listens as the review's agent until a round, an answer, a stop, or the timeout. */
@@ -1074,8 +1086,13 @@ async function waitForFeedback(options: Options): Promise<void> {
       if (step.stop) { print({ session, stopped: true, reason: step.stop }); return; }
       if (step.responses) { print({ session, responses: step.responses }); return; }
       if (step.pending) {
-        const { candidate: current, targetRestack } = await refreshAdvancedTarget(await activeCandidate(resolveSingle(options, "feedback")), { session });
-        const result = await feedbackSnapshot(current, targetRestack, { session });
+        const found = await activeCandidate(resolveSingle(options, "feedback"));
+        // Work a round that ended or was taken over left behind goes to this round
+        // to record, unless another round runs, which may still be making it.
+        // The target is restacked only once it is recorded.
+        const leftoverWork = !otherRoundRunning(review, session) && (await implementationService()).hasLeftoverWork(found.worktree);
+        const { candidate: current, targetRestack } = leftoverWork ? { candidate: found, targetRestack: null } : await refreshAdvancedTarget(found, { session });
+        const result = await feedbackSnapshot(current, targetRestack, { session }, { leftoverWork });
         if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
         // Another run claimed the threads first; keep listening.
       }

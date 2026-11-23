@@ -856,6 +856,15 @@ export interface SemanticFlowFeedbackOptions {
  * With `wait`, it heartbeats as the review's listening agent and returns when
  * feedback arrives, a question is answered, the session stops (`stopped` with
  * `reason`), or the timeout passes (`timedOut`). Every result includes `session`.
+ * A round's result also has `leftoverWork`: null, or the work the implementation
+ * does not record that an earlier round or the reviewer left. `movedStages`
+ * lists each finalized stage whose branch moved (`stageId`, `branch`,
+ * `recordedHead`, `head`); `pendingRestack` is null or the `stageId` and
+ * `worktree` of a restack stopped at a conflict. The round's `stages` still show
+ * the recorded heads. While leftover work exists the target branch is not
+ * restacked, and no other validation failure is reported this way. Leftover work
+ * is handed over only while no other round runs; a wait with `session` first
+ * validates the work of the round it finished and fails on it, keeping the session.
  * @cli semantic-flow.mjs
  * @command feedback
  */
