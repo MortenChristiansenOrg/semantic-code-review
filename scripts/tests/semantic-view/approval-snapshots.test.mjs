@@ -68,6 +68,29 @@ test('a batch retains each file as a single capture would, and a file that canno
   assert.equal(Buffer.from(stored(results.at(-1)).content.bytes, 'base64').toString(), `content ${many.at(-1)}\n`);
 });
 
+test('a batch retains a path that became a directory, and an unreadable blob fails only its file', (t) => {
+  const { repo, context } = setup(t);
+  const base = repo.commitFile('config', 'old config\n', 'File');
+  repo.git('rm', 'config'); fs.mkdirSync(path.join(repo.root, 'config'));
+  fs.writeFileSync(path.join(repo.root, 'config', 'default.txt'), 'default\n');
+  fs.writeFileSync(path.join(repo.root, 'broken.txt'), 'this blob is damaged below\n'.repeat(50));
+  repo.git('add', '.'); repo.git('commit', '-m', 'Directory');
+  const head = repo.git('rev-parse', 'HEAD');
+  const at = (file) => ({ ...endpoint(repo, head, file), baseRevision: base });
+  const endpoints = [at('config'), at('config/default.txt'), at('broken.txt')];
+  const single = captureApprovalSnapshot(context, endpoints[0]);
+  // Truncate the loose object: its header still reads, its content does not.
+  const blob = repo.git('rev-parse', `${head}:broken.txt`), object = path.join(repo.root, '.git', 'objects', blob.slice(0, 2), blob.slice(2));
+  fs.chmodSync(object, 0o644); fs.writeFileSync(object, fs.readFileSync(object).subarray(0, 20));
+  const results = captureApprovalSnapshots(context, endpoints);
+  const stored = (result) => JSON.parse(fs.readFileSync(path.join(reviewDirectory(context.reviewId), 'snapshots', result.snapshotId + '.json'), 'utf8'));
+  assert.deepEqual({ ...stored(results[0]), id: '', createdAt: '' }, { ...stored(single), id: '', createdAt: '' });
+  assert.match(stored(results[0]).content.unsupported, /submodules/);
+  assert.match(stored(results[0]).baseIdentity, /^100644 blob /);
+  assert.equal(Buffer.from(stored(results[1]).content.bytes, 'base64').toString(), 'default\n');
+  assert.match(results[2].error, /unavailable/);
+});
+
 test('comparisons distinguish added, deleted, empty, and binary file states', (t) => {
   const { repo, context } = setup(t);
   const absent = captureApprovalSnapshot(context, endpoint(repo));

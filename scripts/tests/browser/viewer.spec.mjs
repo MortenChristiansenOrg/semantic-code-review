@@ -1809,6 +1809,32 @@ test('an approval whose content is retained after the archive notice is listed a
   expect(await warnsBeforeLeaving(page)).toBe(false);
 });
 
+test('a group approval whose first save lands after the archive notice lists the files it never saved', async ({ page }) => {
+  await mount(page, bulkFixture(250));
+  const counted = countApprovalRequests(page);
+  let archived = false, release;
+  const held = new Promise((resolve) => { release = resolve; });
+  await page.route('**/api/revision?*', (route) => archived ? route.fulfill(archivedRefusal) : route.fallback());
+  // The first save of approvals is stored, but its answer arrives only after the page learned of the archive.
+  await page.route('**/api/review-state?*', async (route) => {
+    if (route.request().method() !== 'POST' || !route.request().postDataJSON().changes.some((change) => change.path[0] === 'approvals')) return route.fallback();
+    await held; return route.fallback();
+  });
+  const { node } = await openFolders(page);
+  const bulk = node.locator('.fgroup').filter({ has: page.locator('.fg-name', { hasText: /^bulk$/ }) });
+  const firstSave = page.waitForRequest((request) => new URL(request.url()).pathname === '/api/review-state' && request.method() === 'POST');
+  await bulk.locator('.fg-approve').click();
+  await firstSave;
+  await page.getByRole('button', { name: 'Reviews', exact: true }).click();
+  archived = true;
+  await expect(page.getByRole('heading', { name: 'Implementation archived' })).toBeVisible();
+  release();
+  await expect(page.locator('.ended-review')).toContainText('These approval changes were not saved:');
+  await expect(page.locator('.ended-review li')).toHaveCount(50);
+  await expect(page.locator('.ended-review li').first()).toHaveText('bulk/file-200.js');
+  expect(counted.snapshots).toEqual([200]);
+});
+
 /** Holds the page's next saves of review state until released, then refuses
  * them as the server does once the implementation was archived. */
 async function holdSavesUntilArchived(page) {

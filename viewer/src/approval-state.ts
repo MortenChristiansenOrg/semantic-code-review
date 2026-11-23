@@ -88,13 +88,28 @@ export function changeApproval(id: string, kind: string | undefined): Promise<vo
   approvalOps.set(id, operation); render();
   return operation;
 }
-/** Files per snapshot request, which the server accepts at most, and per save:
- * a save of more approvals could exceed what the server accepts in one. */
+/** Files per snapshot request, which the server accepts at most, and per save. */
 const APPROVALS_PER_REQUEST = 200;
+/** JSON characters of the files' endpoints per request: a save carries each
+ * approval's endpoint, and a re-approval its previous one too, so this keeps a
+ * save well within the 8 MiB the server accepts. */
+const ENDPOINT_CHARS_PER_REQUEST = 1024 * 1024;
+/** The approvals split into requests of at most 200 files and 1 MiB of endpoints. */
+function approvalRequests(approvals: readonly FileApproval[]): FileApproval[][] {
+  const requests: FileApproval[][] = [];
+  let current: FileApproval[] = [], chars = 0;
+  for (const approval of approvals) {
+    const size = JSON.stringify(approvalEndpoint(approval.entry)).length;
+    if (current.length && (current.length === APPROVALS_PER_REQUEST || chars + size > ENDPOINT_CHARS_PER_REQUEST)) { requests.push(current); current = []; chars = 0; }
+    current.push(approval); chars += size;
+  }
+  if (current.length) requests.push(current);
+  return requests;
+}
 /** A file approval being made. */
 interface FileApproval { id: string; entry: MembershipEntry; rev: string; previousId: string | null }
 /**
- * Approves files, 200 at a time: retains their content with one request, records
+ * Approves files, up to 200 at a time: retains their content with one request, records
  * each approval whose content was retained, and saves them together. A file whose
  * content could not be retained stays unapproved with its error shown, while the
  * others are approved. Files approved or being changed already are skipped. Each
@@ -111,8 +126,7 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
   const pending = new Set(approvals);
   const operation = Promise.resolve().then(async () => {
     try {
-      for (let start = 0; start < approvals.length; start += APPROVALS_PER_REQUEST) {
-        const batch = approvals.slice(start, start + APPROVALS_PER_REQUEST);
+      for (const batch of approvalRequests(approvals)) {
         const response = await api.captureApprovalSnapshots(batch.map(({ entry }) => approvalEndpoint(entry)));
         const retained = await response.json();
         if (!response.ok || !retained.ok) {
@@ -149,8 +163,8 @@ export function approveFiles(ids: readonly string[]): Promise<void> | undefined 
           if (saveError) throw new Error(saveError);
         } while (!stored());
         recorded.forEach((approval) => pending.delete(approval));
-        // A review that ended after the save shows no diff to collapse.
-        if (reviewEnded) return;
+        // A review that ended after the save shows no diff to collapse, and saves no more approvals.
+        if (reviewEnded) { if (pending.size) throw new ApprovalCutOff(); return; }
         let collapsed = false;
         for (const { entry } of recorded) if (activeFileNodeId(entry.id) === entry.nodeId) { delete state.activeFiles[entry.id]; collapsed = true; }
         if (collapsed) persist();

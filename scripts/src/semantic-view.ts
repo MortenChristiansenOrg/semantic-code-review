@@ -2527,7 +2527,7 @@ function serveViewer({
         if (!isTrustedRequest(request, port)) throw new Error("Approval snapshots require a same-origin request.");
         const fields = await readRequestFields(request);
         sendJson<Wire.ApprovalSnapshotsResponse>(response, 200, { ok: true, results: await jobs.call("captureApprovals", implementationId, fields) });
-      } catch (error) { failure(409, error); }
+      } catch (error) { failure(409, error, { reviewUnavailable: reviewSessionUnavailable(context) }); }
       return;
     }
     if (request.method === "POST" && pathname === "/api/approval-comparison") {
