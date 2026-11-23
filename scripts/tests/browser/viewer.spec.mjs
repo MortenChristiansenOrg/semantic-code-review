@@ -4652,7 +4652,8 @@ test('steps keep their disclosure, focus and open diff across live updates that 
   expect(errors).toEqual([]);
 });
 
-test('the page keeps its scroll position across live updates that grow, reorder and open content', async ({ page }) => {
+// The browser keeps what is in view still: the page scrolls by as much as content above it grows.
+test('what is in view stays in place across live updates that grow, reorder and open content', async ({ page }) => {
   await page.setViewportSize({ width: 1200, height: 600 });
   const data = fixture(); data.feedback = [thread('t1')];
   const errors = await mount(page, data, { openStages: { first: true, second: true } });
@@ -4662,22 +4663,31 @@ test('the page keeps its scroll position across live updates that grow, reorder 
   await page.evaluate(() => { document.documentElement.style.scrollBehavior = 'auto'; window.scrollTo(0, 900); });
   const scrollY = () => page.evaluate(() => window.scrollY);
   await expect.poll(scrollY).toBe(900);
+  const inView = page.locator('details[data-node="second-one"] > summary');
+  const top = () => inView.evaluate((el) => el.getBoundingClientRect().top);
+  const before = await top();
+  expect(before).toBeGreaterThan(0); expect(before).toBeLessThan(600);
   // A new step and a longer summary above the view, then stages and steps in a new order.
   data.stages[0].nodes.unshift({ id: 'first-zero', title: 'Step zero', description: 'A new step. '.repeat(30) });
   data.stages[0].summary = 'A much longer summary. '.repeat(40);
   data.viewerRevision = 'grown';
   await expect(page.locator('details[data-node="first-zero"]')).toHaveCount(1);
-  expect(await scrollY()).toBe(900);
+  expect(await top()).toBeCloseTo(before, 0);
+  expect(await scrollY()).toBeGreaterThan(900);
+  const stageInView = page.locator('.stage[data-stage="second"] .stage-sum');
+  await expect(stageInView).toBeInViewport();
   data.stages.reverse(); data.stages[0].nodes.reverse(); data.viewerRevision = 'reordered';
   await expect(page.locator('.stage').first()).toHaveAttribute('data-stage', 'second');
   await expect(page.locator('.stage[data-stage="second"] details.node').first()).toHaveAttribute('data-node', 'second-two');
-  expect(await scrollY()).toBe(900);
+  // The stage in view moved to the top of the review, and the page followed it.
+  await expect(stageInView).toBeInViewport();
   // Local renders: the notes panel and coverage open and close.
+  const settled = await scrollY();
   for (const action of ['toggle-notes', 'toggle-notes', 'toggle-coverage', 'toggle-coverage']) {
     const toggle = page.locator(`.tb-btn[data-action="${action}"]`), expanded = await toggle.getAttribute('aria-expanded');
     await toggle.evaluate((el) => el.click());
     await expect(toggle).not.toHaveAttribute('aria-expanded', expanded);
-    expect(await scrollY()).toBe(900);
+    expect(await scrollY()).toBe(settled);
   }
   expect(errors).toEqual([]);
 });
@@ -5191,6 +5201,98 @@ test('opening the notes panel from an agent notification keeps the reply being w
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await expect(inline).toHaveValue('A reply in progress');
   await expect(toggle).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+// Agent replies grow threads above what the reviewer is reading; the browser keeps what is in view still.
+test('agent replies above the window leave the stages in view where they are', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 700 });
+  const data = fixture();
+  data.stages = ['s0', 's1', 's2', 's3'].map((id) => ({ ...fixture().stages[0], id, title: `Stage ${id}`,
+    nodes: ['one', 'two'].map((n) => ({ id: `${id}-${n}`, title: `Step ${n}`, description: 'Node description' })),
+    files: [{ ...fixture().stages[0].files[0], memberships: [{ nodeId: `${id}-one`, classification: 'behavior', hunks: [1] }, { nodeId: `${id}-two`, classification: 'behavior', hunks: [2] }] }] }));
+  data.feedback = data.stages.map((stage) => thread(stage.id, 'open', { kind: 'stage', stageId: stage.id, label: `Stage ${stage.id}` }));
+  const open = Object.fromEntries(data.stages.map((stage) => [stage.id, true]));
+  const errors = await mount(page, data, { openStages: open, openThreads: open });
+  const stage = page.locator('.stage[data-stage="s2"] .stage-head');
+  await stage.evaluate((el) => window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - 200, behavior: 'instant' }));
+  const before = await stage.evaluate((el) => el.getBoundingClientRect().top);
+  for (const item of data.feedback.slice(0, 2)) item.comments.push({ author: 'agent', body: 'Answered.\n\nWith a second paragraph.', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'replied';
+  await expect(page.locator('.stage[data-stage="s1"] [data-thread-id="s1"]')).toContainText('With a second paragraph.');
+  expect(await stage.evaluate((el) => el.getBoundingClientRect().top)).toBeCloseTo(before, 0);
+  expect(errors).toEqual([]);
+});
+
+for (const [placement, above] of [['just below the top bar', 0], ['partly above the window', 200]]) {
+  test(`agent replies above the rows in view of a diff ${placement} leave those rows where they are`, async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 900 });
+    const data = fixture();
+    const file = data.stages[0].files[0];
+    file.lines = Array.from({ length: 120 }, (_, i) => ({ t: 'add', n: i + 1, s: `const v${i + 1} = ${i};`, h: 1 }));
+    file.additions = 120; file.memberships = [{ nodeId: 'first-one', classification: 'behavior', hunks: [1] }];
+    const lineId = (n) => `l:first:new:${n}:shared.js`;
+    data.feedback = [2, 5].map((n) => thread(`line${n}`, 'open', { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: n, label: `shared.js:${n}` }));
+    const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId(2)]: true, [lineId(5)]: true } });
+    await openFile(page);
+    const scroller = page.locator('.cinema-diff .diff-scroll');
+    // The diff's top sits below the top bar, or `above` pixels above the window.
+    const covered = await page.evaluate(() => parseFloat(document.documentElement.style.getPropertyValue('--sticky-inset')) || 0);
+    await scroller.evaluate((el, top) => {
+      document.documentElement.style.scrollBehavior = 'auto';
+      window.scrollBy(0, el.getBoundingClientRect().top - top);
+      el.scrollTop = 900;
+    }, above ? -above : covered);
+    // A row shown both in the diff and in the window.
+    const row = await scroller.evaluate((el) => {
+      const box = el.getBoundingClientRect(), top = Math.max(box.top, 0), bottom = Math.min(box.bottom, window.innerHeight);
+      return document.elementFromPoint(box.left + 100, (top + bottom) / 2).closest('[data-line-id]').dataset.lineId;
+    });
+    const measure = () => page.locator(`[data-line-id="${row}"]`).evaluate((el) => {
+      const scroller = el.closest('.diff-scroll'), box = scroller.getBoundingClientRect(), top = el.getBoundingClientRect().top;
+      return { top, inDiff: top >= box.top && top < box.bottom, diff: scroller.scrollTop, page: window.scrollY };
+    });
+    const before = await measure();
+    expect(before.inDiff).toBe(true);
+    for (const item of data.feedback) item.comments.push({ author: 'agent', body: 'Answered.\n\nWith a second paragraph.', createdAt: '2026-09-08T10:01:00Z' });
+    data.viewerRevision = 'replied';
+    await expect(page.locator(`.line-thread[data-thread="${lineId(5)}"]`)).toContainText('With a second paragraph.');
+    // The diff scrolls by what grew in it; the page around it stays.
+    const after = await measure();
+    expect(after.top).toBeCloseTo(before.top, 0);
+    expect(after.inDiff).toBe(true);
+    expect(after.diff).toBeGreaterThan(before.diff);
+    expect(after.page).toBe(before.page);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a reply to the first discussion on a line leaves a later one on that line, in view, where it is', async ({ page }) => {
+  await page.setViewportSize({ width: 1200, height: 900 });
+  const data = fixture();
+  const file = data.stages[0].files[0];
+  file.lines = Array.from({ length: 120 }, (_, i) => ({ t: 'add', n: i + 1, s: `const v${i + 1} = ${i};`, h: 1 }));
+  file.additions = 120; file.memberships = [{ nodeId: 'first-one', classification: 'behavior', hunks: [1] }];
+  const lineId = 'l:first:new:5:shared.js';
+  const target = { kind: 'line', stageId: 'first', nodeId: 'first-one', path: 'shared.js', side: 'new', line: 5, label: 'shared.js:5' };
+  data.feedback = [thread('earlier', 'open', target), thread('later', 'open', target)];
+  data.feedback[0].comments.push(...Array.from({ length: 6 }, (_, i) => ({ author: i % 2 ? 'user' : 'agent', body: `Earlier message ${i}`, createdAt: '2026-09-08T10:00:00Z' })));
+  const errors = await mount(page, data, { openStages: { first: true }, activeFiles: { [fileId]: 'first-one' }, openLineThreads: { [lineId]: true } });
+  await openFile(page);
+  const scroller = page.locator('.cinema-diff .diff-scroll');
+  const later = page.locator('.cinema-diff [data-thread-id="later"] .tmsg').first();
+  await expect(later).toBeVisible();
+  // The later discussion shows near the top of the diff; the earlier one is above it, out of view.
+  await scroller.evaluate((el) => { el.scrollIntoView({ block: 'center', behavior: 'instant' }); });
+  await later.evaluate((el) => { const scroller = el.closest('.diff-scroll'); scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 40; });
+  const measure = () => later.evaluate((el) => ({ top: el.getBoundingClientRect().top, page: window.scrollY }));
+  const before = await measure();
+  data.feedback[0].comments.push({ author: 'agent', body: 'A late answer.\n\nWith a second paragraph.', createdAt: '2026-09-08T10:01:00Z' });
+  data.viewerRevision = 'replied';
+  await expect(page.locator('.cinema-diff [data-thread-id="earlier"]')).toContainText('A late answer.');
+  const after = await measure();
+  expect(after.top).toBeCloseTo(before.top, 0);
+  expect(after.page).toBe(before.page);
   expect(errors).toEqual([]);
 });
 
