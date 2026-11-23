@@ -4480,7 +4480,7 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   await showNotes(page);
 
   data.feedback[0].comments.push(agentReply('a1', '**Kept** the stage as it is.\n\nIt matches the plan.'));
-  data.feedback[1].comments.push(agentReply('a1', 'Renamed the constant.'));
+  data.feedback[1].comments.push(agentReply('a1', '```ts\nconst limit = 3;\n```\nRenamed `MAX_RETRIES` to `RETRY_LIMIT` in *both* places.'));
   await publish(page, data, 'replied');
   const toasts = page.locator('.reply-toast');
   await expect(toasts).toHaveCount(2);
@@ -4489,6 +4489,7 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   await expect(toasts.nth(0).locator('.reply-toast-excerpt')).toHaveText('Kept the stage as it is.');
   await expect(toasts.nth(1).locator('.reply-toast-kind')).toHaveText('Line');
   await expect(toasts.nth(1).locator('.reply-toast-target')).toHaveText('shared.js:3');
+  await expect(toasts.nth(1).locator('.reply-toast-excerpt')).toHaveText('Renamed MAX_RETRIES to RETRY_LIMIT in both places.');
   await expect(page.locator('[data-action="dismiss-reply-toasts"]')).toBeVisible();
   await expect(page.locator('.visually-hidden[role="status"]')).toHaveText('Agent sent 2 replies.');
   // The generic refresh notice is gone.
@@ -4497,7 +4498,7 @@ test('each agent reply gets a toast naming what it is about, and Show goes to th
   await toasts.nth(1).getByRole('button', { name: 'Show' }).click();
   await expect(page.locator('.tb-btn[data-action="toggle-notes"]')).toHaveAttribute('aria-expanded', 'false');
   const reply = page.locator(`.cinema-diff .line-thread[data-thread="${lineId}"] .tmsg-agent`);
-  await expect(reply).toContainText('Renamed the constant.');
+  await expect(reply).toContainText('Renamed MAX_RETRIES');
   await expect(reply).toBeInViewport();
   await expect(reply).toBeFocused();
   await expect(toasts).toHaveCount(1);
@@ -4629,10 +4630,13 @@ test('more than five reply toasts collapse into a group that expands, and Dismis
   // The expanded list stays within the window.
   const box = await page.locator('.notice-stack').boundingBox();
   expect(box.y).toBeGreaterThanOrEqual(0);
-  // Dismissing one leaves five, shown one by one.
-  await listed.first().getByRole('button', { name: 'Dismiss' }).click();
+  // Dismissing one leaves five, shown one by one, and focus moves to the toast in its place.
+  await listed.first().getByRole('button', { name: 'Dismiss' }).focus();
+  await page.keyboard.press('Enter');
   await expect(group).toHaveCount(0);
   await expect(page.locator('.reply-toast')).toHaveCount(5);
+  await expect(page.locator('.reply-toast').first().getByRole('button', { name: 'Dismiss' })).toBeFocused();
+  await expect(page.locator('.reply-toast').first()).toContainText('Answered two.');
   await page.locator('[data-action="dismiss-reply-toasts"]').click();
   await expect(page.locator('.reply-toast')).toHaveCount(0);
   expect(errors).toEqual([]);

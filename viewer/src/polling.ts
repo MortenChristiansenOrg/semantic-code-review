@@ -88,11 +88,14 @@ export async function pollViewerRevision(): Promise<void> {
       selectionRevision = payload.implementation.viewerRevision;
       if (diffRevisions(payload.implementation) === diffRevisions(data) && JSON.stringify(feedback) !== JSON.stringify(artifactThreads)) {
         artifactThreads.splice(0, artifactThreads.length, ...feedback);
+        refreshNotice = "";
         render();
       }
     } else {
       selectionRevision = null;
       adoptImplementation(payload.implementation);
+      // A notice about the review before this update no longer applies.
+      refreshNotice = "";
       render();
     }
     adoptAgentStatus(snapshot.agent);

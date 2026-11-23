@@ -1988,7 +1988,9 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
 /* Notices and agent reply toasts stack up from the bottom left corner. Only their
    controls take the pointer, so the page around them stays usable. */
 .notice-stack {
-  position: fixed; bottom: 16px; left: 16px; z-index: 80;
+  /* Above the scrim of an open side panel, so toasts stay in use beside it, and
+     below the panels and the lightbox, which cover them where they overlap. */
+  position: fixed; bottom: 16px; left: 16px; z-index: 57;
   display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
   width: min(380px, calc(100vw - 32px)); max-height: calc(100dvh - var(--topbar-bottom, 64px) - 32px);
   pointer-events: none;
@@ -2302,7 +2304,7 @@ html:has(.file-search[open]) { overflow: hidden; }
 /* Toasts that do not fit the window scroll, so each one's controls stay in reach. */
 .reply-toasts {
   display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-height: 0;
-  overflow-y: auto; overscroll-behavior: contain; padding-bottom: 2px;
+  overflow-y: auto; overscroll-behavior: contain; padding-bottom: 2px; pointer-events: auto;
 }
 .reply-toast {
   display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-radius: 8px;

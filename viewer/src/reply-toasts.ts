@@ -56,10 +56,18 @@ export function updateReplyToasts(): void {
   if (toasts.length <= TOAST_GROUP_AFTER) expanded = false;
 }
 
-/** The first line of a reply, as plain text. */
+/** The first line of a reply's text, without its Markdown marks, or of its code when it has only code. */
 function excerpt(body: string): string {
-  const line = body.split(/\r?\n/).map((text) => text.trim()).find(Boolean) || "";
-  return line.replace(/^(#+|[-*+>]|\d+[.)])\s+/, "").replace(/[*_`]/g, "");
+  let fenced = false;
+  const prose: string[] = [], code: string[] = [];
+  for (const text of body.split(/\r?\n/).map((item) => item.trim())) {
+    if (/^(```|~~~)/.test(text)) fenced = !fenced;
+    else if (text) (fenced ? code : prose).push(text);
+  }
+  const line = prose[0] ?? code[0] ?? "";
+  if (!prose.length) return line;
+  return line.replace(/^(#+|[-*+>]|\d+[.)])\s+/, "")
+    .replace(/`([^`]+)`/g, "$1").replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, "$2").replace(/(^|\W)([*_])(?=\S)(.+?)(?<=\S)\2(?=\W|$)/g, "$1$3");
 }
 
 export function replyToastsModel(): ReplyToastsView {
@@ -80,19 +88,23 @@ export function replyToastsModel(): ReplyToastsView {
    now in its place, else to the toasts' remaining controls, else back to where
    focus was before it entered the toasts. */
 export interface ToastFocus { action: string; index: number }
+/** The toasts of single replies, without the summary of a group. */
+const toastSelector = ".notice-stack .reply-toast:not(.reply-toast-group)";
+/** A control that can take focus: in the page, shown and not inert. */
+const usable = (element: Element | null): boolean => Boolean(element?.isConnected && element.getClientRects().length && !element.closest("[inert], [hidden]"));
 export function captureToastFocus(): ToastFocus | null {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLElement) || !focused.dataset.action || !focused.closest(".notice-stack")) return null;
   const toast = focused.closest(".reply-toast");
-  return { action: focused.dataset.action, index: toast ? [...app.querySelectorAll(".notice-stack .reply-toast")].indexOf(toast) : 0 };
+  return { action: focused.dataset.action, index: toast ? [...app.querySelectorAll(toastSelector)].indexOf(toast) : 0 };
 }
 export function restoreToastFocus(focus: ToastFocus | null): void {
   if (!focus || document.activeElement && document.activeElement !== document.body) return;
-  const shown = [...app.querySelectorAll(".notice-stack .reply-toast")];
+  const shown = [...app.querySelectorAll(toastSelector)];
   const toast = shown[Math.min(focus.index, shown.length - 1)];
   const next = toast?.querySelector(`[data-action="${cssEsc(focus.action)}"]`) || app.querySelector(".notice-stack button");
   const inToasts = focusable(next);
-  const target = inToasts || (focusBefore?.isConnected ? focusable(focusBefore) : null);
+  const target = inToasts || (usable(focusBefore) ? focusable(focusBefore) : null);
   target?.focus({ preventScroll: true });
   // A list of toasts that scrolls shows the control focused in it.
   inToasts?.scrollIntoView({ block: "nearest", behavior: "instant" });
@@ -123,12 +135,18 @@ export function toggleReplyToasts(): void {
 function revealReply(key: string, where: string): void {
   stopReveal?.();
   let frames = 0, frame = 0;
+  // A diff that fails to load, or takes this long, never shows the reply in time to be wanted.
+  const until = performance.now() + 15000;
   const stop = stopReveal = () => { cancelAnimationFrame(frame); if (stopReveal === stop) stopReveal = null; };
   const step = () => {
     frames += 1;
     const reply = app.querySelector(`${where} .tmsg[data-reply-key="${cssEsc(key)}"]`);
     // The navigation scrolls to the thread two frames on, or once its diff page loaded.
-    if (frames < 3 || lazyJumpPending() || !reply?.getClientRects().length) { frame = requestAnimationFrame(step); return; }
+    if (frames < 3 || lazyJumpPending() || !reply?.getClientRects().length) {
+      if (performance.now() < until && replies().some((item) => item.key === key)) frame = requestAnimationFrame(step);
+      else stop();
+      return;
+    }
     stop();
     reply.scrollIntoView({ behavior: "smooth", block: "nearest" });
     // The button pressed went away with its toast; focus elsewhere was the reviewer's choice.
