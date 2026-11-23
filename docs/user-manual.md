@@ -594,6 +594,16 @@ stage changes, restacks, replies, progress notes and questions, and it ends with
 one short line. While a listening agent works on a round, other changes to the
 implementation, for example from `/semantic-flow continue` in another
 conversation, are refused until the round is finished.
+
+A stage commit that no restack recorded, or a restack stopped at a conflict, can
+be left behind by a replaced or interrupted agent, or by your own commit on a
+stage branch. The next agent that starts listening is handed that work with its
+first round. It keeps the work: it records the commit with a restack, or
+resolves the conflict and completes the restack, before it answers the round's
+threads, then finishes or corrects the work like any other change. It discards
+none of it on its own, and it asks you in the viewer about uncommitted edits it
+finds instead of committing or removing them. The viewer shows it working on the
+round meanwhile.
 A completed
 review starts no listening: choose **Reopen review** in Saved reviews first.
 Running `/semantic-flow review` again in the same conversation reopens the
