@@ -1985,7 +1985,23 @@ a.req-src-ref:hover, a.req-src-ref:focus-visible { text-decoration: underline; }
   .lb-rail { display: none; }
 }
 
-.review-update { position: fixed; bottom: 16px; left: 16px; z-index: 50; padding: 8px 14px; border-radius: 8px; background: #252b35; color: #f1f3f5; pointer-events: none; }
+/* Notices and agent reply toasts stack up from the bottom left corner. Only their
+   controls take the pointer, so the page around them stays usable. */
+.notice-stack {
+  /* Above the scrim of an open side panel, so toasts stay in use beside it, and
+     below the panels and the lightbox, which cover them where they overlap. */
+  position: fixed; bottom: 16px; left: 16px; z-index: 57;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  width: min(380px, calc(100vw - 32px)); max-height: calc(100dvh - var(--topbar-bottom, 64px) - 32px);
+  pointer-events: none;
+}
+.review-update { padding: 8px 14px; border-radius: 8px; background: #252b35; color: #f1f3f5; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.review-update:has(.review-update-dismiss) { display: flex; align-items: center; gap: 10px; padding-right: 8px; pointer-events: auto; max-width: 100%; }
+.review-update > span { min-width: 0; overflow-wrap: anywhere; }
+.review-update-dismiss { flex: none; font: inherit; font-size: 15px; line-height: 1; color: inherit; background: transparent; border: 0; border-radius: 6px; padding: 2px 6px; cursor: pointer; }
+.review-update-dismiss:hover { background: rgba(255, 255, 255, .08); }
+/* Where an open side panel would cover them, the notices wait until it closes. */
+@media (max-width: 776px) { body:has(.side.is-open) .notice-stack { display: none; } }
 .diff-pages { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px; }
 .diff-pages button { cursor: pointer; padding: 6px 10px; }
 
@@ -2290,12 +2306,45 @@ html:has(.file-search[open]) { overflow: hidden; }
   margin-left: 6px; font-size: 9px; letter-spacing: .08em; text-transform: uppercase;
   color: var(--ink); background: var(--ok); border-radius: 4px; padding: 0 4px;
 }
-.review-update.agent-round { z-index: 80; pointer-events: auto; display: flex; align-items: center; gap: 10px; }
-.agent-round button {
-  font: inherit; font-size: 12px; color: inherit; background: transparent; cursor: pointer;
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Toasts that do not fit the window scroll, so each one's controls stay in reach. */
+.reply-toasts {
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; min-height: 0;
+  overflow-y: auto; overscroll-behavior: contain; padding-bottom: 2px;
+}
+.reply-toast {
+  display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 14px; border-radius: 8px;
+  background: #252b35; color: #f1f3f5; border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35); pointer-events: auto; animation: toast-in .22s var(--ease);
+}
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.reply-toast-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.reply-toast-about { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13px; }
+.reply-toast-kind {
+  flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ok);
+}
+.reply-toast-target, .reply-toast-excerpt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-toast-target { font-weight: 600; }
+.reply-toast-excerpt { font-size: 12px; color: #b9c0ca; }
+.reply-toast button, .reply-toasts-dismiss {
+  flex: none; font: inherit; font-size: 12px; color: #f1f3f5; background: transparent; cursor: pointer;
   border: 1px solid rgba(255, 255, 255, .25); border-radius: 6px; padding: 2px 8px;
 }
-.agent-round button[data-action="dismiss-round"] { border: 0; padding: 2px 4px; }
+.reply-toast button:hover, .reply-toasts-dismiss:hover { background: rgba(255, 255, 255, .08); }
+.reply-toast .reply-toast-dismiss { border: 0; padding: 2px 6px; font-size: 15px; line-height: 1; }
+.reply-toasts-dismiss { align-self: flex-start; pointer-events: auto; background: #252b35; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+.reply-toast-group { padding: 6px 8px; }
+.reply-toast .reply-toast-expand {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 0; padding: 4px 6px; text-align: left; font-size: 13px;
+}
+.reply-toast-count { font-weight: 600; }
+.reply-toast-hint { font-size: 12px; color: #b9c0ca; }
+.reply-toast-group .reply-toasts-dismiss { background: transparent; box-shadow: none; }
+.reply-toast-list { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; pointer-events: auto; }
+/* The expanded group opens upward from the summary in the corner. */
+.reply-toasts.is-grouped { flex-direction: column-reverse; }
+@media (prefers-reduced-motion: reduce) { .reply-toast { animation: none; } }
 
 /* Shown when the page has no working key: it needs a fresh launch link. */
 .fresh-link-notice {

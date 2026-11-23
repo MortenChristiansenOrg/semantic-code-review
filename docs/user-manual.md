@@ -578,8 +578,12 @@ A draft cannot be edited while it is being sent. The viewer remembers the
 choice for later reviews.
 
 The viewer shows whether an agent is listening or working, each thread as
-queued, in progress, or answered, and a notice with unread markers when a round
-finishes; it can also notify you while the tab is hidden. When the agent needs
+queued, in progress, or answered, and unread markers on new replies; it can
+also notify you while the tab is hidden. Each reply that arrives while the
+viewer is open gets a toast in the bottom left corner naming what its thread is
+about. **Show** takes you to the reply in the code, and a toast goes away once
+you show, dismiss or read its reply. More than five toasts collapse into one
+group you can expand, and **Dismiss all** clears them. When the agent needs
 a decision that is not about one thread, its question appears at the top of the
 viewer. When no agent listens, the viewer names `/semantic-flow review` to start
 one.

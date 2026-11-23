@@ -44,6 +44,8 @@ interface LazyJump {
 export let pendingLazyJump: LazyJump | null = null;
 /** The loaded jump whose scheduled frames may still open and scroll to its target. */
 let resumingJump: LazyJump | null = null;
+/** Whether a jump still waits for a diff page to load before it scrolls. */
+export const lazyJumpPending = (): boolean => Boolean(pendingLazyJump || resumingJump);
 /** Cancels a line jump into `fileId`, or any line jump, when its diff closes. */
 function cancelLazyJump(fileId?: string | null): void {
   if (fileId == null || pendingLazyJump?.fileId === fileId) pendingLazyJump = null;

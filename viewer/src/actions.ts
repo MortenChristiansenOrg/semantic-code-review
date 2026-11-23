@@ -1,5 +1,5 @@
 // The actions of the page's controls, dispatched by their data-action.
-import { agent, answerAgent, copyAgentCommand, minimizedAgentQuestions, sendingDrafts, setRoundNotice, stopAgent } from "./agent";
+import { agent, answerAgent, copyAgentCommand, minimizedAgentQuestions, sendingDrafts, stopAgent } from "./agent";
 import { approveGroup, changeApproval } from "./approval-state";
 import { editorAttachments } from "./attachments";
 import { app } from "./context";
@@ -11,14 +11,14 @@ import { openFileSearch } from "./file-search-dialog";
 import { fileCodeInsights, insightFingerprint, insightReviewState } from "./insights";
 import { activeFileNodeId, approvalEntry, fileById, insightKey, stageOf } from "./lookups";
 import { animateStageToggle, applyNotesFilter, cinemaHolder, collapseThenRender, jumpToElement, toggleCinema } from "./navigation";
-import { refreshRemote, refreshingRemote } from "./polling";
+import { refreshRemote, refreshingRemote, setRefreshNotice } from "./polling";
 import { popOwner, showPop } from "./popover";
 import { render } from "./render";
+import { dismissReplyToast, dismissReplyToasts, showReplyToast, toggleReplyToasts } from "./reply-toasts";
 import { changeReview, manageReviewData, refreshReviews, reviewListBusy, reviewsOpen, setReviewsOpen } from "./saved-reviews";
 import { oneOf } from "./narrow";
 import { persist, state } from "./state";
 import { artifactThreadsForElement, localVisibleForElement, noteAt, pendingReplies, threadOps, threadStateKey } from "./threads";
-import { showUnreadReplies } from "./unread-replies";
 import { isFeedbackTargetKind, isNoteKind } from "./stored-state";
 import { cssEsc, focusable } from "./util";
 
@@ -88,10 +88,16 @@ export function installActions(): void {
     } else if (a === "agent-choice") {
       const request = agent?.requests.find((item) => item.id === btn.dataset.id);
       if (request) void answerAgent(request.id, request.choices[Number(btn.dataset.choice)] || "");
-    } else if (a === "show-unread") {
-      showUnreadReplies();
-    } else if (a === "dismiss-round") {
-      setRoundNotice(null); render();
+    } else if (a === "show-reply-toast") {
+      if (btn.dataset.key !== undefined) showReplyToast(btn.dataset.key);
+    } else if (a === "dismiss-reply-toast") {
+      if (btn.dataset.key !== undefined) dismissReplyToast(btn.dataset.key);
+    } else if (a === "dismiss-reply-toasts") {
+      dismissReplyToasts();
+    } else if (a === "toggle-reply-toasts") {
+      toggleReplyToasts();
+    } else if (a === "dismiss-refresh-notice") {
+      setRefreshNotice(""); render();
     } else if (a === "refresh-reviews") {
       if (!reviewListBusy) void refreshReviews();
     } else if (a === "open-review" || a === "complete-review") {

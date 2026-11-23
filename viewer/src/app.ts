@@ -25,6 +25,7 @@ import { installStickyInsets } from "./sticky-insets";
 import { initState, installUnloadGuard, persist, reviewEnded, reviewEndOf, state, type ReviewEnd, type SavedReview } from "./state";
 import { installHeldThreadLists, usableNotes } from "./threads";
 import { installUnreadReplies } from "./unread-replies";
+import { installReplyToasts } from "./reply-toasts";
 import { cssEsc } from "./util";
 
 
@@ -77,6 +78,7 @@ async function startApp(): Promise<boolean> {
   installKeyboard();
   installSelection();
   installUnreadReplies();
+  installReplyToasts();
   installStickyInsets();
 
   const drafts: Draft[] = compose ? [...usableNotes(), compose] : usableNotes();

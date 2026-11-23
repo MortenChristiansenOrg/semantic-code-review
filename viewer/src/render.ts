@@ -1,5 +1,4 @@
 // Rendering the page from its model, and what runs after each render.
-import { roundNotice } from "./agent";
 import { approvalErrors } from "./approval-state";
 import { app } from "./context";
 import { animateDetails } from "./details";
@@ -8,6 +7,7 @@ import { forgetRemovedInsights, setRenderingPage } from "./insight-preview";
 import { fadePendingHighlight, resumePendingLazyJump } from "./navigation";
 import { agentBarModel, coverageModel, notesPanelModel, storyModel, topbarModel } from "./page-model";
 import { refreshNotice } from "./polling";
+import { captureToastFocus, replyToastsModel, restoreToastFocus, updateReplyToasts } from "./reply-toasts";
 import { keepFocusedPop } from "./popover";
 import { captureFileScrolls, captureFocus, restoreFileScrolls, restoreFocus } from "./render-steps";
 import { reviewsDialog, reviewsOpen, setReviewsOpen, updateReviewList } from "./saved-reviews";
@@ -24,11 +24,12 @@ export const baseTitle = document.title;
 
 /* ---- render ----------------------------------------------------------- */
 export function render(): void {
-  const focus = captureFocus(), scrolls = captureFileScrolls();
+  const focus = captureFocus(), scrolls = captureFileScrolls(), toastFocus = captureToastFocus();
   renderView();
   restoreFileScrolls(scrolls);
   document.body.classList.toggle("no-scroll", state.notesOpen);
   restoreFocus(focus);
+  restoreToastFocus(toastFocus);
   keepFocusedPop();
   loadOpenDiffs();
   resumePendingLazyJump();
@@ -36,12 +37,13 @@ export function render(): void {
 export function renderView(): void {
   if (reviewEnded) { renderPage(app, null); setReviewsOpen(true); updateReviewList(); return; }
   beginThreadLists();
+  updateReplyToasts();
   const model: PageView = {
     topbar: topbarModel(),
     agentBar: agentBarModel(),
     notices: {
       approvalErrors: [...approvalErrors].map(([id, message]) => ({ id, message })),
-      roundCount: roundNotice ? roundNotice.count : null,
+      replies: replyToastsModel(),
       refresh: refreshNotice,
     },
     story: storyModel(),
