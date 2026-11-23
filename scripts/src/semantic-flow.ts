@@ -337,13 +337,13 @@ function captureValidation(validate: () => string): CapturedValidation {
   }
 }
 
-async function checkImplementation(root: string, { leftoverWork: allowLeftover = false } = {}): Promise<CapturedValidation & { emptyStages: string[] | null; leftoverWork: LeftoverWork | null }> {
+async function checkImplementation(root: string, { leftoverWork: allowLeftover = false, targetMayAdvance = false } = {}): Promise<CapturedValidation & { emptyStages: string[] | null; leftoverWork: LeftoverWork | null }> {
   const { validateImplementation } = await implementationService();
   // Unknown (null) unless the implementation validates.
   let emptyStages: string[] | null = null;
   let leftoverWork: LeftoverWork | null = null;
   const captured = captureValidation(() => {
-    const validation = validateImplementation(root, { leftoverWork: allowLeftover });
+    const validation = validateImplementation(root, { leftoverWork: allowLeftover, targetMayAdvance });
     emptyStages = validation.emptyStages;
     leftoverWork = validation.leftoverWork;
     return [validation.message, ...validation.warnings.map((warning) => `Warning: ${warning}`)].join("\n");
@@ -892,8 +892,8 @@ async function refreshAdvancedTarget(candidate: ActiveCandidate, round: RoundIde
 
 /** Validates the implementation for a feedback command and returns its empty
  * stages, and the leftover work it allowed when leftoverWork is set. */
-async function validateArtifactForFeedback(candidate: ArtifactCandidate, { leftoverWork = false } = {}): Promise<{ emptyStages: string[]; leftoverWork: LeftoverWork | null }> {
-  const artifactValidation = await checkImplementation(candidate.worktree, { leftoverWork });
+async function validateArtifactForFeedback(candidate: ArtifactCandidate, { leftoverWork = false, targetMayAdvance = false } = {}): Promise<{ emptyStages: string[]; leftoverWork: LeftoverWork | null }> {
+  const artifactValidation = await checkImplementation(candidate.worktree, { leftoverWork, targetMayAdvance });
   if (!artifactValidation.passed) {
     if (artifactValidation.output) console.error(artifactValidation.output);
     fail("Semantic implementation validation failed.");
@@ -1018,7 +1018,10 @@ async function waitForFeedback(options: Options): Promise<void> {
   // for the reviewer's answer may hold uncommitted or unrestacked work, so skip it then.
   if (requested && !updateAgentState(review, (state, now) => roundAwaitingAnswer(state, now, requested))) {
     try {
-      await validateArtifactForFeedback(candidate);
+      // A target that advanced during the round is restacked once the next round
+      // arrives. Unrecorded work is this session's to fix unless another round runs,
+      // whose work in progress it may be.
+      await validateArtifactForFeedback(candidate, { targetMayAdvance: true, leftoverWork: otherRoundRunning(review, requested) });
       if (candidate.feedbackExists) {
         const feedbackValidation = await checkFeedback(candidate.worktree);
         if (!feedbackValidation.passed) {
@@ -1088,13 +1091,15 @@ async function waitForFeedback(options: Options): Promise<void> {
       if (step.pending) {
         const found = await activeCandidate(resolveSingle(options, "feedback"));
         // Work a round that ended or was taken over left behind goes to this round
-        // to record, unless another round runs, which may still be making it.
-        // The target is restacked only once it is recorded.
-        const leftoverWork = !otherRoundRunning(review, session) && (await implementationService()).hasLeftoverWork(found.worktree);
-        const { candidate: current, targetRestack } = leftoverWork ? { candidate: found, targetRestack: null } : await refreshAdvancedTarget(found, { session });
-        const result = await feedbackSnapshot(current, targetRestack, { session }, { leftoverWork });
-        if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
-        // Another run claimed the threads first; keep listening.
+        // to record. The target is restacked only once it is recorded.
+        const leftoverWork = (await implementationService()).hasLeftoverWork(found.worktree);
+        // While another round runs, the work may be its own in progress: keep listening until it finishes.
+        if (!leftoverWork || !otherRoundRunning(review, session)) {
+          const { candidate: current, targetRestack } = leftoverWork ? { candidate: found, targetRestack: null } : await refreshAdvancedTarget(found, { session });
+          const result = await feedbackSnapshot(current, targetRestack, { session }, { leftoverWork });
+          if (result.stages.length || result.responses?.length) { print({ ...result, session }); return; }
+          // Another run claimed the threads first; keep listening.
+        }
       }
       if (Date.now() >= deadline) { print({ session, timedOut: true }); return; }
       await delay(WAIT_POLL_MS);

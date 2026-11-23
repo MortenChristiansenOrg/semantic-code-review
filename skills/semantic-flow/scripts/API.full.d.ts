@@ -862,9 +862,10 @@ export interface SemanticFlowFeedbackOptions {
  * `recordedHead`, `head`); `pendingRestack` is null or the `stageId` and
  * `worktree` of a restack stopped at a conflict. The round's `stages` still show
  * the recorded heads. While leftover work exists the target branch is not
- * restacked, and no other validation failure is reported this way. Leftover work
- * is handed over only while no other round runs; a wait with `session` first
- * validates the work of the round it finished and fails on it, keeping the session.
+ * restacked, and no other validation failure is reported this way. While another
+ * round runs, the wait keeps listening instead, since the work may be that round's.
+ * A wait with `session` first validates the work of the round it finished, apart
+ * from an advanced target, and fails on it, keeping the session.
  * @cli semantic-flow.mjs
  * @command feedback
  */

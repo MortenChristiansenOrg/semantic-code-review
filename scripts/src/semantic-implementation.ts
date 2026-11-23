@@ -95,7 +95,7 @@ import { errorCode, errorMessage, isRecord, isStringArray, type JsonRecord } fro
 import { parseDocument } from "./shared/schema-validation.js";
 import { feedbackDirectory, gitCommonDirectory, reviewHome, reviewId, withReviewLock, writeReviewId } from "./shared/review-store.js";
 import { describeFinalizedStages, emptyStageIds, stageThreads } from "./shared/stage-report.js";
-import { claimActive, readAgentState, roundRefusal, touchAgent, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
+import { claimActive, liveSession, readAgentState, roundRefusal, touchAgent, updateAgentState, type AgentState, type RoundIdentity } from "./shared/agent-session.js";
 
 const commitFacts = factCache<string>();
 const linearRangeFacts = factCache<number>();
@@ -1021,16 +1021,23 @@ export function hasLeftoverWork(root: string): boolean {
 }
 
 /** Validates the recorded implementation past its leftover work: moved stage
- * branches count at their recorded heads, and a pending restack is allowed. The
- * target may have advanced, since the leftover work keeps it from being restacked. */
-function leftoverValidation(workspace: Workspace, leftover: LeftoverWork): ArtifactValidationOptions {
-  const { baseRevision, targetBranch } = loadImplementation(workspace.root, workspace.snapshot, { includeWork: false }).manifest;
-  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}^{commit}`], { cwd: workspace.root });
+ * branches count at their recorded heads, and a pending restack is allowed. */
+function leftoverValidation(leftover: LeftoverWork): ArtifactValidationOptions {
   return {
     allowPendingRestack: leftover.pendingRestack !== null,
     movingBranches: new Map(leftover.movedStages.map(({ branch, recordedHead }) => [branch, recordedHead])),
-    allowTargetDrift: targetHead !== undefined && isAncestor(workspace.root, baseRevision, targetHead),
   };
+}
+
+/** Whether the target branch only advanced past the recorded base, without
+ * containing the final stage, so a later wait restacks the implementation onto it. */
+function targetOnlyAdvanced(workspace: Workspace): boolean {
+  const artifact = loadImplementation(workspace.root, workspace.snapshot, { includeWork: false });
+  const { baseRevision, targetBranch, stages } = artifact.manifest;
+  const targetHead = gitOptional(["rev-parse", "--verify", "--quiet", `refs/heads/${targetBranch}^{commit}`], { cwd: workspace.root });
+  if (targetHead === undefined || !isAncestor(workspace.root, baseRevision, targetHead)) return false;
+  const finalStage = stages.at(-1);
+  return finalStage === undefined || targetHead === baseRevision || !isAncestor(workspace.root, finalizedStage(artifact, finalStage).change.headRevision, targetHead);
 }
 
 export interface ImplementationValidation {
@@ -1045,12 +1052,15 @@ export interface ImplementationValidation {
 
 /** Fully validates the implementation in root, as `implementation validate` does.
  * With leftoverWork, a moved stage branch and a pending restack are reported in
- * the result instead of failing; every other failure still fails. */
-export function validateImplementation(root: string, { leftoverWork: allowLeftover = false }: { leftoverWork?: boolean } = {}): ImplementationValidation {
+ * the result instead of failing; every other failure still fails. With
+ * targetMayAdvance, or with leftover work, which keeps the target from being
+ * restacked, a target branch that only advanced is accepted too. */
+export function validateImplementation(root: string, { leftoverWork: allowLeftover = false, targetMayAdvance = false }: { leftoverWork?: boolean; targetMayAdvance?: boolean } = {}): ImplementationValidation {
   return withValidationContext(() => {
     const workspace = openWorkspace(root);
     const leftoverWork = allowLeftover ? findLeftoverWork(workspace) : null;
-    const artifact = validateArtifact(workspace, { quiet: true, ...(leftoverWork ? leftoverValidation(workspace, leftoverWork) : {}) });
+    const allowTargetDrift = (targetMayAdvance || leftoverWork !== null) && targetOnlyAdvanced(workspace);
+    const artifact = validateArtifact(workspace, { quiet: true, allowTargetDrift, ...(leftoverWork ? leftoverValidation(leftoverWork) : {}) });
     return {
       message: validationMessage(artifact, "full"),
       warnings: [...artifact.stages.values()].flatMap((stage) => evidenceWarnings(stage)),
@@ -3422,10 +3432,15 @@ function abortRestack(workspace: Workspace): void {
   draft.remove(PENDING_RESTACK_FILE);
   // Aborting changes no stage, so the round that started the restack may still
   // discard it after another agent took that round over. Any other abort is a change like any other.
-  // Only while no other round runs: one that does may be resolving this restack itself.
+  // Only while no other round runs and no other session listens: the agent that
+  // took over finishes the restack, from the moment its session starts.
   const owner = pending?.claim;
   recovery = owner !== undefined && commandRound !== null && "claim" in commandRound && owner === commandRound.claim
-    ? (state, now) => !state.claims.some((claim) => claim.id !== owner && claimActive(claim, now))
+    ? (state, now) => {
+      const live = liveSession(state);
+      const round = [...state.claims, ...state.retiredClaims].find((claim) => claim.id === owner);
+      return !state.claims.some((claim) => claim.id !== owner && claimActive(claim, now)) && (!live || live.id === round?.sessionId);
+    }
     : undefined;
   try { withArtifactLock(workspace, implementationId, () => commitArtifact(workspace.root, workspace.snapshot, draft)); }
   finally { recovery = undefined; }

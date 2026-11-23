@@ -95,10 +95,8 @@ it succeeds.
 
 If any command reports that the round was replaced, another agent started
 listening and took over its threads. Stop at once: no commit, restack, stage
-change, question, or reply for this round. If this round left a restack
-pending, first discard it with `<semantic-flow> implementation restack --abort
---claim <claim>`; when that is refused, the new agent handles it. Leave other
-edits as they are. End with one
+change, question, or reply for this round. Leave a pending restack and other
+edits as they are; the new agent takes them over. End with one
 short line in the chat, naming any uncommitted edits you left.
 
 ## Leftover work
@@ -117,12 +115,16 @@ threads, with this round's claim:
    `git status` in the pending restack's `worktree`.
 3. Finish a pending restack as `../docs/restack-conflicts.md` describes, with
    `restack --continue --claim <claim>`. Abort it with `--claim <claim>` only
-   when it cannot be continued; its stage commits stay on their branches.
+   when it cannot be continued, after saving the resolution staged in its
+   worktree (`git diff --cached`) to an OS temporary file for the restack that
+   stops at the same conflict again. Its stage commits stay on their branches.
 4. Check out the lowest stage branch that still has commits after its recorded
    head and run `implementation restack --from <stage-id> --claim <claim>`.
    `<semantic-flow> implementation validate` names any stage still moved.
-5. Use the `--json` summary of each restack: a listed stage's `baseRevision` and
-   `nextHead` replace the round's `stageBase` and `stageHead` for it.
+5. Run `<semantic-flow> feedback next --json --compact`. For this round's
+   threads, its stage groups replace the round's `stages`: `stageBase`,
+   `stageHead`, `stale`, and `currentLine` now describe the recorded stages.
+   Ignore other threads.
 
 The recorded work is the starting point of the round. Finish or correct it like
 any other change, and describe the result in the replies. Revert part of it

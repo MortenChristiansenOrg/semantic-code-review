@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { feedbackDirectory } from "../../src/shared/review-store.ts";
-import { agentStatus, endSession, readAgentState, updateAgentState } from "../../src/shared/agent-session.ts";
+import { agentStatus, createClaim, endSession, readAgentState, updateAgentState } from "../../src/shared/agent-session.ts";
 import { createImplementationWithStages, flowCli } from "../helpers/repository.mjs";
 
 const reviewDirectory = (repository) => path.dirname(feedbackDirectory(repository.root));
@@ -130,17 +130,25 @@ test("a first wait with nothing left reports leftoverWork as null", async (t) =>
 test("the new agent records the replaced round's stage commit under its claim and answers against it", async (t) => {
   const { repository } = createImplementationWithStages(t);
   repository.feedback("init");
-  addThread(repository, "change");
+  repository.feedback("thread", "add", "--id", "change", "--comment-id", "change-note", "--body", "Rename this.",
+    "--label", "Line", "--target-kind", "line", "--stage", "implementation", "--path", "implementation.txt", "--side", "new", "--line", "1");
   await wait(repository);
-  leaveStageCommit(repository);
+  // The earlier round added a line above the one the thread is about.
+  repository.commitFile("implementation.txt", "added above\nimplementation\n", "Address feedback");
   const round = await wait(repository);
+  assert.equal(round.stages[0].threads[0].currentLine, 1);
 
   repository.expectSemanticFailure("pass the claim", "restack", "--from", "implementation");
   const summary = JSON.parse(repository.semantic("restack", "--from", "implementation", "--claim", round.claim, "--json"));
   const stage = summary.stages.find(({ id }) => id === "implementation");
   assert.equal(recordedHead(repository, "implementation"), stage.nextHead);
-  assert.equal(repository.git("show", `${stage.nextHead}:implementation.txt`), "implementation v2");
+  assert.equal(repository.git("show", `${stage.nextHead}:implementation.txt`), "added above\nimplementation");
   repository.semantic("validate");
+  // The threads, read again, describe the recorded stage, and the round keeps them.
+  const refreshed = JSON.parse(repository.feedback("next", "--json", "--compact"));
+  assert.equal(refreshed[0].stageHead, stage.nextHead);
+  assert.deepEqual(refreshed[0].threads.map(({ id, stale, currentLine }) => ({ id, stale, currentLine })), [{ id: "change", stale: false, currentLine: 2 }]);
+  assertListening(repository, round);
 
   repository.feedback("thread", "reply", "--id", "change", "--comment-id", "done", "--author", "agent", "--claim", round.claim,
     "--body", "Finished the earlier round's change.");
@@ -204,6 +212,36 @@ test("leftover work keeps an advanced target from being restacked until it is re
   assert.equal(round.targetRestack, null);
   assert.deepEqual(round.leftoverWork.movedStages.map(({ stageId }) => stageId), ["implementation"]);
   assertListening(repository, round);
+
+  // Once the work is recorded and the round answered, the next round restacks onto the target.
+  repository.semantic("restack", "--from", "implementation", "--claim", round.claim);
+  repository.feedback("thread", "reply", "--id", "change", "--comment-id", "done", "--author", "agent", "--claim", round.claim, "--body", "Done.");
+  assert.equal((await wait(repository, "--session", round.session, "--timeout", "1")).timedOut, true);
+  addThread(repository, "next");
+  const next = await wait(repository, "--session", round.session);
+  assert.equal(next.leftoverWork, null);
+  assert.equal(next.targetRestack.targetBranch, "main");
+});
+
+test("while another round runs, a wait keeps listening instead of taking work that round may still be making", async (t) => {
+  const { repository } = createImplementationWithStages(t);
+  repository.feedback("init");
+  const review = reviewIdOf(repository);
+  const listening = await wait(repository, "--timeout", "1");
+  // A round outside listening, such as /semantic-flow feedback, is committing its change.
+  addThread(repository, "standalone");
+  const standalone = updateAgentState(review, (agent, now) => createClaim(agent, now, null, [{ id: "standalone", through: "standalone-note" }]));
+  leaveStageCommit(repository);
+  addThread(repository, "change");
+
+  assert.equal((await wait(repository, "--session", listening.session, "--timeout", "2")).timedOut, true);
+  assert.equal(readAgentState(review).session.endedAt, undefined);
+  // Once that round ended without recording its commit, the session's next wait names it.
+  updateAgentState(review, (agent) => { agent.claims = agent.claims.filter(({ id }) => id !== standalone); });
+  const failed = await waitRun(repository, "--session", listening.session);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /Stage implementation branch .* moved from/);
+  assert.equal(readAgentState(review).session.endedAt, undefined);
 });
 
 test("other validation failures still fail a first wait, with or without leftover work", async (t) => {
