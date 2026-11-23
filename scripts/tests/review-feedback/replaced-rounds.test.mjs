@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { semanticImplementationApi } from "../../src/command-api.ts";
 import { feedbackDirectory, reviewHome } from "../../src/shared/review-store.ts";
-import { createClaim, releaseClaims, startSession, updateAgentState } from "../../src/shared/agent-session.ts";
+import { createClaim, endSession, releaseClaims, startSession, updateAgentState } from "../../src/shared/agent-session.ts";
 import { createImplementationWithStages, flowCli, semanticCli, sourceLoader } from "../helpers/repository.mjs";
 
 const reviewDirectory = (repository) => path.dirname(feedbackDirectory(repository.root));
@@ -120,7 +120,10 @@ test("a replaced round cannot continue its pending restack but can still abort i
   repository.expectSemanticFailure("was replaced", "restack", "--continue", "--claim", replaced.claim);
   repository.expectSemanticFailure("was replaced", "restack", "--abort", "--claim", replaced.claim);
   assert.deepEqual(implementationState(repository), before);
+  // Not while the session that took over listens, even before it claims anything.
   updateAgentState(review, (state) => releaseClaims(state, session));
+  repository.expectSemanticFailure("was replaced", "restack", "--abort", "--claim", replaced.claim);
+  updateAgentState(review, (state, now) => endSession(state, now, "stopped"));
   repository.semantic("restack", "--abort", "--claim", replaced.claim);
   assert.equal(repository.artifact.exists(".work/restack.json"), false);
 });

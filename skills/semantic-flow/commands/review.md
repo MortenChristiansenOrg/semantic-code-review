@@ -64,15 +64,17 @@ followed by `/semantic-flow review` resumes listening.
 
 Never end the loop on your own and never ask whether to continue. Waiting again
 with a session after a round first validates the stack and feedback; fix any
-failure it reports before continuing. Stop and two hours without feedback take
+failure it reports before continuing, keeping your session. A moved stage branch
+or pending restack is handled as `feedback.md` “Leftover work” describes. Stop and two hours without feedback take
 effect only after the current round.
 
 ## Rounds
 
 When a result first has `stages` or `responses`, read `feedback.md` completely
 once. A round's result has the same fields as its `feedback --json` preflight,
-with the threads already claimed, so do not run that preflight. Process each
-round by its “The round's claim”, “Ask in the viewer”, “Address feedback”,
+with the threads already claimed, so do not run that preflight. It also has
+`leftoverWork`, usually null. Process each
+round by its “The round's claim”, “Leftover work”, “Ask in the viewer”, “Address feedback”,
 “Restack conflicts”, and “Reply” sections, including parallel subagents for questions and for
 independent stage changes. Reuse stage worktrees created in earlier rounds.
 

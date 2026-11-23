@@ -102,7 +102,8 @@ A review the agent listens to (`/semantic-flow review`) records one listening
 session with a heartbeat. Starting another session replaces it and returns the
 threads of every running round to the queue. Afterwards a replaced round can
 post no reply, progress note or question that names it, and can change the
-implementation only to abort a restack it left pending while no other round runs. Every command that changes the
+implementation only to abort a restack it left pending while no other round runs
+and no other session listens; the agent that took over finishes it instead. Every command that changes the
 implementation accepts the round's `claim` and checks it under the review lock,
 in the same step as the snapshot and ref transaction, so a takeover cannot come
 between the check and the change. While a listening session's round runs, a
