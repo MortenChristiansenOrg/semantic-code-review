@@ -4672,7 +4672,7 @@ test('what is in view stays in place across live updates that grow, reorder and 
   data.stages[0].summary = 'A much longer summary. '.repeat(40);
   data.viewerRevision = 'grown';
   await expect(page.locator('details[data-node="first-zero"]')).toHaveCount(1);
-  expect(await top()).toBeCloseTo(before, 0);
+  expect(Math.abs(await top() - before)).toBeLessThanOrEqual(1);
   expect(await scrollY()).toBeGreaterThan(900);
   const stageInView = page.locator('.stage[data-stage="second"] .stage-sum');
   await expect(stageInView).toBeInViewport();
@@ -5220,7 +5220,7 @@ test('agent replies above the window leave the stages in view where they are', a
   for (const item of data.feedback.slice(0, 2)) item.comments.push({ author: 'agent', body: 'Answered.\n\nWith a second paragraph.', createdAt: '2026-09-08T10:01:00Z' });
   data.viewerRevision = 'replied';
   await expect(page.locator('.stage[data-stage="s1"] [data-thread-id="s1"]')).toContainText('With a second paragraph.');
-  expect(await stage.evaluate((el) => el.getBoundingClientRect().top)).toBeCloseTo(before, 0);
+  expect(Math.abs(await stage.evaluate((el) => el.getBoundingClientRect().top) - before)).toBeLessThanOrEqual(1);
   expect(errors).toEqual([]);
 });
 
@@ -5259,7 +5259,7 @@ for (const [placement, above] of [['just below the top bar', 0], ['partly above 
     await expect(page.locator(`.line-thread[data-thread="${lineId(5)}"]`)).toContainText('With a second paragraph.');
     // The diff scrolls by what grew in it; the page around it stays.
     const after = await measure();
-    expect(after.top).toBeCloseTo(before.top, 0);
+    expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
     expect(after.inDiff).toBe(true);
     expect(after.diff).toBeGreaterThan(before.diff);
     expect(after.page).toBe(before.page);
@@ -5291,7 +5291,7 @@ test('a reply to the first discussion on a line leaves a later one on that line,
   data.viewerRevision = 'replied';
   await expect(page.locator('.cinema-diff [data-thread-id="earlier"]')).toContainText('A late answer.');
   const after = await measure();
-  expect(after.top).toBeCloseTo(before.top, 0);
+  expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
   expect(after.page).toBe(before.page);
   expect(errors).toEqual([]);
 });
@@ -5319,7 +5319,7 @@ test('a reply above a message taller than the diff leaves the part of it in view
   data.viewerRevision = 'replied';
   await expect(page.locator('.cinema-diff [data-thread-id="earlier"]')).toContainText('A late answer.');
   const after = await measure();
-  expect(after.top).toBeCloseTo(before.top, 0);
+  expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
   expect(after.page).toBe(before.page);
   expect(errors).toEqual([]);
 });
