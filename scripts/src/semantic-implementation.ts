@@ -501,15 +501,17 @@ function stageNodeErrors(stage: EditableStage, files: FileChange[], diffContext:
     }
   }
 
-  // An empty stage has no diff for its nodes to cover; its node IDs and links are still checked.
+  for (const node of nodes) {
+    for (const duplicate of duplicateValues(node.changes.map((change) => change.path))) {
+      errors.push(`Stage ${stage.id} node ${node.id} repeats path ${duplicate}.`);
+    }
+  }
+
+  // An empty stage has no diff for its nodes to cover; its node IDs, paths and links are still checked.
   if (!membership) return errors;
   const filesByPath = new Map(files.map((file) => [file.path, file]));
   const memberships = new Map<string, { node: ChangeNode; change: NodeFileChange }[]>();
   for (const node of nodes) {
-    const nodePaths = node.changes.map((change) => change.path);
-    for (const duplicate of duplicateValues(nodePaths)) {
-      errors.push(`Stage ${stage.id} node ${node.id} repeats path ${duplicate}.`);
-    }
     for (const change of node.changes) {
       if (!filesByPath.has(change.path)) {
         errors.push(
