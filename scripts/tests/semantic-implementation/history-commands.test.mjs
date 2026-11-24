@@ -1113,3 +1113,86 @@ test("finishing folds a stage's commits into one with a generated message and co
   repository.artifact.write("manifest.json", manifest);
   repository.expectSemanticFailure("has 2 commits", "validate");
 });
+
+/** Gives a finalized stage one node with the given paths. */
+function organizeFinalized(repository, id, paths, failure = undefined) {
+  const organization = {
+    $schema: "https://semantic-code-review.dev/skills/semantic-flow/v0.1/stage-organization.schema.json",
+    nodes: [{
+      id: "implementation-change",
+      description: "Implement the stage behavior.",
+      changes: paths.map((path) => ({ path, classification: "behavior" })),
+    }],
+    itemLinks: [],
+  };
+  const input = `.organization-${id}.json`;
+  repository.write(input, `${JSON.stringify(organization, null, 2)}\n`);
+  try {
+    const args = ["stage", "organize", "--finalized", "--stage", id, "--file", input];
+    return failure ? repository.expectSemanticFailure(failure, ...args) : repository.semantic(...args);
+  } finally {
+    repository.remove(input);
+  }
+}
+
+function plannedPaths(repository, id) {
+  return JSON.parse(repository.semantic("stage", "plan", "--finalized", "--stage", id)).files.map((file) => file.path);
+}
+
+test("a finalized stage that a restack gave an unowned file is organized again", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  beginStage(repository, { id: "policy" });
+  finalizeStage(repository, { id: "policy", file: "policy.txt", contents: "policy\n" });
+  beginStage(repository, { id: "persistence", dependencies: ["policy"] });
+  finalizeStage(repository, { id: "persistence", file: "persistence.txt", contents: "persistence\n" });
+
+  repository.git("switch", "semantic-flow/test-implementation/stages/policy");
+  repository.commitFile("rules.txt", "rules\n", "Add the rules");
+  repository.semantic("restack", "--from", "policy");
+  repository.expectSemanticFailure(
+    /Stage policy does not assign changed path rules\.txt to a node\.\nOrganize stage policy again: .*implementation stage plan --finalized --stage policy/,
+    "validate",
+  );
+
+  assert.deepEqual(plannedPaths(repository, "policy").sort(), ["policy.txt", "rules.txt"]);
+  organizeFinalized(repository, "policy", ["policy.txt", "rules.txt"]);
+  repository.semantic("validate", "--publish");
+});
+
+test("finalized stages that a target change left unorganized are organized one at a time", (t) => {
+  const repository = createRepository(t);
+  initializeImplementation(repository);
+  const prefix = "semantic-flow/test-implementation/stages";
+  const finalizeTwoFiles = (id, files) => {
+    for (const file of files) repository.write(file, `${file}\n`);
+    repository.git("add", ...files);
+    repository.git("commit", "--quiet", "-m", `Implement ${id}`);
+    organizeStage(repository, { id });
+    repository.semantic("stage", "finish", "--id", id);
+  };
+  beginStage(repository, { id: "a" });
+  finalizeTwoFiles("a", ["a.txt", "a-more.txt"]);
+  beginStage(repository, { id: "b", dependencies: ["a"] });
+  finalizeTwoFiles("b", ["b.txt", "b-more.txt"]);
+
+  // The target already makes one change of each stage, so their nodes name paths the stages no longer change.
+  repository.git("switch", "main");
+  for (const file of ["a.txt", "b.txt"]) repository.write(file, `${file}\n`);
+  repository.git("add", "a.txt", "b.txt");
+  repository.git("commit", "--quiet", "-m", "Make the same changes on the target");
+  repository.semantic("restack", "--base", "main");
+  repository.expectSemanticFailure(/Stage a node implementation-change references unchanged path a\.txt\./, "validate");
+
+  repository.git("switch", `${prefix}/a`);
+  assert.deepEqual(plannedPaths(repository, "a"), ["a-more.txt"]);
+  organizeFinalized(repository, "a", ["a-more.txt"]);
+  repository.expectSemanticFailure(/Stage b node implementation-change references unchanged path b\.txt\./, "validate");
+
+  repository.git("switch", `${prefix}/b`);
+  assert.deepEqual(plannedPaths(repository, "b"), ["b-more.txt"]);
+  // Organizing checks the stage itself against its diff.
+  organizeFinalized(repository, "b", ["b.txt", "b-more.txt"], "Stage b node implementation-change references unchanged path b.txt.");
+  organizeFinalized(repository, "b", ["b-more.txt"]);
+  repository.semantic("validate", "--publish");
+});
