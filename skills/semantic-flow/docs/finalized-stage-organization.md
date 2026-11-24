@@ -1,9 +1,10 @@
 # Reorganize a finalized stage
 
-Use only when a feedback or reconciliation correction changes a finalized
-stage's node coverage or item links. Run from the artifact worktree with the
-stage's recorded branch checked out and the correction committed. Preserve
-unrelated user changes.
+Use only when a feedback or reconciliation correction, or a restack or sync,
+changes a finalized stage's node coverage or item links. Run from the artifact
+worktree with the stage's recorded branch checked out and any correction
+committed. Other finalized stages may still need reorganizing; organize each in
+turn. Preserve unrelated user changes.
 
 ## Prepare the organization input
 

@@ -698,6 +698,9 @@ function removedStageErrors(files: ArtifactFiles, { manifest, stages, workStages
 
 interface SemanticValidationOptions {
   validateGit?: boolean;
+  /** Finalized stages whose nodes no longer fit their diff pass, so a restack's
+   * result can be organized again one stage at a time. */
+  allowUnorganizedStages?: boolean;
   /** Branch heads the command moves together with the draft it validates. */
   movingBranches?: ReadonlyMap<string, string>;
   allowLandedTarget?: boolean;
@@ -708,7 +711,7 @@ function validateSemantic(
   workspace: Pick<Workspace, "root">,
   files: ArtifactFiles,
   artifact: Artifact,
-  { validateGit = true, allowLandedTarget = false, allowTargetDrift = false, movingBranches = new Map() }: SemanticValidationOptions = {},
+  { validateGit = true, allowLandedTarget = false, allowTargetDrift = false, movingBranches = new Map(), allowUnorganizedStages = false }: SemanticValidationOptions = {},
 ): void {
   const errors: string[] = [];
   const { manifest, requirements, stages, workStages, removedStages } = artifact;
@@ -780,7 +783,11 @@ function validateSemantic(
       errors.push(`Stage ${id} repeats changed path ${duplicate}.`);
     }
     // An emptied stage keeps the nodes of its change, which no diff covers now.
-    errors.push(...stageNodeErrors(stage, stage.change.files, undefined, stage.change.files.length > 0));
+    const nodeErrors = stageNodeErrors(stage, stage.change.files, undefined, stage.change.files.length > 0 && !allowUnorganizedStages);
+    errors.push(...nodeErrors);
+    if (nodeErrors.length > stageNodeErrors(stage, stage.change.files, undefined, false).length) {
+      errors.push(reorganizeHint(id));
+    }
     errors.push(...evidenceItemErrors(stage));
     if (heads.has(stage.change.headRevision)) {
       errors.push(`Stage ${id} repeats head ${stage.change.headRevision}.`);
@@ -902,13 +909,14 @@ function validateSemantic(
       if (!isMarkedEmptyStage(workspace.root, head)) fail(`Stage ${id} changes nothing, and its commit is not marked as an empty stage.`);
       continue;
     }
+    if (allowUnorganizedStages) continue;
     const nodeErrors = stageNodeErrors(stage, files, {
       root: workspace.root,
       baseRevision,
       headRevision: head,
     });
     if (nodeErrors.length > 0) {
-      fail(nodeErrors.join("\n"));
+      fail([...nodeErrors, reorganizeHint(id)].join("\n"));
     }
   }
 }
@@ -933,6 +941,7 @@ function validateArtifact(
     allowTargetDrift = false,
     movingBranches,
     allowPendingRestack = false,
+    allowUnorganizedStages = false,
   }: ArtifactValidationOptions = {},
   files: ArtifactFiles | undefined = workspace.snapshot,
 ): Artifact {
@@ -955,7 +964,7 @@ function validateArtifact(
     }
   }
   if (!schemaOnly) {
-    validateSemantic(workspace, files, artifact, { validateGit, allowLandedTarget, allowTargetDrift, movingBranches });
+    validateSemantic(workspace, files, artifact, { validateGit, allowLandedTarget, allowTargetDrift, movingBranches, allowUnorganizedStages });
   }
 
   if (publish) {
@@ -974,6 +983,11 @@ function validateArtifact(
     console.log(validationMessage(artifact, schemaOnly ? "schema" : publish ? "publication" : "full"));
   }
   return artifact;
+}
+
+/** How to fit the nodes of a finalized stage to its diff again. */
+function reorganizeHint(stageId: string): string {
+  return `Organize stage ${stageId} again: with its branch checked out, run stage plan --finalized --stage ${stageId}, then stage organize --finalized --stage ${stageId} --file <organization-json>.`;
 }
 
 function validationMessage(artifact: Artifact, mode: "schema" | "publication" | "full"): string {
@@ -1824,8 +1838,9 @@ function batchItemOptions(item: unknown, index: number): Options {
 
 function organizationPlan(workspace: Workspace, options: Options): void {
   assertKnownOptions(options, commandOptionNames(semanticImplementationApi, "stage plan"));
-  const artifact = validateArtifact(workspace, { quiet: true, validateGit: false });
   const finalized = flag(options, "finalized");
+  // A restack may leave finalized stages whose nodes no longer fit; planning is how they are fitted again.
+  const artifact = validateArtifact(workspace, { quiet: true, validateGit: false, allowUnorganizedStages: finalized });
   const requested = option(options, "stage");
   const id = finalized ? explicitStageId(requested, "stage") : selectedWorkingStageId(artifact, requested, "stage");
   const stage = finalized ? artifact.stages.get(id) : artifact.workStages.get(id);
@@ -1893,9 +1908,12 @@ function organizeStage(workspace: Workspace, options: Options): void {
   );
   const organization = parseDocument(STAGE_ORGANIZATION_SCHEMA_ID, readJsonInput(inputFile), inputFile);
 
+  // A restack may leave finalized stages whose nodes no longer fit; organizing
+  // fits them again one at a time, so the others may still be unorganized.
   const artifact = validateArtifact(workspace, {
     quiet: true,
     validateGit: false,
+    allowUnorganizedStages: finalized,
   });
   const stageId = explicitId ?? selectedWorkingStageId(artifact, requestedStage, "stage");
   const stage = finalized
@@ -1960,9 +1978,11 @@ function organizeStage(workspace: Workspace, options: Options): void {
     artifact.stages.set(stageId, updated);
     writeManifest(draft, artifact);
   }
+  // The organized stage was checked against its diff above.
   validateArtifact(workspace, {
     quiet: true,
     validateGit: finalized && !finalizedStageMoved,
+    allowUnorganizedStages: finalized,
   }, draft);
   const fold = updated.$schema === STAGE_SCHEMA_ID && branchHead !== undefined
     ? [{ ref: `refs/heads/${updated.change.branch}`, next: headRevision, previous: branchHead }]

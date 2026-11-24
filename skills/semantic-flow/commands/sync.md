@@ -56,9 +56,9 @@ worktree is still detached after either. For an originally detached
 stage/base checkout, detach at its new recorded stage/base revision.
 
 If node ownership, hunk selectors, or line ranges no longer fit the rewritten
-diff, read `../scripts/api/stages.d.ts` and reorganize only the affected finalized
-stages with `stage plan --finalized` and `stage organize --finalized`. Use the
-CLI for metadata edits. Then rerun `sync --local --json` in the artifact worktree.
+diff, reorganize only the affected finalized stages as
+`../docs/finalized-stage-organization.md` describes. Use the CLI for metadata
+edits. Then rerun `sync --local --json` in the artifact worktree.
 
 ## Complete
 
