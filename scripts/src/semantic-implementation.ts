@@ -989,7 +989,7 @@ function validateArtifact(
 
 /** How to fit the nodes of a finalized stage to its diff again. */
 function reorganizeHint(stageId: string): string {
-  return `Organize stage ${stageId} again: with its branch checked out, run stage plan --finalized --stage ${stageId}, then stage organize --finalized --stage ${stageId} --file <organization-json>.`;
+  return `Organize stage ${stageId} again: with its branch checked out, run implementation stage plan --finalized --stage ${stageId}, then implementation stage organize --finalized --stage ${stageId} --file <organization-json>.`;
 }
 
 function validationMessage(artifact: Artifact, mode: "schema" | "publication" | "full"): string {

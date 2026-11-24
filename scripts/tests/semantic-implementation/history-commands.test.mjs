@@ -1151,7 +1151,7 @@ test("a finalized stage that a restack gave an unowned file is organized again",
   repository.commitFile("rules.txt", "rules\n", "Add the rules");
   repository.semantic("restack", "--from", "policy");
   repository.expectSemanticFailure(
-    /Stage policy does not assign changed path rules\.txt to a node\.\nOrganize stage policy again: .*stage plan --finalized --stage policy/,
+    /Stage policy does not assign changed path rules\.txt to a node\.\nOrganize stage policy again: .*implementation stage plan --finalized --stage policy/,
     "validate",
   );
 
